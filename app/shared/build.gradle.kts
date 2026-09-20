@@ -26,9 +26,9 @@ kotlin {
     }
 
     @OptIn(ExperimentalWasmDsl::class)
-    wasmJs {
+ /*   wasmJs {
         browser()
-    }
+    }*/
 
     android {
         namespace = "com.ideasdeveloper.idc.app.shared"
