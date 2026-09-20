@@ -1,5 +1,5 @@
-// app/src/commonMain/kotlin/com/ideasdeveloper/app/navigation/NavRoute.kt
-package com.ideasdeveloper.app.navigation
+// app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/navigation/NavRoute.kt
+package com.ideasdeveloper.idc.navigation
 
 /**
  * Simple navigation routes for the IdeasCore app.

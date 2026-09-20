@@ -1,5 +1,5 @@
-// app/src/commonMain/kotlin/com/ideasdeveloper/app/ui/screens/LoginScreen.kt
-package com.ideasdeveloper.app.ui.screens
+// app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/ui/screens/LoginScreen.kt
+package com.ideasdeveloper.idc.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
