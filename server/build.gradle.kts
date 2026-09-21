@@ -14,6 +14,12 @@ dependencies {
     implementation(libs.logback)
     implementation(libs.ktor.serverCore)
     implementation(libs.ktor.serverNetty)
-    testImplementation(libs.ktor.serverTestHost)
-    testImplementation(libs.kotlin.testJunit)
+
+    /* === DB + Connection Pool === */
+    implementation(libs.exposed.core)
+    implementation(libs.exposed.jdbc)
+    implementation(libs.exposed.jodatime)
+    implementation(libs.postgresql)
+    implementation(libs.hikaricp)
+    /* === End DB === */
 }

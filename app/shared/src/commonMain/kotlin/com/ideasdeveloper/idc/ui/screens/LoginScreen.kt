@@ -94,12 +94,12 @@ fun LoginScreen(
                     modifier = Modifier.fillMaxWidth(),
                     shape = MaterialTheme.shapes.medium,
                     textStyle = LocalTextStyle.current.copy(color = Color.White),
-                    colors = TextFieldDefaults.outlinedTextFieldColors(
+                    colors = TextFieldDefaults.colors(
                         focusedLabelColor = Color.White,
                         unfocusedLabelColor = Color(0xFFCCCCCC),
                         cursorColor = Color.White,
-                        focusedBorderColor = Color.White.copy(alpha = 0.5f),
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
+                        focusedContainerColor = Color.White.copy(alpha = 0.5f),
+                        unfocusedContainerColor = Color.White.copy(alpha = 0.3f),
                     ),
                 )
             }
@@ -129,12 +129,12 @@ fun LoginScreen(
 
                     textStyle = LocalTextStyle.current.copy(color = Color.White),
 
-                    colors = TextFieldDefaults.outlinedTextFieldColors(
+                    colors = TextFieldDefaults.colors(
                         focusedLabelColor = Color.White,
                         unfocusedLabelColor = Color(0xFFCCCCCC),
                         cursorColor = Color.White,
-                        focusedBorderColor = Color.White.copy(alpha = 0.5f),
-                        unfocusedBorderColor = Color.White.copy(alpha = 0.3f),
+                        focusedContainerColor = Color.White.copy(alpha = 0.5f),
+                        unfocusedContainerColor = Color.White.copy(alpha = 0.3f),
                     ),
                 )
             }

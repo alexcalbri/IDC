@@ -1,4 +1,3 @@
-import org.jetbrains.kotlin.gradle.ExperimentalWasmDsl
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
@@ -25,11 +24,6 @@ kotlin {
         browser()
     }
 
-    @OptIn(ExperimentalWasmDsl::class)
- /*   wasmJs {
-        browser()
-    }*/
-
     android {
         namespace = "com.ideasdeveloper.idc.app.shared"
         compileSdk = libs.versions.android.compileSdk.get().toInt()
@@ -40,14 +34,6 @@ kotlin {
         }
         androidResources {
             enable = true
-        }
-        withHostTest {
-            isIncludeAndroidResources = true
-        }
-        withDeviceTestBuilder {
-            sourceSetTreeName = "test"
-        }.configure {
-            instrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         }
     }
 
@@ -64,12 +50,8 @@ kotlin {
             implementation(libs.compose.material3)
             implementation(libs.compose.ui)
             implementation(libs.compose.components.resources)
-            implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.lifecycle.viewmodelCompose)
             implementation(libs.androidx.lifecycle.runtimeCompose)
-        }
-        commonTest.dependencies {
-            implementation(libs.kotlin.test)
         }
         jsMain.dependencies {
             implementation(libs.wrappers.browser)
