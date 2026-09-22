@@ -1,5 +1,9 @@
 This is a Kotlin Multiplatform project targeting Android, iOS, Web, Desktop (JVM), Server.
 
+For a first Ubuntu server installation (PostgreSQL, Java and the Ktor
+application), see the interactive [installer](scripts/ubuntu/install.sh)
+and its [self-hosting instructions](SELF_HOSTING.md#instalador-interactivo-para-ubuntu).
+
 * [/app/iosApp](./app/iosApp/iosApp) contains an iOS application. Even if you’re sharing your UI with Compose
   Multiplatform,
   you need this entry point for your iOS app. This is also where you should add SwiftUI code for your project.

@@ -1,0 +1,623 @@
+# IdeasCore --- Self-Hosting Guide
+
+> Status: **Bootstrap guide**
+>
+> IdeasCore is still evolving. This document intentionally separates
+> steps that can be verified from the repository from architecture that
+> is planned. Before publishing a release, replace placeholders with
+> exact commands tested against that release.
+
+## 1. Deployment Model
+
+### Instalador interactivo para Ubuntu
+
+**Implementado; pendiente de prueba integral en un servidor Ubuntu limpio.**
+El archivo `scripts/ubuntu/install.sh` prepara una primera instalación en
+Ubuntu 24.04 o 26.04 con systemd, sin PostgreSQL ni Java preinstalados.
+Instala PostgreSQL y OpenJDK 21 desde APT, descarga este repositorio,
+compila el backend con su Gradle Wrapper y crea el servicio `ideascore`.
+Ktor se incorpora como dependencia de la aplicación; no se instala como
+un paquete independiente del sistema.
+
+No necesitas instalar Nginx ni las herramientas del backend previamente.
+El script consulta el estado de los paquetes de Ubuntu para Java 21,
+PostgreSQL y su cliente, Nginx, Git, curl, certificados CA, Python 3,
+herramientas DNS y OpenSSL. Muestra cuáles están disponibles y cuáles
+faltan, instala estos últimos y verifica el resultado. Comprueba Certbot
+por separado después de validar el dominio, reutilizando una instalación
+existente incluso si no proviene de APT. No actualiza deliberadamente
+todos los paquetes ya instalados: el mantenimiento del sistema sigue
+siendo una operación independiente.
+
+El punto de partida es Ubuntu Server 24.04/26.04 con sus herramientas
+básicas (Bash, APT/dpkg, systemd y utilidades de cuentas), acceso root
+mediante sudo, terminal interactiva e Internet. El comando de descarga
+de abajo instala curl si la instalación limpia todavía no lo tiene.
+
+Primero publica los cambios del instalador y del backend en la rama que
+vas a utilizar. Desde una terminal SSH en Ubuntu:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl
+curl --fail --show-error --location \
+  https://raw.githubusercontent.com/alexcalbri/IDC/develop/scripts/ubuntu/install.sh \
+  --output install-ideascore.sh
+less install-ideascore.sh
+sudo bash install-ideascore.sh
+```
+
+El comando presupone que los archivos ya están publicados en `develop`.
+Para otra rama o etiqueta, cambia `develop` en la URL y selecciona esa
+misma referencia cuando pregunte el instalador. El repositorio debe poder
+clonarse públicamente por HTTPS; este instalador no gestiona credenciales
+para repositorios privados. Necesita Internet para APT, GitHub, Gradle y
+las dependencias, además de memoria suficiente para compilar (el proyecto
+configura un heap Gradle de hasta 4 GiB y otro Kotlin de hasta 3 GiB).
+
+Preguntas del instalador:
+
+- Rama o etiqueta que se instalará (predeterminada: `develop`).
+- Dominio público del backend, sin protocolo ni rutas (por ejemplo `api.tuempresa.com`).
+- Correo para registrar la cuenta de Let’s Encrypt.
+- Base PostgreSQL nueva (predeterminada: `idc`).
+- Usuario PostgreSQL nuevo (predeterminado: `idc_app`).
+- Contraseña de PostgreSQL y confirmación, sin mostrarla en pantalla.
+- Confirmación del resumen antes de instalar paquetes.
+
+La contraseña admite al menos 16 caracteres ASCII imprimibles. Se guarda
+en `/etc/ideascore/server.env`, propiedad de root y con permisos `600`.
+La aplicación corre con el usuario Linux `ideascore`, sin privilegios
+administrativos. El instalador configura Nginx con HTTPS y un certificado
+de Let’s Encrypt. Reutiliza Certbot si ya está instalado; si falta,
+lo instala mediante APT después de validar el dominio. Instala los servicios en el Ubuntu donde se
+ejecuta. Configura automáticamente Ktor en `127.0.0.1:8080` y su conexión
+JDBC al PostgreSQL local en `127.0.0.1:5432`, usando la base, usuario y
+contraseña introducidos. No solicita IP ni puerto. Si el puerto HTTP
+8080 no está disponible, se detiene con un mensaje explicativo.
+Para probar desde tu PC, utiliza `https://TU_DOMINIO/`. Nginx publica el
+puerto 443 y redirige HTTP a HTTPS; Ktor no escucha conexiones externas.
+Antes de ejecutar, crea los registros DNS A y, si utilizas IPv6, AAAA,
+apuntando al servidor y permite entrada TCP 80/443 en el firewall y en
+el proveedor de hosting/router. El script no modifica DNS ni firewall.
+Consulta DNS público a través de `1.1.1.1` y comprueba cada dirección
+publicada con un token HTTP temporal servido por este Nginx. Un AAAA
+incorrecto también detiene la instalación. Esta comprobación desde el
+servidor requiere NAT loopback si está detrás de NAT; la validación final
+de accesibilidad desde Internet la realiza Let’s Encrypt al emitir el
+certificado. Usa DNS directo para esta instalación, sin un proxy CDN.
+La confirmación inicial incluye aceptar los términos enlazados de
+Let’s Encrypt. El certificado no se solicita hasta confirmar.
+
+El servidor verifica `SELECT 1` durante el arranque y luego habilita su
+ruta `/`. El instalador comprueba PostgreSQL, la respuesta HTTPS local
+con validación del certificado y una renovación de prueba con Certbot.
+Todavía no crea tablas de usuarios, login, migraciones ni control plane.
+La instalación configura una sola base; la resolución multi-tenant es
+arquitectura prevista.
+
+```bash
+sudo systemctl status ideascore --no-pager
+sudo journalctl -u ideascore -f
+sudoedit /etc/ideascore/server.env
+sudo systemctl restart ideascore
+curl --fail http://127.0.0.1:8080/
+```
+
+Cambiar `DB_PASSWORD` en el archivo no cambia la contraseña en PostgreSQL:
+ambas deben coincidir. Las variables del archivo son leídas por systemd;
+no ejecutes ese archivo como un script Bash.
+
+Este instalador es **solo para una primera instalación**. Rechaza
+directorios, servicio, cuenta Linux, base o usuario PostgreSQL existentes;
+no sobrescribe sus datos ni cambia sus contraseñas. Si falla después de
+crear recursos, los conserva para diagnóstico: no es una actualización
+automática ni realiza rollback. Revisa el error y el estado antes de
+reintentar; no borres una base de datos para forzar su ejecución.
+
+Para modificarlo, conserva sus bloques: validación y preguntas, paquetes,
+compilación, PostgreSQL, configuración del servicio y comprobaciones.
+Los valores predeterminados están junto a cada llamada a `ask`.
+La dirección y el puerto HTTP están en las constantes `APP_HOST` y
+`APP_PORT`; cualquier cambio posterior también debe reflejarse en el
+proxy de Nginx. Mantén Ktor en loopback para que el acceso público use HTTPS.
+Las rutas de instalación están declaradas al inicio y también aparecen
+en el archivo de servicio: deben mantenerse sincronizadas.
+
+La compilación del backend sin SDK Android utiliza:
+
+```bash
+./gradlew -PserverOnly=true :server:tasks --all
+./gradlew -PserverOnly=true :server:test :server:installDist
+```
+
+`settings.gradle.kts` omite las aplicaciones y selecciona
+`core/build-server.gradle.kts`, que compila las mismas fuentes comunes
+de Core para JVM. El build normal conserva todos los targets.
+
+IdeasCore supports a self-hosted model in which an organization runs the
+application on infrastructure it controls.
+
+The intended deployment contains:
+
+``` text
+Users
+  |
+Reverse Proxy / TLS
+  |
+IdeasCore Ktor Server
+  |
+  +-------------------+
+  |                   |
+Platform/Control DB   Tenant PostgreSQL DB(s)
+                      |
+                      +-- Core structures
+                      +-- Installed module structures
+```
+
+KMP clients communicate with the Ktor server. They do not connect
+directly to PostgreSQL.
+
+------------------------------------------------------------------------
+
+## 2. Prerequisites
+
+Verify the exact requirements in the current repository before
+installation.
+
+Expected categories include:
+
+-   Git
+-   JDK compatible with the repository Gradle toolchain
+-   PostgreSQL
+-   Gradle Wrapper from the repository
+-   Docker/Compose if the deployment uses containers
+-   reverse proxy with TLS for internet-facing production deployments
+
+Do not rely on versions copied from old documentation. Check:
+
+``` bash
+./gradlew --version
+```
+
+and inspect:
+
+``` text
+gradle/libs.versions.toml
+gradle.properties
+settings.gradle.kts
+```
+
+------------------------------------------------------------------------
+
+## 3. Clone
+
+``` bash
+git clone <IDEASCORE_REPOSITORY_URL>
+cd IDC
+```
+
+For a production deployment, use a tagged release when releases are
+available instead of an arbitrary development commit.
+
+------------------------------------------------------------------------
+
+## 4. Inspect the Build
+
+Before configuring production infrastructure:
+
+``` bash
+git status
+git log --oneline -5
+./gradlew tasks
+```
+
+Run the server tests available in the current repository.
+
+Historically the server task has been:
+
+``` bash
+./gradlew :server:test
+```
+
+Verify that this task still exists before relying on it.
+
+------------------------------------------------------------------------
+
+## 5. PostgreSQL
+
+IdeasCore's approved architecture uses PostgreSQL.
+
+The intended tenant model is:
+
+-   one tenant/company = one PostgreSQL database;
+-   every tenant DB receives Core migrations;
+-   only installed modules receive their module migrations.
+
+Example only:
+
+``` text
+ideascore_company_a
+├── Core
+├── CRM-like module
+└── Hotel-like module
+
+ideascore_company_b
+├── Core
+└── Hotspot-like module
+```
+
+Exact database names and schemas are deployment choices.
+
+### Production recommendations
+
+-   use dedicated database roles;
+-   use strong generated passwords;
+-   restrict network access;
+-   enable backups;
+-   use TLS where database traffic crosses untrusted networks;
+-   do not expose PostgreSQL directly to public clients.
+
+------------------------------------------------------------------------
+
+## 6. Control Plane
+
+Managed/multi-tenant deployments are intended to have platform metadata
+logically separate from tenant business data.
+
+The exact control-plane provisioning command/schema is **not yet defined
+by this guide**.
+
+Do not manually invent control-plane tables from architectural examples.
+
+Once provisioning tooling exists, document the exact tested command
+here.
+
+------------------------------------------------------------------------
+
+## 7. Environment Configuration
+
+Secrets must be supplied server-side.
+
+Likely configuration categories include:
+
+``` text
+server host/port
+database host/port
+platform/control database credentials
+tenant database credentials or resolver configuration
+JWT/authentication secrets
+integration credentials
+logging configuration
+module configuration
+```
+
+The exact environment-variable names must come from the current server
+implementation.
+
+### Important
+
+Do not copy historical/example variable names into production unless
+they are verified in current code.
+
+To find current configuration, inspect the server for environment/config
+access, for example:
+
+``` bash
+grep -R "System.getenv\|environment.config\|application.conf" -n server
+```
+
+Document verified variables in a table here as they are implemented:
+
+| Variable | Required | Purpose / default |
+| --- | --- | --- |
+| `DB_PASSWORD` | Yes | PostgreSQL password; no fallback |
+| `DB_URL` | No | JDBC URL; `jdbc:postgresql://localhost:5432/idc` |
+| `DB_USER` | No | PostgreSQL role; `idc` (installer sets `idc_app`) |
+| `DB_POOL_SIZE` | No | Hikari pool maximum; `10` |
+| `HOST` | No | HTTP bind address; `0.0.0.0` (installer sets `127.0.0.1` behind Nginx) |
+| `PORT` | No | HTTP port; `8080` |
+
+`EngineMain` loads `application.conf`. `DatabaseFactory` connects and
+checks PostgreSQL at startup, and closes the pool on application stop.
+These variables must also be provided when running the backend locally.
+
+Never commit `.env` files containing real secrets.
+
+Provide `.env.example` with placeholders when the project adopts
+environment-based configuration.
+
+------------------------------------------------------------------------
+
+## 8. Database Migrations
+
+Target architecture:
+
+``` text
+Core migrations
+      +
+Installed module migrations
+      =
+Tenant database schema
+```
+
+The exact migration tool/commands must be documented after they are
+implemented and tested.
+
+A future release procedure should support:
+
+1.  backup;
+2.  verify target version;
+3.  run Core migrations;
+4.  run migrations only for installed modules;
+5.  verify migration status;
+6.  start/upgrade server;
+7.  health check;
+8.  rollback/recovery procedure if needed.
+
+Never tell operators to run unverified SQL copied from architectural
+examples.
+
+------------------------------------------------------------------------
+
+## 9. Module Installation
+
+The intended lifecycle is:
+
+``` text
+Available → Entitled (when applicable) → Installed → Enabled
+```
+
+For self-managed open-source deployments, commercial entitlement may not
+apply.
+
+Installing a module should eventually:
+
+1.  validate dependencies;
+2.  apply the module's migrations to the tenant DB;
+3.  register installed version/state;
+4.  enable server functionality;
+5.  expose client/UI functionality as appropriate.
+
+Exact CLI/API/UI installation steps must be added here when implemented.
+
+Disabling a module should preserve data by default.
+
+Uninstalling may be destructive and must require explicit administrative
+intent.
+
+------------------------------------------------------------------------
+
+## 10. External Integrations
+
+Integration credentials remain server-side.
+
+Example: a Hotel module may use a Cloudbeds adapter implementing a
+provider-neutral reservation capability.
+
+Do not put provider secrets in:
+
+-   KMP source;
+-   browser JavaScript;
+-   mobile app resources;
+-   Git;
+-   screenshots/logs.
+
+For every implemented provider, document:
+
+-   required credentials;
+-   callback/webhook requirements;
+-   redirect URLs if applicable;
+-   required network access;
+-   synchronization behavior;
+-   retry behavior;
+-   provider-specific setup.
+
+------------------------------------------------------------------------
+
+## 11. Running the Server
+
+Historically the repository has used:
+
+``` bash
+./gradlew :server:run
+```
+
+Verify this against the current repository.
+
+Before calling a deployment production-ready, confirm:
+
+-   server starts successfully;
+-   database connectivity works;
+-   migrations are current;
+-   authentication works;
+-   tenant isolation works;
+-   enabled/disabled module enforcement works;
+-   health endpoint works if implemented;
+-   logs contain no secrets.
+
+------------------------------------------------------------------------
+
+## 12. Docker
+
+Containerized self-hosting is an intended deployment option.
+
+Do not publish a fictional `docker run` command before the repository
+contains a tested image/Dockerfile.
+
+When Docker support is implemented, this section should include:
+
+-   image name/tag;
+-   required environment variables;
+-   ports;
+-   volumes;
+-   network configuration;
+-   database connectivity;
+-   healthcheck;
+-   upgrade steps;
+-   backup requirements.
+
+A `compose.yaml` is recommended for a reproducible self-hosted stack
+once the server, database and provisioning workflow are stable.
+
+------------------------------------------------------------------------
+
+## 13. Reverse Proxy and TLS
+
+The Ubuntu installer now creates `/etc/nginx/sites-available/ideascore`
+and enables it without replacing other sites. It rejects an existing
+IdeasCore site or an existing Nginx configuration mentioning the supplied
+domain. It preserves other Certbot certificates and uses the certificate
+name `ideascore-DOMAIN` under `/etc/letsencrypt/live/`.
+
+Nginx terminates TLS 1.2/1.3 on port 443 and proxies to loopback port 8080.
+Port 80 redirects to HTTPS except for the ACME webroot challenge path,
+which must stay accessible for renewals. The backend is not publicly
+proxied until a certificate is obtained and the database check succeeds.
+If issuance fails, the temporary site only serves challenges and a 503
+response; no plaintext backend fallback is enabled.
+
+`ideascore-certbot.timer` checks renewal twice daily with randomized delay.
+The certificate's deploy hook reloads Nginx after renewal. Existing
+Certbot installation methods and renewal timers are left in place.
+
+```bash
+sudo systemctl status ideascore-certbot.timer
+sudo journalctl -u ideascore-certbot.service
+sudo nginx -t
+```
+
+End-to-end issuance and renewal against a real domain remain untested in
+this workspace. Failed installs preserve their files and certificates;
+inspect the failing step before recovery instead of rerunning blindly.
+
+Internet-facing production deployments should place the server behind a
+reverse proxy or equivalent ingress with HTTPS.
+
+Document the project's tested proxy configuration when available.
+
+The proxy should preserve the headers required by the server and enforce
+appropriate request-size/time-out policies.
+
+Never document a proxy configuration as official until tested.
+
+------------------------------------------------------------------------
+
+## 14. Backups
+
+A production self-host must back up:
+
+1.  platform/control metadata, if used;
+2.  every tenant PostgreSQL database;
+3.  deployment configuration/secrets through an appropriate secure
+    mechanism;
+4.  any persistent files not stored in PostgreSQL.
+
+Module installation/uninstallation and upgrades should be preceded by an
+appropriate backup when they can modify persistent data.
+
+A restore procedure is as important as a backup procedure. Test
+restores.
+
+------------------------------------------------------------------------
+
+## 15. Upgrade Procedure
+
+Until automated tooling exists, treat upgrades conservatively.
+
+Target release process:
+
+``` text
+Backup
+  ↓
+Read release notes
+  ↓
+Stop/coordinate writes if required
+  ↓
+Update code/image
+  ↓
+Core migrations
+  ↓
+Installed-module migrations
+  ↓
+Start server
+  ↓
+Health checks
+  ↓
+Functional smoke tests
+```
+
+Never assume every tenant has the same installed modules.
+
+Migration orchestration must account for each tenant's installed module
+set and versions.
+
+------------------------------------------------------------------------
+
+## 16. Security Checklist
+
+Before exposing a self-hosted installation:
+
+-   [ ] no default passwords;
+-   [ ] no secrets committed to Git;
+-   [ ] PostgreSQL not publicly exposed unnecessarily;
+-   [ ] HTTPS enabled;
+-   [ ] tenant isolation tested;
+-   [ ] server-side authorization tested;
+-   [ ] disabled modules blocked server-side;
+-   [ ] backups configured;
+-   [ ] restore tested;
+-   [ ] integration secrets stored server-side;
+-   [ ] logs reviewed for secret leakage;
+-   [ ] dependency/security updates reviewed.
+
+------------------------------------------------------------------------
+
+## 17. Troubleshooting
+
+When deployment fails, collect:
+
+``` bash
+git rev-parse HEAD
+git status
+java -version
+./gradlew --version
+```
+
+Then inspect:
+
+-   server logs;
+-   PostgreSQL connectivity;
+-   migration state;
+-   environment configuration;
+-   installed module state;
+-   reverse proxy logs.
+
+Do not post secrets publicly when requesting support.
+
+------------------------------------------------------------------------
+
+## 18. Documentation Maintenance
+
+This guide must change with the code.
+
+Whenever a change affects:
+
+-   prerequisites;
+-   environment variables;
+-   ports;
+-   database setup;
+-   tenant provisioning;
+-   migration commands;
+-   Docker;
+-   module installation;
+-   integration setup;
+-   backup/upgrade procedures;
+
+update this document in the same change.
+
+Only document commands that are implemented and tested.
+
+Use labels such as **Implemented**, **Planned**, or **Example** when
+necessary to prevent architectural intentions from being mistaken for
+working deployment instructions.

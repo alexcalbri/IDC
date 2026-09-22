@@ -1,24 +1,25 @@
 package com.ideasdeveloper.idc
 
-import com.typesafe.config.Config
+import io.ktor.server.config.ApplicationConfig
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
-import org.jetbrains.exposed.sql.Database
+import org.jetbrains.exposed.v1.jdbc.Database
 import javax.sql.DataSource
 
 object DatabaseFactory {
 
     private var dataSource: HikariDataSource? = null
 
-    fun init(config: Config) {
-        val dbConfig = config.getConfig("database")
+    fun init(config: ApplicationConfig) {
+        check(dataSource == null) { "Database already initialized" }
+        val dbConfig = config.config("database")
 
         val hikariConfig = HikariConfig().apply {
-            driverClassName = dbConfig.getString("driver")
-            jdbcUrl = dbConfig.getString("url")
-            username = dbConfig.getString("user")
-            password = dbConfig.getString("password")
-            maximumPoolSize = dbConfig.getInt("maxPoolSize")
+            driverClassName = dbConfig.property("driver").getString()
+            jdbcUrl = dbConfig.property("url").getString()
+            username = dbConfig.property("user").getString()
+            password = dbConfig.property("password").getString()
+            maximumPoolSize = dbConfig.property("maxPoolSize").getString().toInt()
             isIsolateInternalQueries = true
             addDataSourceProperty("cachePrepStmts", "true")
             addDataSourceProperty("prepStmtCacheSize", "250")
@@ -27,13 +28,29 @@ object DatabaseFactory {
             connectionInitSql = "SET search_path TO \"public\""
         }
 
-        dataSource = HikariDataSource(hikariConfig)
-        Database.connect(dataSource!!)
+        val pool = HikariDataSource(hikariConfig)
+        try {
+            pool.connection.use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("SELECT 1").use { result ->
+                        check(result.next() && result.getInt(1) == 1) {
+                            "PostgreSQL connection check failed"
+                        }
+                    }
+                }
+            }
+            Database.connect(pool)
+            dataSource = pool
+        } catch (failure: Exception) {
+            pool.close()
+            throw failure
+        }
     }
 
     fun getDataSource(): DataSource = dataSource ?: error("Database not initialized")
 
     fun close() {
         dataSource?.close()
+        dataSource = null
     }
 }

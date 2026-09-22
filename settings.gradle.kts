@@ -16,9 +16,14 @@ dependencyResolutionManagement {
         maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
     }
     }
-include(":app:androidApp")
-include(":app:desktopApp")
-include(":app:shared")
-include(":app:webApp")
+if (providers.gradleProperty("serverOnly").orNull != "true") {
+    include(":app:androidApp")
+    include(":app:desktopApp")
+    include(":app:shared")
+    include(":app:webApp")
+}
 include(":core")
 include(":server")
+if (providers.gradleProperty("serverOnly").orNull == "true") {
+    project(":core").buildFileName = "build-server.gradle.kts"
+}
