@@ -12,11 +12,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Alignment.Companion.CenterHorizontally
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -24,13 +22,12 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginScreen(
     onLoginSuccess: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val keyboardController = LocalSoftwareKeyboardController.current
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
@@ -84,51 +81,64 @@ fun LoginScreen(
             )
 
             // Email Field
-            OutlinedTextField(
-                value = email,
-                onValueChange = { email = it },
-                label = { Text("Correo electrónico") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.medium,
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.White.copy(alpha = 0.15f),
-                    unfocusedContainerColor = Color.White.copy(alpha = 0.15f),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedLabelColor = Color.White,
-                    unfocusedLabelColor = Color(0xFFCCCCCC),
-                ),
-            )
+            Box(
+                modifier = Modifier
+                    .background(Color.White.copy(alpha = 0.15f), MaterialTheme.shapes.medium)
+            ) {
+                OutlinedTextField(
+                    value = email,
+                    onValueChange = { email = it },
+                    label = { Text("Correo electrónico", color = Color.White) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+                    textStyle = LocalTextStyle.current.copy(color = Color.White),
+                    colors = TextFieldDefaults.colors(
+                        focusedLabelColor = Color.White,
+                        unfocusedLabelColor = Color(0xFFCCCCCC),
+                        cursorColor = Color.White,
+                        focusedContainerColor = Color.White.copy(alpha = 0.5f),
+                        unfocusedContainerColor = Color.White.copy(alpha = 0.3f),
+                    ),
+                )
+            }
 
             Spacer(modifier = Modifier.height(16.dp))
 
             // Password Field
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Contraseña") },
-                singleLine = true,
-                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                trailingIcon = {
-                    val iconText = if (showPassword) "👁️" else "👁️‍🗨️"
-                    TextButton(onClick = { showPassword = !showPassword }) {
-                        Text(iconText, color = Color.White)
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-                shape = MaterialTheme.shapes.medium,
-                colors = TextFieldDefaults.colors(
-                    focusedContainerColor = Color.White.copy(alpha = 0.15f),
-                    unfocusedContainerColor = Color.White.copy(alpha = 0.15f),
-                    focusedTextColor = Color.White,
-                    unfocusedTextColor = Color.White,
-                    focusedLabelColor = Color.White,
-                    unfocusedLabelColor = Color(0xFFCCCCCC),
-                ),
-            )
+            Box(
+                modifier = Modifier
+                    .background(Color.White.copy(alpha = 0.15f), MaterialTheme.shapes.medium)
+            ) {
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    label = { Text("Contraseña", color = Color.White) },
+                    singleLine = true,
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    trailingIcon = {
+                        val iconText = if (showPassword) "👁️" else "👁️‍🗨️"
+                        TextButton(onClick = { showPassword = !showPassword }) {
+                            Text(iconText, color = Color.White)
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = MaterialTheme.shapes.medium,
+
+                    textStyle = LocalTextStyle.current.copy(color = Color.White),
+
+                    colors = TextFieldDefaults.colors(
+                        focusedLabelColor = Color.White,
+                        unfocusedLabelColor = Color(0xFFCCCCCC),
+                        cursorColor = Color.White,
+                        focusedContainerColor = Color.White.copy(alpha = 0.5f),
+                        unfocusedContainerColor = Color.White.copy(alpha = 0.3f),
+                    ),
+                )
+            }
+
 
             Spacer(modifier = Modifier.height(16.dp))
 
