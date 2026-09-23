@@ -9,6 +9,48 @@
 
 ## 1. Deployment Model
 
+### Initial owner provisioning (local implementation; clean-host test pending)
+
+The installer now asks for a central administration database, the first
+company's name/database/code, and one set of credentials for `server_owner`.
+That same login is the first company's `business_owner`; no second owner
+account or password is requested. It is an ordinary PostgreSQL login role,
+not a SQL superuser. The central database holds only server-owner users/sessions and
+the company registry (code, name, database and active status). Company users,
+sessions and the singleton `business_owner` record live in the company database.
+Customer and optional module schemas are not implemented yet.
+
+The installer applies authentication migrations to both databases, the registry
+migration centrally and the ownership migration to the tenant. Each database
+records scripts in `schema_migrations` by module, version and checksum.
+Database ownership remains with the provisioning administrator. Separate runtime
+accounts receive only the table permissions needed for authentication. `DB_URL`
+points at the central database; root-only `TENANT_DATABASES_JSON` supplies tenant
+connection configurations (`databaseName`, `jdbcUrl`, `user`, `password`).
+The first tenant service password is generated automatically. No end-user owner
+passwords are saved in server.env. Future company provisioning must add its
+connection configuration; there is not yet an administrative API for this.
+
+Before reporting success, the installer tests `/auth/login` with the same user
+in both scopes (without a company code, then with the first company's code),
+revokes the test sessions, and rejects passwordless authentication for these
+accounts. This verifies login only: administrative endpoints, tenant pools,
+owner authorization and the client login flow remain pending. Module files
+are not yet downloaded selectively; the installer still clones the repository.
+
+Publish the matching backend, installer and migration files to the selected
+Git branch before running on Ubuntu. This script is for a fresh installation;
+it refuses existing application files/accounts instead of resetting owners.
+An interrupted installation after provisioning requires diagnosis, not a
+blind rerun. Do not apply these initial scripts manually to an existing server
+with the previous central-user layout; data migration is a separate task.
+
+For company login, POST JSON to `/auth/login` with `username`, `password` and
+`companyCode` (requested by the installer). For server administration omit
+`companyCode` or set it to null. Unknown/inactive companies are rejected.
+Responses include `scope`, `companyCode`, `role` and the session token.
+This does not yet connect the client login view or expose administrative actions.
+
 ### Instalador interactivo para Ubuntu
 
 **Implementado; pendiente de prueba integral en un servidor Ubuntu limpio.**
@@ -92,6 +134,9 @@ Let’s Encrypt. El certificado no se solicita hasta confirmar.
 El servidor verifica `SELECT 1` durante el arranque y luego habilita su
 ruta `/`. El instalador comprueba PostgreSQL, la respuesta HTTPS local
 con validación del certificado y una renovación de prueba con Certbot.
+La comprobación HTTPS es obligatoria. Si solo falla la simulación de
+renovación, el instalador muestra una advertencia y marca esa prueba como
+pendiente; no declara la renovación verificada ni deshace la instalación.
 Todavía no crea tablas de usuarios, login, migraciones ni control plane.
 La instalación configura una sola base; la resolución multi-tenant es
 arquitectura prevista.
@@ -114,6 +159,13 @@ no sobrescribe sus datos ni cambia sus contraseñas. Si falla después de
 crear recursos, los conserva para diagnóstico: no es una actualización
 automática ni realiza rollback. Revisa el error y el estado antes de
 reintentar; no borres una base de datos para forzar su ejecución.
+
+Excepción de recuperación: si solo quedó el sitio Nginx temporal con
+`return 503`, puedes ejecutar de nuevo con el mismo dominio. El instalador
+exige que el archivo coincida exactamente con su plantilla, que el enlace
+habilitado apunte a ese archivo y que todavía no existan los directorios,
+cuenta ni servicio de la aplicación. Repite la comprobación HTTP y continúa
+con Certbot. No adopta sitios HTTPS ni configuraciones personalizadas.
 
 Para modificarlo, conserva sus bloques: validación y preguntas, paquetes,
 compilación, PostgreSQL, configuración del servicio y comprobaciones.
@@ -574,6 +626,36 @@ Before exposing a self-hosted installation:
 ------------------------------------------------------------------------
 
 ## 17. Troubleshooting
+
+Si la instalación anterior terminó en `certbot renew --dry-run` con
+`rateLimited` / `Service busy; retry later`, no ejecutes de nuevo todo el
+instalador. El certificado real puede estar emitido y el backend activo.
+Comprueba `systemctl status ideascore --no-pager` y
+`curl --fail https://TU_DOMINIO/`. Revisa el temporizador con
+`systemctl status ideascore-certbot.timer --no-pager`. La simulación usa
+normalmente el entorno staging de Let’s Encrypt; no sustituye el certificado
+real. Revisa el log de Certbot y respeta cualquier indicación `Retry-After`.
+Después repite solamente `certbot renew --cert-name ideascore-TU_DOMINIO --dry-run`.
+
+Si una versión anterior termina con `No se pudo completar la instalación
+de dnsutils` después de que APT seleccione `bind9-dnsutils`, es un falso
+negativo del instalador: comprobaba el alias en vez del paquete instalado.
+La versión corregida utiliza `bind9-dnsutils` y comprueba que exista `dig`.
+En este fallo concreto todavía no se ha creado la configuración de
+IdeasCore; descarga el script corregido y ejecútalo de nuevo. Los paquetes
+ya instalados se detectan y se conservan, sin borrar bases ni certificados.
+
+Si aparece `ERR: bad trap`, el intérprete utilizado puede no admitir el
+trap `ERR` de Bash. Ejecuta el archivo descargado explícitamente con:
+
+```bash
+sudo bash install-ideascore.sh
+```
+
+La versión actual detecta `sh install.sh` y se relanza con Bash antes de
+usar opciones o traps específicos de Bash. Si se recibe por una tubería
+en otro intérprete, solicita descargarlo y ejecutarlo con Bash. Evita
+`source install.sh`: el instalador debe correr como un proceso separado.
 
 When deployment fails, collect:
 

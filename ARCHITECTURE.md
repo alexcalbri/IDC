@@ -63,9 +63,9 @@ and interaction patterns. IdeasCore is not limited to them.
   Nginx serves HTTPS on port 443 with a Let's Encrypt certificate and
   redirects HTTP to HTTPS. A systemd timer handles renewal; Ktor stays
   on loopback. Real-domain issuance/renewal validation is still pending.
-- This bootstrap connects to one configured database. Shared Customer,
-  authentication, tenant resolution, module provisioning and control-plane
-  capabilities below remain planned, not implemented by this installer.
+- This bootstrap connects the backend to one central database and provisions
+  initial authentication identities and ownership records. Shared Customer,
+  tenant routing, module provisioning and administrative APIs remain planned.
 
 Current architectural direction:
 
@@ -173,6 +173,47 @@ receive that module's tables.
 
 ## 6. Module Installation Model
 
+**APPROVED / NOT YET IMPLEMENTED: on-demand distribution.**
+
+The initial installation downloads only Core and its required dependencies:
+Customer/Prospect functionality, login/sessions, tenant administration,
+authorization and module management. Core is not just the Customer table;
+it includes the infrastructure needed to operate the server. Optional
+module code and tables are excluded from this initial installation.
+
+Module files are shared at server scope, while module installation and
+data are scoped to each tenant database:
+
+1. An authorized administrator selects a module for a registered company.
+2. The server checks the module version, Core compatibility, dependencies
+   and the company's authorization to install it.
+3. The server downloads the trusted module package from the project's
+   repository/distribution source only if that exact verified version is
+   not already available locally. An incomplete or invalid download is
+   not treated as an installed package.
+4. The server applies outstanding module migrations only to the selected
+   company's database and records their versions and installation status.
+5. The module becomes enabled for that company only after successful
+   provisioning. Retries must not repeat completed migrations.
+
+For example, installing module A for company 1 downloads its files and
+creates its tables in database 1. Installing the same version for company 2
+reuses those files and creates tables only in database 2. File presence
+alone never grants access or creates tables in another company's database.
+Dependencies follow the same shared-files/per-company-schema rules.
+
+Packages are identified by module ID and version, with integrity checks.
+Updating a shared package must not silently migrate or enable other
+companies; compatibility with each company's schema must be checked.
+Shared files cannot be removed while another company needs them.
+
+The package format, release distribution, Kotlin module loading strategy
+and client UI delivery remain to be designed. Downloading source files
+does not automatically load executable Ktor routes or Compose screens;
+this decision does not promise hot loading without rebuilding/restarting.
+The current installer still clones the repository and builds the server;
+selective downloads and the module installer are not implemented.
+
 Modules own their migrations.
 
 Conceptually:
@@ -208,8 +249,81 @@ separate, potentially destructive administrative operation.
 
 ## 7. Control Plane
 
-Managed deployments require a platform-level control plane logically
-separate from tenant business data.
+**APPROVED / NOT YET IMPLEMENTED**
+
+Every IdeasCore server, including self-hosted installations, has a central
+administration database logically separate from tenant business data.
+It registers companies, their codes, database locations and active status
+(the future subscription control point). It also holds server-owner identities
+and their sessions, because these accounts do not belong to any company.
+Company users, business ownership, permissions, sessions and module installation
+state belong in each company's database, not in the central registry.
+Shared module files/version inventory is server-level infrastructure; its
+storage format remains to be designed. PostgreSQL login roles themselves
+remain cluster-wide; application membership is local to each company.
+
+### Server and business ownership
+
+- `server_owner` is an IdeasCore permission level, not Ubuntu root or a
+  PostgreSQL superuser. It can create companies and their databases,
+  authorize/install/enable modules, and manage users and application roles
+  across all companies registered on this IdeasCore server. Its scope does
+  not include unrelated databases hosted in the same PostgreSQL instance.
+- Each company has exactly one `business_owner`, enforced by the data
+  model and provisioning workflow. This owner has full application control
+  within that company, including its users and roles, but cannot access
+  other companies or grant itself server-level privileges. It cannot enable
+  modules that the server owner has not authorized for its company.
+- Ownership transfer replaces the company's owner atomically; it must not
+  leave an active company without an owner or with multiple owners.
+- The server administration UI is visible only to `server_owner`. Ktor
+  independently checks permissions and target-company scope on every
+  administrative operation; hiding the UI is not authorization.
+- Database/role creation and migrations use a separate internal
+  provisioning identity. End-user PostgreSQL login roles do not receive
+  superuser privileges just because they own a server or business in
+  IdeasCore. Application roles are distinct from PostgreSQL SQL privileges.
+
+### Initial provisioning and first client launch
+
+The installer requests credentials only for the initial `server_owner`
+and the first company's name/code. The same PostgreSQL login is registered
+as that company's `business_owner`, with separate local user records and
+sessions in each database. Ownership of later companies is assigned explicitly;
+server ownership alone does not create company-local membership.
+It creates the central administration database,
+the first tenant database, required Core schemas, PostgreSQL login roles
+and application identity/ownership records. No default shared passwords
+or passwords committed to source are allowed. Re-running provisioning
+must preserve existing identities and data rather than reset owners.
+
+The client will request and retain the server's HTTPS URL and company code,
+then display login, with a separate server-administration option.
+`POST /auth/login` accepts `username`, `password` and optional `companyCode`.
+Omitting/nulling the company code selects server-owner login. Supplying a
+code resolves an active company through the central registry, then checks
+credentials and active membership in that company's database. Empty/invalid,
+unknown or inactive codes are rejected, without fallback to server login.
+Clients cannot supply arbitrary database destinations. Successful responses
+include `scope`, `companyCode` and `role` for selecting the appropriate view;
+these response fields are not substitutes for server-side authorization.
+
+**Current provisioning implementation (clean-host validation pending):**
+the installer creates one end-user PostgreSQL login for both initial ownership
+scopes, in addition to separate runtime service roles. The central database
+holds the server owner, its sessions, `server_owners` and `companies`.
+The company database holds its users, sessions and singleton `business_owner`.
+Separate restricted runtime credentials and pools are used for each database.
+The installer tests both scoped logins and revokes those test sessions.
+Customer schemas, administrative permission enforcement/APIs and the client
+flow remain pending; registry records alone do not implement those permissions.
+This is a fresh-install layout, not an automatic upgrade of an existing server.
+
+Each database records executed scripts by module, version and checksum in
+`schema_migrations`. `scripts/ubuntu/migrations.sh` executes schema changes and
+their history record in one transaction, skips identical applied scripts and
+rejects modified applied scripts. Each optional module will own its numbered
+SQL scripts. The module download/upgrade workflow is still pending.
 
 It can track:
 
@@ -218,12 +332,11 @@ It can track:
 -   hosting mode;
 -   plans/subscriptions;
 -   entitlements;
--   installed/enabled modules;
--   module versions;
 -   tenant database metadata;
 -   support/commercial metadata.
 
 These are conceptual responsibilities, not final table names.
+Company-local module installation/version records remain in the company database.
 
 Tenant customer/business records do not belong in the control plane.
 
@@ -408,7 +521,7 @@ are implemented.
 
 ## 14. Security Principles
 
--   no PostgreSQL credentials in clients;
+-   no embedded or persisted PostgreSQL service credentials in clients;
 -   no third-party API secrets in clients;
 -   no production secrets committed to Git;
 -   authorization enforced server-side;
@@ -416,6 +529,83 @@ are implemented.
 -   module availability enforced server-side;
 -   external identifiers never replace internal IDs;
 -   SQL input must be safely parameterized/validated.
+
+### Authentication and database access
+
+**APPROVED / NOT YET IMPLEMENTED**
+
+IdeasCore authenticates people using PostgreSQL login roles, but executes
+business queries through a dedicated service account for each tenant.
+Authentication and the identity used for business queries are separate.
+
+The approved flow is:
+
+1. The client sends the user's PostgreSQL login name and password to Ktor
+   over HTTPS. Clients never connect directly to PostgreSQL. The password
+   is used transiently for login, not embedded in the application,
+   persisted as a session credential, or included in logs.
+2. Ktor resolves the allowed database endpoint and tenant using server-owned
+   configuration and verified identity/tenant membership. A client cannot
+   select an arbitrary JDBC URL, host or database to authenticate against.
+   The central registry resolves active company codes; the selected company
+   database defines its allowed users. Server identities are checked centrally.
+3. Ktor opens a short-lived authentication connection with the submitted
+   credentials. PostgreSQL must require password authentication for this
+   connection (SCRAM-SHA-256); `trust` or another method that does not
+   verify the submitted password cannot establish a valid application login.
+4. Ktor verifies that the authenticated identity is active and authorized
+   for IdeasCore and the selected tenant. Successful PostgreSQL connection
+   alone is not sufficient application authorization. Service and
+   administrative accounts are not automatically application users.
+5. Ktor closes the authentication connection, stops retaining the password,
+   and issues an application session tied to a stable user identity and
+   authorized scope. Server administration sessions need not select a
+   tenant; business requests must resolve and authorize a tenant explicitly.
+   Current code issues opaque tokens and stores only their SHA-256 hashes,
+   with configurable expiry. Sessions are stored in the database of their
+   scope. Client transport and protected business routes remain pending;
+   those routes must recheck company activity and never accept a token from
+   another scope merely because its format is valid.
+6. On every protected request, Ktor validates the session, tenant access,
+   functional permissions and module availability. Business queries use
+   the service account and connection pool for that tenant's database.
+
+IdeasCore does not store end-user passwords or their hashes in its own
+application tables. PostgreSQL manages those authentication credentials.
+Application tables may still store user identity mappings, profiles,
+tenant membership, permissions, sessions and audit records. These users
+are distinct from the shared Customer/Prospect business entity.
+
+Business queries run with the service account's SQL privileges, not with
+the authenticated user's PostgreSQL privileges. Individual PostgreSQL
+grants are not implicitly carried over from login. Ktor owns application
+authorization and must record the acting user and tenant in audit events.
+
+Disabling application access must revoke or invalidate the user's
+application sessions. Disabling a PostgreSQL role or changing its password
+does not by itself revoke an already issued IdeasCore session. The
+mechanism for propagating such administrative changes remains to be designed.
+
+Runtime service accounts must have only the required data-access privileges.
+Database ownership, schema changes and migrations belong to a separate
+administrative/provisioning identity. Service credentials remain exclusively
+on the server, separate from end-user login credentials.
+
+**Current implementation:** `DatabaseFactory` has one configured Hikari
+pool and verifies PostgreSQL connectivity on startup. New installations
+point it at the central database and grant the runtime role read access to
+identity/registry tables and data access to sessions, without database
+ownership. Existing installations are not upgraded automatically.
+Tenant pools are configured through server-only `TENANT_DATABASES_JSON`;
+registry database names must match an explicitly configured connection.
+Central administration APIs are not yet implemented. Local
+code includes `/auth/login`, active-user mapping, opaque session issuance,
+session validation/revocation services and an IP-based login rate limit.
+Login now selects the proper database and reports server/business ownership;
+protected business operations and cross-company server administration remain
+unimplemented. The revised installation and end-to-end login still require
+clean-host validation. Do not interpret
+the current database-owner role as the approved runtime permission model.
 
 ------------------------------------------------------------------------
 

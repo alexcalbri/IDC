@@ -9,6 +9,7 @@ import javax.sql.DataSource
 object DatabaseFactory {
 
     private var dataSource: HikariDataSource? = null
+    private var database: Database? = null
 
     fun init(config: ApplicationConfig) {
         check(dataSource == null) { "Database already initialized" }
@@ -39,7 +40,7 @@ object DatabaseFactory {
                     }
                 }
             }
-            Database.connect(pool)
+            database = Database.connect(pool)
             dataSource = pool
         } catch (failure: Exception) {
             pool.close()
@@ -49,8 +50,12 @@ object DatabaseFactory {
 
     fun getDataSource(): DataSource = dataSource ?: error("Database not initialized")
 
+    fun getDatabase(): Database =
+        database ?: error("Database not initialized")
     fun close() {
         dataSource?.close()
         dataSource = null
+        database = null
     }
+
 }
