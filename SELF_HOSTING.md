@@ -668,6 +668,14 @@ If the server was installed with an older installer that did not create
 `/opt/ideascore/web`, the updater builds the browser app and installs it
 there instead of skipping it.
 
+The updater runs Gradle with one worker, disables configuration cache for the
+deployment build and sets Kotlin compiler execution through
+`-Pkotlin.compiler.execution.strategy=in-process`. If the host has less than
+2 GiB available memory and less than 1 GiB swap, it creates a temporary
+2 GiB swap file at `/opt/ideascore/update.swap` for the build and removes it
+afterward. This avoids depending on the Kotlin daemon socket and gives the
+Kotlin/JS production compiler enough memory on small servers.
+
 ------------------------------------------------------------------------
 
 ## 16. Security Checklist

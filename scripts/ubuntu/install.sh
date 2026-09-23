@@ -69,6 +69,58 @@ readonly APP_HOST=127.0.0.1
 readonly APP_PORT=8080
 readonly NGINX_SITE=/etc/nginx/sites-available/ideascore
 readonly ACME_ROOT=/var/www/ideascore-acme
+readonly INSTALL_SWAP_FILE=$APP_DIR/install.swap
+readonly INSTALL_SWAP_SIZE_MB=2048
+readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
+readonly NODE_OPTIONS_VALUE="--max-old-space-size=2048"
+INSTALL_SWAP_CREATED=false
+
+cleanup_install_swap() {
+    if [[ $INSTALL_SWAP_CREATED == true ]]; then
+        swapoff "$INSTALL_SWAP_FILE" >/dev/null 2>&1 || true
+        rm -f "$INSTALL_SWAP_FILE"
+    fi
+}
+
+trap 'cleanup_install_swap; printf "InstalaciÃ³n interrumpida (lÃ­nea %s). Se conservan los archivos y datos para diagnÃ³stico.\n" "$LINENO" >&2' ERR
+trap 'cleanup_install_swap' EXIT
+
+ensure_install_swap() {
+    local available_kb total_swap_kb
+    available_kb=$(awk '/MemAvailable:/ { print $2 }' /proc/meminfo)
+    total_swap_kb=$(awk '/SwapTotal:/ { print $2 }' /proc/meminfo)
+
+    if (( available_kb >= 2097152 || total_swap_kb >= 1048576 )); then
+        return
+    fi
+
+    [[ ! -e $INSTALL_SWAP_FILE ]] || die "Ya existe $INSTALL_SWAP_FILE. Revisalo antes de instalar."
+    printf 'Memoria limitada detectada; se creara swap temporal de %s MiB para compilar.\n' "$INSTALL_SWAP_SIZE_MB"
+    if command -v fallocate >/dev/null 2>&1; then
+        fallocate -l "${INSTALL_SWAP_SIZE_MB}M" "$INSTALL_SWAP_FILE" ||
+            dd if=/dev/zero of="$INSTALL_SWAP_FILE" bs=1M count="$INSTALL_SWAP_SIZE_MB" status=none
+    else
+        dd if=/dev/zero of="$INSTALL_SWAP_FILE" bs=1M count="$INSTALL_SWAP_SIZE_MB" status=none
+    fi
+    chmod 600 "$INSTALL_SWAP_FILE"
+    mkswap "$INSTALL_SWAP_FILE" >/dev/null
+    swapon "$INSTALL_SWAP_FILE"
+    INSTALL_SWAP_CREATED=true
+}
+
+run_gradle() {
+    runuser -u ideascore -- env \
+        JAVA_HOME="$JAVA_HOME" \
+        NODE_OPTIONS="$NODE_OPTIONS_VALUE" \
+        bash ./gradlew \
+        --no-daemon \
+        --no-configuration-cache \
+        --max-workers=1 \
+        --console=plain \
+        "-Dorg.gradle.jvmargs=$GRADLE_JVM_ARGS" \
+        "-Pkotlin.compiler.execution.strategy=in-process" \
+        "$@"
+}
 for unit in /etc/systemd/system/ideascore-certbot.service /etc/systemd/system/ideascore-certbot.timer; do
     [[ ! -e $unit && ! -L $unit ]] || die 'Ya existe una configuración de renovación de IdeasCore.'
 done
@@ -277,6 +329,7 @@ JAVA_HOME="/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture)"
 [[ -x $JAVA_HOME/bin/java ]] || die 'No se encontró el JDK 21 instalado.'
 runuser -u ideascore -- git clone --depth 1 --branch "$GIT_REF" -- "$REPO_URL" "$APP_DIR/source"
 cd "$APP_DIR/source"
+ensure_install_swap
 [[ -f scripts/ubuntu/migrations.sh ]] || die 'La rama descargada no incluye el ejecutor de migraciones.'
 for migration in database/core/migrations/V001__create_application_users.sql \
     database/core/migrations/V002__create_application_sessions.sql \
@@ -284,10 +337,9 @@ for migration in database/core/migrations/V001__create_application_users.sql \
     database/tenant/migrations/V001__create_business_owner.sql; do
     [[ -f $migration ]] || die "La rama descargada no incluye $migration. Publica los cambios antes de instalar."
 done
-runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew \
-    -PserverOnly=true --no-daemon --console=plain :server:tasks --all
-runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew \
-    -PserverOnly=true --no-daemon --console=plain :server:test :server:installDist
+runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
+run_gradle -PserverOnly=true :server:tasks --all
+run_gradle -PserverOnly=true :server:test :server:installDist
 [[ -x server/build/install/server/bin/server ]] || die 'No se encontró la distribución del servidor.'
 install -d -m 755 "$APP_DIR/app"
 cp -R server/build/install/server/. "$APP_DIR/app/"
@@ -296,8 +348,7 @@ chmod -R a+rX "$APP_DIR/app"
 chmod -R go-w "$APP_DIR/app"
 
 # Build the browser app without mobile SDKs. Gradle supplies Node and Yarn.
-runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew \
-    -PwebOnly=true --no-daemon --console=plain :app:webApp:jsBrowserDistribution
+run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution
 WEB_DIST="$APP_DIR/source/app/webApp/build/dist/js/productionExecutable"
 [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se encontro la distribucion web completa.'
 install -d -m 755 "$APP_DIR/web"
