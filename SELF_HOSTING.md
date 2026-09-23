@@ -39,31 +39,27 @@ deployments need a separate web build/deployment and Nginx update.
 
 ### Initial owner provisioning (local implementation; clean-host test pending)
 
-The installer now asks for a central administration database, the first
-company's name/database/code, and one set of credentials for `server_owner`.
-That same login is the first company's `business_owner`; no second owner
-account or password is requested. It is an ordinary PostgreSQL login role,
-not a SQL superuser. The central database holds only server-owner users/sessions and
-the company registry (code, name, database and active status). Company users,
-sessions and the singleton `business_owner` record live in the company database.
-Customer and optional module schemas are not implemented yet.
+The installer now asks for a central administration database and one set of
+credentials for `server_owner`. It does not create the first company. The
+server owner is an ordinary PostgreSQL login role, not a SQL superuser. The
+central database holds server-owner users/sessions and an initially empty
+company registry with code, name, database, active status and branding fields.
+Company users, sessions and the singleton `business_owner` record will live
+inside each company database after the Empresa core module provisions it.
 
-The installer applies authentication migrations to both databases, the registry
-migration centrally and the ownership migration to the tenant. Each database
-records scripts in `schema_migrations` by module, version and checksum.
-Database ownership remains with the provisioning administrator. Separate runtime
-accounts receive only the table permissions needed for authentication. `DB_URL`
-points at the central database; root-only `TENANT_DATABASES_JSON` supplies tenant
-connection configurations (`databaseName`, `jdbcUrl`, `user`, `password`).
-The first tenant service password is generated automatically. No end-user owner
-passwords are saved in server.env. Future company provisioning must add its
-connection configuration; there is not yet an administrative API for this.
+The installer applies Core authentication migrations and the central registry
+migrations to the central database. The database records scripts in
+`schema_migrations` by module, version and checksum. Database ownership remains
+with the provisioning administrator. The runtime account receives only the
+table permissions needed for authentication and the company registry. `DB_URL`
+points at the central database; root-only `TENANT_DATABASES_JSON` starts as
+`[]`. Future company provisioning must add tenant connection configuration
+when it creates company databases.
 
-Before reporting success, the installer tests `/auth/login` with the same user
-in both scopes (without a company code, then with the first company's code),
-revokes the test sessions, and rejects passwordless authentication for these
-accounts. This verifies login only: administrative endpoints and their
-authorization remain pending; the client login is wired but
+Before reporting success, the installer tests `/auth/login` with the
+`server_owner`, revokes the test session, and rejects passwordless
+authentication for that account. This verifies login only: administrative
+endpoints and their authorization remain pending; the client login is wired but
 end-to-end verification against a new Ubuntu installation is pending. Module files
 are not yet downloaded selectively; the installer still clones the repository.
 
@@ -75,8 +71,8 @@ blind rerun. Do not apply these initial scripts manually to an existing server
 with the previous central-user layout; data migration is a separate task.
 
 For company login, POST JSON to `/auth/login` with `username`, `password` and
-`companyCode` (requested by the installer). For server administration omit
-`companyCode` or set it to null. Unknown/inactive companies are rejected.
+`companyCode` after a company has been created from the app. For server
+administration omit `companyCode` or set it to null. Unknown/inactive companies are rejected.
 Responses include `scope`, `companyCode`, `role` and the session token.
 The client login view consumes this response; administrative actions are not yet exposed.
 

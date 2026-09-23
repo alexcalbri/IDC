@@ -293,16 +293,15 @@ remain cluster-wide; application membership is local to each company.
 
 ### Initial provisioning and first client launch
 
-The installer requests credentials only for the initial `server_owner`
-and the first company's name/code. The same PostgreSQL login is registered
-as that company's `business_owner`, with separate local user records and
-sessions in each database. Ownership of later companies is assigned explicitly;
-server ownership alone does not create company-local membership.
-It creates the central administration database,
-the first tenant database, required Core schemas, PostgreSQL login roles
-and application identity/ownership records. No default shared passwords
-or passwords committed to source are allowed. Re-running provisioning
-must preserve existing identities and data rather than reset owners.
+The installer requests credentials only for the initial `server_owner`.
+It creates the central administration database, required Core authentication
+schemas, the company registry and the server-owner identity. It does not
+create any company or tenant database. Companies are created from the app
+while signed in as `server_owner`; that flow provisions the tenant database,
+applies Core tenant migrations and assigns the first `business_owner`.
+No default shared passwords or passwords committed to source are allowed.
+Re-running provisioning must preserve existing identities and data rather
+than reset owners.
 
 The client will request and retain the server's HTTPS URL and company code,
 then display login, with a separate server-administration option.
@@ -316,22 +315,31 @@ include `scope`, `companyCode` and `role` for selecting the appropriate view;
 these response fields are not substitutes for server-side authorization.
 
 **Current provisioning implementation (clean-host validation pending):**
-the installer creates one end-user PostgreSQL login for both initial ownership
-scopes, in addition to separate runtime service roles. The central database
-holds the server owner, its sessions, `server_owners` and `companies`.
-The company database holds its users, sessions and singleton `business_owner`.
-Separate restricted runtime credentials and pools are used for each database.
-The installer tests both scoped logins and revokes those test sessions.
-Customer schemas and administrative permission enforcement/APIs remain pending;
+the installer creates one end-user PostgreSQL login for server ownership,
+in addition to the runtime service role. The central database holds the
+server owner, its sessions, `server_owners` and an initially empty
+`companies` registry. `TENANT_DATABASES_JSON` starts as an empty list until
+the Empresa core module provisions tenant databases. The installer tests
+server-owner login and revokes the test session. Customer schemas, company
+creation APIs and administrative permission enforcement remain pending;
 registry records alone do not implement those permissions. The shared client
 login is connected to the API, keeps the session in memory and navigates to
-the existing dashboard on success. The client persists the first successful
-server URL and company code/server-administration choice locally so later
-launches do not prompt for those values again. Separate administrative screens
-remain pending; both login scopes currently share the dashboard. The browser
-client initially uses its current origin as server URL when no saved
-configuration exists.
+the existing dashboard on success. When the user selects "Mantener sesión
+iniciada", the client persists the issued session token locally until its
+server-provided expiration time; expired persisted sessions are discarded on
+startup. The client persists the first successful server URL and company
+code/server-administration choice locally so later launches do not prompt for
+those values again. Separate administrative screens remain pending; both login
+scopes currently share the dashboard. The browser client initially uses its
+current origin as server URL when no saved configuration exists.
 This is a fresh-install layout, not an automatic upgrade of an existing server.
+
+The Empresa module is part of Core. It owns company creation, company
+registry metadata, tenant provisioning and company identity. Company identity
+includes the display name, logo URL and brand colors. Once a company identity
+is selected or restored on the client, the same identity must be used across
+login, dashboard and every module so the whole app reflects the active
+company.
 
 Each database records executed scripts by module, version and checksum in
 `schema_migrations`. `scripts/ubuntu/migrations.sh` executes schema changes and
@@ -537,7 +545,9 @@ The shared client is migrating toward a feature-first structure:
 
 - `app/shared/.../app/core/config` contains client-side server/company
   configuration and platform-specific persistence.
-- `app/shared/.../app/core/session` contains client session state.
+- `app/shared/.../app/core/company` contains the shared company identity
+  model and platform-specific persistence for name, logo and brand colors.
+- `app/shared/.../app/core/session` contains client session state and optional platform-specific session persistence.
 - `app/shared/.../app/features/auth` contains login data, presentation
   state and UI.
 - `app/shared/.../app/features/dashboard` contains the current dashboard UI.

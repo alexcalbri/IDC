@@ -21,6 +21,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
 import com.ideasdeveloper.idc.app.features.auth.presentation.LoginViewModel
 
@@ -35,6 +36,13 @@ fun LoginScreen(
     }
     val state by loginViewModel.state.collectAsState()
     val savedConfiguration = remember { ClientConfigurationStore.load() }
+    val companyIdentity = remember { CompanyIdentityStore.current() }
+    val primaryColor = remember(companyIdentity.primaryColor) {
+        companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
+    }
+    val secondaryColor = remember(companyIdentity.secondaryColor) {
+        companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2))
+    }
 
     var serverUrl by rememberSaveable {
         mutableStateOf(savedConfiguration?.serverUrl ?: initialServerUrl)
@@ -48,6 +56,7 @@ fun LoginScreen(
     var username by rememberSaveable { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
+    var keepSignedIn by rememberSaveable { mutableStateOf(false) }
     val needsServerConfiguration = savedConfiguration == null
 
     val isLoading = state.isLoading
@@ -64,7 +73,7 @@ fun LoginScreen(
             .fillMaxSize()
             .background(
                 brush = Brush.horizontalGradient(
-                    colors = listOf(Color(0xFF667EEA), Color(0xFF764BA2))
+                    colors = listOf(primaryColor, secondaryColor)
                 )
             )
     ) {
@@ -91,7 +100,7 @@ fun LoginScreen(
             ) {}
 
             Text(
-                text = "IdeasCore",
+                text = companyIdentity.name,
                 fontSize = 32.sp,
                 fontWeight = FontWeight.Bold,
                 color = Color.White,
@@ -223,6 +232,20 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Checkbox(
+                    checked = keepSignedIn,
+                    onCheckedChange = { keepSignedIn = it },
+                    enabled = !isLoading,
+                )
+                Text("Mantener sesión iniciada", color = Color.White)
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             // error message
             state.error?.let { message ->
                 Text(
@@ -240,6 +263,7 @@ fun LoginScreen(
                         username = username,
                         password = password,
                         companyCode = if (serverAdministration) null else companyCode,
+                        keepSignedIn = keepSignedIn,
                     )
                 },
                 enabled = serverUrl.isNotBlank() &&
@@ -253,12 +277,12 @@ fun LoginScreen(
                 shape = MaterialTheme.shapes.medium,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color.White,
-                    contentColor = Color(0xFF667EEA),
+                    contentColor = primaryColor,
                 )
             ) {
                 if (isLoading) {
                     CircularProgressIndicator(
-                        color = Color(0xFF667EEA),
+                        color = primaryColor,
                         strokeWidth = 2.dp,
                         modifier = Modifier.size(20.dp)
                     )
@@ -306,4 +330,10 @@ fun LoginScreen(
             }
         }
     }
+}
+
+private fun String.toComposeColor(fallback: Color): Color {
+    val hex = trim().removePrefix("#")
+    if (hex.length != 6) return fallback
+    return hex.toLongOrNull(16)?.let { Color((0xFF000000L or it).toInt()) } ?: fallback
 }

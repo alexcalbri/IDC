@@ -29,6 +29,7 @@ class LoginViewModel : ViewModel() {
         username: String,
         password: String,
         companyCode: String?,
+        keepSignedIn: Boolean,
     ) {
         if (_state.value.isLoading) return
 
@@ -63,7 +64,7 @@ class LoginViewModel : ViewModel() {
                     )
                 )
 
-                SessionStore.save(response)
+                SessionStore.save(response, keepSignedIn = keepSignedIn)
                 ClientConfigurationStore.save(
                     ClientConfiguration(
                         serverUrl = serverUrl.trim().trimEnd('/'),

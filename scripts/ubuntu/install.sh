@@ -178,7 +178,7 @@ ask ACME_EMAIL 'Correo para la cuenta de Let’s Encrypt' ''
 [[ $ACME_EMAIL =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die 'Correo inválido.'
 printf 'Los registros A/AAAA deben apuntar a este servidor; los puertos 80 y 443 deben ser accesibles desde Internet.\n'
 printf 'Se solicitará un certificado para https://%s y se aceptarán los términos de Let’s Encrypt: https://letsencrypt.org/repository/\n' "$DOMAIN"
-ask DB_NAME 'Nombre de la base de datos nueva' idc
+ask DB_NAME 'Base central nueva de IdeasCore' idc_control
 ask DB_USER 'Usuario PostgreSQL nuevo para la aplicación' idc_app
 for identifier in "$DB_NAME" "$DB_USER"; do
     [[ $identifier =~ ^[a-z][a-z0-9_]{0,62}$ && $identifier != pg_* && $identifier != postgres ]] ||
@@ -198,21 +198,12 @@ while true; do
     printf 'Las contraseñas no coinciden.\n'
 done
 unset DB_PASSWORD_AGAIN
-ask COMPANY_NAME 'Nombre de la primera empresa' ''
-ask COMPANY_CODE 'Codigo de empresa para iniciar sesion' empresa
-ask TENANT_USER 'Cuenta interna nueva para la base de empresa' idc_tenant_app
-for identifier in "$COMPANY_CODE" "$TENANT_USER"; do
-    [[ $identifier =~ ^[a-z][a-z0-9_]{0,62}$ && $identifier != pg_* && $identifier != postgres ]] || die 'Identificador invalido.'
-done
-[[ -n ${COMPANY_NAME// /} ]] || die 'El nombre de empresa es obligatorio.'
-ask CONTROL_DB 'Base central de administracion nueva' idc_control
 ask SERVER_OWNER 'Usuario de login del propietario del servidor' server_owner
-for identifier in "$CONTROL_DB" "$SERVER_OWNER"; do
+for identifier in "$SERVER_OWNER"; do
     [[ $identifier =~ ^[a-z][a-z0-9_]{0,62}$ && $identifier != pg_* && $identifier != postgres ]] ||
         die 'Identificador invalido: usa letras minusculas, numeros y guion bajo.'
 done
-[[ $CONTROL_DB != "$DB_NAME" && $SERVER_OWNER != "$DB_USER" ]] || die 'Las bases y las cuentas internas deben ser distintas.'
-[[ $TENANT_USER != "$DB_USER" && $TENANT_USER != "$SERVER_OWNER" ]] || die 'La cuenta interna de empresa debe ser distinta.'
+[[ $SERVER_OWNER != "$DB_USER" ]] || die 'La cuenta del propietario debe ser distinta del usuario interno de la aplicaciÃ³n.'
 ask_password() {
     local secret repeated
     while true; do
@@ -227,7 +218,7 @@ ask_password() {
     printf -v "$1" '%s' "$secret"
 }
 ask_password SERVER_PASSWORD "$SERVER_OWNER"
-printf 'Este usuario tambien sera propietario de la primera empresa.\n'
+printf 'Este usuario podra crear empresas desde la app.\n'
 printf '\nSe instalará %s en %s, con base %s, usuario %s y HTTP %s:%s.\n' \
     "$GIT_REF" "$APP_DIR" "$DB_NAME" "$DB_USER" "$APP_HOST" "$APP_PORT"
 ask CONFIRM '¿Continuar? Escribe si' no
@@ -317,10 +308,7 @@ pg_admin() { runuser -u postgres -- psql -X --dbname=postgres --set=ON_ERROR_STO
     die 'El usuario PostgreSQL ya existe. No se cambiará su contraseña.'
 [[ $(pg_admin -Atc "SELECT count(*) FROM pg_database WHERE datname = '$DB_NAME'") == 0 ]] ||
     die 'La base de datos ya existe. No se modificará.'
-for role in "$SERVER_OWNER" "$TENANT_USER"; do
-    [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$role'") == 0 ]] || die "El rol $role ya existe."
-done
-[[ $(pg_admin -Atc "SELECT count(*) FROM pg_database WHERE datname = '$CONTROL_DB'") == 0 ]] || die 'La base central ya existe.'
+[[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$SERVER_OWNER'") == 0 ]] || die "El rol $SERVER_OWNER ya existe."
 
 # 2. Build without root privileges or Android SDK. The wrapper pins Gradle.
 useradd --system --user-group --create-home --home-dir "$APP_DIR" --shell /usr/sbin/nologin ideascore
@@ -333,8 +321,7 @@ ensure_install_swap
 [[ -f scripts/ubuntu/migrations.sh ]] || die 'La rama descargada no incluye el ejecutor de migraciones.'
 for migration in database/core/migrations/V001__create_application_users.sql \
     database/core/migrations/V002__create_application_sessions.sql \
-    database/control/migrations/V001__create_server_registry.sql \
-    database/tenant/migrations/V001__create_business_owner.sql; do
+    database/control/migrations/V001__create_server_registry.sql; do
     [[ -f $migration ]] || die "La rama descargada no incluye $migration. Publica los cambios antes de instalar."
 done
 runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
@@ -373,87 +360,50 @@ pg_admin --set=db_user="$DB_USER" --set=db_name="$DB_NAME" --set=verifier="$SCRA
 CREATE ROLE :"db_user" LOGIN PASSWORD :'verifier';
 CREATE DATABASE :"db_name";
 REVOKE ALL ON DATABASE :"db_name" FROM PUBLIC;
+GRANT CONNECT ON DATABASE :"db_name" TO :"db_user";
 SQL
 unset SCRAM_VERIFIER
-pg_admin --set=control_db="$CONTROL_DB" --set=db_user="$DB_USER" <<'SQL'
-CREATE DATABASE :"control_db";
-REVOKE ALL ON DATABASE :"control_db" FROM PUBLIC;
-GRANT CONNECT ON DATABASE :"control_db" TO :"db_user";
-SQL
 source scripts/ubuntu/migrations.sh
-for target_db in "$CONTROL_DB" "$DB_NAME"; do
-    apply_migration "$target_db" core database/core/migrations/V001__create_application_users.sql
-    apply_migration "$target_db" core database/core/migrations/V002__create_application_sessions.sql
-done
-apply_migration "$CONTROL_DB" control database/control/migrations/V001__create_server_registry.sql
-apply_migration "$DB_NAME" tenant database/tenant/migrations/V001__create_business_owner.sql
-TENANT_PASSWORD=$(openssl rand -hex 32)
-verifier=$(printf '%s' "$TENANT_PASSWORD" | scram_verifier)
-pg_admin -v tenant_user="$TENANT_USER" -v verifier="$verifier" -v tenant_db="$DB_NAME" <<'SQL'
-CREATE ROLE :"tenant_user" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD :'verifier';
-GRANT CONNECT ON DATABASE :"tenant_db" TO :"tenant_user";
-SQL
+apply_migration "$DB_NAME" core database/core/migrations/V001__create_application_users.sql
+apply_migration "$DB_NAME" core database/core/migrations/V002__create_application_sessions.sql
+apply_migration "$DB_NAME" control database/control/migrations/V001__create_server_registry.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
-pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" \
-    -v control_db="$CONTROL_DB" -v tenant_db="$DB_NAME" <<'SQL'
+pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD :'verifier';
-GRANT CONNECT ON DATABASE :"control_db" TO :"login_role";
-GRANT CONNECT ON DATABASE :"tenant_db" TO :"login_role";
+GRANT CONNECT ON DATABASE :"db_name" TO :"login_role";
 SQL
 unset verifier
-runuser -u postgres -- psql -X -d "$CONTROL_DB" -v ON_ERROR_STOP=1 \
-    -v db_user="$DB_USER" -v server_owner="$SERVER_OWNER" \
-    -v company_name="$COMPANY_NAME" -v company_code="$COMPANY_CODE" -v tenant_db="$DB_NAME" <<'SQL'
+runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+    -v db_user="$DB_USER" -v server_owner="$SERVER_OWNER" <<'SQL'
 BEGIN;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 INSERT INTO application_users VALUES (gen_random_uuid(), :'server_owner', true);
 INSERT INTO server_owners SELECT id FROM application_users WHERE postgres_role = :'server_owner';
-INSERT INTO companies (id, code, name, database_name, is_active)
-    VALUES (gen_random_uuid(), :'company_code', :'company_name', :'tenant_db', true);
 GRANT USAGE ON SCHEMA public TO :"db_user";
 GRANT SELECT ON application_users, server_owners, companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO :"db_user";
 COMMIT;
 SQL
-runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
-    -v tenant_user="$TENANT_USER" -v business_owner="$SERVER_OWNER" <<'SQL'
-BEGIN;
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-INSERT INTO application_users VALUES (gen_random_uuid(), :'business_owner', true);
-INSERT INTO business_owner (user_id) SELECT id FROM application_users WHERE postgres_role = :'business_owner';
-GRANT USAGE ON SCHEMA public TO :"tenant_user";
-GRANT SELECT ON application_users, business_owner TO :"tenant_user";
-GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO :"tenant_user";
-COMMIT;
-SQL
-PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -U "$DB_USER" -d "$CONTROL_DB" \
+PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
     -v ON_ERROR_STOP=1 -c 'SELECT count(*) AS usuarios_iniciales FROM application_users;'
 
 # Reject passwordless pg_hba configurations before enabling public login.
-for target_db in "$CONTROL_DB" "$DB_NAME"; do
-    if PGPASSWORD="$(openssl rand -hex 32)" psql -X -h 127.0.0.1 -U "$SERVER_OWNER" -d "$target_db" -c 'SELECT 1' >/dev/null 2>&1; then
-        die 'PostgreSQL acepta una contrasena incorrecta. Configura scram-sha-256 en pg_hba.conf.'
-    fi
-done
+if PGPASSWORD="$(openssl rand -hex 32)" psql -X -h 127.0.0.1 -U "$SERVER_OWNER" -d "$DB_NAME" -c 'SELECT 1' >/dev/null 2>&1; then
+    die 'PostgreSQL acepta una contrasena incorrecta. Configura scram-sha-256 en pg_hba.conf.'
+fi
 
 # 4. systemd reads this root-only file; it must never be committed to Git.
 install -d -m 700 "$CONFIG_DIR"
 {
     printf 'JAVA_HOME=%s\nHOST=%s\nPORT=%s\n' "$JAVA_HOME" "$APP_HOST" "$APP_PORT"
-    printf 'DB_URL=jdbc:postgresql://127.0.0.1:5432/%s\nDB_USER=%s\n' "$CONTROL_DB" "$DB_USER"
+    printf 'DB_URL=jdbc:postgresql://127.0.0.1:5432/%s\nDB_USER=%s\n' "$DB_NAME" "$DB_USER"
     printf '%s' "$DB_PASSWORD" | python3 -c \
         'import json, sys; print("DB_PASSWORD=" + json.dumps(sys.stdin.read()))'
     printf 'DB_POOL_SIZE=10\n'
-    printf '%s' "$TENANT_PASSWORD" | python3 -c '
-import json, sys
-entry = {"databaseName": sys.argv[1], "jdbcUrl": "jdbc:postgresql://127.0.0.1:5432/" + sys.argv[1],
-         "user": sys.argv[2], "password": sys.stdin.read()}
-print("TENANT_DATABASES_JSON=" + json.dumps(json.dumps([entry])))
-' "$DB_NAME" "$TENANT_USER"
+    printf 'TENANT_DATABASES_JSON=[]\n'
 } > "$CONFIG_DIR/server.env"
 chmod 600 "$CONFIG_DIR/server.env"
 unset DB_PASSWORD
-unset TENANT_PASSWORD
 
 cat > "$SERVICE_FILE" <<'UNIT'
 [Unit]
@@ -499,28 +449,23 @@ done
 
 # Send credentials via stdin, never command arguments or logs. Revoke the
 # temporary test sessions immediately; do not display or persist their tokens.
-for login_code in '' "$COMPANY_CODE"; do
-    printf '%s' "$SERVER_PASSWORD" | python3 -c '
+printf '%s' "$SERVER_PASSWORD" | python3 -c '
 import json, sys, urllib.request
 body = json.dumps({"username": sys.argv[1], "password": sys.stdin.read(),
-                   "companyCode": sys.argv[2] or None}).encode()
+                   "companyCode": None}).encode()
 request = urllib.request.Request("http://127.0.0.1:8080/auth/login", data=body,
     headers={"Content-Type": "application/json"})
 with urllib.request.urlopen(request, timeout=20) as response:
     result = json.load(response)
     if response.status != 200 or not result.get("accessToken"):
         sys.exit("Login inicial invalido")
-    expected_role = "business_owner" if sys.argv[2] else "server_owner"
-    if result.get("role") != expected_role or result.get("companyCode") != (sys.argv[2] or None):
-        sys.exit("El login no devuelve el propietario o empresa esperados")
-' "$SERVER_OWNER" "$login_code"
-done
+    if result.get("role") != "server_owner" or result.get("companyCode") is not None:
+        sys.exit("El login no devuelve el propietario del servidor esperado")
+' "$SERVER_OWNER"
 unset SERVER_PASSWORD
-for target_db in "$CONTROL_DB" "$DB_NAME"; do
-    runuser -u postgres -- psql -X -d "$target_db" -v ON_ERROR_STOP=1 \
-        -c 'UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL;'
-done
-printf 'Login del propietario verificado en servidor y empresa.\n'
+runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+    -c 'UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL;'
+printf 'Login del propietario del servidor verificado.\n'
 
 # 5. Public HTTPS terminates at Nginx; Ktor is reachable only on loopback.
 cat > "$NGINX_SITE" <<NGINX
@@ -608,6 +553,6 @@ fi
 printf 'Configuración: /etc/ideascore/server.env\nLogs: sudo journalctl -u ideascore -f\n'
 printf 'Login disponible: POST https://%s/auth/login\n' "$DOMAIN"
 printf 'Aplicacion web disponible: https://%s/\n' "$DOMAIN"
-printf 'Propietario del servidor y de la primera empresa: %s\n' "$SERVER_OWNER"
-printf 'Codigo de empresa para login: %s\n' "$COMPANY_CODE"
-printf 'Pendiente: panel administrativo, sus permisos y provisionamiento de modulos.\n'
+printf 'Propietario del servidor: %s\n' "$SERVER_OWNER"
+printf 'Empresas iniciales: ninguna. Crea la primera desde la app con el usuario server owner.\n'
+printf 'Pendiente: modulo Empresa, panel administrativo, sus permisos y provisionamiento de modulos.\n'
