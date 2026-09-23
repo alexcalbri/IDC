@@ -20,7 +20,7 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Dmg, TargetFormat.Msi, TargetFormat.Deb)
             packageName = "com.ideasdeveloper.idc"
-            packageVersion = "1.0.0"
+            packageVersion = "0.2.0"
         }
     }
 }

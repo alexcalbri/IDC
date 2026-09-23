@@ -104,41 +104,60 @@ fun LoginScreen(
                 color = Color(0xFFE0E0E0),
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 32.dp)
             )
-
+            Spacer(Modifier.height(16.dp))
             if (needsServerConfiguration) {
                 //servidor
-                OutlinedTextField(
-                    value = serverUrl,
-                    onValueChange = { serverUrl = it },
-                    label = { Text("URL HTTPS del servidor") },
-                    placeholder = { Text("https://idc.ideasdeveloper.com") },
-                    singleLine = true,
-                    enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Checkbox(
-                        checked = serverAdministration,
-                        onCheckedChange = { serverAdministration = it },
-                        enabled = !isLoading,
-                    )
-                    Text("Administrar servidor", color = Color.White)
-                }
-
-                if (!serverAdministration) {
+                Box(
+                    modifier = Modifier
+                        .background(Color.White.copy(alpha = 0.15f), MaterialTheme.shapes.medium)
+                ) {
                     OutlinedTextField(
-                        value = companyCode,
-                        onValueChange = { companyCode = it },
-                        label = { Text("Código de empresa") },
+                        value = serverUrl,
+                        onValueChange = { serverUrl = it },
+                        label = { Text("URL HTTPS del servidor") },
+                        placeholder = { Text("https://sub.domain.tld") },
                         singleLine = true,
-                        enabled = !isLoading,
                         modifier = Modifier.fillMaxWidth(),
+                        shape = MaterialTheme.shapes.medium,
+                        textStyle = LocalTextStyle.current.copy(color = Color.White),
+                        enabled = !isLoading,
+                        colors = TextFieldDefaults.colors(
+                            focusedLabelColor = Color.White,
+                            unfocusedLabelColor = Color(0xFFCCCCCC),
+                            cursorColor = Color.White,
+                            focusedContainerColor = Color.White.copy(alpha = 0.5f),
+                            unfocusedContainerColor = Color.White.copy(alpha = 0.3f),
+                        ),
                     )
                 }
 
                 Spacer(Modifier.height(16.dp))
             }
+                if (!serverAdministration) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color.White.copy(alpha = 0.15f), MaterialTheme.shapes.medium)
+                    ) {
+                        OutlinedTextField(
+                            value = companyCode,
+                            onValueChange = { companyCode = it },
+                            label = { Text("Código de empresa") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = MaterialTheme.shapes.medium,
+                            textStyle = LocalTextStyle.current.copy(color = Color.White),
+                            enabled = !isLoading,
+                            colors = TextFieldDefaults.colors(
+                                focusedLabelColor = Color.White,
+                                unfocusedLabelColor = Color(0xFFCCCCCC),
+                                cursorColor = Color.White,
+                                focusedContainerColor = Color.White.copy(alpha = 0.5f),
+                                unfocusedContainerColor = Color.White.copy(alpha = 0.3f),
+                            ),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
 
             // User Field
             Box(
@@ -256,23 +275,35 @@ fun LoginScreen(
         }
 
         // Footer
-        Column(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 24.dp),
-            horizontalAlignment = CenterHorizontally
+                .padding(horizontal = 24.dp, vertical = 24.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(
-                text = "IdeasCore v0.1.0",
-                color = Color.White.copy(alpha = 0.7f),
-                fontSize = 12.sp
-            )
-            Text(
-                text = "Flow Tier",
-                color = Color.White.copy(alpha = 0.5f),
-                fontSize = 10.sp
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = serverAdministration,
+                    onCheckedChange = { serverAdministration = it },
+                    enabled = !isLoading,
+                )
+                Text("Administrar servidor", color = Color.White)
+            }
+
+            Column(horizontalAlignment = Alignment.End) {
+                Text(
+                    text = "IdeasCore v0.2.0",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = 12.sp
+                )
+                Text(
+                    text = "Flow Tier",
+                    color = Color.White.copy(alpha = 0.5f),
+                    fontSize = 10.sp
+                )
+            }
         }
     }
 }
