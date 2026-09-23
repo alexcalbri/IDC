@@ -1,6 +1,8 @@
 package com.ideasdeveloper.idc.app.features.auth.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
@@ -57,6 +59,8 @@ fun LoginScreen(
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var keepSignedIn by rememberSaveable { mutableStateOf(false) }
+    var administratorClickCount by rememberSaveable { mutableStateOf(0) }
+    var administratorToggleVisible by rememberSaveable { mutableStateOf(false) }
     val needsServerConfiguration = savedConfiguration == null
 
     val isLoading = state.isLoading
@@ -307,16 +311,33 @@ fun LoginScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(
-                    checked = serverAdministration,
-                    onCheckedChange = { serverAdministration = it },
-                    enabled = !isLoading,
-                )
-                Text("Administrar servidor", color = Color.White)
+            if (administratorToggleVisible) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(
+                        checked = serverAdministration,
+                        onCheckedChange = { serverAdministration = it },
+                        enabled = !isLoading,
+                    )
+                    Text("Administrar servidor", color = Color.White)
+                }
+            } else {
+                Spacer(modifier = Modifier.width(1.dp))
             }
 
-            Column(horizontalAlignment = Alignment.End) {
+            Column(
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    if (!administratorToggleVisible) {
+                        administratorClickCount += 1
+                        if (administratorClickCount >= 6) {
+                            administratorToggleVisible = true
+                        }
+                    }
+                },
+                horizontalAlignment = Alignment.End
+            ) {
                 Text(
                     text = "IdeasCore v0.2.0",
                     color = Color.White.copy(alpha = 0.7f),
