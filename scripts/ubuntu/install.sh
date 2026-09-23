@@ -295,6 +295,17 @@ chown -R root:root "$APP_DIR/app"
 chmod -R a+rX "$APP_DIR/app"
 chmod -R go-w "$APP_DIR/app"
 
+# Build the browser app without mobile SDKs. Gradle supplies Node and Yarn.
+runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew \
+    -PwebOnly=true --no-daemon --console=plain :app:webApp:jsBrowserDistribution
+WEB_DIST="$APP_DIR/source/app/webApp/build/dist/js/productionExecutable"
+[[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se encontro la distribucion web completa.'
+install -d -m 755 "$APP_DIR/web"
+cp -R "$WEB_DIST/." "$APP_DIR/web/"
+chown -R root:root "$APP_DIR/web"
+chmod -R a+rX "$APP_DIR/web"
+chmod -R go-w "$APP_DIR/web"
+
 # 3. SCRAM verifier: the plaintext password never becomes an SQL statement
 # or a command argument. Printable ASCII avoids SASLprep ambiguities.
 scram_verifier() { python3 -c '
@@ -476,13 +487,19 @@ server {
     ssl_certificate /etc/letsencrypt/live/$CERT_NAME/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$CERT_NAME/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
-    location / {
+    root $APP_DIR/web;
+    index index.html;
+    location /auth/ {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location / {
+        try_files \$uri \$uri/ /index.html;
+        add_header Cache-Control "no-cache";
     }
 }
 NGINX
@@ -513,8 +530,15 @@ UNIT
 chmod 644 /etc/systemd/system/ideascore-certbot.{service,timer}
 systemctl daemon-reload
 systemctl enable --now ideascore-certbot.timer
+WEB_INDEX=$(curl --noproxy '*' --fail --silent --show-error --max-time 15 \
+    --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/")
+[[ $WEB_INDEX == "$(cat "$APP_DIR/web/index.html")" ]] || die 'El dominio no esta sirviendo el index.html de la app.'
 curl --noproxy '*' --fail --silent --show-error --max-time 15 \
-    --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/" >/dev/null
+    --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/webApp.js" >/dev/null
+LOGIN_STATUS=$(curl --noproxy '*' --silent --show-error --max-time 15 \
+    --resolve "$DOMAIN:443:127.0.0.1" --output /dev/null --write-out '%{http_code}' \
+    --header 'Content-Type: application/json' --data '{}' "https://$DOMAIN/auth/login")
+[[ $LOGIN_STATUS == 400 ]] || die 'La ruta HTTPS /auth/login no devuelve la validacion esperada (400).'
 RENEWAL_VERIFIED=false
 if "$CERTBOT_BIN" renew --cert-name "$CERT_NAME" --dry-run; then
     RENEWAL_VERIFIED=true
@@ -532,6 +556,7 @@ else
 fi
 printf 'Configuración: /etc/ideascore/server.env\nLogs: sudo journalctl -u ideascore -f\n'
 printf 'Login disponible: POST https://%s/auth/login\n' "$DOMAIN"
+printf 'Aplicacion web disponible: https://%s/\n' "$DOMAIN"
 printf 'Propietario del servidor y de la primera empresa: %s\n' "$SERVER_OWNER"
 printf 'Codigo de empresa para login: %s\n' "$COMPANY_CODE"
-printf 'Pendiente: interfaz cliente, permisos administrativos y provisionamiento de modulos.\n'
+printf 'Pendiente: panel administrativo, sus permisos y provisionamiento de modulos.\n'

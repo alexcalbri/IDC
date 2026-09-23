@@ -50,6 +50,13 @@ and interaction patterns. IdeasCore is not limited to them.
   An existing Certbot executable is reused; otherwise Certbot is installed.
 - `-PserverOnly=true` builds the server and Core JVM sources without
   configuring client projects or requiring an Android SDK.
+- The installer also builds `:app:webApp:jsBrowserDistribution` with
+  `-PwebOnly=true`, using JS-only Core/shared build profiles without mobile
+  SDKs. Gradle downloads its Node/Yarn tooling. Nginx serves the production
+  files from `/opt/ideascore/web` at `/`, with SPA fallback to `index.html`;
+  `/auth/` is proxied unchanged to Ktor. The web login pre-fills the current
+  origin, allowing same-origin authentication without additional CORS rules.
+  The internal Ktor `/` health response remains separate from the web app.
 - Ktor starts through `EngineMain`, reads `application.conf`, and checks
   PostgreSQL with `SELECT 1` before installing the HTTP routes. The
   connection pool is closed when the application stops.
@@ -315,8 +322,15 @@ holds the server owner, its sessions, `server_owners` and `companies`.
 The company database holds its users, sessions and singleton `business_owner`.
 Separate restricted runtime credentials and pools are used for each database.
 The installer tests both scoped logins and revokes those test sessions.
-Customer schemas, administrative permission enforcement/APIs and the client
-flow remain pending; registry records alone do not implement those permissions.
+Customer schemas and administrative permission enforcement/APIs remain pending;
+registry records alone do not implement those permissions. The shared client
+login is connected to the API, keeps the session in memory and navigates to
+the existing dashboard on success. The client persists the first successful
+server URL and company code/server-administration choice locally so later
+launches do not prompt for those values again. Separate administrative screens
+remain pending; both login scopes currently share the dashboard. The browser
+client initially uses its current origin as server URL when no saved
+configuration exists.
 This is a fresh-install layout, not an automatic upgrade of an existing server.
 
 Each database records executed scripts by module, version and checksum in
@@ -516,6 +530,28 @@ IDC/
 This is a target organization, not permission to perform a mass
 refactor. The repository should migrate deliberately as real features
 are implemented.
+
+### Implemented client/module layout
+
+The shared client is migrating toward a feature-first structure:
+
+- `app/shared/.../app/core/config` contains client-side server/company
+  configuration and platform-specific persistence.
+- `app/shared/.../app/core/session` contains client session state.
+- `app/shared/.../app/features/auth` contains login data, presentation
+  state and UI.
+- `app/shared/.../app/features/dashboard` contains the current dashboard UI.
+
+The first optional module scaffold exists at `modules/hostpot`, with
+`shared`, `server` and `migrations` directories. It is not yet wired into
+Gradle or runtime module loading; those decisions remain part of the module
+installation/loading design.
+
+The backend source is organized under `com.ideasdeveloper.idc.server`.
+The Ktor entry point lives in `server.app`, database bootstrap in
+`server.infrastructure.database`, and server authentication is split into
+`auth.api`, `auth.application`, `auth.domain` and `auth.infrastructure`.
+These packages are separate from the client login feature package.
 
 ------------------------------------------------------------------------
 

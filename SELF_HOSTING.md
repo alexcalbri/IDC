@@ -9,6 +9,34 @@
 
 ## 1. Deployment Model
 
+### Web application in the initial installation
+
+The installer builds and installs both Ktor and the browser application.
+`https://YOUR_DOMAIN/` serves the web login instead of the Ktor greeting.
+Nginx serves `/opt/ideascore/web`, with an `index.html` fallback for client
+navigation, and forwards `/auth/` to Ktor on loopback without rewriting
+the path. The browser login starts with the current origin as its server URL;
+use that URL for same-origin authentication. Other server URLs require a
+separately configured CORS policy and are not enabled by this installer.
+
+The web build command is:
+
+```bash
+./gradlew -PwebOnly=true :app:webApp:jsBrowserDistribution
+```
+
+The result is `app/webApp/build/dist/js/productionExecutable/`.
+`core/build-web.gradle.kts` and `app/shared/build-web.gradle.kts` reuse
+existing sources with JS-only targets so Ubuntu needs no Android/iOS SDK.
+Keep their shared dependencies aligned with the normal build profiles.
+Gradle downloads Node/Yarn and frontend dependencies automatically.
+
+Publish these build profiles, the client sources, settings and installer
+together before installing from GitHub. This change applies to new
+installations; an already running installer will not acquire the new logic.
+Do not rerun this first-install script against an installed server. Existing
+deployments need a separate web build/deployment and Nginx update.
+
 ### Initial owner provisioning (local implementation; clean-host test pending)
 
 The installer now asks for a central administration database, the first
@@ -34,8 +62,9 @@ connection configuration; there is not yet an administrative API for this.
 Before reporting success, the installer tests `/auth/login` with the same user
 in both scopes (without a company code, then with the first company's code),
 revokes the test sessions, and rejects passwordless authentication for these
-accounts. This verifies login only: administrative endpoints, tenant pools,
-owner authorization and the client login flow remain pending. Module files
+accounts. This verifies login only: administrative endpoints and their
+authorization remain pending; the client login is wired but
+end-to-end verification against a new Ubuntu installation is pending. Module files
 are not yet downloaded selectively; the installer still clones the repository.
 
 Publish the matching backend, installer and migration files to the selected
@@ -49,7 +78,7 @@ For company login, POST JSON to `/auth/login` with `username`, `password` and
 `companyCode` (requested by the installer). For server administration omit
 `companyCode` or set it to null. Unknown/inactive companies are rejected.
 Responses include `scope`, `companyCode`, `role` and the session token.
-This does not yet connect the client login view or expose administrative actions.
+The client login view consumes this response; administrative actions are not yet exposed.
 
 ### Instalador interactivo para Ubuntu
 
@@ -370,9 +399,11 @@ Document verified variables in a table here as they are implemented:
 | `HOST` | No | HTTP bind address; `0.0.0.0` (installer sets `127.0.0.1` behind Nginx) |
 | `PORT` | No | HTTP port; `8080` |
 
-`EngineMain` loads `application.conf`. `DatabaseFactory` connects and
-checks PostgreSQL at startup, and closes the pool on application stop.
-These variables must also be provided when running the backend locally.
+`EngineMain` loads `application.conf` and starts
+`com.ideasdeveloper.idc.server.app.ApplicationKt.module`. `DatabaseFactory`
+connects and checks PostgreSQL at startup, and closes the pool on
+application stop. These variables must also be provided when running the
+backend locally.
 
 Never commit `.env` files containing real secrets.
 
@@ -522,7 +553,8 @@ IdeasCore site or an existing Nginx configuration mentioning the supplied
 domain. It preserves other Certbot certificates and uses the certificate
 name `ideascore-DOMAIN` under `/etc/letsencrypt/live/`.
 
-Nginx terminates TLS 1.2/1.3 on port 443 and proxies to loopback port 8080.
+Nginx terminates TLS 1.2/1.3 on port 443, serves the browser application,
+and proxies `/auth/` to loopback port 8080.
 Port 80 redirects to HTTPS except for the ACME webroot challenge path,
 which must stay accessible for renewals. The backend is not publicly
 proxied until a certificate is obtained and the database check succeeds.
@@ -603,6 +635,38 @@ Never assume every tenant has the same installed modules.
 
 Migration orchestration must account for each tenant's installed module
 set and versions.
+
+### Ubuntu updater
+
+`scripts/ubuntu/update.sh` updates an existing installation created by the
+Ubuntu installer. It does not create databases, change secrets or run
+module migrations. It:
+
+1. verifies `/opt/ideascore/source`, `/opt/ideascore/app`,
+   `/etc/ideascore/server.env` and `ideascore.service`;
+2. refuses to continue if the checked-out source has local changes;
+3. fetches the requested branch, tag or commit;
+4. builds `:server:test :server:installDist` with `-PserverOnly=true`;
+5. builds `:app:webApp:jsBrowserDistribution` with `-PwebOnly=true`;
+6. backs up the current runtime app, and backs up web artifacts too when
+   `/opt/ideascore/web` already exists;
+7. replaces `/opt/ideascore/app` and `/opt/ideascore/web`;
+8. restarts `ideascore.service` and checks `http://127.0.0.1:8080/`.
+
+Run it on the server with:
+
+```bash
+sudo bash /opt/ideascore/source/scripts/ubuntu/update.sh
+```
+
+For the current package reorganization, the updater installs the new Ktor
+entry point `com.ideasdeveloper.idc.server.app.ApplicationKt.module` through
+the rebuilt server distribution. Existing `/etc/ideascore/server.env`,
+PostgreSQL databases and Nginx configuration are preserved.
+
+If the server was installed with an older installer that did not create
+`/opt/ideascore/web`, the updater builds the browser app and installs it
+there instead of skipping it.
 
 ------------------------------------------------------------------------
 
