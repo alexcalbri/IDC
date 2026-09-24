@@ -70,7 +70,7 @@ readonly APP_PORT=8080
 readonly NGINX_SITE=/etc/nginx/sites-available/ideascore
 readonly ACME_ROOT=/var/www/ideascore-acme
 readonly INSTALL_SWAP_FILE=$APP_DIR/install.swap
-readonly INSTALL_SWAP_SIZE_MB=2048
+readonly INSTALL_SWAP_SIZE_MB=4096
 readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
 readonly NODE_OPTIONS_VALUE="--max-old-space-size=2048"
 INSTALL_SWAP_CREATED=false
@@ -78,7 +78,10 @@ INSTALL_SWAP_CREATED=false
 cleanup_install_swap() {
     if [[ $INSTALL_SWAP_CREATED == true ]]; then
         swapoff "$INSTALL_SWAP_FILE" >/dev/null 2>&1 || true
-        rm -f "$INSTALL_SWAP_FILE"
+        rm -f "$INSTALL_SWAP_FILE" 2>/dev/null || {
+            swapoff "$INSTALL_SWAP_FILE" >/dev/null 2>&1 || true
+            rm -f "$INSTALL_SWAP_FILE" || true
+        }
     fi
 }
 
@@ -120,6 +123,30 @@ run_gradle() {
         "-Dorg.gradle.jvmargs=$GRADLE_JVM_ARGS" \
         "-Pkotlin.compiler.execution.strategy=in-process" \
         "$@"
+}
+
+verify_acme_challenge() {
+    local address=$1
+    local resolve_address=$address
+    local reply=''
+    local delay
+    local delays=(0 10 20 30 60)
+
+    [[ $address != *:* ]] || resolve_address="[$address]"
+    for delay in "${delays[@]}"; do
+        if (( delay > 0 )); then
+            printf 'Reintentando verificacion HTTP en %s segundos...\n' "$delay"
+            sleep "$delay"
+        fi
+
+        if reply=$(curl --noproxy '*' --fail --silent --show-error --max-time 15 \
+            --resolve "$DOMAIN:80:$resolve_address" "http://$DOMAIN/.well-known/acme-challenge/$DNS_TOKEN"); then
+            [[ $reply == "$DNS_TOKEN" ]] || die "El registro $address responde desde otro sitio. Corrige el DNS."
+            return
+        fi
+    done
+
+    die "No se pudo leer el desafío HTTP por $address:80 despues de varios intentos. Revisa DNS, firewall/NAT y /var/log/nginx/error.log. Corrige la causa y vuelve a ejecutar con el mismo dominio."
 }
 for unit in /etc/systemd/system/ideascore-certbot.service /etc/systemd/system/ideascore-certbot.timer; do
     [[ ! -e $unit && ! -L $unit ]] || die 'Ya existe una configuración de renovación de IdeasCore.'
@@ -268,12 +295,7 @@ printf '%s' "$DNS_TOKEN" > "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
 chmod 644 "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
 for address in "${DOMAIN_IPS[@]}"; do
     printf 'Verificando dominio %s en %s, puerto 80...\n' "$DOMAIN" "$address"
-    resolve_address=$address
-    [[ $address != *:* ]] || resolve_address="[$address]"
-    reply=$(curl --noproxy '*' --fail --silent --show-error --max-time 15 \
-        --resolve "$DOMAIN:80:$resolve_address" "http://$DOMAIN/.well-known/acme-challenge/$DNS_TOKEN") ||
-        die "No se pudo leer el desafío HTTP por $address:80. Revisa DNS, firewall/NAT y /var/log/nginx/error.log. Corrige la causa y vuelve a ejecutar con el mismo dominio."
-    [[ $reply == "$DNS_TOKEN" ]] || die "El registro $address responde desde otro sitio. Corrige el DNS."
+    verify_acme_challenge "$address"
 done
 rm -- "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
 

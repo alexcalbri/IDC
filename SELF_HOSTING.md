@@ -121,6 +121,8 @@ clonarse públicamente por HTTPS; este instalador no gestiona credenciales
 para repositorios privados. Necesita Internet para APT, GitHub, Gradle y
 las dependencias, además de memoria suficiente para compilar (el proyecto
 configura un heap Gradle de hasta 4 GiB y otro Kotlin de hasta 3 GiB).
+Como requisito mínimo, el servidor debe contar con al menos 2 GiB de RAM
+y 10 GiB libres en disco duro antes de iniciar la instalación.
 
 Preguntas del instalador:
 
