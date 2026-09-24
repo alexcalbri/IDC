@@ -8,6 +8,9 @@ package com.ideasdeveloper.idc.navigation
 sealed class NavRoute {
     object Login : NavRoute()
     object Dashboard : NavRoute()
+    object Empresa : NavRoute()
+    object Hostpot : NavRoute()
+    object Crm : NavRoute()
     object Clientes : NavRoute()
     object Memberships : NavRoute()
     object Settings : NavRoute()
@@ -16,6 +19,9 @@ sealed class NavRoute {
         fun fromString(route: String): NavRoute = when (route) {
             "login" -> Login
             "dashboard" -> Dashboard
+            "empresa" -> Empresa
+            "hostpot" -> Hostpot
+            "crm" -> Crm
             "clientes" -> Clientes
             "memberships" -> Memberships
             "settings" -> Settings
@@ -25,6 +31,9 @@ sealed class NavRoute {
         fun NavRoute.routeName(): String = when (this) {
             is Login -> "login"
             is Dashboard -> "dashboard"
+            is Empresa -> "empresa"
+            is Hostpot -> "hostpot"
+            is Crm -> "crm"
             is Clientes -> "clientes"
             is Memberships -> "memberships"
             is Settings -> "settings"

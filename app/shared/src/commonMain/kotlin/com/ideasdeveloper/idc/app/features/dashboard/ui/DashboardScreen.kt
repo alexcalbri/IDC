@@ -8,14 +8,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.navigation.NavRoute
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DashboardScreen(
+    session: LoginResponse?,
     onNavigateTo: (NavRoute) -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val canSeeEmpresa = session?.role in setOf("server_owner", "business_owner")
+
     Scaffold(
         topBar = {
             CenterAlignedTopAppBar(
@@ -48,18 +52,13 @@ fun DashboardScreen(
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Quick action cards
-            DashboardActionCard(
-                title = "Clientes",
-                description = "Gestiona tu base de clientes",
-                onClick = { onNavigateTo(NavRoute.Clientes) }
-            )
-
-            DashboardActionCard(
-                title = "Memberships",
-                description = "Administra planes de membresía",
-                onClick = { onNavigateTo(NavRoute.Memberships) }
-            )
+            if (canSeeEmpresa) {
+                DashboardActionCard(
+                    title = "Empresa",
+                    description = "Administra la configuración base de la empresa",
+                    onClick = { onNavigateTo(NavRoute.Empresa) }
+                )
+            }
 
             DashboardActionCard(
                 title = "Ajustes",

@@ -162,7 +162,18 @@ Preferred data direction:
 -   stable/high-value identity and query fields: relational columns;
 -   tenant-defined flexible attributes: PostgreSQL `JSONB`;
 -   field definitions: relational metadata describing key, label, type,
-    validation, required state, order, options and active state.
+    validation, required state, order, options, control type and active
+    state.
+
+Field definitions should support server-driven UI rendering. The server may
+describe generic controls such as text, textarea, number, money, date,
+datetime, email, phone, boolean, select/dropdown and multi-select, including
+option values, display labels, defaults and validation rules. Clients may use
+that metadata to render forms/lists without a release for each tenant field
+change.
+
+Server validation remains authoritative. Client validation improves user
+experience but must not be treated as trust or authorization.
 
 Do not run `ALTER TABLE` for every custom field.
 
@@ -315,6 +326,19 @@ tenant database.
 
 Do not maintain a monolithic schema that creates tables for modules a
 tenant does not use.
+
+Prefer server-driven module delivery for the client. The Core app should
+provide a generic module container, navigation surface and reusable controls.
+After login, it can request active modules, visible menu entries, field
+definitions, dropdown/multi-select options, permissions and action descriptors
+from the server. This allows modules and tenant-specific fields to appear
+without downloading executable client code.
+
+Do not assume Android, iOS or desktop clients can safely download and execute
+new Kotlin/Compose module code after release. Highly custom client UI should
+ship through normal client releases while activation and visibility remain
+server-controlled. Web-specific bundle loading may be considered only for a
+concrete requirement.
 
 Use the migration tooling actually adopted by the repository. If none
 exists, propose an appropriate tool and obtain approval before making it

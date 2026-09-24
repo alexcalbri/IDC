@@ -143,10 +143,19 @@ Recommended model:
 -   stable, high-value fields as relational columns;
 -   configurable tenant-specific attributes in PostgreSQL JSONB;
 -   relational field-definition metadata for label, type, validation,
-    order, options and active state.
+    order, options, control type and active state.
 
 A tenant should be able to add, reorder, disable and eventually remove
 custom fields without a schema migration for every field.
+
+Field definitions are also the source for server-driven client rendering.
+The server can describe a field as text, textarea, number, money, date,
+datetime, email, phone, boolean, select/dropdown or multi-select, including
+option values, display labels, defaults and validation rules. The client may
+use these definitions to render generic forms and lists without a client
+release for each tenant field change. The server remains authoritative for
+validation and must reject invalid values even when a client-side form already
+checked them.
 
 Use relational tables---not JSONB---for entities with their own
 identity, lifecycle, history, relationships, transactions or integrity
@@ -214,12 +223,25 @@ Updating a shared package must not silently migrate or enable other
 companies; compatibility with each company's schema must be checked.
 Shared files cannot be removed while another company needs them.
 
-The package format, release distribution, Kotlin module loading strategy
-and client UI delivery remain to be designed. Downloading source files
-does not automatically load executable Ktor routes or Compose screens;
-this decision does not promise hot loading without rebuilding/restarting.
-The current installer still clones the repository and builds the server;
-selective downloads and the module installer are not implemented.
+Client module delivery should be server-driven where practical. The Core app
+ships a generic module container, navigation surface and reusable controls.
+After login, it asks the server which modules are active for the company and
+visible to the user, then renders menus, forms, lists and basic actions from
+module metadata. Module metadata may include field definitions, dropdown and
+multi-select options, permissions, routes and action descriptors. The client
+must not treat hidden UI as authorization; protected server operations still
+check session, tenant, role, permissions and module availability.
+
+Downloading and executing new Kotlin/Compose code inside an already compiled
+Android, iOS or desktop client is not the default architecture. Highly custom
+client experiences should ship in normal client releases, while their
+visibility and activation remain server-controlled. Web-specific bundle
+loading may be evaluated separately if a real requirement appears.
+
+The package format, release distribution and server module loading strategy
+remain to be designed. The current installer still clones the repository and
+builds the server; selective downloads and the module installer are not
+implemented.
 
 Modules own their migrations.
 
@@ -552,10 +574,15 @@ The shared client is migrating toward a feature-first structure:
   state and UI.
 - `app/shared/.../app/features/dashboard` contains the current dashboard UI.
 
-The first optional module scaffold exists at `modules/hostpot`, with
-`shared`, `server` and `migrations` directories. It is not yet wired into
-Gradle or runtime module loading; those decisions remain part of the module
-installation/loading design.
+The current module scaffolds are `modules/empresa`, `modules/hostpot` and
+`modules/crm`, each with planned shared, server and migration areas. They are
+not yet wired into Gradle or runtime module loading; those decisions remain
+part of the module installation/loading design.
+
+Empresa is the first Core module surfaced in the client dashboard. It is
+always active for `server_owner` and `business_owner` sessions and hidden from
+other roles. Its current screen is a placeholder; functional company
+administration remains pending.
 
 The backend source is organized under `com.ideasdeveloper.idc.server`.
 The Ktor entry point lives in `server.app`, database bootstrap in
