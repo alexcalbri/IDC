@@ -23,6 +23,9 @@ class LoginDatabases(
     centralDatabase: Database,
     centralUrl: String,
     tenantConfiguration: String,
+    private val runtimeUser: String,
+    private val runtimePassword: String,
+    private val tenantJdbcUrlPrefix: String,
     private val lifetimeSeconds: Long,
 ) : AutoCloseable {
     private val configurations = Json.decodeFromString<List<TenantDatabaseConfig>>(tenantConfiguration)
@@ -31,6 +34,7 @@ class LoginDatabases(
         .toMutableMap()
     private val pools = mutableMapOf<String, HikariDataSource>()
     private val scopes = mutableMapOf<String, LoginScope>()
+    private val tenantDatabaseNamePattern = Regex("[a-z][a-z0-9_]{0,62}")
 
     val service = ScopedLoginService(
         serverScope = scope(central, centralDatabase, centralUrl, true),
@@ -47,6 +51,7 @@ class LoginDatabases(
 
     @Synchronized
     fun tenantConfig(databaseName: String): TenantDatabaseConfig? = configurations[databaseName]
+        ?: databaseName.takeIf { it.matches(tenantDatabaseNamePattern) }?.let { inferredTenantConfig(it) }
 
     @Synchronized
     fun registerTenant(config: TenantDatabaseConfig) {
@@ -58,7 +63,10 @@ class LoginDatabases(
     @Synchronized
     private fun tenantScope(name: String): LoginScope? {
         scopes[name]?.let { return it }
-        val config = configurations[name] ?: return null
+        val config = configurations[name]
+            ?: name.takeIf { it.matches(tenantDatabaseNamePattern) }?.let { inferredTenantConfig(it) }
+            ?: return null
+        configurations[name] = config
         val pool = HikariDataSource(HikariConfig().apply {
             jdbcUrl = config.jdbcUrl
             username = config.user
@@ -78,6 +86,13 @@ class LoginDatabases(
             throw failure
         }
     }
+
+    private fun inferredTenantConfig(databaseName: String): TenantDatabaseConfig = TenantDatabaseConfig(
+        databaseName = databaseName,
+        jdbcUrl = tenantJdbcUrlPrefix + databaseName,
+        user = runtimeUser,
+        password = runtimePassword,
+    )
 
     private fun scope(source: DataSource, database: Database, url: String, server: Boolean): LoginScope {
         val users = ApplicationUserRepository(database)

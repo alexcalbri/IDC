@@ -392,7 +392,7 @@ apply_migration "$DB_NAME" core database/core/migrations/V002__create_applicatio
 apply_migration "$DB_NAME" control database/control/migrations/V001__create_server_registry.sql
 apply_migration "$DB_NAME" control database/control/migrations/V002__create_provisioning_audit_log.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
-pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" <<'SQL'
+pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
 GRANT CONNECT ON DATABASE :"db_name" TO :"login_role";
 GRANT :"login_role" TO :"db_user";
@@ -515,6 +515,22 @@ server {
     root $APP_DIR/web;
     index index.html;
     location /auth/ {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location /companies {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location /modules {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;

@@ -34,7 +34,7 @@ The installer:
 13. Installs the Ktor server under `/opt/ideascore/app`.
 14. Installs the web app under `/opt/ideascore/web`.
 15. Creates a systemd service.
-16. Configures Nginx to serve the web app and proxy `/auth/` to Ktor.
+16. Configures Nginx to serve the web app and proxy `/auth/`, `/companies` and `/modules` to Ktor.
 17. Tests server-owner login.
 
 Files involved:
@@ -60,12 +60,20 @@ On startup, the Ktor server:
 4. Creates `LoginDatabases`, which owns login database selection.
 5. Creates a central `SessionService` for validating server-owner tokens.
 6. Creates `CompanyProvisioningService`.
-7. Registers routes:
+7. Builds the server module registry with the currently bundled modules:
+   - `clientes`;
+   - `crm`;
+   - `hostpot`.
+8. Registers routes:
    - `GET /`;
    - `POST /auth/login`;
    - `GET /companies`;
    - `POST /companies`;
-   - `PUT /companies/{code}/modules/{moduleId}`.
+   - `PUT /companies/{code}/modules/{moduleId}`;
+   - `GET /modules`;
+   - `GET /modules/{moduleId}/metadata`;
+   - module-owned endpoints under `/modules/{moduleId}`.
+9. Closes tenant pools and central database pool on application stop.
 8. Closes tenant pools and central database pool on application stop.
 
 Config is read from `server/src/main/resources/application.conf`.
@@ -189,7 +197,7 @@ Flow:
 2. If `companyCode` is absent, login targets the central database.
 3. If `companyCode` is present, login resolves the company in central
    `companies`.
-4. For company login, `LoginDatabases` opens or reuses the tenant database pool.
+4. For company login, `LoginDatabases` opens or reuses the tenant database pool. If the tenant is not preloaded in `TENANT_DATABASES_JSON`, it infers the JDBC URL from `companies.database_name`, `TENANT_JDBC_URL_PREFIX` and the server runtime DB credentials.
 5. `PostgresCredentialVerifier` validates the submitted credentials against
    PostgreSQL.
 6. `ApplicationUserRepository` confirms the PostgreSQL role maps to an active
@@ -262,11 +270,12 @@ Implemented route behavior:
 - `login` shows `LoginScreen`.
 - `dashboard` shows `DashboardScreen`.
 - `module/empresa` shows `CompanyProvisioningScreen` for `server_owner`.
-- Other `module/{moduleId}` values show a placeholder screen.
+- Other `module/{moduleId}` values show `ServerDrivenModuleScreen`, which requests module metadata from the server.
 - `settings` shows a placeholder screen.
 
-Module-specific routes like `composable("crm")` or `composable("hostpot")` are
-not implemented. All modules use `module/{moduleId}`.
+Module-specific client routes like `composable("crm")` or `composable("hostpot")` are
+not implemented. All modules use `module/{moduleId}` and load their display
+metadata from `/modules/{moduleId}/metadata`.
 
 ## 8. Dashboard Flow
 
@@ -311,7 +320,8 @@ Flow:
 13. Server inserts central company registry row.
 14. Server writes an audit log row.
 15. Server registers the tenant connection in memory.
-16. Client refreshes the company list.
+16. Future server restarts can reconstruct that tenant connection from the central `companies.database_name` value.
+17. Client refreshes the company list.
 
 After this, the business owner can log in with:
 
@@ -376,7 +386,7 @@ Current behavior:
   placeholder screens.
 - The authenticated top bar is reused by dashboard/module screens.
 
-## 13. Installed Module Scaffolds
+## 13. Installed Module Scaffolds And Server Registry
 
 Implemented scaffold directories:
 
@@ -387,9 +397,14 @@ Implemented scaffold directories:
 
 Working behavior:
 
+- The server build includes the `clientes`, `hostpot` and `crm` module source directories.
+- `Application.kt` registers these modules in `ModuleRegistry`.
+- `GET /modules` returns the module definitions known by the running server.
+- `GET /modules/{moduleId}/metadata` returns display metadata for the generic client screen.
+- Each bundled module owns its server route namespace under `/modules/{moduleId}`.
 - `clientes` is seeded as enabled in tenant DBs.
 - `hostpot` and `crm` are seeded as disabled and can be toggled.
-- Runtime module screens for `clientes`, `hostpot` and `crm` are placeholders.
+- Functional module screens still render metadata/placeholders; full business UI and data flows are not implemented yet.
 
 ## 14. Web Deployment Flow
 
@@ -400,11 +415,7 @@ The installer:
 - builds the web app;
 - copies it to `/opt/ideascore/web`;
 - configures Nginx to serve the web app;
-- proxies `/auth/` to Ktor.
-
-Company administration routes are implemented in Ktor. Nginx routing for routes
-beyond `/auth/` must be verified in deployment before calling the full web flow
-production-ready.
+- proxies `/auth/`, `/companies` and `/modules` to Ktor.
 
 ## 15. Update Script
 

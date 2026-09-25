@@ -98,10 +98,10 @@ fun Route.companyRoutes(
                 CompanyErrorResponse("COMPANY_NOT_CREATED", exception.message ?: "No se pudo crear la empresa."),
             )
             return@post
-        } catch (_: SQLException) {
+        } catch (exception: SQLException) {
             call.respond(
                 HttpStatusCode.ServiceUnavailable,
-                CompanyErrorResponse("DATABASE_UNAVAILABLE", "No se pudo completar la provision de la empresa."),
+                CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toProvisioningMessage()),
             )
             return@post
         }
@@ -157,10 +157,10 @@ fun Route.companyRoutes(
                 CompanyErrorResponse("MODULE_NOT_UPDATED", exception.message ?: "No se pudo actualizar el modulo."),
             )
             return@put
-        } catch (_: SQLException) {
+        } catch (exception: SQLException) {
             call.respond(
                 HttpStatusCode.ServiceUnavailable,
-                CompanyErrorResponse("DATABASE_UNAVAILABLE", "No se pudo actualizar el modulo."),
+                CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toModuleMessage()),
             )
             return@put
         }
@@ -179,3 +179,10 @@ private suspend fun io.ktor.server.application.ApplicationCall.serverOwnerRole(
         ?: return null
     return withContext(Dispatchers.IO) { authorizer.serverOwnerRole(token) }
 }
+
+
+private fun SQLException.toProvisioningMessage(): String =
+    "No se pudo completar la provision de la empresa. PostgreSQL ${sqlState.orEmpty()}: ${message.orEmpty()}"
+
+private fun SQLException.toModuleMessage(): String =
+    "No se pudo actualizar el modulo. PostgreSQL ${sqlState.orEmpty()}: ${message.orEmpty()}"

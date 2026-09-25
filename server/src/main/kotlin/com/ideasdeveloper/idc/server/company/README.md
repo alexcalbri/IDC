@@ -21,5 +21,9 @@ Implementación actual:
 - `GET /companies` lista empresas y estado de modulos.
 - `PUT /companies/{code}/modules/{moduleId}` habilita o deshabilita modulos
   opcionales por empresa. `clientes` queda bloqueado como modulo base.
+- El catalogo de modulos activos del servidor viene de `ModuleRegistry`; los
+  modulos incluidos actualmente son `clientes`, `hostpot` y `crm`.
+- Cada modulo incluido puede exponer metadata y endpoints propios bajo
+  `/modules/{moduleId}`.
 
 El instalador inicial solo crea la plataforma central y el `server_owner`. No crea empresas.

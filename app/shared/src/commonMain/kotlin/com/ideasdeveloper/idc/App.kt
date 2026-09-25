@@ -34,6 +34,7 @@ import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.features.auth.ui.LoginScreen
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyProvisioningScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
+import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import com.ideasdeveloper.idc.navigation.NavRoute
@@ -107,10 +108,10 @@ fun App(initialServerUrl: String = "") {
                         onMinimize = ::openDashboard,
                     )
                 } else {
-                    ModulePlaceholderScreen(
-                        moduleName = moduleName,
-                        viewName = null,
-                        body = "Modulo $moduleName pendiente",
+                    ServerDrivenModuleScreen(
+                        moduleId = moduleId,
+                        serverUrl = clientConfiguration?.serverUrl,
+                        fallbackTitle = moduleName,
                         onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
                         onLogout = ::logout,
                         onMinimize = ::openDashboard,

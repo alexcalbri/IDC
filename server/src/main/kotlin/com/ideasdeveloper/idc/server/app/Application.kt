@@ -12,6 +12,11 @@ import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningConf
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
+import com.ideasdeveloper.idc.server.modules.ModuleRegistry
+import com.ideasdeveloper.idc.server.modules.moduleRoutes
+import com.ideasdeveloper.idc.modules.clientes.ClientesServerModule
+import com.ideasdeveloper.idc.modules.crm.CrmServerModule
+import com.ideasdeveloper.idc.modules.hostpot.HostpotServerModule
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
@@ -64,11 +69,22 @@ fun Application.module() {
         }
     }
     DatabaseFactory.init(environment.config)
+    val moduleRegistry = ModuleRegistry(
+        listOf(
+            ClientesServerModule,
+            CrmServerModule,
+            HostpotServerModule,
+        )
+    )
     val loginDatabases = LoginDatabases(
         central = DatabaseFactory.getDataSource(),
         centralDatabase = DatabaseFactory.getDatabase(),
         centralUrl = environment.config.property("database.url").getString(),
         tenantConfiguration = environment.config.property("tenant.databases").getString(),
+        runtimeUser = environment.config.property("database.user").getString(),
+        runtimePassword = environment.config.property("database.password").getString(),
+        tenantJdbcUrlPrefix = environment.config.propertyOrNull("provisioning.tenantJdbcUrlPrefix")?.getString()
+            ?: environment.config.property("database.url").getString().substringBeforeLast('/') + "/",
         lifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
     )
     val centralSessions = SessionService(
@@ -83,6 +99,7 @@ fun Application.module() {
             central = DatabaseFactory.getDataSource(),
             config = it,
             loginDatabases = loginDatabases,
+            moduleRegistry = moduleRegistry,
         )
     }
     monitor.subscribe(ApplicationStopped) {
@@ -106,6 +123,7 @@ fun Application.module() {
                 provisioning = companyProvisioning,
             )
         }
+        moduleRoutes(moduleRegistry)
     }
 }
 

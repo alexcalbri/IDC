@@ -54,8 +54,9 @@ and interaction patterns. IdeasCore is not limited to them.
   `-PwebOnly=true`, using JS-only Core/shared build profiles without mobile
   SDKs. Gradle downloads its Node/Yarn tooling. Nginx serves the production
   files from `/opt/ideascore/web` at `/`, with SPA fallback to `index.html`;
-  `/auth/` is proxied unchanged to Ktor. The web login pre-fills the current
-  origin, allowing same-origin authentication without additional CORS rules.
+  `/auth/`, `/companies` and `/modules` are proxied unchanged to Ktor. The web
+  login pre-fills the current origin, allowing same-origin API calls without
+  additional CORS rules.
   The internal Ktor `/` health response remains separate from the web app.
 - Ktor starts through `EngineMain`, reads `application.conf`, and checks
   PostgreSQL with `SELECT 1` before installing the HTTP routes. The
@@ -70,9 +71,10 @@ and interaction patterns. IdeasCore is not limited to them.
   Nginx serves HTTPS on port 443 with a Let's Encrypt certificate and
   redirects HTTP to HTTPS. A systemd timer handles renewal; Ktor stays
   on loopback. Real-domain issuance/renewal validation is still pending.
-- This bootstrap connects the backend to one central database and provisions
-  initial authentication identities and ownership records. Shared Customer,
-  tenant routing, module provisioning and administrative APIs remain planned.
+- This bootstrap connects the backend to one central database, provisions
+  initial authentication identities and ownership records, and installs the
+  current company-provisioning API. New company databases receive shared
+  Customer/Prospect structures and the tenant module registry.
 
 Current architectural direction:
 
@@ -595,15 +597,19 @@ The shared client is migrating toward a feature-first structure:
   by server-provided module metadata.
 
 The current module scaffolds are `modules/empresa`, `modules/clientes`,
-`modules/hostpot` and `modules/crm`, each with planned shared, server and
-migration areas. They are not yet wired into Gradle or runtime module loading;
-those decisions remain part of the module installation/loading design.
+`modules/hostpot` and `modules/crm`. The server build includes the `clientes`,
+`hostpot` and `crm` shared/server source directories and registers those
+server modules in `ModuleRegistry`. The running server exposes `/modules`,
+`/modules/{moduleId}/metadata` and each module-owned namespace under
+`/modules/{moduleId}`. Downloading module packages from GitHub/distribution
+and loading them on demand remains planned architecture, not implemented
+behavior.
 
 Empresa is the first Core module surfaced in the client dashboard. It is
-always active for `server_owner` and `business_owner` sessions and hidden from
-other roles as a local fallback until active module metadata is loaded from the
-server. Its current screen is a generic module placeholder; functional company
-administration remains pending.
+always active for `server_owner` and `business_owner` sessions. For
+`server_owner`, `module/empresa` opens the implemented company provisioning
+screen. Other module routes use the generic server-driven module screen and
+load display metadata from the backend.
 
 The backend source is organized under `com.ideasdeveloper.idc.server`.
 The Ktor entry point lives in `server.app`, database bootstrap in
@@ -691,11 +697,14 @@ pool and verifies PostgreSQL connectivity on startup. New installations
 point it at the central database, grant the runtime role read access to
 identity tables, data access to sessions and registry write access for company
 creation. Existing installations are not upgraded automatically.
-Tenant pools are preloaded through server-only `TENANT_DATABASES_JSON`; tenants
-created through the Empresa API are added to the running resolver immediately.
+Tenant pools may be preloaded through server-only `TENANT_DATABASES_JSON`; tenants
+created through the Empresa API are added to the running resolver immediately, and
+server restarts can reconstruct company tenant connections from the central
+`companies.database_name` registry plus `TENANT_JDBC_URL_PREFIX`.
 Local code includes `/auth/login`, `GET /companies`, `POST /companies`,
-`PUT /companies/{code}/modules/{moduleId}`, active-user mapping, opaque session
-issuance, session validation/revocation services and IP-based login/admin rate limits.
+`PUT /companies/{code}/modules/{moduleId}`, `/modules`,
+`/modules/{moduleId}/metadata`, active-user mapping, opaque session issuance,
+session validation/revocation services and IP-based login/admin rate limits.
 Login now selects the proper database and reports server/business ownership;
 protected business operations and cross-company server administration remain
 unimplemented. The revised installation and end-to-end login still require

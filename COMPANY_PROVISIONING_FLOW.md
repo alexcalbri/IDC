@@ -38,7 +38,7 @@ Owns the top-level Compose navigation shell.
 - Reads `moduleId` from Navigation `SavedState` using `androidx.savedstate.read`.
 - Routes `module/empresa` for `server_owner` sessions to
   `CompanyProvisioningScreen`.
-- Routes all other modules to `ModulePlaceholderScreen`.
+- Routes all other modules to `ServerDrivenModuleScreen`, which loads module metadata from the server.
 - Uses `NavRoute.Module(moduleId)` instead of hardcoded module routes like
   `hostpot` or `crm`.
 
@@ -70,10 +70,12 @@ Provides the current Empresa administration UI.
   - company code;
   - company name;
   - business owner username;
-  - business owner password.
+  - business owner password;
+  - business owner password confirmation in the client form.
 - Calls `POST /companies`.
 - Loads existing companies through `GET /companies`.
 - Shows module state per company.
+- Shows PostgreSQL diagnostic details returned by protected server-owner provisioning routes when database provisioning fails.
 - Allows enabling/disabling optional modules through
   `PUT /companies/{code}/modules/{moduleId}`.
 - Keeps `clientes` visible as locked because it is the base customer module.
@@ -95,6 +97,14 @@ Contains client DTOs and HTTP client code for Empresa.
   - Company list and module state response.
 - `CompanyErrorResponse.kt`
   - Error response from company endpoints.
+
+### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/features/modules/*`
+
+Provides the generic module client flow.
+
+- `ModuleApi.kt` calls `/modules/{moduleId}/metadata`.
+- `ModuleDefinition.kt` mirrors the server metadata contract.
+- `ServerDrivenModuleScreen.kt` renders module title, description and view list from server metadata.
 
 ### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/features/auth/data/LoginResponse.kt`
 
@@ -132,6 +142,7 @@ Wires the Ktor application.
 - Wires company routes with:
   - `ServerOwnerAuthorizer`;
   - `CompanyProvisioningService`.
+- Registers module metadata routes and each module-owned endpoint namespace.
 - Builds `CompanyProvisioningConfig` from server config.
 
 ### `server/src/main/resources/application.conf`
@@ -179,6 +190,14 @@ Validates server-owner authorization.
 
 The returned PostgreSQL role is passed to provisioning code and used with
 `SET ROLE`.
+
+### `server/src/main/kotlin/com/ideasdeveloper/idc/server/modules/*`
+
+Defines the server module contract and registry.
+
+- `ServerModule.kt` declares module metadata and optional route installation.
+- `ModuleRoutes.kt` exposes `/modules`, `/modules/{moduleId}/metadata` and installs module-owned routes.
+- Current modules are bundled at build time. GitHub/package download and hot installation are planned architecture, not implemented behavior.
 
 ### `server/src/main/kotlin/com/ideasdeveloper/idc/server/company/application/CompanyProvisioningService.kt`
 
@@ -239,8 +258,9 @@ Resolves login scope.
 
 - Server login uses the central database.
 - Company login uses central `companies.code` to resolve the tenant database.
-- Tenant pools are preloaded from `TENANT_DATABASES_JSON`.
+- Tenant pools can be preloaded from `TENANT_DATABASES_JSON`.
 - Newly created tenants are registered at runtime with `registerTenant(...)`.
+- After a restart, tenants can be reconstructed from central `companies.database_name`, `TENANT_JDBC_URL_PREFIX` and the server runtime DB credentials.
 - Company login reads enabled modules from tenant `tenant_modules`.
 - Login response includes `enabledModules`.
 
@@ -328,7 +348,7 @@ Existing planned scaffold.
 - Registered in tenant module seed as `hostpot`.
 - Disabled by default.
 - Can be enabled/disabled by `server_owner`.
-- Runtime screen is still a placeholder.
+- The generic runtime screen loads this module metadata from the server; functional module behavior is still pending.
 
 ### `modules/crm`
 
@@ -337,7 +357,7 @@ Existing planned scaffold.
 - Registered in tenant module seed as `crm`.
 - Disabled by default.
 - Can be enabled/disabled by `server_owner`.
-- Runtime screen is still a placeholder.
+- The generic runtime screen loads this module metadata from the server; functional module behavior is still pending.
 
 ## Installer
 

@@ -565,7 +565,7 @@ domain. It preserves other Certbot certificates and uses the certificate
 name `ideascore-DOMAIN` under `/etc/letsencrypt/live/`.
 
 Nginx terminates TLS 1.2/1.3 on port 443, serves the browser application,
-and proxies `/auth/` to loopback port 8080.
+and proxies `/auth/`, `/companies` and `/modules` to loopback port 8080.
 Port 80 redirects to HTTPS except for the ACME webroot challenge path,
 which must stay accessible for renewals. The backend is not publicly
 proxied until a certificate is obtained and the database check succeeds.
@@ -651,7 +651,8 @@ set and versions.
 
 `scripts/ubuntu/update.sh` updates an existing installation created by the
 Ubuntu installer. It does not create databases, change secrets or run
-module migrations. It:
+module migrations. It rewrites the IdeasCore Nginx site using the current proxy
+routes for `/auth/`, `/companies` and `/modules`. It:
 
 1. verifies `/opt/ideascore/source`, `/opt/ideascore/app`,
    `/etc/ideascore/server.env` and `ideascore.service`;

@@ -66,6 +66,7 @@ fun CompanyProvisioningScreen(
     var name by remember { mutableStateOf("") }
     var ownerUsername by remember { mutableStateOf("") }
     var ownerPassword by remember { mutableStateOf("") }
+    var ownerPasswordConfirmation by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
     var isRefreshing by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -157,6 +158,21 @@ fun CompanyProvisioningScreen(
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                OutlinedTextField(
+                    value = ownerPasswordConfirmation,
+                    onValueChange = { ownerPasswordConfirmation = it },
+                    label = { Text("Confirmar contrasena") },
+                    singleLine = true,
+                    enabled = !isLoading,
+                    visualTransformation = PasswordVisualTransformation(),
+                    isError = ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation,
+                    supportingText = {
+                        if (ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation) {
+                            Text("Las contrasenas no coinciden.")
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
 
                 error?.let { Text(it, color = Color(0xFFB00020)) }
                 message?.let { Text(it, color = Color(0xFF176B3A)) }
@@ -180,7 +196,8 @@ fun CompanyProvisioningScreen(
                                 code.isNotBlank() &&
                                 name.isNotBlank() &&
                                 ownerUsername.isNotBlank() &&
-                                ownerPassword.length >= 12,
+                                ownerPassword.length >= 12 &&
+                                ownerPassword == ownerPasswordConfirmation,
                         onClick = {
                             val activeServerUrl = serverUrl ?: return@Button
                             val activeSession = session ?: return@Button
@@ -201,6 +218,11 @@ fun CompanyProvisioningScreen(
                                         )
                                     }
                                     message = "Empresa ${response.name} creada. Ya puedes iniciar sesion con codigo ${response.code}."
+                                    code = ""
+                                    name = ""
+                                    ownerUsername = ""
+                                    ownerPassword = ""
+                                    ownerPasswordConfirmation = ""
                                     refreshCompanies()
                                 } catch (exception: CompanyException) {
                                     error = exception.message

@@ -6,6 +6,8 @@ import com.ideasdeveloper.idc.server.company.api.CreateCompanyResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.idc.server.company.api.CompanyModuleResponse
 import com.ideasdeveloper.idc.server.company.api.CompanySummaryResponse
+import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import org.postgresql.ds.PGSimpleDataSource
 import java.nio.file.Files
 import java.nio.file.Path
@@ -22,15 +24,12 @@ class CompanyProvisioningService(
     private val central: DataSource,
     private val config: CompanyProvisioningConfig,
     private val loginDatabases: LoginDatabases,
+    private val moduleRegistry: ModuleRegistry,
 ) {
     private val companyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
-    private val modules = listOf(
-        ModuleDefinition("clientes", "Clientes", locked = true),
-        ModuleDefinition("hostpot", "Hostpot", locked = false),
-        ModuleDefinition("crm", "CRM", locked = false),
-    )
+    private val modules: List<ModuleDefinition> = moduleRegistry.definitions
 
     fun createCompany(request: CreateCompanyRequest, provisioningRole: String): CreateCompanyResponse {
         val code = request.code.trim()
@@ -151,7 +150,7 @@ class CompanyProvisioningService(
         val normalizedCompanyCode = companyCode.trim()
         val normalizedModuleId = moduleId.trim()
         val definition = modules.singleOrNull { it.id == normalizedModuleId }
-            ?: throw CompanyProvisioningException("Modulo no reconocido.")
+            ?: throw CompanyProvisioningException("Modulo no reconocido o no instalado en el servidor.")
         if (definition.locked && !enabled) {
             throw CompanyProvisioningException("El modulo ${definition.displayName} es base y no puede deshabilitarse.")
         }
@@ -369,12 +368,7 @@ class CompanyProvisioningService(
 
     private fun loadCompanyModules(databaseName: String): List<CompanyModuleResponse> {
         val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return modules.map { definition ->
-            CompanyModuleResponse(
-                moduleId = definition.id,
-                displayName = definition.displayName,
-                enabled = definition.id == "clientes",
-                locked = definition.locked,
-            )
+            definition.toCompanyModuleResponse(enabled = definition.locked)
         }
 
         val states = mutableMapOf<String, Boolean>()
@@ -388,12 +382,7 @@ class CompanyProvisioningService(
             }
         }
         return modules.map { definition ->
-            CompanyModuleResponse(
-                moduleId = definition.id,
-                displayName = definition.displayName,
-                enabled = if (definition.locked) true else states[definition.id] == true,
-                locked = definition.locked,
-            )
+            definition.toCompanyModuleResponse(enabled = if (definition.locked) true else states[definition.id] == true)
         }
     }
 
@@ -504,16 +493,18 @@ class CompanyProvisioningService(
         return HexFormat.of().formatHex(bytes)
     }
 
-    private data class ModuleDefinition(
-        val id: String,
-        val displayName: String,
-        val locked: Boolean,
-    )
-
     private data class CompanyRow(
         val code: String,
         val name: String,
         val databaseName: String,
         val isActive: Boolean,
     )
+
+    private fun ModuleDefinition.toCompanyModuleResponse(enabled: Boolean): CompanyModuleResponse =
+        CompanyModuleResponse(
+            moduleId = id,
+            displayName = displayName,
+            enabled = enabled,
+            locked = locked,
+        )
 }

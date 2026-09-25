@@ -29,3 +29,16 @@ dependencies {
     implementation(libs.ktor.serverRateLimit)
     /* === End DB === */
 }
+
+kotlin {
+    sourceSets {
+        main {
+            kotlin.srcDir("../modules/clientes/shared/src/commonMain/kotlin")
+            kotlin.srcDir("../modules/clientes/server/src/main/kotlin")
+            kotlin.srcDir("../modules/crm/shared/src/commonMain/kotlin")
+            kotlin.srcDir("../modules/crm/server/src/main/kotlin")
+            kotlin.srcDir("../modules/hostpot/shared/src/commonMain/kotlin")
+            kotlin.srcDir("../modules/hostpot/server/src/main/kotlin")
+        }
+    }
+}
