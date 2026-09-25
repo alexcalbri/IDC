@@ -12,6 +12,7 @@ actual object PersistentSessionStore {
     private const val ScopeKey = "idc.session.scope"
     private const val CompanyCodeKey = "idc.session.companyCode"
     private const val RoleKey = "idc.session.role"
+    private const val EnabledModulesKey = "idc.session.enabledModules"
 
     private val defaults = NSUserDefaults.standardUserDefaults
 
@@ -30,6 +31,10 @@ actual object PersistentSessionStore {
             scope = defaults.stringForKey(ScopeKey)?.takeIf { it.isNotBlank() } ?: return null,
             companyCode = defaults.stringForKey(CompanyCodeKey)?.takeIf { it.isNotBlank() },
             role = defaults.stringForKey(RoleKey)?.takeIf { it.isNotBlank() } ?: return null,
+            enabledModules = defaults.stringForKey(EnabledModulesKey)
+                ?.split(",")
+                ?.filter { it.isNotBlank() }
+                .orEmpty(),
         )
     }
 
@@ -43,6 +48,7 @@ actual object PersistentSessionStore {
             defaults.setObject(it, CompanyCodeKey)
         } ?: defaults.removeObjectForKey(CompanyCodeKey)
         defaults.setObject(response.role, RoleKey)
+        defaults.setObject(response.enabledModules.joinToString(","), EnabledModulesKey)
     }
 
     actual fun clear() {
@@ -53,6 +59,7 @@ actual object PersistentSessionStore {
         defaults.removeObjectForKey(ScopeKey)
         defaults.removeObjectForKey(CompanyCodeKey)
         defaults.removeObjectForKey(RoleKey)
+        defaults.removeObjectForKey(EnabledModulesKey)
     }
 
     private fun nowEpochSeconds(): Long = NSDate().timeIntervalSince1970.toLong()

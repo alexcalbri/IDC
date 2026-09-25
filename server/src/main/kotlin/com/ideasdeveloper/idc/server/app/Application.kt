@@ -2,7 +2,15 @@ package com.ideasdeveloper.idc.server.app
 
 import com.ideasdeveloper.idc.sayHello
 import com.ideasdeveloper.idc.server.auth.api.authRoutes
+import com.ideasdeveloper.idc.server.auth.application.SessionService
+import com.ideasdeveloper.idc.server.auth.infrastructure.database.ApplicationSessionRepository
+import com.ideasdeveloper.idc.server.auth.infrastructure.database.ApplicationUserRepository
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
+import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
+import com.ideasdeveloper.idc.server.company.api.companyRoutes
+import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningConfig
+import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningService
+import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.*
@@ -42,6 +50,18 @@ fun Application.module() {
                 }
             }
         }
+        register(RateLimitName("admin")) {
+            rateLimiter(
+                limit = 20,
+                refillPeriod = 60.seconds,
+            )
+
+            requestKey { call ->
+                call.request.headers["Authorization"]
+                    ?.takeIf { it.isNotBlank() }
+                    ?: call.request.local.remoteAddress
+            }
+        }
     }
     DatabaseFactory.init(environment.config)
     val loginDatabases = LoginDatabases(
@@ -51,6 +71,20 @@ fun Application.module() {
         tenantConfiguration = environment.config.property("tenant.databases").getString(),
         lifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
     )
+    val centralSessions = SessionService(
+        sessionRepository = ApplicationSessionRepository(DatabaseFactory.getDatabase()),
+        userRepository = ApplicationUserRepository(DatabaseFactory.getDatabase()),
+        tokenGenerator = SessionTokenGenerator(),
+        sessionLifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
+    )
+    val provisioningConfig = companyProvisioningConfig()
+    val companyProvisioning = provisioningConfig?.let {
+        CompanyProvisioningService(
+            central = DatabaseFactory.getDataSource(),
+            config = it,
+            loginDatabases = loginDatabases,
+        )
+    }
     monitor.subscribe(ApplicationStopped) {
         loginDatabases.close()
         DatabaseFactory.close()
@@ -66,5 +100,27 @@ fun Application.module() {
                 loginService = loginDatabases.service,
             )
         }
+        rateLimit(RateLimitName("admin")) {
+            companyRoutes(
+                authorizer = ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions),
+                provisioning = companyProvisioning,
+            )
+        }
     }
+}
+
+private fun Application.companyProvisioningConfig(): CompanyProvisioningConfig? {
+    val databaseUrl = environment.config.property("database.url").getString()
+    val runtimeUser = environment.config.property("database.user").getString()
+    val runtimePassword = environment.config.property("database.password").getString()
+    return CompanyProvisioningConfig(
+        administrationJdbcUrl = environment.config.propertyOrNull("provisioning.administrationJdbcUrl")?.getString()
+            ?: databaseUrl,
+        runtimeUser = runtimeUser,
+        runtimePassword = runtimePassword,
+        tenantJdbcUrlPrefix = environment.config.propertyOrNull("provisioning.tenantJdbcUrlPrefix")?.getString()
+            ?: databaseUrl.substringBeforeLast('/') + "/",
+        migrationsRoot = environment.config.propertyOrNull("provisioning.migrationsRoot")?.getString()
+            ?: ".",
+    )
 }

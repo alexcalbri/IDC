@@ -12,6 +12,7 @@ actual object PersistentSessionStore {
     private const val ScopeKey = "scope"
     private const val CompanyCodeKey = "companyCode"
     private const val RoleKey = "role"
+    private const val EnabledModulesKey = "enabledModules"
 
     private lateinit var applicationContext: Context
 
@@ -37,6 +38,10 @@ actual object PersistentSessionStore {
             scope = preferences.getString(ScopeKey, null)?.takeIf { it.isNotBlank() } ?: return null,
             companyCode = preferences.getString(CompanyCodeKey, null)?.takeIf { it.isNotBlank() },
             role = preferences.getString(RoleKey, null)?.takeIf { it.isNotBlank() } ?: return null,
+            enabledModules = preferences.getString(EnabledModulesKey, null)
+                ?.split(",")
+                ?.filter { it.isNotBlank() }
+                .orEmpty(),
         )
     }
 
@@ -56,6 +61,7 @@ actual object PersistentSessionStore {
                 } ?: remove(CompanyCodeKey)
             }
             .putString(RoleKey, response.role)
+            .putString(EnabledModulesKey, response.enabledModules.joinToString(","))
             .apply()
     }
 

@@ -8,34 +8,25 @@ package com.ideasdeveloper.idc.navigation
 sealed class NavRoute {
     object Login : NavRoute()
     object Dashboard : NavRoute()
-    object Empresa : NavRoute()
-    object Hostpot : NavRoute()
-    object Crm : NavRoute()
-    object Clientes : NavRoute()
-    object Memberships : NavRoute()
+    data class Module(val moduleId: String) : NavRoute()
     object Settings : NavRoute()
 
     companion object {
         fun fromString(route: String): NavRoute = when (route) {
             "login" -> Login
             "dashboard" -> Dashboard
-            "empresa" -> Empresa
-            "hostpot" -> Hostpot
-            "crm" -> Crm
-            "clientes" -> Clientes
-            "memberships" -> Memberships
             "settings" -> Settings
-            else -> Login
+            else -> if (route.startsWith("module/")) {
+                Module(route.removePrefix("module/"))
+            } else {
+                Login
+            }
         }
 
         fun NavRoute.routeName(): String = when (this) {
             is Login -> "login"
             is Dashboard -> "dashboard"
-            is Empresa -> "empresa"
-            is Hostpot -> "hostpot"
-            is Crm -> "crm"
-            is Clientes -> "clientes"
-            is Memberships -> "memberships"
+            is Module -> "module/$moduleId"
             is Settings -> "settings"
         }
     }

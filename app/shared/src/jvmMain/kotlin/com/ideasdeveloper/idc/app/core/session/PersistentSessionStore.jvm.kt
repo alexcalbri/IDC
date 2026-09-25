@@ -11,6 +11,7 @@ actual object PersistentSessionStore {
     private const val ScopeKey = "scope"
     private const val CompanyCodeKey = "companyCode"
     private const val RoleKey = "role"
+    private const val EnabledModulesKey = "enabledModules"
 
     private val preferences = Preferences.userRoot().node("com/ideasdeveloper/idc/session")
 
@@ -29,6 +30,9 @@ actual object PersistentSessionStore {
             scope = preferences.get(ScopeKey, "").takeIf { it.isNotBlank() } ?: return null,
             companyCode = preferences.get(CompanyCodeKey, "").takeIf { it.isNotBlank() },
             role = preferences.get(RoleKey, "").takeIf { it.isNotBlank() } ?: return null,
+            enabledModules = preferences.get(EnabledModulesKey, "")
+                .split(",")
+                .filter { it.isNotBlank() },
         )
     }
 
@@ -42,6 +46,7 @@ actual object PersistentSessionStore {
             preferences.put(CompanyCodeKey, it)
         } ?: preferences.remove(CompanyCodeKey)
         preferences.put(RoleKey, response.role)
+        preferences.put(EnabledModulesKey, response.enabledModules.joinToString(","))
     }
 
     actual fun clear() {
@@ -52,6 +57,7 @@ actual object PersistentSessionStore {
         preferences.remove(ScopeKey)
         preferences.remove(CompanyCodeKey)
         preferences.remove(RoleKey)
+        preferences.remove(EnabledModulesKey)
     }
 
     private fun nowEpochSeconds(): Long = System.currentTimeMillis() / 1000L

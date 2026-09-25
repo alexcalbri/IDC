@@ -343,7 +343,8 @@ ensure_install_swap
 [[ -f scripts/ubuntu/migrations.sh ]] || die 'La rama descargada no incluye el ejecutor de migraciones.'
 for migration in database/core/migrations/V001__create_application_users.sql \
     database/core/migrations/V002__create_application_sessions.sql \
-    database/control/migrations/V001__create_server_registry.sql; do
+    database/control/migrations/V001__create_server_registry.sql \
+    database/control/migrations/V002__create_provisioning_audit_log.sql; do
     [[ -f $migration ]] || die "La rama descargada no incluye $migration. Publica los cambios antes de instalar."
 done
 runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
@@ -389,10 +390,12 @@ source scripts/ubuntu/migrations.sh
 apply_migration "$DB_NAME" core database/core/migrations/V001__create_application_users.sql
 apply_migration "$DB_NAME" core database/core/migrations/V002__create_application_sessions.sql
 apply_migration "$DB_NAME" control database/control/migrations/V001__create_server_registry.sql
+apply_migration "$DB_NAME" control database/control/migrations/V002__create_provisioning_audit_log.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" <<'SQL'
-CREATE ROLE :"login_role" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD :'verifier';
+CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
 GRANT CONNECT ON DATABASE :"db_name" TO :"login_role";
+GRANT :"login_role" TO :"db_user";
 SQL
 unset verifier
 runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
@@ -402,7 +405,9 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 INSERT INTO application_users VALUES (gen_random_uuid(), :'server_owner', true);
 INSERT INTO server_owners SELECT id FROM application_users WHERE postgres_role = :'server_owner';
 GRANT USAGE ON SCHEMA public TO :"db_user";
-GRANT SELECT ON application_users, server_owners, companies TO :"db_user";
+GRANT SELECT ON application_users, server_owners TO :"db_user";
+GRANT SELECT, INSERT, UPDATE ON companies TO :"db_user";
+GRANT SELECT, INSERT ON provisioning_audit_log TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO :"db_user";
 COMMIT;
 SQL
@@ -423,6 +428,8 @@ install -d -m 700 "$CONFIG_DIR"
         'import json, sys; print("DB_PASSWORD=" + json.dumps(sys.stdin.read()))'
     printf 'DB_POOL_SIZE=10\n'
     printf 'TENANT_DATABASES_JSON=[]\n'
+    printf 'TENANT_JDBC_URL_PREFIX=jdbc:postgresql://127.0.0.1:5432/\n'
+    printf 'MIGRATIONS_ROOT=%s/source\n' "$APP_DIR"
 } > "$CONFIG_DIR/server.env"
 chmod 600 "$CONFIG_DIR/server.env"
 unset DB_PASSWORD

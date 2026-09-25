@@ -41,20 +41,28 @@ deployments need a separate web build/deployment and Nginx update.
 
 The installer now asks for a central administration database and one set of
 credentials for `server_owner`. It does not create the first company. The
-server owner is an ordinary PostgreSQL login role, not a SQL superuser. The
+server owner is a PostgreSQL login role with tenant-provisioning privileges,
+not a SQL superuser. The
 central database holds server-owner users/sessions and an initially empty
 company registry with code, name, database, active status and branding fields.
-Company users, sessions and the singleton `business_owner` record will live
-inside each company database after the Empresa core module provisions it.
+Company users, sessions, the singleton `business_owner` record, the shared
+Customer/Prospect schema and the tenant module registry will live inside each
+company database after the Empresa core module provisions it. The tenant module
+registry seeds `clientes` as an enabled base module.
 
 The installer applies Core authentication migrations and the central registry
 migrations to the central database. The database records scripts in
 `schema_migrations` by module, version and checksum. Database ownership remains
-with the provisioning administrator. The runtime account receives only the
-table permissions needed for authentication and the company registry. `DB_URL`
+with the provisioning administrator. The runtime account receives the
+table permissions needed for authentication and the company registry, plus
+membership in the `server_owner` role so it can provision tenants only after
+the backend validates a `server_owner` session token. `DB_URL`
 points at the central database; root-only `TENANT_DATABASES_JSON` starts as
-`[]`. Future company provisioning must add tenant connection configuration
-when it creates company databases.
+`[]`. The Empresa screen can create a company database, apply tenant
+migrations, seed its `business_owner` and register the tenant in the running
+server so company login works without restart. From the same screen,
+`server_owner` can enable or disable optional `hostpot` and `crm` modules per
+company; `clientes` stays enabled as the base customer module.
 
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
@@ -396,6 +404,9 @@ Document verified variables in a table here as they are implemented:
 | `DB_POOL_SIZE` | No | Hikari pool maximum; `10` |
 | `HOST` | No | HTTP bind address; `0.0.0.0` (installer sets `127.0.0.1` behind Nginx) |
 | `PORT` | No | HTTP port; `8080` |
+| `PROVISIONING_DB_URL` | No | PostgreSQL administration database URL used before `SET ROLE server_owner`; defaults to `DB_URL`. |
+| `TENANT_JDBC_URL_PREFIX` | No | Prefix used for newly created tenant JDBC URLs; defaults to the central DB URL up to the last `/`. |
+| `MIGRATIONS_ROOT` | No | Repository/source root containing `database/...` migrations; defaults to the server working directory. |
 
 `EngineMain` loads `application.conf` and starts
 `com.ideasdeveloper.idc.server.app.ApplicationKt.module`. `DatabaseFactory`
@@ -430,11 +441,13 @@ A future release procedure should support:
 1.  backup;
 2.  verify target version;
 3.  run Core migrations;
-4.  run migrations only for installed modules;
-5.  verify migration status;
-6.  start/upgrade server;
-7.  health check;
-8.  rollback/recovery procedure if needed.
+4.  run tenant Core migrations for company databases, including shared
+    Customer/Prospect and tenant module registry migrations;
+5.  run migrations only for installed optional modules;
+6.  verify migration status;
+7.  start/upgrade server;
+8.  health check;
+9.  rollback/recovery procedure if needed.
 
 Never tell operators to run unverified SQL copied from architectural
 examples.

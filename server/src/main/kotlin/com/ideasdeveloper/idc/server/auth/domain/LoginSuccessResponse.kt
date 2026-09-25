@@ -11,4 +11,5 @@ class LoginSuccessResponse(
     val scope: String = "company",
     val companyCode: String? = null,
     val role: String = "user",
+    val enabledModules: List<String> = emptyList(),
 )

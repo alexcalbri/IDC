@@ -28,6 +28,7 @@ class LoginDatabases(
     private val configurations = Json.decodeFromString<List<TenantDatabaseConfig>>(tenantConfiguration)
         .also { entries -> require(entries.map { it.databaseName }.distinct().size == entries.size) }
         .associateBy { it.databaseName }
+        .toMutableMap()
     private val pools = mutableMapOf<String, HikariDataSource>()
     private val scopes = mutableMapOf<String, LoginScope>()
 
@@ -43,6 +44,16 @@ class LoginDatabases(
         },
         companyScope = { name -> tenantScope(name) },
     )
+
+    @Synchronized
+    fun tenantConfig(databaseName: String): TenantDatabaseConfig? = configurations[databaseName]
+
+    @Synchronized
+    fun registerTenant(config: TenantDatabaseConfig) {
+        configurations[config.databaseName] = config
+        scopes.remove(config.databaseName)
+        pools.remove(config.databaseName)?.close()
+    }
 
     @Synchronized
     private fun tenantScope(name: String): LoginScope? {
@@ -86,7 +97,22 @@ class LoginDatabases(
             LoginSuccessResponse(session.userId, session.username, session.accessToken, session.expiresInSeconds,
                 scope = if (server) "server" else "company",
                 companyCode = if (server) null else credentials.companyCode,
-                role = if (server) "server_owner" else if (owner) "business_owner" else "user")
+                role = if (server) "server_owner" else if (owner) "business_owner" else "user",
+                enabledModules = if (server) emptyList() else enabledModules(source))
+        }
+    }
+
+    private fun enabledModules(source: DataSource): List<String> {
+        return source.connection.use { connection ->
+            connection.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled' ORDER BY module_id").use { query ->
+                query.executeQuery().use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            add(rows.getString(1))
+                        }
+                    }
+                }
+            }
         }
     }
 

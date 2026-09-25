@@ -134,6 +134,10 @@ unrelated copy.
 Customer creation should go through a shared Core service so that
 identity resolution and future duplicate handling remain centralized.
 
+Implemented tenant migrations create the shared `customers` table and
+`customer_field_definitions` metadata in each company database. Functional
+customer APIs and duplicate-resolution rules remain pending.
+
 ### Flexible fields
 
 Customer information needs to be flexible between companies.
@@ -340,11 +344,17 @@ these response fields are not substitutes for server-side authorization.
 the installer creates one end-user PostgreSQL login for server ownership,
 in addition to the runtime service role. The central database holds the
 server owner, its sessions, `server_owners` and an initially empty
-`companies` registry. `TENANT_DATABASES_JSON` starts as an empty list until
-the Empresa core module provisions tenant databases. The installer tests
-server-owner login and revokes the test session. Customer schemas, company
-creation APIs and administrative permission enforcement remain pending;
-registry records alone do not implement those permissions. The shared client
+`companies` registry. `TENANT_DATABASES_JSON` starts as an empty list and can
+preload existing tenant databases at server startup. The Empresa core module
+now exposes a server-owner-only company creation API that provisions a tenant
+database, applies Core and tenant migrations, seeds the `business_owner`, marks
+`clientes` enabled and registers the tenant connection in the running server.
+The initial PostgreSQL `server_owner` role is the provisioning identity: after
+the backend validates a `server_owner` session token, it assumes that role for
+the provisioning operation. The same Empresa API can list companies and enable
+or disable optional modules such as `hostpot` and `crm`; `clientes` is a locked
+base module. Administrative permission coverage is still narrow and registry
+records alone do not implement all future permissions. The shared client
 login is connected to the API, keeps the session in memory and navigates to
 the existing dashboard on success. When the user selects "Mantener sesión
 iniciada", the client persists the issued session token locally until its
@@ -362,6 +372,12 @@ includes the display name, logo URL and brand colors. Once a company identity
 is selected or restored on the client, the same identity must be used across
 login, dashboard and every module so the whole app reflects the active
 company.
+
+Tenant databases also include a `tenant_modules` registry. The `clientes`
+Core module is seeded as enabled for new tenant databases so every company has
+the shared Customer/Prospect surface available as a base module. The current
+tenant seed also registers `hostpot` and `crm` as disabled optional modules so
+the server owner can enable them per company.
 
 Each database records executed scripts by module, version and checksum in
 `schema_migrations`. `scripts/ubuntu/migrations.sh` executes schema changes and
@@ -573,15 +589,20 @@ The shared client is migrating toward a feature-first structure:
 - `app/shared/.../app/features/auth` contains login data, presentation
   state and UI.
 - `app/shared/.../app/features/dashboard` contains the current dashboard UI.
+- The client navigation shell uses a generic `module/{moduleId}` route for
+  module screens. Module-specific client routes should not be added for each
+  installed module; the dashboard and module container are intended to be fed
+  by server-provided module metadata.
 
-The current module scaffolds are `modules/empresa`, `modules/hostpot` and
-`modules/crm`, each with planned shared, server and migration areas. They are
-not yet wired into Gradle or runtime module loading; those decisions remain
-part of the module installation/loading design.
+The current module scaffolds are `modules/empresa`, `modules/clientes`,
+`modules/hostpot` and `modules/crm`, each with planned shared, server and
+migration areas. They are not yet wired into Gradle or runtime module loading;
+those decisions remain part of the module installation/loading design.
 
 Empresa is the first Core module surfaced in the client dashboard. It is
 always active for `server_owner` and `business_owner` sessions and hidden from
-other roles. Its current screen is a placeholder; functional company
+other roles as a local fallback until active module metadata is loaded from the
+server. Its current screen is a generic module placeholder; functional company
 administration remains pending.
 
 The backend source is organized under `com.ideasdeveloper.idc.server`.
@@ -660,20 +681,21 @@ does not by itself revoke an already issued IdeasCore session. The
 mechanism for propagating such administrative changes remains to be designed.
 
 Runtime service accounts must have only the required data-access privileges.
-Database ownership, schema changes and migrations belong to a separate
-administrative/provisioning identity. Service credentials remain exclusively
-on the server, separate from end-user login credentials.
+Database ownership, schema changes and migrations belong to the PostgreSQL
+`server_owner` provisioning identity. Service credentials remain server-side;
+the runtime role may assume the `server_owner` role only for operations gated
+by a validated IdeasCore `server_owner` session.
 
 **Current implementation:** `DatabaseFactory` has one configured Hikari
 pool and verifies PostgreSQL connectivity on startup. New installations
-point it at the central database and grant the runtime role read access to
-identity/registry tables and data access to sessions, without database
-ownership. Existing installations are not upgraded automatically.
-Tenant pools are configured through server-only `TENANT_DATABASES_JSON`;
-registry database names must match an explicitly configured connection.
-Central administration APIs are not yet implemented. Local
-code includes `/auth/login`, active-user mapping, opaque session issuance,
-session validation/revocation services and an IP-based login rate limit.
+point it at the central database, grant the runtime role read access to
+identity tables, data access to sessions and registry write access for company
+creation. Existing installations are not upgraded automatically.
+Tenant pools are preloaded through server-only `TENANT_DATABASES_JSON`; tenants
+created through the Empresa API are added to the running resolver immediately.
+Local code includes `/auth/login`, `GET /companies`, `POST /companies`,
+`PUT /companies/{code}/modules/{moduleId}`, active-user mapping, opaque session
+issuance, session validation/revocation services and IP-based login/admin rate limits.
 Login now selects the proper database and reports server/business ownership;
 protected business operations and cross-company server administration remain
 unimplemented. The revised installation and end-to-end login still require

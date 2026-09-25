@@ -11,6 +11,7 @@ actual object PersistentSessionStore {
     private const val ScopeKey = "idc.session.scope"
     private const val CompanyCodeKey = "idc.session.companyCode"
     private const val RoleKey = "idc.session.role"
+    private const val EnabledModulesKey = "idc.session.enabledModules"
 
     actual fun load(): LoginResponse? {
         val expiresAt = localStorage.getItem(ExpiresAtEpochSecondsKey)?.toLongOrNull() ?: 0L
@@ -27,6 +28,10 @@ actual object PersistentSessionStore {
             scope = localStorage.getItem(ScopeKey)?.takeIf { it.isNotBlank() } ?: return null,
             companyCode = localStorage.getItem(CompanyCodeKey)?.takeIf { it.isNotBlank() },
             role = localStorage.getItem(RoleKey)?.takeIf { it.isNotBlank() } ?: return null,
+            enabledModules = localStorage.getItem(EnabledModulesKey)
+                ?.split(",")
+                ?.filter { it.isNotBlank() }
+                .orEmpty(),
         )
     }
 
@@ -40,6 +45,7 @@ actual object PersistentSessionStore {
             localStorage.setItem(CompanyCodeKey, it)
         } ?: localStorage.removeItem(CompanyCodeKey)
         localStorage.setItem(RoleKey, response.role)
+        localStorage.setItem(EnabledModulesKey, response.enabledModules.joinToString(","))
     }
 
     actual fun clear() {
@@ -50,6 +56,7 @@ actual object PersistentSessionStore {
         localStorage.removeItem(ScopeKey)
         localStorage.removeItem(CompanyCodeKey)
         localStorage.removeItem(RoleKey)
+        localStorage.removeItem(EnabledModulesKey)
     }
 
     private fun nowEpochSeconds(): Long = (js("Date.now()") as Double).toLong() / 1000L
