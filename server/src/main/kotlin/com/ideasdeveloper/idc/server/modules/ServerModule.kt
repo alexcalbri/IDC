@@ -5,6 +5,10 @@ import kotlinx.serialization.Serializable
 
 interface ServerModule {
     val definition: ModuleDefinition
+    val migrationModule: String
+        get() = definition.id
+    val migrationPaths: List<String>
+        get() = emptyList()
 
     fun routes(route: Route) {
     }
@@ -36,6 +40,8 @@ class ModuleRegistry(
         modulesById.values.map { it.definition }.sortedBy { it.id }
 
     fun definition(moduleId: String): ModuleDefinition? = modulesById[moduleId]?.definition
+
+    fun module(moduleId: String): ServerModule? = modulesById[moduleId]
 
     fun installRoutes(route: Route) {
         modulesById.values.forEach { module ->

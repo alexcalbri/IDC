@@ -160,13 +160,13 @@ Stores the singleton business owner user for that company.
 
 ### `customers`
 
-Created by `database/tenant/migrations/V002__create_customers.sql`.
+Created by `modules/clientes/migrations/V001__create_customers.sql`.
 
 Stores shared Customer/Prospect identity for all modules in the tenant.
 
 ### `customer_field_definitions`
 
-Created by `database/tenant/migrations/V002__create_customers.sql`.
+Created by `modules/clientes/migrations/V001__create_customers.sql`.
 
 Stores tenant-defined field metadata for future server-driven customer forms.
 
@@ -406,6 +406,7 @@ Working behavior:
 - `GET /modules/{moduleId}/metadata` returns display metadata for the generic client screen.
 - Each bundled module owns its server route namespace under `/modules/{moduleId}`.
 - `clientes` is seeded as enabled in tenant DBs.
+- `clientes` owns its customer schema migration under `modules/clientes/migrations`.
 - `hostpot` and `crm` are seeded as disabled and can be toggled.
 - Functional module screens still render metadata/placeholders; full business UI and data flows are not implemented yet.
 

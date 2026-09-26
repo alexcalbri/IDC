@@ -136,7 +136,7 @@ unrelated copy.
 Customer creation should go through a shared Core service so that
 identity resolution and future duplicate handling remain centralized.
 
-Implemented tenant migrations create the shared `customers` table and
+The locked `clientes` module migration creates the shared `customers` table and
 `customer_field_definitions` metadata in each company database. Functional
 customer APIs and duplicate-resolution rules remain pending.
 

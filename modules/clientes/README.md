@@ -1,12 +1,16 @@
 # Clientes Module
 
-Status: core module scaffold.
+Status: locked base module scaffold.
 
 Clientes exposes the shared IdeasCore Customer/Prospect identity to the UI and
-other modules. Customer storage lives in tenant Core migrations because CRM,
-Hotspot, Memberships, Hotel and future modules should reference the same
-customer record instead of creating separate customer copies.
+other modules. Because every company needs the customer surface, new tenant
+databases install this module automatically and seed it as enabled in
+`tenant_modules`.
 
-New company tenant databases seed this module as enabled through the tenant
-module registry migration. Functional screens, server routes and customer
-creation services remain pending.
+The customer schema is owned by this module and lives in:
+
+```text
+modules/clientes/migrations/V001__create_customers.sql
+```
+
+Functional screens, server routes and customer creation services remain pending.

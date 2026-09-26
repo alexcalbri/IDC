@@ -2,6 +2,14 @@
 
 Status: planned module scaffold.
 
-This module owns hostpot-specific shared contracts, server behavior and database migrations. Core capabilities such as tenants, sessions, customers, permissions and module lifecycle remain outside this module.
+Hostpot owns hostpot-specific server behavior and future database migrations.
+Module-specific migrations belong in:
 
-Hostpot is not functional yet and is not active in the dashboard.
+```text
+modules/hostpot/migrations/
+```
+
+Core capabilities such as tenants, sessions, customers, permissions and module
+lifecycle remain outside this module. Hostpot is registered in the server module
+catalog and can be enabled/disabled, but functional screens and database tables
+are not implemented yet.

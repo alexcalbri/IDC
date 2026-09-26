@@ -10,6 +10,10 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 
 object ClientesServerModule : ServerModule {
+    override val migrationPaths = listOf(
+        "modules/clientes/migrations/V001__create_customers.sql",
+    )
+
     override val definition = ModuleDefinition(
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,

@@ -1,3 +1,5 @@
-# CRM Migrations
+# CRM migrations
 
-Place CRM database migrations here when the module gains functional behavior.
+SQL migrations owned by the CRM module live here.
+
+They are applied to a tenant database when the module is installed/enabled for that tenant.

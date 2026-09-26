@@ -77,7 +77,8 @@ class CompanyProvisioningService(
         )
 
         tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
-            applyTenantMigrations(tenant)
+            applyTenantCoreMigrations(tenant)
+            applyBaseModuleMigrations(tenant)
             seedBusinessOwner(tenant, ownerUsername)
             grantTenantPermissions(tenant, ownerUsername)
         }
@@ -163,6 +164,7 @@ class CompanyProvisioningService(
             ?: throw CompanyProvisioningException("La empresa no tiene conexion tenant configurada.")
 
         tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+            applyModuleMigrations(tenant, definition)
             tenant.autoCommit = false
             try {
                 tenant.prepareStatement(
@@ -263,16 +265,27 @@ class CompanyProvisioningService(
         }
     }
 
-    private fun applyTenantMigrations(connection: Connection) {
+    private fun applyTenantCoreMigrations(connection: Connection) {
         listOf(
-            "database/core/migrations/V001__create_application_users.sql",
-            "database/core/migrations/V002__create_application_sessions.sql",
-            "database/tenant/migrations/V001__create_business_owner.sql",
-            "database/tenant/migrations/V002__create_customers.sql",
-            "database/tenant/migrations/V003__create_tenant_modules.sql",
-        ).forEach { relativePath ->
-            val module = if (relativePath.contains("/core/")) "core" else "tenant"
+            "database/core/migrations/V001__create_application_users.sql" to "core",
+            "database/core/migrations/V002__create_application_sessions.sql" to "core",
+            "database/tenant/migrations/V001__create_business_owner.sql" to "tenant",
+            "database/tenant/migrations/V003__create_tenant_modules.sql" to "tenant",
+        ).forEach { (relativePath, module) ->
             applyMigration(connection, module, Path.of(config.migrationsRoot).resolve(relativePath))
+        }
+    }
+
+    private fun applyBaseModuleMigrations(connection: Connection) {
+        moduleRegistry.definitions
+            .filter { it.locked }
+            .forEach { definition -> applyModuleMigrations(connection, definition) }
+    }
+
+    private fun applyModuleMigrations(connection: Connection, definition: ModuleDefinition) {
+        val module = moduleRegistry.module(definition.id) ?: return
+        module.migrationPaths.forEach { relativePath ->
+            applyMigration(connection, module.migrationModule, Path.of(config.migrationsRoot).resolve(relativePath))
         }
     }
 

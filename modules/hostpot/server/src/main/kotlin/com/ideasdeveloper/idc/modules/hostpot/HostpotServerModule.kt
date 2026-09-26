@@ -10,6 +10,8 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 
 object HostpotServerModule : ServerModule {
+    override val migrationPaths = emptyList<String>()
+
     override val definition = ModuleDefinition(
         id = HostpotModule.id,
         displayName = HostpotModule.displayName,

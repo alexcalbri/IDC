@@ -212,12 +212,14 @@ Main responsibilities:
 - Create tenant database.
 - Create `business_owner` PostgreSQL login role.
 - Grant tenant DB connection to runtime and business owner roles.
-- Apply tenant migrations:
+- Apply tenant/core migrations:
   - Core users;
   - Core sessions;
   - business owner singleton;
-  - customers;
   - tenant modules.
+- Apply locked/base module migrations:
+  - `clientes` customers;
+  - `clientes` customer field definitions.
 - Seed the business owner in `application_users` and `business_owner`.
 - Grant runtime permissions on tenant tables.
 - Insert company into central `companies`.
@@ -311,15 +313,15 @@ Creates singleton `business_owner`.
 
 Each tenant database has exactly one business owner row.
 
-### `database/tenant/migrations/V002__create_customers.sql`
+### `modules/clientes/migrations/V001__create_customers.sql`
 
 Creates shared customer identity structures:
 
 - `customers`
 - `customer_field_definitions`
 
-This belongs to tenant Core because all modules share Customer/Prospect
-identity.
+This belongs to the locked `clientes` module because all modules share Customer/Prospect
+identity through that base module.
 
 ### `database/tenant/migrations/V003__create_tenant_modules.sql`
 

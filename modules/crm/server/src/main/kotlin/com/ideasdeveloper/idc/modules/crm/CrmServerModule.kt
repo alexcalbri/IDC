@@ -10,6 +10,8 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 
 object CrmServerModule : ServerModule {
+    override val migrationPaths = emptyList<String>()
+
     override val definition = ModuleDefinition(
         id = CrmModule.id,
         displayName = CrmModule.displayName,
