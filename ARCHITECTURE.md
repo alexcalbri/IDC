@@ -706,8 +706,9 @@ Local code includes `/auth/login`, `GET /companies`, `POST /companies`,
 `/modules/{moduleId}/metadata`, active-user mapping, opaque session issuance,
 session validation/revocation services and IP-based login/admin rate limits.
 Login now selects the proper database and reports server/business ownership;
-protected business operations and cross-company server administration remain
-unimplemented. The revised installation and end-to-end login still require
+protected business operations remain incomplete. Company administration can create,
+deactivate, reactivate and delete deactivated companies, including their central
+registry rows, tenant databases and business-owner PostgreSQL roles. The revised installation and end-to-end login still require
 clean-host validation. Do not interpret
 the current database-owner role as the approved runtime permission model.
 

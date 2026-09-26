@@ -71,6 +71,8 @@ On startup, the Ktor server:
    - `GET /companies`;
    - `POST /companies`;
    - `PUT /companies/{code}/modules/{moduleId}`;
+   - `PUT /companies/{code}/status`;
+   - `DELETE /companies/{code}`;
    - `GET /modules`;
    - `GET /modules/{moduleId}/metadata`;
    - module-owned endpoints under `/modules/{moduleId}`.
@@ -330,7 +332,25 @@ After this, the business owner can log in with:
 - business owner password;
 - company code.
 
-## 10. Module Administration Flow
+## 10. Company Lifecycle Flow
+
+Implemented by `CompanyProvisioningScreen`, `CompanyApi`, `CompanyRoutes` and
+`CompanyProvisioningService`.
+
+Flow:
+
+1. `server_owner` opens Empresa.
+2. Client loads companies with `GET /companies`.
+3. `server_owner` can deactivate an active company with
+   `PUT /companies/{code}/status` and `{ "active": false }`.
+4. Deactivated companies cannot log in because company login only resolves
+   active companies.
+5. A company can be deleted only after it is deactivated.
+6. `DELETE /companies/{code}` removes the central registry row, unregisters
+   the tenant connection from the running server, drops the tenant database and
+   drops the PostgreSQL business-owner role.
+
+## 11. Module Administration Flow
 
 Implemented by:
 
@@ -358,7 +378,7 @@ Implemented module rules:
 - `clientes` is locked and always enabled.
 - Optional modules only appear after they are installed in the running server module registry.
 
-## 11. Company Login And Module Visibility
+## 12. Company Login And Module Visibility
 
 Implemented by `LoginDatabases` and `DashboardScreen`.
 
@@ -371,7 +391,7 @@ Flow:
 5. Server returns `enabledModules` in login response.
 6. Client dashboard renders module cards from `enabledModules`.
 
-## 12. Branding And Shell
+## 13. Branding And Shell
 
 Implemented files:
 
@@ -386,7 +406,7 @@ Current behavior:
   placeholder screens.
 - The authenticated top bar is reused by dashboard/module screens.
 
-## 13. Installed Module Scaffolds And Server Registry
+## 14. Installed Module Scaffolds And Server Registry
 
 Implemented scaffold directories:
 
@@ -407,7 +427,7 @@ Working behavior:
 - `crm` and `hostpot` remain repository scaffolds; they are not installed in the default server build and are not listed for companies.
 - Functional module screens still render metadata/placeholders; full business UI and data flows are not implemented yet.
 
-## 14. Web Deployment Flow
+## 15. Web Deployment Flow
 
 Implemented in `scripts/ubuntu/install.sh`.
 
@@ -418,7 +438,7 @@ The installer:
 - configures Nginx to serve the web app;
 - proxies `/auth/`, `/companies` and `/modules` to Ktor.
 
-## 15. Update Script
+## 16. Update Script
 
 Implemented file: `scripts/ubuntu/update.sh`.
 
@@ -435,7 +455,7 @@ This document does not claim the updater applies new database migrations or
 privilege changes. Fresh install is the cleanest way to test the current
 company provisioning flow.
 
-## 16. Security Behavior Implemented
+## 17. Security Behavior Implemented
 
 Implemented controls:
 

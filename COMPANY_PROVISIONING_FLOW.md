@@ -175,6 +175,13 @@ Defines company administration HTTP routes.
 - `PUT /companies/{code}/modules/{moduleId}`
   - Requires a valid `server_owner` token.
   - Enables or disables optional modules for a company.
+- `PUT /companies/{code}/status`
+  - Requires a valid `server_owner` token.
+  - Activates or deactivates a company.
+- `DELETE /companies/{code}`
+  - Requires a valid `server_owner` token.
+  - Deletes only companies that are already deactivated.
+  - Removes the central registry row, drops the tenant database and drops the business-owner PostgreSQL role.
 
 All routes use `Authorization: Bearer <token>`.
 
@@ -224,6 +231,8 @@ Main responsibilities:
 - Insert audit records into `provisioning_audit_log`.
 - Register the tenant connection in `LoginDatabases`.
 - List companies and module states.
+- Activate or deactivate companies.
+- Delete deactivated companies, including their central registry row, tenant database and business-owner PostgreSQL role.
 - Enable or disable optional modules.
 
 Module rules:

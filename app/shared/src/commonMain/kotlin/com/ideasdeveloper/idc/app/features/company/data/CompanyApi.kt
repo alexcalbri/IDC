@@ -5,6 +5,7 @@ import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.post
 import io.ktor.client.request.put
@@ -89,6 +90,72 @@ class CompanyApi(serverUrl: String) {
             }
 
             throw CompanyException("El servidor no pudo cargar las empresas.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+
+    suspend fun updateCompanyStatus(
+        accessToken: String,
+        companyCode: String,
+        active: Boolean,
+    ): CompanySummaryResponse {
+        try {
+            val response = client.put("$baseUrl/companies/$companyCode/status") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateCompanyStatusRequest(active))
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo actualizar la empresa.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun deleteCompany(accessToken: String, companyCode: String) {
+        try {
+            val response = client.delete("$baseUrl/companies/$companyCode") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.NoContent) {
+                return
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo eliminar la empresa.")
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {

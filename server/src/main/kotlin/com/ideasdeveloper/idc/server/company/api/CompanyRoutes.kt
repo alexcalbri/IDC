@@ -10,6 +10,7 @@ import io.ktor.server.plugins.ContentTransformationException
 import io.ktor.server.request.receive
 import io.ktor.server.response.respond
 import io.ktor.server.routing.Route
+import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
@@ -109,6 +110,113 @@ fun Route.companyRoutes(
         call.respond(HttpStatusCode.Created, response)
     }
 
+
+    put("/companies/{code}/status") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+        if (serverOwnerRole == null) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                CompanyErrorResponse(
+                    code = "SERVER_OWNER_REQUIRED",
+                    message = "Debes iniciar sesion como server_owner para administrar empresas.",
+                ),
+            )
+            return@put
+        }
+
+        val service = provisioning
+        if (service == null) {
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                CompanyErrorResponse(
+                    code = "PROVISIONING_NOT_CONFIGURED",
+                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                ),
+            )
+            return@put
+        }
+
+        val request = try {
+            call.receive<UpdateCompanyStatusRequest>()
+        } catch (_: BadRequestException) {
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            return@put
+        } catch (_: ContentTransformationException) {
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            return@put
+        }
+
+        val code = call.parameters["code"].orEmpty()
+        val response = try {
+            withContext(Dispatchers.IO) {
+                service.setCompanyActive(code, request.active, serverOwnerRole)
+            }
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(
+                HttpStatusCode.Conflict,
+                CompanyErrorResponse("COMPANY_NOT_UPDATED", exception.message ?: "No se pudo actualizar la empresa."),
+            )
+            return@put
+        } catch (exception: SQLException) {
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()),
+            )
+            return@put
+        }
+
+        call.respond(HttpStatusCode.OK, response)
+    }
+
+    delete("/companies/{code}") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+        if (serverOwnerRole == null) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                CompanyErrorResponse(
+                    code = "SERVER_OWNER_REQUIRED",
+                    message = "Debes iniciar sesion como server_owner para eliminar empresas.",
+                ),
+            )
+            return@delete
+        }
+
+        val service = provisioning
+        if (service == null) {
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                CompanyErrorResponse(
+                    code = "PROVISIONING_NOT_CONFIGURED",
+                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                ),
+            )
+            return@delete
+        }
+
+        val code = call.parameters["code"].orEmpty()
+        try {
+            withContext(Dispatchers.IO) {
+                service.deleteInactiveCompany(code, serverOwnerRole)
+            }
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(
+                HttpStatusCode.Conflict,
+                CompanyErrorResponse("COMPANY_NOT_DELETED", exception.message ?: "No se pudo eliminar la empresa."),
+            )
+            return@delete
+        } catch (exception: SQLException) {
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()),
+            )
+            return@delete
+        }
+
+        call.respond(HttpStatusCode.NoContent)
+    }
+
     put("/companies/{code}/modules/{moduleId}") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val serverOwnerRole = call.serverOwnerRole(authorizer)
@@ -186,3 +294,6 @@ private fun SQLException.toProvisioningMessage(): String =
 
 private fun SQLException.toModuleMessage(): String =
     "No se pudo actualizar el modulo. PostgreSQL ${sqlState.orEmpty()}: ${message.orEmpty()}"
+
+private fun SQLException.toCompanyMessage(): String =
+    "No se pudo actualizar la empresa. PostgreSQL ${sqlState.orEmpty()}: ${message.orEmpty()}"

@@ -69,12 +69,7 @@ class CompanyProvisioningService(
             }
         }
 
-        val tenantConfig = TenantDatabaseConfig(
-            databaseName = databaseName,
-            jdbcUrl = config.tenantJdbcUrlPrefix + databaseName,
-            user = config.runtimeUser,
-            password = config.runtimePassword,
-        )
+        val tenantConfig = tenantConfig(databaseName)
 
         tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
             applyTenantCoreMigrations(tenant)
@@ -144,6 +139,133 @@ class CompanyProvisioningService(
                 isActive = company.isActive,
                 modules = loadCompanyModules(company.databaseName),
             )
+        }
+    }
+
+
+    fun setCompanyActive(companyCode: String, active: Boolean, provisioningRole: String): CompanySummaryResponse {
+        val normalizedCompanyCode = companyCode.trim()
+        val company = central.connection.use { connection ->
+            findCompanyAnyState(connection, normalizedCompanyCode)
+                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+        }
+
+        central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement("UPDATE companies SET is_active = ? WHERE code = ?").use { update ->
+                    update.setBoolean(1, active)
+                    update.setString(2, normalizedCompanyCode)
+                    update.executeUpdate()
+                }
+                insertAudit(
+                    connection = connection,
+                    actorRole = provisioningRole,
+                    action = if (active) "company.activated" else "company.deactivated",
+                    companyCode = normalizedCompanyCode,
+                    moduleId = null,
+                    details = """{"databaseName":"${company.databaseName}"}""",
+                )
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+        }
+
+        if (active) {
+            loginDatabases.registerTenant(tenantConfig(company.databaseName))
+        } else {
+            loginDatabases.unregisterTenant(company.databaseName)
+        }
+
+        return CompanySummaryResponse(
+            code = company.code,
+            name = company.name,
+            databaseName = company.databaseName,
+            isActive = active,
+            modules = loadCompanyModules(company.databaseName),
+        )
+    }
+
+    fun deleteInactiveCompany(companyCode: String, provisioningRole: String) {
+        val normalizedCompanyCode = companyCode.trim()
+        val company = central.connection.use { connection ->
+            findCompanyAnyState(connection, normalizedCompanyCode)
+                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+        }
+        if (company.isActive) {
+            throw CompanyProvisioningException("Primero debes desactivar la empresa antes de eliminarla.")
+        }
+
+        val tenantConfig = loginDatabases.tenantConfig(company.databaseName)
+        var ownerRole: String? = null
+        var tenantDatabaseDropped = false
+        var ownerRoleDropped = false
+
+        adminConnection(provisioningRole).use { admin ->
+            admin.autoCommit = true
+            val tenantDatabaseExists = admin.existsDatabase(company.databaseName)
+            if (tenantDatabaseExists && tenantConfig != null) {
+                ownerRole = tenantRuntimeConnection(tenantConfig).use { tenant ->
+                    tenant.prepareStatement(
+                        """
+                        SELECT users.postgres_role
+                        FROM business_owner owner
+                        JOIN application_users users ON users.id = owner.user_id
+                        LIMIT 1
+                        """.trimIndent()
+                    ).use { query ->
+                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                    }
+                }
+            }
+
+            loginDatabases.unregisterTenant(company.databaseName)
+
+            admin.createStatement().use { statement ->
+                if (tenantDatabaseExists) {
+                    statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(company.databaseName)} FROM PUBLIC")
+                    statement.executeQuery(
+                        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ${quoteLiteral(company.databaseName)}"
+                    ).use { }
+                    statement.executeUpdate("DROP DATABASE IF EXISTS ${quoteIdentifier(company.databaseName)}")
+                    tenantDatabaseDropped = true
+                }
+                val ownerRoleToDrop = ownerRole
+                if (!ownerRoleToDrop.isNullOrBlank() && admin.existsRole(ownerRoleToDrop)) {
+                    statement.executeUpdate("DROP ROLE IF EXISTS ${quoteIdentifier(ownerRoleToDrop)}")
+                    ownerRoleDropped = true
+                }
+            }
+        }
+
+        central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                insertAudit(
+                    connection = connection,
+                    actorRole = provisioningRole,
+                    action = "company.deleted",
+                    companyCode = normalizedCompanyCode,
+                    moduleId = null,
+                    details = """{"databaseName":"${company.databaseName}","ownerRole":"${ownerRole.orEmpty()}","tenantDatabaseDropped":$tenantDatabaseDropped,"ownerRoleDropped":$ownerRoleDropped}""",
+                )
+                connection.prepareStatement("DELETE FROM companies WHERE code = ? AND is_active = FALSE").use { delete ->
+                    delete.setString(1, normalizedCompanyCode)
+                    if (delete.executeUpdate() != 1) {
+                        throw CompanyProvisioningException("No se pudo eliminar la empresa desactivada.")
+                    }
+                }
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
         }
     }
 
@@ -242,6 +364,13 @@ class CompanyProvisioningService(
             throw CompanyProvisioningException("Los colores deben usar formato hexadecimal #RRGGBB.")
         }
     }
+
+    private fun tenantConfig(databaseName: String): TenantDatabaseConfig = TenantDatabaseConfig(
+        databaseName = databaseName,
+        jdbcUrl = config.tenantJdbcUrlPrefix + databaseName,
+        user = config.runtimeUser,
+        password = config.runtimePassword,
+    )
 
     private fun adminConnection(provisioningRole: String): Connection {
         val source = PGSimpleDataSource().apply {
@@ -428,6 +557,27 @@ class CompanyProvisioningService(
     private fun findCompany(connection: Connection, companyCode: String): CompanyRow? {
         connection.prepareStatement(
             "SELECT code, name, database_name, is_active FROM companies WHERE code = ? AND is_active = TRUE"
+        ).use { query ->
+            query.setString(1, companyCode)
+            query.executeQuery().use { rows ->
+                return if (rows.next()) {
+                    CompanyRow(
+                        code = rows.getString("code"),
+                        name = rows.getString("name"),
+                        databaseName = rows.getString("database_name"),
+                        isActive = rows.getBoolean("is_active"),
+                    )
+                } else {
+                    null
+                }
+            }
+        }
+    }
+
+
+    private fun findCompanyAnyState(connection: Connection, companyCode: String): CompanyRow? {
+        connection.prepareStatement(
+            "SELECT code, name, database_name, is_active FROM companies WHERE code = ?"
         ).use { query ->
             query.setString(1, companyCode)
             query.executeQuery().use { rows ->

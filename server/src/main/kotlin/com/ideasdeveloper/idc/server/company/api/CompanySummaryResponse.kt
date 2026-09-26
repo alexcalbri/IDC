@@ -23,3 +23,8 @@ data class CompanyModuleResponse(
 data class UpdateCompanyModuleRequest(
     val enabled: Boolean,
 )
+
+@Serializable
+data class UpdateCompanyStatusRequest(
+    val active: Boolean,
+)

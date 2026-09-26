@@ -61,6 +61,13 @@ class LoginDatabases(
     }
 
     @Synchronized
+    fun unregisterTenant(databaseName: String) {
+        configurations.remove(databaseName)
+        scopes.remove(databaseName)
+        pools.remove(databaseName)?.close()
+    }
+
+    @Synchronized
     private fun tenantScope(name: String): LoginScope? {
         scopes[name]?.let { return it }
         val config = configurations[name]

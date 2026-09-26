@@ -72,6 +72,7 @@ fun CompanyProvisioningScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var companies by remember { mutableStateOf<List<CompanySummaryResponse>>(emptyList()) }
+    var companyPendingDeletion by remember { mutableStateOf<String?>(null) }
 
     fun refreshCompanies() {
         val activeServerUrl = serverUrl ?: return
@@ -256,6 +257,65 @@ fun CompanyProvisioningScreen(
                         company = company,
                         primaryColor = primaryColor,
                         enabled = !isLoading && !isRefreshing && serverUrl != null && session?.accessToken?.isNotBlank() == true,
+                        pendingDeletion = companyPendingDeletion == company.code,
+                        onChangeStatus = { active ->
+                            val activeServerUrl = serverUrl
+                            val activeSession = session
+                            if (activeServerUrl != null && activeSession != null) {
+                                isRefreshing = true
+                                error = null
+                                message = null
+                                companyPendingDeletion = null
+                                scope.launch {
+                                    try {
+                                        val updated = CompanyApi(activeServerUrl).use { api ->
+                                            api.updateCompanyStatus(activeSession.accessToken, company.code, active)
+                                        }
+                                        companies = companies.map {
+                                            if (it.code == updated.code) updated else it
+                                        }
+                                        message = if (updated.isActive) {
+                                            "Empresa ${updated.name} reactivada."
+                                        } else {
+                                            "Empresa ${updated.name} desactivada. Ahora puedes eliminarla si corresponde."
+                                        }
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isRefreshing = false
+                                    }
+                                }
+                            }
+                        },
+                        onRequestDelete = {
+                            companyPendingDeletion = company.code
+                        },
+                        onCancelDelete = {
+                            companyPendingDeletion = null
+                        },
+                        onConfirmDelete = {
+                            val activeServerUrl = serverUrl
+                            val activeSession = session
+                            if (activeServerUrl != null && activeSession != null) {
+                                isRefreshing = true
+                                error = null
+                                message = null
+                                scope.launch {
+                                    try {
+                                        CompanyApi(activeServerUrl).use { api ->
+                                            api.deleteCompany(activeSession.accessToken, company.code)
+                                        }
+                                        companies = companies.filterNot { it.code == company.code }
+                                        companyPendingDeletion = null
+                                        message = "Empresa ${company.name} eliminada junto con su base tenant."
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isRefreshing = false
+                                    }
+                                }
+                            }
+                        },
                         onChangeModule = { moduleId, enabled ->
                             val activeServerUrl = serverUrl
                             val activeSession = session
@@ -294,6 +354,11 @@ private fun CompanyModulesRow(
     company: CompanySummaryResponse,
     primaryColor: Color,
     enabled: Boolean,
+    pendingDeletion: Boolean,
+    onChangeStatus: (active: Boolean) -> Unit,
+    onRequestDelete: () -> Unit,
+    onCancelDelete: () -> Unit,
+    onConfirmDelete: () -> Unit,
     onChangeModule: (moduleId: String, enabled: Boolean) -> Unit,
 ) {
     Column(
@@ -305,6 +370,50 @@ private fun CompanyModulesRow(
     ) {
         Text(company.name, style = MaterialTheme.typography.titleSmall, color = primaryColor)
         Text("Codigo: ${company.code}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
+        Text(
+            "Estado: ${if (company.isActive) "activa" else "desactivada"}",
+            style = MaterialTheme.typography.bodySmall,
+            color = if (company.isActive) Color(0xFF176B3A) else Color(0xFF8A5A00),
+        )
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                enabled = enabled,
+                onClick = { onChangeStatus(!company.isActive) },
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (company.isActive) Color(0xFFE9E9EF) else primaryColor,
+                    contentColor = if (company.isActive) primaryColor else Color.White,
+                ),
+            ) {
+                Text(if (company.isActive) "Desactivar" else "Reactivar")
+            }
+            if (!company.isActive) {
+                Button(
+                    enabled = enabled,
+                    onClick = if (pendingDeletion) onConfirmDelete else onRequestDelete,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (pendingDeletion) Color(0xFFB00020) else Color(0xFFE9E9EF),
+                        contentColor = if (pendingDeletion) Color.White else Color(0xFFB00020),
+                    ),
+                ) {
+                    Text(if (pendingDeletion) "Confirmar borrar DB" else "Eliminar")
+                }
+                if (pendingDeletion) {
+                    Button(
+                        enabled = enabled,
+                        onClick = onCancelDelete,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
+                    ) {
+                        Text("Cancelar")
+                    }
+                }
+            }
+        }
+
         company.modules.forEach { module ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -316,7 +425,7 @@ private fun CompanyModulesRow(
                     color = Color(0xFF333333),
                 )
                 Button(
-                    enabled = enabled && !module.locked,
+                    enabled = enabled && company.isActive && !module.locked,
                     onClick = { onChangeModule(module.moduleId, !module.enabled) },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (module.enabled) Color(0xFFE9E9EF) else primaryColor,
