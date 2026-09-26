@@ -718,7 +718,10 @@ Login now selects the proper database and reports server/business ownership;
 company self-management validates a tenant-scoped `business_owner` session
 before reading or updating company profile metadata. Company administration can create,
 deactivate, reactivate and delete deactivated companies, including their central
-registry rows, tenant databases and business-owner PostgreSQL roles. The revised installation and end-to-end login still require
+registry rows, tenant databases and business-owner PostgreSQL roles. The Ubuntu
+clean installer can also remove tenant PostgreSQL roles discovered in
+`application_users` from `idc_*` tenant databases selected for deletion, after
+an additional explicit confirmation. The revised installation and end-to-end login still require
 clean-host validation. Do not interpret
 the current database-owner role as the approved runtime permission model.
 

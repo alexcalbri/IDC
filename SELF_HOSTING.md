@@ -565,7 +565,11 @@ to overwrite an existing IdeasCore installation. The clean mode must be confirme
 by typing `LIMPIAR`; it removes the IdeasCore systemd service, Linux user, app
 files, root-only config directory, Nginx site and selected PostgreSQL roles or
 databases before reinstalling. It can also remove tenant databases named
-`idc_*` when explicitly requested.
+`idc_*` when explicitly requested. When tenant databases are removed, the
+installer reads their `application_users.postgres_role` values before dropping
+the databases, lists the detected tenant PostgreSQL users and requires typing
+`BORRAR_USUARIOS_POSTGRES` before deleting those roles with `DROP ROLE`.
+PostgreSQL will block any role deletion that still has dependencies.
 
 The installer asks for the public mode: `https` or `http`. `https` uses Let's
 Encrypt. `http` skips certificate issuance and serves the web app over plain

@@ -168,9 +168,16 @@ clean_postgres_objects() {
     local db_user=$2
     local server_owner=$3
     local tenant_db
+    local tenant_role
+    local tenant_roles_file
+    local tenant_roles_count
+    local role_delete_confirm
+    tenant_roles_file=$(mktemp)
     if [[ ${CLEAN_TENANT_DATABASES:-no} == si ]]; then
         while IFS= read -r tenant_db; do
             [[ -n $tenant_db ]] || continue
+            printf 'Leyendo usuarios PostgreSQL de tenant %s...\n' "$tenant_db"
+            pg_admin -d "$tenant_db" -Atc "SELECT postgres_role FROM application_users ORDER BY postgres_role" >>"$tenant_roles_file" 2>/dev/null || true
             printf 'Borrando base tenant %s...\n' "$tenant_db"
             pg_admin -v tenant_db="$tenant_db" <<'SQL'
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'tenant_db';
@@ -194,6 +201,30 @@ DROP OWNED BY :"server_owner" CASCADE;
 DROP ROLE :"server_owner";
 SQL
     fi
+    if [[ -s $tenant_roles_file ]]; then
+        tenant_roles_count=$( (sort -u "$tenant_roles_file" | grep -Ev "^(${db_user}|${server_owner})$" || true) | wc -l | tr -d ' ')
+        if [[ $tenant_roles_count != 0 ]]; then
+            printf '\nUsuarios PostgreSQL tenant detectados para borrar:\n'
+            (sort -u "$tenant_roles_file" | grep -Ev "^(${db_user}|${server_owner})$" || true) | sed 's/^/ - /'
+            printf 'Para borrar estos usuarios escribe BORRAR_USUARIOS_POSTGRES: '
+            read -r role_delete_confirm
+            [[ $role_delete_confirm == BORRAR_USUARIOS_POSTGRES ]] || die 'Cancelado antes de borrar usuarios PostgreSQL tenant.'
+            (sort -u "$tenant_roles_file" | grep -Ev "^(${db_user}|${server_owner})$" || true) | while IFS= read -r tenant_role; do
+                [[ -n $tenant_role ]] || continue
+                if [[ ! $tenant_role =~ ^[a-z][a-z0-9_]{0,62}$ || $tenant_role == pg_* || $tenant_role == postgres ]]; then
+                    printf 'Omitiendo rol tenant con nombre no permitido: %s\n' "$tenant_role"
+                    continue
+                fi
+                if [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$tenant_role'") != 0 ]]; then
+                    printf 'Borrando usuario PostgreSQL tenant %s...\n' "$tenant_role"
+                    pg_admin -v tenant_role="$tenant_role" <<'SQL'
+DROP ROLE :"tenant_role";
+SQL
+                fi
+            done
+        fi
+    fi
+    rm -f "$tenant_roles_file"
 }
 
 assert_no_existing_install() {
