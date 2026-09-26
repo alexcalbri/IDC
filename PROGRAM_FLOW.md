@@ -63,10 +63,8 @@ On startup, the Ktor server:
 4. Creates `LoginDatabases`, which owns login database selection.
 5. Creates a central `SessionService` for validating server-owner tokens.
 6. Creates `CompanyProvisioningService`.
-7. Builds the server module registry with the currently bundled modules:
-   - `clientes`;
-   - `crm`;
-   - `hostpot`.
+7. Builds the server module registry with the currently installed server modules:
+   - `clientes` as the locked base module.
 8. Registers routes:
    - `GET /`;
    - `POST /auth/login`;
@@ -176,9 +174,9 @@ Created by `database/tenant/migrations/V003__create_tenant_modules.sql`.
 
 Initial module states:
 
-- `clientes`: enabled;
-- `hostpot`: disabled;
-- `crm`: disabled.
+- `clientes`: enabled.
+
+Optional modules are not seeded until they are installed on the server.
 
 ## 5. Authentication Flow
 
@@ -294,8 +292,8 @@ The dashboard:
 Known module display mappings:
 
 - `clientes`
-- `hostpot`
-- `crm`
+
+Other installed modules fall back to generic display names until their metadata is loaded.
 
 ## 9. Company Creation Flow
 
@@ -358,8 +356,7 @@ Flow:
 Implemented module rules:
 
 - `clientes` is locked and always enabled.
-- `hostpot` can be enabled or disabled.
-- `crm` can be enabled or disabled.
+- Optional modules only appear after they are installed in the running server module registry.
 
 ## 11. Company Login And Module Visibility
 
@@ -400,14 +397,14 @@ Implemented scaffold directories:
 
 Working behavior:
 
-- The server build includes the `clientes`, `hostpot` and `crm` module source directories.
-- `Application.kt` registers these modules in `ModuleRegistry`.
+- The server build includes only the `clientes` module source directories by default.
+- `Application.kt` registers `clientes` in `ModuleRegistry`.
 - `GET /modules` returns the module definitions known by the running server.
 - `GET /modules/{moduleId}/metadata` returns display metadata for the generic client screen.
 - Each bundled module owns its server route namespace under `/modules/{moduleId}`.
 - `clientes` is seeded as enabled in tenant DBs.
 - `clientes` owns its customer schema migration under `modules/clientes/migrations`.
-- `hostpot` and `crm` are seeded as disabled and can be toggled.
+- `crm` and `hostpot` remain repository scaffolds; they are not installed in the default server build and are not listed for companies.
 - Functional module screens still render metadata/placeholders; full business UI and data flows are not implemented yet.
 
 ## 14. Web Deployment Flow

@@ -15,8 +15,6 @@ import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.moduleRoutes
 import com.ideasdeveloper.idc.modules.clientes.ClientesServerModule
-import com.ideasdeveloper.idc.modules.crm.CrmServerModule
-import com.ideasdeveloper.idc.modules.hostpot.HostpotServerModule
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
@@ -72,8 +70,6 @@ fun Application.module() {
     val moduleRegistry = ModuleRegistry(
         listOf(
             ClientesServerModule,
-            CrmServerModule,
-            HostpotServerModule,
         )
     )
     val loginDatabases = LoginDatabases(

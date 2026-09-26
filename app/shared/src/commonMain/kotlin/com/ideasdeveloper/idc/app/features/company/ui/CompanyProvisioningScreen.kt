@@ -241,7 +241,11 @@ fun CompanyProvisioningScreen(
                     }
                 }
 
-                Text("Modulos por empresa", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+                Text("Modulos disponibles por empresa", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+                Text(
+                    "Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa.",
+                    color = Color(0xFF666666),
+                )
 
                 if (isRefreshing) {
                     Text("Cargando empresas...", color = Color(0xFF666666))

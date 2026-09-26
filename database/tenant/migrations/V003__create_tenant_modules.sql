@@ -20,8 +20,6 @@ CREATE INDEX tenant_modules_status_idx
 
 INSERT INTO tenant_modules (module_id, display_name, status, enabled_at)
 VALUES
-    ('clientes', 'Clientes', 'enabled', CURRENT_TIMESTAMP),
-    ('hostpot', 'Hostpot', 'disabled', NULL),
-    ('crm', 'CRM', 'disabled', NULL);
+    ('clientes', 'Clientes', 'enabled', CURRENT_TIMESTAMP);
 
 COMMIT;

@@ -9,5 +9,6 @@ IdeasCore Customer/Prospect identity. Module-specific migrations belong in:
 modules/crm/migrations/
 ```
 
-CRM is registered in the server module catalog and can be enabled/disabled, but
-functional screens and database tables are not implemented yet.
+CRM is not included in the default server build. A future server-owner module
+installation flow will install it from a trusted GitHub package or a validated
+ZIP upload before it can be enabled for companies.

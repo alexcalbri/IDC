@@ -18,8 +18,7 @@ modules.
 6. The backend creates the tenant database and the `business_owner` PostgreSQL
    login role.
 7. The backend applies Core and tenant migrations to the new tenant database.
-8. The backend seeds the tenant `business_owner`, `clientes`, `hostpot` and
-   `crm` module registry rows.
+8. The backend seeds the tenant `business_owner` and the locked `clientes` module registry row.
 9. The backend registers the company in the central `companies` table and adds
    the tenant connection to the running login resolver.
 10. The `business_owner` can then log in using username, password and
@@ -58,8 +57,7 @@ Renders the dashboard after login.
 - Reads `session.enabledModules` and renders those modules dynamically.
 - Maps known module IDs:
   - `clientes`
-  - `hostpot`
-  - `crm`
+- Other installed modules use generic labels until metadata is loaded.
 - Navigates all modules through `NavRoute.Module(moduleId)`.
 
 ### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/features/company/ui/CompanyProvisioningScreen.kt`
@@ -197,7 +195,7 @@ Defines the server module contract and registry.
 
 - `ServerModule.kt` declares module metadata and optional route installation.
 - `ModuleRoutes.kt` exposes `/modules`, `/modules/{moduleId}/metadata` and installs module-owned routes.
-- Current modules are bundled at build time. GitHub/package download and hot installation are planned architecture, not implemented behavior.
+- Current default server bundle includes only `clientes`. GitHub/package download and ZIP installation are planned architecture, not implemented behavior.
 
 ### `server/src/main/kotlin/com/ideasdeveloper/idc/server/company/application/CompanyProvisioningService.kt`
 
@@ -231,8 +229,7 @@ Main responsibilities:
 Module rules:
 
 - `clientes` is locked and always enabled.
-- `hostpot` is optional.
-- `crm` is optional.
+- Optional modules only appear after they are installed in the server module registry.
 
 ### `server/src/main/kotlin/com/ideasdeveloper/idc/server/company/application/CompanyProvisioningConfig.kt`
 
@@ -329,9 +326,9 @@ Creates `tenant_modules`.
 
 Initial rows:
 
-- `clientes`: enabled;
-- `hostpot`: disabled;
-- `crm`: disabled.
+- `clientes`: enabled.
+
+Optional modules are inserted only after they are installed on the server.
 
 ## Module Scaffolds
 
@@ -345,21 +342,19 @@ Core module scaffold for the shared customer surface.
 
 ### `modules/hostpot`
 
-Existing planned scaffold.
+Repository scaffold for a future optional module package.
 
-- Registered in tenant module seed as `hostpot`.
-- Disabled by default.
-- Can be enabled/disabled by `server_owner`.
-- The generic runtime screen loads this module metadata from the server; functional module behavior is still pending.
+- Not included in the default server build.
+- Not inserted into tenant `tenant_modules` until a module installation flow is implemented.
+- Future installation will come from a trusted GitHub package or a validated ZIP upload.
 
 ### `modules/crm`
 
-Existing planned scaffold.
+Repository scaffold for a future optional module package.
 
-- Registered in tenant module seed as `crm`.
-- Disabled by default.
-- Can be enabled/disabled by `server_owner`.
-- The generic runtime screen loads this module metadata from the server; functional module behavior is still pending.
+- Not included in the default server build.
+- Not inserted into tenant `tenant_modules` until a module installation flow is implemented.
+- Future installation will come from a trusted GitHub package or a validated ZIP upload.
 
 ## Installer
 

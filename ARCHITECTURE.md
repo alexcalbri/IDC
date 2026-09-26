@@ -354,8 +354,8 @@ database, applies Core and tenant migrations, seeds the `business_owner`, marks
 The initial PostgreSQL `server_owner` role is the provisioning identity: after
 the backend validates a `server_owner` session token, it assumes that role for
 the provisioning operation. The same Empresa API can list companies and enable
-or disable optional modules such as `hostpot` and `crm`; `clientes` is a locked
-base module. Administrative permission coverage is still narrow and registry
+or disable optional modules installed on the server; `clientes` is a locked
+base module. The default server build currently installs only `clientes`. Administrative permission coverage is still narrow and registry
 records alone do not implement all future permissions. The shared client
 login is connected to the API, keeps the session in memory and navigates to
 the existing dashboard on success. When the user selects "Mantener sesión
@@ -378,7 +378,7 @@ company.
 Tenant databases also include a `tenant_modules` registry. The `clientes`
 Core module is seeded as enabled for new tenant databases so every company has
 the shared Customer/Prospect surface available as a base module. The current
-tenant seed also registers `hostpot` and `crm` as disabled optional modules so
+tenant seed registers only `clientes`; optional modules are added only after server-side installation so
 the server owner can enable them per company.
 
 Each database records executed scripts by module, version and checksum in
@@ -597,9 +597,9 @@ The shared client is migrating toward a feature-first structure:
   by server-provided module metadata.
 
 The current module scaffolds are `modules/empresa`, `modules/clientes`,
-`modules/hostpot` and `modules/crm`. The server build includes the `clientes`,
-`hostpot` and `crm` shared/server source directories and registers those
-server modules in `ModuleRegistry`. The running server exposes `/modules`,
+`modules/hostpot` and `modules/crm`. The default server build includes only the
+`clientes` shared/server source directories and registers that server module in
+`ModuleRegistry`. The running server exposes `/modules`,
 `/modules/{moduleId}/metadata` and each module-owned namespace under
 `/modules/{moduleId}`. Downloading module packages from GitHub/distribution
 and loading them on demand remains planned architecture, not implemented

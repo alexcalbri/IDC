@@ -61,8 +61,9 @@ points at the central database; root-only `TENANT_DATABASES_JSON` starts as
 `[]`. The Empresa screen can create a company database, apply tenant
 migrations, seed its `business_owner` and register the tenant in the running
 server so company login works without restart. From the same screen,
-`server_owner` can enable or disable optional `hostpot` and `crm` modules per
-company; `clientes` stays enabled as the base customer module.
+`server_owner` can enable or disable modules that are installed on the server;
+`clientes` stays enabled as the base customer module. The default installation
+only includes `clientes`.
 
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
