@@ -78,7 +78,7 @@ class LoginViewModel : ViewModel() {
                 _state.value = LoginUiState(error = exception.message)
             } catch (_: IllegalArgumentException) {
                 _state.value = LoginUiState(
-                    error = "Revisa la URL HTTPS del servidor."
+                    error = "Revisa la URL del servidor. Debe iniciar con http:// o https:// y no llevar rutas."
                 )
             } catch (_: Exception) {
                 _state.value = LoginUiState(

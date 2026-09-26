@@ -127,8 +127,8 @@ fun LoginScreen(
                     OutlinedTextField(
                         value = serverUrl,
                         onValueChange = { serverUrl = it },
-                        label = { Text("URL HTTPS del servidor") },
-                        placeholder = { Text("https://sub.domain.tld") },
+                        label = { Text("URL del servidor") },
+                        placeholder = { Text("https://sub.domain.tld o http://sub.domain.tld") },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
                         shape = MaterialTheme.shapes.medium,

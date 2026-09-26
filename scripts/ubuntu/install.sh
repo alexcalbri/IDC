@@ -148,22 +148,82 @@ verify_acme_challenge() {
 
     die "No se pudo leer el desafío HTTP por $address:80 despues de varios intentos. Revisa DNS, firewall/NAT y /var/log/nginx/error.log. Corrige la causa y vuelve a ejecutar con el mismo dominio."
 }
-for unit in /etc/systemd/system/ideascore-certbot.service /etc/systemd/system/ideascore-certbot.timer; do
-    [[ ! -e $unit && ! -L $unit ]] || die 'Ya existe una configuración de renovación de IdeasCore.'
-done
+clean_files_and_services() {
+    printf 'Deteniendo servicios de IdeasCore si existen...\n'
+    systemctl stop ideascore.service >/dev/null 2>&1 || true
+    systemctl disable ideascore.service >/dev/null 2>&1 || true
+    systemctl stop ideascore-certbot.timer ideascore-certbot.service >/dev/null 2>&1 || true
+    systemctl disable ideascore-certbot.timer ideascore-certbot.service >/dev/null 2>&1 || true
+    rm -f "$SERVICE_FILE" /etc/systemd/system/ideascore-certbot.service /etc/systemd/system/ideascore-certbot.timer
+    rm -f /etc/nginx/sites-enabled/ideascore "$NGINX_SITE"
+    rm -rf "$APP_DIR" "$CONFIG_DIR" "$ACME_ROOT"
+    if getent passwd ideascore >/dev/null; then
+        userdel -r ideascore >/dev/null 2>&1 || userdel ideascore >/dev/null 2>&1 || true
+    fi
+    systemctl daemon-reload >/dev/null 2>&1 || true
+}
 
-# Never overwrite an existing installation or adopt an unrelated Linux account.
-[[ ! -e $APP_DIR && ! -e $CONFIG_DIR && ! -e $SERVICE_FILE ]] ||
-    die 'Ya hay archivos de IdeasCore. Este script es para una primera instalación, no para actualizarla.'
-! getent passwd ideascore >/dev/null || die 'El usuario Linux ideascore ya existe.'
-! getent group ideascore >/dev/null || die 'El grupo Linux ideascore ya existe.'
-[[ $(systemctl show ideascore.service --property=LoadState --value) == not-found ]] ||
-    die 'Ya existe un servicio ideascore.'
+clean_postgres_objects() {
+    local db_name=$1
+    local db_user=$2
+    local server_owner=$3
+    local tenant_db
+    if [[ ${CLEAN_TENANT_DATABASES:-no} == si ]]; then
+        while IFS= read -r tenant_db; do
+            [[ -n $tenant_db ]] || continue
+            printf 'Borrando base tenant %s...\n' "$tenant_db"
+            pg_admin -v tenant_db="$tenant_db" <<'SQL'
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'tenant_db';
+DROP DATABASE IF EXISTS :"tenant_db";
+SQL
+        done < <(pg_admin -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'idc\_%' AND datname <> '$db_name' ORDER BY datname")
+    fi
+    pg_admin -v db_name="$db_name" <<'SQL'
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'db_name';
+DROP DATABASE IF EXISTS :"db_name";
+SQL
+    if [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$db_user'") != 0 ]]; then
+        pg_admin -v db_user="$db_user" <<'SQL'
+DROP OWNED BY :"db_user" CASCADE;
+DROP ROLE :"db_user";
+SQL
+    fi
+    if [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$server_owner'") != 0 ]]; then
+        pg_admin -v server_owner="$server_owner" <<'SQL'
+DROP OWNED BY :"server_owner" CASCADE;
+DROP ROLE :"server_owner";
+SQL
+    fi
+}
 
-printf '\nIdeasCore: instalación completa del backend en este Ubuntu.\n'
-printf 'Se comprobarán Java 21, PostgreSQL, Nginx, Certbot, Git, curl, Python, DNS y OpenSSL.\n'
-printf 'Los componentes que falten se instalarán; Gradle descargará Ktor al compilar.\n'
+assert_no_existing_install() {
+    for unit in /etc/systemd/system/ideascore-certbot.service /etc/systemd/system/ideascore-certbot.timer; do
+        [[ ! -e $unit && ! -L $unit ]] || die 'Ya existe una configuracion de renovacion de IdeasCore. Usa instalacion limpia si quieres borrarla.'
+    done
+    [[ ! -e $APP_DIR && ! -e $CONFIG_DIR && ! -e $SERVICE_FILE ]] ||
+        die 'Ya hay archivos de IdeasCore. Usa instalacion limpia para borrarlos o elimina manualmente antes de continuar.'
+    [[ ! -e $NGINX_SITE && ! -e /etc/nginx/sites-enabled/ideascore ]] ||
+        die 'Ya existe configuracion Nginx de IdeasCore. Usa instalacion limpia si quieres reemplazarla.'
+    ! getent passwd ideascore >/dev/null || die 'El usuario Linux ideascore ya existe. Usa instalacion limpia si pertenece a IdeasCore.'
+    ! getent group ideascore >/dev/null || die 'El grupo Linux ideascore ya existe. Usa instalacion limpia si pertenece a IdeasCore.'
+    [[ $(systemctl show ideascore.service --property=LoadState --value) == not-found ]] ||
+        die 'Ya existe un servicio ideascore. Usa instalacion limpia si quieres reemplazarlo.'
+}
+
+printf '\nIdeasCore: instalacion completa del backend en este Ubuntu.\n'
+printf 'Se comprobaran Java 21, PostgreSQL, Nginx, Git, curl, Python, DNS y OpenSSL.\n'
+printf 'Puedes elegir publicacion HTTPS con Lets Encrypt o HTTP sin certificado.\n'
+printf 'Los componentes que falten se instalaran; Gradle descargara Ktor al compilar.\n'
 printf 'Repositorio: %s\nLa rama elegida debe incluir este instalador y sus cambios de backend.\n' "$REPO_URL"
+ask CLEAN_INSTALL 'Instalacion limpia y borrar restos anteriores de IdeasCore? Escribe si o no' no
+[[ $CLEAN_INSTALL == si || $CLEAN_INSTALL == no ]] || die 'Responde si o no.'
+ask PUBLIC_SCHEME 'Modo publico: https o http' https
+[[ $PUBLIC_SCHEME == https || $PUBLIC_SCHEME == http ]] || die 'Responde https o http.'
+if [[ $PUBLIC_SCHEME == http ]]; then
+    printf '\nALERTA: HTTP no cifra usuarios, contrasenas ni tokens. Usalo solo para pruebas temporales en un entorno controlado.\n'
+    ask HTTP_CONFIRM 'Para confirmar HTTP escribe HTTP' no
+    [[ $HTTP_CONFIRM == HTTP ]] || die 'Cancelado antes de publicar por HTTP.'
+fi
 ask GIT_REF 'Rama o etiqueta de GitHub' develop
 [[ $GIT_REF =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*$ && $GIT_REF != *..* ]] || die 'Referencia Git inválida.'
 ask DOMAIN 'Dominio público que apunta a este Ubuntu (sin https:// ni rutas)' ''
@@ -175,6 +235,15 @@ IFS='.' read -r -a DOMAIN_LABELS <<< "$DOMAIN"
 for label in "${DOMAIN_LABELS[@]}"; do
     [[ ${#label} -le 63 && $label =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] || die 'Dominio inválido.'
 done
+
+if [[ $CLEAN_INSTALL == si ]]; then
+    printf '\nAVISO: la instalacion limpia borrara archivos, servicio, usuario Linux y configuracion Nginx de IdeasCore.\n'
+    ask CLEAN_CONFIRM 'Para confirmar escribe LIMPIAR' no
+    [[ $CLEAN_CONFIRM == LIMPIAR ]] || die 'Cancelado antes de limpiar.'
+    clean_files_and_services
+else
+    assert_no_existing_install
+fi
 
 # Resume only the exact temporary site for this domain, before application
 # provisioning. Never adopt a live HTTPS site or custom Nginx configuration.
@@ -190,21 +259,25 @@ server {
 NGINX
 }
 RESUME_ACME=false
-if [[ -e $NGINX_SITE || -L $NGINX_SITE ]]; then
-    [[ -f $NGINX_SITE && ! -L $NGINX_SITE ]] && cmp -s "$NGINX_SITE" <(acme_site_config) ||
-        die 'La configuración Nginx existente no es el sitio temporal de este dominio; no se modificará.'
-    RESUME_ACME=true
-    printf 'Se reanudará la preparación HTTPS del dominio %s.\n' "$DOMAIN"
+if [[ $PUBLIC_SCHEME == https ]]; then
+    if [[ -e $NGINX_SITE || -L $NGINX_SITE ]]; then
+        [[ -f $NGINX_SITE && ! -L $NGINX_SITE ]] && cmp -s "$NGINX_SITE" <(acme_site_config) ||
+            die 'La configuracion Nginx existente no es el sitio temporal de este dominio; no se modificara.'
+        RESUME_ACME=true
+        printf 'Se reanudara la preparacion HTTPS del dominio %s.\n' "$DOMAIN"
+    fi
+    if [[ -e /etc/nginx/sites-enabled/ideascore || -L /etc/nginx/sites-enabled/ideascore ]]; then
+        [[ $RESUME_ACME == true && -L /etc/nginx/sites-enabled/ideascore &&
+           $(readlink /etc/nginx/sites-enabled/ideascore) == "$NGINX_SITE" ]] ||
+            die 'El sitio habilitado de IdeasCore no corresponde al sitio temporal esperado.'
+    fi
+    ask ACME_EMAIL 'Correo para la cuenta de Lets Encrypt' ''
+    [[ $ACME_EMAIL =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die 'Correo invalido.'
+    printf 'Los registros A/AAAA deben apuntar a este servidor; los puertos 80 y 443 deben ser accesibles desde Internet.\n'
+    printf 'Se solicitara un certificado para https://%s y se aceptaran los terminos de Lets Encrypt.\n' "$DOMAIN"
+else
+    printf 'Se eligio HTTP. Lets Encrypt se omitira y la app quedara publicada sin certificado.\n'
 fi
-if [[ -e /etc/nginx/sites-enabled/ideascore || -L /etc/nginx/sites-enabled/ideascore ]]; then
-    [[ $RESUME_ACME == true && -L /etc/nginx/sites-enabled/ideascore &&
-       $(readlink /etc/nginx/sites-enabled/ideascore) == "$NGINX_SITE" ]] ||
-        die 'El sitio habilitado de IdeasCore no corresponde al sitio temporal esperado.'
-fi
-ask ACME_EMAIL 'Correo para la cuenta de Let’s Encrypt' ''
-[[ $ACME_EMAIL =~ ^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]] || die 'Correo inválido.'
-printf 'Los registros A/AAAA deben apuntar a este servidor; los puertos 80 y 443 deben ser accesibles desde Internet.\n'
-printf 'Se solicitará un certificado para https://%s y se aceptarán los términos de Let’s Encrypt: https://letsencrypt.org/repository/\n' "$DOMAIN"
 ask DB_NAME 'Base central nueva de IdeasCore' idc_control
 ask DB_USER 'Usuario PostgreSQL nuevo para la aplicación' idc_app
 for identifier in "$DB_NAME" "$DB_USER"; do
@@ -231,6 +304,10 @@ for identifier in "$SERVER_OWNER"; do
         die 'Identificador invalido: usa letras minusculas, numeros y guion bajo.'
 done
 [[ $SERVER_OWNER != "$DB_USER" ]] || die 'La cuenta del propietario debe ser distinta del usuario interno de la aplicaciÃ³n.'
+if [[ $CLEAN_INSTALL == si ]]; then
+    ask CLEAN_TENANT_DATABASES 'Borrar tambien bases tenant idc_* de intentos anteriores? Escribe si o no' no
+    [[ $CLEAN_TENANT_DATABASES == si || $CLEAN_TENANT_DATABASES == no ]] || die 'Responde si o no.'
+fi
 ask_password() {
     local secret repeated
     while true; do
@@ -258,62 +335,63 @@ for executable in curl git python3 dig nginx openssl psql pg_isready runuser use
     command -v "$executable" >/dev/null 2>&1 || die "Falta el ejecutable $executable después de comprobar los paquetes."
 done
 
-# Check public DNS before installing Certbot or requesting a certificate.
-DOMAIN_IPS=()
-for record in A AAAA; do
-    DNS_ANSWER=$(dig @1.1.1.1 +time=5 +tries=2 +short "$DOMAIN" "$record") || die 'No se pudo consultar DNS público.'
-    while IFS= read -r address; do
-        # Ignore CNAME names; dig also returns their resolved addresses.
-        if [[ $address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || $address == *:* ]]; then
-            DOMAIN_IPS+=("$address")
-        fi
-    done <<< "$DNS_ANSWER"
-done
-(( ${#DOMAIN_IPS[@]} > 0 )) || die 'El dominio no tiene registros públicos A/AAAA resolubles.'
-NGINX_CONFIG=$(nginx -T 2>&1) || die 'La configuración Nginx existente no es válida.'
-if [[ $RESUME_ACME == true ]]; then
-    # Remove only one exact copy; any other occurrence still blocks a conflict.
-    NGINX_CONFIG=${NGINX_CONFIG/"$(acme_site_config)"/}
-fi
-if [[ $NGINX_CONFIG == *"$DOMAIN"* ]]; then
-    die 'El dominio ya aparece en Nginx. Revisa su configuración antes de instalar; no se sobrescribirá.'
-fi
-install -d -m 755 "$ACME_ROOT" "$ACME_ROOT/.well-known" "$ACME_ROOT/.well-known/acme-challenge"
-acme_site_config > "$NGINX_SITE"
-chmod 644 "$NGINX_SITE"
-if [[ ! -L /etc/nginx/sites-enabled/ideascore ]]; then
+if [[ $PUBLIC_SCHEME == https ]]; then
+    # Check public DNS before installing Certbot or requesting a certificate.
+    DOMAIN_IPS=()
+    for record in A AAAA; do
+        DNS_ANSWER=$(dig @1.1.1.1 +time=5 +tries=2 +short "$DOMAIN" "$record") || die 'No se pudo consultar DNS público.'
+        while IFS= read -r address; do
+            # Ignore CNAME names; dig also returns their resolved addresses.
+            if [[ $address =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ || $address == *:* ]]; then
+                DOMAIN_IPS+=("$address")
+            fi
+        done <<< "$DNS_ANSWER"
+    done
+    (( ${#DOMAIN_IPS[@]} > 0 )) || die 'El dominio no tiene registros públicos A/AAAA resolubles.'
+    NGINX_CONFIG=$(nginx -T 2>&1) || die 'La configuración Nginx existente no es válida.'
+    if [[ $RESUME_ACME == true ]]; then
+        # Remove only one exact copy; any other occurrence still blocks a conflict.
+        NGINX_CONFIG=${NGINX_CONFIG/"$(acme_site_config)"/}
+    fi
+    if [[ $NGINX_CONFIG == *"$DOMAIN"* ]]; then
+        die 'El dominio ya aparece en Nginx. Revisa su configuración antes de instalar; no se sobrescribirá.'
+    fi
+    install -d -m 755 "$ACME_ROOT" "$ACME_ROOT/.well-known" "$ACME_ROOT/.well-known/acme-challenge"
+    acme_site_config > "$NGINX_SITE"
+    chmod 644 "$NGINX_SITE"
+    rm -f /etc/nginx/sites-enabled/ideascore
     ln -s "$NGINX_SITE" /etc/nginx/sites-enabled/ideascore
+    nginx -t
+    systemctl enable --now nginx
+    systemctl reload nginx
+
+    # Check every published address, including IPv6, using an unpredictable token.
+    # This also rejects stale DNS entries pointing at a different web server.
+    DNS_TOKEN=$(openssl rand -hex 24)
+    printf '%s' "$DNS_TOKEN" > "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
+    chmod 644 "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
+    for address in "${DOMAIN_IPS[@]}"; do
+        printf 'Verificando dominio %s en %s, puerto 80...\n' "$DOMAIN" "$address"
+        verify_acme_challenge "$address"
+    done
+    rm -- "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
+
+    # Let's Encrypt is a certificate authority; Certbot is its local ACME client.
+    if ! command -v certbot >/dev/null 2>&1; then
+        ensure_packages certbot
+    else
+        printf 'Disponible: Certbot (se reutilizará la instalación existente).\n'
+    fi
+    CERTBOT_BIN=$(command -v certbot)
+    "$CERTBOT_BIN" --version
+    CERT_NAME="ideascore-$DOMAIN"
+    "$CERTBOT_BIN" certonly --webroot --webroot-path "$ACME_ROOT" \
+        --server https://acme-v02.api.letsencrypt.org/directory \
+        --cert-name "$CERT_NAME" --domain "$DOMAIN" --email "$ACME_EMAIL" \
+        --agree-tos --non-interactive --keep-until-expiring \
+        --deploy-hook 'systemctl reload nginx'
+
 fi
-nginx -t
-systemctl enable --now nginx
-systemctl reload nginx
-
-# Check every published address, including IPv6, using an unpredictable token.
-# This also rejects stale DNS entries pointing at a different web server.
-DNS_TOKEN=$(openssl rand -hex 24)
-printf '%s' "$DNS_TOKEN" > "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
-chmod 644 "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
-for address in "${DOMAIN_IPS[@]}"; do
-    printf 'Verificando dominio %s en %s, puerto 80...\n' "$DOMAIN" "$address"
-    verify_acme_challenge "$address"
-done
-rm -- "$ACME_ROOT/.well-known/acme-challenge/$DNS_TOKEN"
-
-# Let's Encrypt is a certificate authority; Certbot is its local ACME client.
-if ! command -v certbot >/dev/null 2>&1; then
-    ensure_packages certbot
-else
-    printf 'Disponible: Certbot (se reutilizará la instalación existente).\n'
-fi
-CERTBOT_BIN=$(command -v certbot)
-"$CERTBOT_BIN" --version
-CERT_NAME="ideascore-$DOMAIN"
-"$CERTBOT_BIN" certonly --webroot --webroot-path "$ACME_ROOT" \
-    --server https://acme-v02.api.letsencrypt.org/directory \
-    --cert-name "$CERT_NAME" --domain "$DOMAIN" --email "$ACME_EMAIL" \
-    --agree-tos --non-interactive --keep-until-expiring \
-    --deploy-hook 'systemctl reload nginx'
-
 systemctl enable --now postgresql
 pg_isready -h 127.0.0.1 -p 5432 || die 'PostgreSQL no responde en 127.0.0.1:5432.'
 python3 - "$APP_HOST" "$APP_PORT" <<'PY'
@@ -326,6 +404,9 @@ with socket.socket() as connection:
 PY
 
 pg_admin() { runuser -u postgres -- psql -X --dbname=postgres --set=ON_ERROR_STOP=1 "$@"; }
+if [[ $CLEAN_INSTALL == si ]]; then
+    clean_postgres_objects "$DB_NAME" "$DB_USER" "$SERVER_OWNER"
+fi
 [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$DB_USER'") == 0 ]] ||
     die 'El usuario PostgreSQL ya existe. No se cambiará su contraseña.'
 [[ $(pg_admin -Atc "SELECT count(*) FROM pg_database WHERE datname = '$DB_NAME'") == 0 ]] ||
@@ -496,8 +577,67 @@ runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
     -c 'UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE revoked_at IS NULL;'
 printf 'Login del propietario del servidor verificado.\n'
 
-# 5. Public HTTPS terminates at Nginx; Ktor is reachable only on loopback.
-cat > "$NGINX_SITE" <<NGINX
+# 5. Public access terminates at Nginx; Ktor is reachable only on loopback.
+if [[ $PUBLIC_SCHEME == http ]]; then
+    cat > "$NGINX_SITE" <<NGINX
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $DOMAIN;
+    root $APP_DIR/web;
+    index index.html;
+    location /auth/ {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location /companies {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location /modules {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    location / {
+        try_files \$uri \$uri/ /index.html;
+        add_header Cache-Control "no-cache";
+    }
+}
+NGINX
+    chmod 644 "$NGINX_SITE"
+    rm -f /etc/nginx/sites-enabled/ideascore
+    ln -s "$NGINX_SITE" /etc/nginx/sites-enabled/ideascore
+    nginx -t
+    systemctl enable --now nginx
+    systemctl reload nginx
+
+    WEB_INDEX=$(curl --noproxy '*' --fail --silent --show-error --max-time 15 \
+        --resolve "$DOMAIN:80:127.0.0.1" "http://$DOMAIN/")
+    [[ $WEB_INDEX == "$(cat "$APP_DIR/web/index.html")" ]] || die 'El dominio no esta sirviendo el index.html de la app por HTTP.'
+    curl --noproxy '*' --fail --silent --show-error --max-time 15 \
+        --resolve "$DOMAIN:80:127.0.0.1" "http://$DOMAIN/webApp.js" >/dev/null
+    LOGIN_STATUS=$(curl --noproxy '*' --silent --show-error --max-time 15 \
+        --resolve "$DOMAIN:80:127.0.0.1" --output /dev/null --write-out '%{http_code}' \
+        --header 'Content-Type: application/json' --data '{}' "http://$DOMAIN/auth/login")
+    [[ $LOGIN_STATUS == 400 ]] || die 'La ruta HTTP /auth/login no devuelve la validacion esperada (400).'
+
+    printf '\nIdeasCore instalado temporalmente sin HTTPS: http://%s/\n' "$DOMAIN"
+    printf 'PostgreSQL, backend y publicacion HTTP verificados. Lets Encrypt fue omitido.\n'
+    printf 'Cuando el bloqueo termine, configura HTTPS antes de usarlo en produccion.\n'
+else
+    cat > "$NGINX_SITE" <<NGINX
 server {
     listen 80;
     listen [::]:80;
@@ -544,12 +684,13 @@ server {
     }
 }
 NGINX
-nginx -t
-systemctl reload nginx
+    chmod 644 "$NGINX_SITE"
+    rm -f /etc/nginx/sites-enabled/ideascore
+    ln -s "$NGINX_SITE" /etc/nginx/sites-enabled/ideascore
+    nginx -t
+    systemctl reload nginx
 
-# A dedicated timer also supports an existing Certbot installation without
-# replacing its installation method or modifying renewal of other domains.
-cat > /etc/systemd/system/ideascore-certbot.service <<UNIT
+    cat > /etc/systemd/system/ideascore-certbot.service <<UNIT
 [Unit]
 Description=Renew the IdeasCore TLS certificate
 After=network-online.target nginx.service
@@ -558,7 +699,7 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$CERTBOT_BIN renew --cert-name $CERT_NAME --quiet
 UNIT
-cat > /etc/systemd/system/ideascore-certbot.timer <<'UNIT'
+    cat > /etc/systemd/system/ideascore-certbot.timer <<'UNIT'
 [Unit]
 Description=Check IdeasCore TLS certificate twice daily
 [Timer]
@@ -568,36 +709,37 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 UNIT
-chmod 644 /etc/systemd/system/ideascore-certbot.{service,timer}
-systemctl daemon-reload
-systemctl enable --now ideascore-certbot.timer
-WEB_INDEX=$(curl --noproxy '*' --fail --silent --show-error --max-time 15 \
-    --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/")
-[[ $WEB_INDEX == "$(cat "$APP_DIR/web/index.html")" ]] || die 'El dominio no esta sirviendo el index.html de la app.'
-curl --noproxy '*' --fail --silent --show-error --max-time 15 \
-    --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/webApp.js" >/dev/null
-LOGIN_STATUS=$(curl --noproxy '*' --silent --show-error --max-time 15 \
-    --resolve "$DOMAIN:443:127.0.0.1" --output /dev/null --write-out '%{http_code}' \
-    --header 'Content-Type: application/json' --data '{}' "https://$DOMAIN/auth/login")
-[[ $LOGIN_STATUS == 400 ]] || die 'La ruta HTTPS /auth/login no devuelve la validacion esperada (400).'
-RENEWAL_VERIFIED=false
-if "$CERTBOT_BIN" renew --cert-name "$CERT_NAME" --dry-run; then
-    RENEWAL_VERIFIED=true
-else
-    printf 'AVISO: la instalación funciona por HTTPS, pero no se pudo verificar la renovación.\n' >&2
-    printf 'Revisa /var/log/letsencrypt/letsencrypt.log. Si indica rateLimited o Service busy, espera antes de reintentar.\n' >&2
-    printf 'Reintenta solo la prueba: %s renew --cert-name %s --dry-run\n' "$CERTBOT_BIN" "$CERT_NAME" >&2
+    chmod 644 /etc/systemd/system/ideascore-certbot.{service,timer}
+    systemctl daemon-reload
+    systemctl enable --now ideascore-certbot.timer
+    WEB_INDEX=$(curl --noproxy '*' --fail --silent --show-error --max-time 15 \
+        --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/")
+    [[ $WEB_INDEX == "$(cat "$APP_DIR/web/index.html")" ]] || die 'El dominio no esta sirviendo el index.html de la app.'
+    curl --noproxy '*' --fail --silent --show-error --max-time 15 \
+        --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/webApp.js" >/dev/null
+    LOGIN_STATUS=$(curl --noproxy '*' --silent --show-error --max-time 15 \
+        --resolve "$DOMAIN:443:127.0.0.1" --output /dev/null --write-out '%{http_code}' \
+        --header 'Content-Type: application/json' --data '{}' "https://$DOMAIN/auth/login")
+    [[ $LOGIN_STATUS == 400 ]] || die 'La ruta HTTPS /auth/login no devuelve la validacion esperada (400).'
+    RENEWAL_VERIFIED=false
+    if "$CERTBOT_BIN" renew --cert-name "$CERT_NAME" --dry-run; then
+        RENEWAL_VERIFIED=true
+    else
+        printf 'AVISO: la instalacion funciona por HTTPS, pero no se pudo verificar la renovacion.\n' >&2
+        printf 'Revisa /var/log/letsencrypt/letsencrypt.log. Si indica rateLimited o Service busy, espera antes de reintentar.\n' >&2
+        printf 'Reintenta solo la prueba: %s renew --cert-name %s --dry-run\n' "$CERTBOT_BIN" "$CERT_NAME" >&2
+    fi
+    printf '\nIdeasCore instalado: https://%s/\n' "$DOMAIN"
+    printf 'PostgreSQL, backend y certificado HTTPS verificados.\n'
+    if [[ $RENEWAL_VERIFIED == true ]]; then
+        printf 'Renovacion de prueba verificada.\n'
+    else
+        printf 'Renovacion automatica configurada; prueba de renovacion PENDIENTE. No vuelvas a ejecutar todo el instalador.\n'
+    fi
 fi
-printf '\nIdeasCore instalado: https://%s/\n' "$DOMAIN"
-printf 'PostgreSQL, backend y certificado HTTPS verificados.\n'
-if [[ $RENEWAL_VERIFIED == true ]]; then
-    printf 'Renovación de prueba verificada.\n'
-else
-    printf 'Renovación automática configurada; prueba de renovación PENDIENTE. No vuelvas a ejecutar todo el instalador.\n'
-fi
-printf 'Configuración: /etc/ideascore/server.env\nLogs: sudo journalctl -u ideascore -f\n'
-printf 'Login disponible: POST https://%s/auth/login\n' "$DOMAIN"
-printf 'Aplicacion web disponible: https://%s/\n' "$DOMAIN"
+printf 'Configuracion: /etc/ideascore/server.env\nLogs: sudo journalctl -u ideascore -f\n'
+printf 'Login disponible: POST %s://%s/auth/login\n' "$PUBLIC_SCHEME" "$DOMAIN"
+printf 'Aplicacion web disponible: %s://%s/\n' "$PUBLIC_SCHEME" "$DOMAIN"
 printf 'Propietario del servidor: %s\n' "$SERVER_OWNER"
 printf 'Empresas iniciales: ninguna. Crea la primera desde la app con el usuario server owner.\n'
 printf 'Pendiente: modulo Empresa, panel administrativo, sus permisos y provisionamiento de modulos.\n'

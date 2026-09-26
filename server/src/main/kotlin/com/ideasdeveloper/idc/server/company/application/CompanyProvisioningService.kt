@@ -311,13 +311,10 @@ class CompanyProvisioningService(
                     }
                 }
             }
-            sql.removePrefix("BEGIN;").removeSuffix("COMMIT;")
-                .split(";")
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-                .forEach { statementSql ->
-                    connection.createStatement().use { it.execute(statementSql) }
-                }
+            val migrationSql = sql.removePrefix("BEGIN;").removeSuffix("COMMIT;").trim()
+            connection.createStatement().use { statement ->
+                statement.execute(migrationSql)
+            }
             connection.prepareStatement("INSERT INTO schema_migrations (module, version, checksum) VALUES (?, ?, ?)").use { insert ->
                 insert.setString(1, module)
                 insert.setString(2, version)

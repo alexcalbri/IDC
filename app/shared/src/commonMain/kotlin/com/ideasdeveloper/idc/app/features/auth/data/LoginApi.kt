@@ -18,7 +18,7 @@ class LoginApi(serverUrl: String) {
     init {
         val url = Url(baseUrl)
         require(
-            url.protocol == URLProtocol.HTTPS &&
+            url.protocol in listOf(URLProtocol.HTTP, URLProtocol.HTTPS) &&
                     url.host.isNotBlank() &&
                     url.user == null &&
                     url.password == null &&
@@ -26,7 +26,7 @@ class LoginApi(serverUrl: String) {
                     url.fragment.isEmpty() &&
                     url.encodedPath in listOf("", "/")
         ) {
-            "Introduce la URL HTTPS del servidor, sin rutas."
+            "Introduce la URL del servidor con http:// o https://, sin rutas."
         }
     }
 

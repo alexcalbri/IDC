@@ -13,7 +13,9 @@ Implemented by `scripts/ubuntu/install.sh`.
 The installer:
 
 1. Requires Bash and root privileges.
-2. Installs/checks required system packages.
+2. Asks whether to run a clean installation. When confirmed with `LIMPIAR`, it removes previous IdeasCore files, service, Linux user, Nginx site and selected PostgreSQL objects before continuing.
+3. Asks for the public mode: `https` or `http`. HTTP requires an extra `HTTP` confirmation because it does not encrypt credentials or tokens.
+4. Installs/checks required system packages.
 3. Clones the selected Git branch/tag into `/opt/ideascore/source`.
 4. Builds:
    - backend server distribution;
@@ -35,7 +37,8 @@ The installer:
 14. Installs the web app under `/opt/ideascore/web`.
 15. Creates a systemd service.
 16. Configures Nginx to serve the web app and proxy `/auth/`, `/companies` and `/modules` to Ktor.
-17. Tests server-owner login.
+17. Uses HTTPS with Let's Encrypt when `https` is selected, or plain HTTP when `http` is explicitly confirmed.
+18. Tests server-owner login.
 
 Files involved:
 
@@ -234,7 +237,7 @@ Files:
 
 Flow:
 
-1. User enters server URL, username, password and optionally company code.
+1. User enters server URL, username, password and optionally company code. The server URL may use `https://` or `http://`; HTTP is intended only for installations explicitly published in HTTP mode.
 2. `LoginViewModel` calls `LoginApi`.
 3. `LoginApi` posts to `/auth/login`.
 4. On success, `SessionStore.save(...)` keeps the session in memory.

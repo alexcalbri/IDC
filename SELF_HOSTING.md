@@ -558,7 +558,21 @@ once the server, database and provisioning workflow are stable.
 
 ## 13. Reverse Proxy and TLS
 
-The Ubuntu installer now creates `/etc/nginx/sites-available/ideascore`
+The Ubuntu installer can run in two installation modes. The default mode refuses
+to overwrite an existing IdeasCore installation. The clean mode must be confirmed
+by typing `LIMPIAR`; it removes the IdeasCore systemd service, Linux user, app
+files, root-only config directory, Nginx site and selected PostgreSQL roles or
+databases before reinstalling. It can also remove tenant databases named
+`idc_*` when explicitly requested.
+
+The installer asks for the public mode: `https` or `http`. `https` uses Let's
+Encrypt. `http` skips certificate issuance and serves the web app over plain
+HTTP while proxying `/auth/`, `/companies` and `/modules` to Ktor. Choosing
+`http` prints a credential/token warning and requires typing `HTTP` to confirm.
+Use HTTP only as a temporary recovery/testing mode; enable HTTPS before
+production use.
+
+The Ubuntu installer normally creates `/etc/nginx/sites-available/ideascore`
 and enables it without replacing other sites. It rejects an existing
 IdeasCore site or an existing Nginx configuration mentioning the supplied
 domain. It preserves other Certbot certificates and uses the certificate
