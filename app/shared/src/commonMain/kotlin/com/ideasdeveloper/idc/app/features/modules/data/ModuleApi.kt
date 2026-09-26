@@ -11,13 +11,17 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 
+// Cliente HTTP para consultar metadata de modulos server-driven.
 class ModuleApi(serverUrl: String) {
+    // Normaliza la URL base configurada durante el login.
     private val baseUrl = serverUrl.trim().trimEnd('/')
 
     init {
+        // Valida que la URL sea parseable antes de construir endpoints.
         Url(baseUrl)
     }
 
+    // Cliente Ktor ligero para obtener definiciones de modulo.
     private val client = HttpClient {
         expectSuccess = false
         followRedirects = false
@@ -32,6 +36,7 @@ class ModuleApi(serverUrl: String) {
         }
     }
 
+    // Carga la definicion que la UI generica usara para presentar el modulo.
     suspend fun metadata(moduleId: String): ModuleDefinition {
         try {
             val response = client.get("$baseUrl/modules/$moduleId/metadata")
@@ -48,6 +53,7 @@ class ModuleApi(serverUrl: String) {
         }
     }
 
+    // Libera recursos del cliente HTTP.
     fun close() {
         client.close()
     }

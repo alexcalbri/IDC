@@ -19,11 +19,14 @@ data class LoginUiState(
     val succeeded: Boolean = false,
 )
 
+// Coordina validacion, llamada de login y persistencia de sesion/configuracion.
 class LoginViewModel : ViewModel() {
 
+    // Estado observable por la pantalla de login.
     private val _state = MutableStateFlow(LoginUiState())
     val state = _state.asStateFlow()
 
+    // Ejecuta el flujo completo de autenticacion contra el servidor configurado.
     fun login(
         serverUrl: String,
         username: String,
@@ -33,6 +36,7 @@ class LoginViewModel : ViewModel() {
     ) {
         if (_state.value.isLoading) return
 
+        // Valida campos basicos antes de abrir una conexion HTTP.
         if (username.isBlank() || password.isEmpty()) {
             _state.value = LoginUiState(
                 error = "Introduce usuario y contraseña."
@@ -41,6 +45,7 @@ class LoginViewModel : ViewModel() {
         }
 
         val code = companyCode?.trim()
+        // Asegura que el codigo tenant use el mismo formato esperado por el servidor.
         if (code != null && !code.matches(Regex("[a-z][a-z0-9_]{0,62}"))) {
             _state.value = LoginUiState(
                 error = "Introduce un código de empresa válido."
@@ -56,6 +61,7 @@ class LoginViewModel : ViewModel() {
             try {
                 api = LoginApi(serverUrl)
 
+                // Solicita al servidor token, rol y modulos habilitados para esta sesion.
                 val response = api.login(
                     LoginRequest(
                         username = username.trim(),
@@ -64,6 +70,7 @@ class LoginViewModel : ViewModel() {
                     )
                 )
 
+                // Guarda sesion y configuracion para que el resto de la app pueda navegar.
                 SessionStore.save(response, keepSignedIn = keepSignedIn)
                 ClientConfigurationStore.save(
                     ClientConfiguration(

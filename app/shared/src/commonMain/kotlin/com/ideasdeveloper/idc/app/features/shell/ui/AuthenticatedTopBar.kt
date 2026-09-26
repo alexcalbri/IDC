@@ -31,6 +31,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 @Composable
+// Renderiza la barra superior compartida por pantallas autenticadas.
 fun AuthenticatedTopBar(
     title: String,
     primaryColor: Color,
@@ -39,6 +40,7 @@ fun AuthenticatedTopBar(
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Controla el menu de acciones y anima el icono cuando se abre.
     var menuExpanded by remember { mutableStateOf(false) }
     val menuRotation by animateFloatAsState(
         targetValue = if (menuExpanded) 90f else 0f,
@@ -51,6 +53,7 @@ fun AuthenticatedTopBar(
             .padding(horizontal = 20.dp, vertical = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        // Muestra el logo provisional de la empresa o servidor.
         Box(
             modifier = Modifier
                 .size(48.dp)
@@ -66,6 +69,7 @@ fun AuthenticatedTopBar(
 
         Spacer(modifier = Modifier.width(14.dp))
 
+        // Muestra titulo y subtitulo contextual de la pantalla actual.
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
@@ -82,6 +86,7 @@ fun AuthenticatedTopBar(
             }
         }
 
+        // Agrupa ajustes y cierre de sesion en un menu compacto.
         Box {
             IconButton(
                 onClick = { menuExpanded = !menuExpanded },
@@ -120,6 +125,7 @@ fun AuthenticatedTopBar(
     }
 }
 
+// Convierte colores hex guardados por la empresa a Color de Compose.
 fun String.toComposeColor(fallback: Color): Color {
     val hex = trim().removePrefix("#")
     if (hex.length != 6) return fallback

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.core.company
 
+// Identidad visual que el cliente usa para pintar pantallas con marca de empresa.
 data class CompanyIdentity(
     val id: String,
     val code: String,
@@ -10,6 +11,7 @@ data class CompanyIdentity(
     val accentColor: String,
 )
 
+// Identidad por defecto cuando la sesion pertenece al dueno del servidor.
 val ServerOwnerIdentity = CompanyIdentity(
     id = "server",
     code = "server",

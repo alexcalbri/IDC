@@ -45,6 +45,7 @@ import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
 
 @Composable
+// Renderiza la administracion de empresas disponible para el dueno del servidor.
 fun CompanyProvisioningScreen(
     serverUrl: String?,
     session: LoginResponse?,
@@ -53,6 +54,7 @@ fun CompanyProvisioningScreen(
     onMinimize: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Usa la identidad visual activa para mantener la misma marca que dashboard y login.
     val companyIdentity = remember { CompanyIdentityStore.current() }
     val primaryColor = remember(companyIdentity.primaryColor) {
         companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
@@ -74,6 +76,7 @@ fun CompanyProvisioningScreen(
     var companies by remember { mutableStateOf<List<CompanySummaryResponse>>(emptyList()) }
     var companyPendingDeletion by remember { mutableStateOf<String?>(null) }
 
+    // Recarga empresas y modulos habilitables desde el servidor actual.
     fun refreshCompanies() {
         val activeServerUrl = serverUrl ?: return
         val activeSession = session ?: return
@@ -92,6 +95,7 @@ fun CompanyProvisioningScreen(
         }
     }
 
+    // Actualiza la lista cuando cambia la URL del servidor o la sesion autenticada.
     LaunchedEffect(serverUrl, session?.accessToken) {
         refreshCompanies()
     }
@@ -110,6 +114,7 @@ fun CompanyProvisioningScreen(
             modifier = Modifier.align(Alignment.TopCenter),
         )
 
+        // Contiene el formulario de nueva empresa y la lista de empresas existentes.
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.92f)
@@ -124,6 +129,7 @@ fun CompanyProvisioningScreen(
             ) {
                 Text("Nueva empresa", style = MaterialTheme.typography.titleLarge, color = primaryColor)
 
+                // Captura los datos requeridos para crear el tenant y su business owner inicial.
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it.trim().lowercase() },
@@ -183,6 +189,7 @@ fun CompanyProvisioningScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // Minimiza la pantalla y vuelve al dashboard sin perder la sesion.
                     Button(
                         onClick = onMinimize,
                         enabled = !isLoading,
@@ -200,6 +207,7 @@ fun CompanyProvisioningScreen(
                                 ownerPassword.length >= 12 &&
                                 ownerPassword == ownerPasswordConfirmation,
                         onClick = {
+                            // Crea la empresa y refresca la lista para mostrar sus modulos disponibles.
                             val activeServerUrl = serverUrl ?: return@Button
                             val activeSession = session ?: return@Button
                             isLoading = true
@@ -253,6 +261,7 @@ fun CompanyProvisioningScreen(
                 }
 
                 companies.forEach { company ->
+                    // Renderiza cada tenant administrable con acciones de estado, borrado y modulos.
                     CompanyModulesRow(
                         company = company,
                         primaryColor = primaryColor,
@@ -350,6 +359,7 @@ fun CompanyProvisioningScreen(
 }
 
 @Composable
+// Renderiza una empresa existente y sus modulos activables.
 private fun CompanyModulesRow(
     company: CompanySummaryResponse,
     primaryColor: Color,
@@ -381,6 +391,7 @@ private fun CompanyModulesRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // Cambia entre activar y desactivar la empresa completa.
             Button(
                 enabled = enabled,
                 onClick = { onChangeStatus(!company.isActive) },
@@ -392,6 +403,7 @@ private fun CompanyModulesRow(
                 Text(if (company.isActive) "Desactivar" else "Reactivar")
             }
             if (!company.isActive) {
+                // Exige una segunda pulsacion antes de borrar la base tenant.
                 Button(
                     enabled = enabled,
                     onClick = if (pendingDeletion) onConfirmDelete else onRequestDelete,
@@ -415,6 +427,7 @@ private fun CompanyModulesRow(
         }
 
         company.modules.forEach { module ->
+            // Permite activar o desactivar cada modulo no bloqueado de la empresa.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -439,6 +452,7 @@ private fun CompanyModulesRow(
     }
 }
 
+// Cierra el cliente HTTP de empresas despues de cada uso suspendido.
 private suspend inline fun <T> CompanyApi.use(block: suspend (CompanyApi) -> T): T {
     return try {
         block(this)

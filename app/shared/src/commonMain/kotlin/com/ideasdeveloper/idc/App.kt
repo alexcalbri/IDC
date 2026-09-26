@@ -32,6 +32,7 @@ import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
 import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.features.auth.ui.LoginScreen
+import com.ideasdeveloper.idc.app.features.company.ui.CompanyManagementScreen
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyProvisioningScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
@@ -41,8 +42,10 @@ import com.ideasdeveloper.idc.navigation.NavRoute
 import com.ideasdeveloper.idc.navigation.NavRoute.Companion.routeName
 
 @Composable
+// Orquesta la navegacion principal segun exista o no una sesion restaurada.
 fun App(initialServerUrl: String = "") {
     MaterialTheme {
+        // Restaura la sesion, identidad visual y configuracion local antes de construir rutas.
         val navController = rememberNavController()
         val restoredSession = remember { SessionStore.restore() }
         val session by SessionStore.session.collectAsState()
@@ -50,6 +53,7 @@ fun App(initialServerUrl: String = "") {
         remember { CompanyIdentityStore.restore() }
         var clientConfiguration by remember { mutableStateOf(ClientConfigurationStore.load()) }
 
+        // Regresa al dashboard limpiando pantallas duplicadas de la pila.
         fun openDashboard() {
             navController.navigate("dashboard") {
                 popUpTo("dashboard") {
@@ -59,6 +63,7 @@ fun App(initialServerUrl: String = "") {
             }
         }
 
+        // Cierra la sesion local y deja al usuario en la pantalla de login.
         fun logout() {
             SessionStore.clear()
             navController.navigate("login") {
@@ -69,6 +74,7 @@ fun App(initialServerUrl: String = "") {
             }
         }
 
+        // Define las rutas activas de la app y decide la pantalla inicial.
         NavHost(
             navController = navController,
             startDestination = if (restoredSession == null) "login" else "dashboard"
@@ -77,6 +83,7 @@ fun App(initialServerUrl: String = "") {
                 LoginScreen(
                     initialServerUrl = initialServerUrl,
                     onLoginSuccess = {
+                        // Recarga la configuracion guardada por el login antes de entrar al dashboard.
                         clientConfiguration = ClientConfigurationStore.load()
                         navController.navigate("dashboard") {
                             popUpTo("login") {
@@ -88,6 +95,7 @@ fun App(initialServerUrl: String = "") {
                 )
             }
             composable("dashboard") {
+                // Muestra el punto de entrada autenticado con los modulos disponibles.
                 DashboardScreen(
                     session = currentSession,
                     onNavigateTo = { route -> navController.navigate(route.routeName()) },
@@ -99,15 +107,27 @@ fun App(initialServerUrl: String = "") {
                     getStringOrNull("moduleId")
                 }.orEmpty()
                 val moduleName = moduleId.toModuleTitle()
-                if (moduleId == "empresa" && currentSession?.role == "server_owner") {
-                    CompanyProvisioningScreen(
-                        serverUrl = clientConfiguration?.serverUrl,
-                        session = currentSession,
-                        onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                        onLogout = ::logout,
-                        onMinimize = ::openDashboard,
-                    )
+                // La administracion de Empresa usa pantallas propias para dueno del servidor y dueno del negocio.
+                if (moduleId == "empresa") {
+                    if (currentSession?.role == "server_owner") {
+                        CompanyProvisioningScreen(
+                            serverUrl = clientConfiguration?.serverUrl,
+                            session = currentSession,
+                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                            onLogout = ::logout,
+                            onMinimize = ::openDashboard,
+                        )
+                    } else {
+                        CompanyManagementScreen(
+                            serverUrl = clientConfiguration?.serverUrl,
+                            session = currentSession,
+                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                            onLogout = ::logout,
+                            onMinimize = ::openDashboard,
+                        )
+                    }
                 } else {
+                    // Los demas modulos se renderizan desde metadata recibida del servidor.
                     ServerDrivenModuleScreen(
                         moduleId = moduleId,
                         serverUrl = clientConfiguration?.serverUrl,
@@ -119,6 +139,7 @@ fun App(initialServerUrl: String = "") {
                 }
             }
             composable("settings") {
+                // Mantiene disponible la ruta de ajustes mientras se implementa la pantalla final.
                 ModulePlaceholderScreen(
                     moduleName = "Ajustes",
                     viewName = "Preferencias",
@@ -132,6 +153,7 @@ fun App(initialServerUrl: String = "") {
     }
 }
 
+// Convierte ids de modulo en titulos legibles para las pantallas internas.
 private fun String.toModuleTitle(): String = when (this) {
     "empresa" -> "Empresa"
     "clientes" -> "Clientes"
@@ -141,6 +163,7 @@ private fun String.toModuleTitle(): String = when (this) {
 }
 
 @Composable
+// Renderiza una pantalla temporal con la barra autenticada y una accion para volver al dashboard.
 private fun ModulePlaceholderScreen(
     moduleName: String,
     viewName: String?,

@@ -11,11 +11,14 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.json.Json
 
+// Cliente HTTP encargado solo del inicio de sesion.
 class LoginApi(serverUrl: String) {
 
+    // Normaliza la URL base para construir endpoints sin dobles barras.
     private val baseUrl = serverUrl.trim().trimEnd('/')
 
     init {
+        // Acepta solo URLs raiz http/https para evitar rutas inesperadas en la configuracion.
         val url = Url(baseUrl)
         require(
             url.protocol in listOf(URLProtocol.HTTP, URLProtocol.HTTPS) &&
@@ -30,6 +33,7 @@ class LoginApi(serverUrl: String) {
         }
     }
 
+    // Cliente Ktor con JSON tolerante a campos nuevos enviados por el servidor.
     private val client = HttpClient {
         expectSuccess = false
         followRedirects = false
@@ -46,6 +50,7 @@ class LoginApi(serverUrl: String) {
         }
     }
 
+    // Envia credenciales al endpoint de login y traduce estados HTTP a mensajes de UI.
     suspend fun login(request: LoginRequest): LoginResponse {
         try {
             val response = client.post("$baseUrl/auth/login") {
@@ -86,6 +91,7 @@ class LoginApi(serverUrl: String) {
         }
     }
 
+    // Libera recursos del cliente cuando termina el flujo de login.
     fun close() {
         client.close()
     }

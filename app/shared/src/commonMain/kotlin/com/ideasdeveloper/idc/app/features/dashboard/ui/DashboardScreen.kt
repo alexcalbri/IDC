@@ -22,14 +22,18 @@ import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import com.ideasdeveloper.idc.navigation.NavRoute
 
 @Composable
+// Renderiza el dashboard principal con las acciones disponibles para la sesion actual.
 fun DashboardScreen(
     session: LoginResponse?,
     onNavigateTo: (NavRoute) -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Determina si el usuario puede entrar a la administracion de empresa.
     val canSeeEmpresa = session?.role in setOf("server_owner", "business_owner")
+    // Obtiene los modulos activos que el servidor envio durante el inicio de sesion.
     val enabledModules = session?.enabledModules.orEmpty()
+    // Carga la identidad visual de la empresa para pintar el dashboard.
     val companyIdentity = remember { CompanyIdentityStore.current() }
     val primaryColor = remember(companyIdentity.primaryColor) {
         companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
@@ -38,6 +42,7 @@ fun DashboardScreen(
         companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2))
     }
 
+    // Renderiza el fondo principal con los colores configurados para la empresa.
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -47,6 +52,7 @@ fun DashboardScreen(
                 )
             )
     ) {
+        // Renderiza la barra superior autenticada con acceso a ajustes y cierre de sesion.
         AuthenticatedTopBar(
             title = "Dashboard",
             subtitle = "Principal",
@@ -77,6 +83,7 @@ fun DashboardScreen(
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 24.dp)
             )
 
+            // Renderiza la tarjeta de Empresa para roles autorizados.
             if (canSeeEmpresa) {
                 DashboardActionCard(
                     title = "Empresa",
@@ -85,8 +92,10 @@ fun DashboardScreen(
                     primaryColor = primaryColor,
                     onClick = { onNavigateTo(NavRoute.Module("empresa")) }
                 )
+                Spacer(modifier = Modifier.height(12.dp))
             }
 
+            // Renderiza los modulos activos recibidos desde el servidor.
             enabledModules
                 .filter { it != "empresa" }
                 .forEach { moduleId ->
@@ -106,13 +115,23 @@ fun DashboardScreen(
     }
 }
 
-private fun String.toDashboardModule(): DashboardModule = when (this) {
-    "clientes" -> DashboardModule("Clientes", "Gestiona la identidad compartida de clientes", "C")
-    "hostpot" -> DashboardModule("Hostpot", "Modulo Hostpot pendiente", "H")
-    "crm" -> DashboardModule("CRM", "Modulo CRM pendiente", "C")
-    else -> DashboardModule(replace("-", " ").replace("_", " "), "Modulo pendiente", take(1).uppercase())
+// Convierte cualquier id tecnico recibido desde el servidor en textos genericos para el dashboard.
+private fun String.toDashboardModule(): DashboardModule {
+    val title = toDisplayName()
+    return DashboardModule(
+        title = title,
+        description = "Abrir modulo $title",
+        iconText = title.take(1).uppercase(),
+    )
 }
 
+// Convierte ids como customer-module o customer_module en nombres legibles para el usuario.
+private fun String.toDisplayName(): String = split('-', '_')
+    .filter { it.isNotBlank() }
+    .joinToString(" ") { word -> word.replaceFirstChar { char -> char.uppercase() } }
+    .ifBlank { "Modulo" }
+
+// Representa la informacion visual minima de una tarjeta de modulo.
 private data class DashboardModule(
     val title: String,
     val description: String,
@@ -121,6 +140,7 @@ private data class DashboardModule(
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+// Renderiza una tarjeta clickeable para navegar a una accion o modulo.
 private fun DashboardActionCard(
     title: String,
     description: String,
@@ -128,6 +148,7 @@ private fun DashboardActionCard(
     primaryColor: Color,
     onClick: () -> Unit,
 ) {
+    // Crea la tarjeta visual y ejecuta la navegacion al hacer click.
     Card(
         onClick = onClick,
         modifier = Modifier.fillMaxWidth(),
@@ -142,6 +163,7 @@ private fun DashboardActionCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+            // Renderiza el circulo con la inicial o icono textual del modulo.
             Box(
                 modifier = Modifier
                     .size(42.dp)
@@ -155,6 +177,7 @@ private fun DashboardActionCard(
                     fontWeight = FontWeight.Bold,
                 )
             }
+            // Renderiza el titulo y la descripcion de la accion.
             Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = title,

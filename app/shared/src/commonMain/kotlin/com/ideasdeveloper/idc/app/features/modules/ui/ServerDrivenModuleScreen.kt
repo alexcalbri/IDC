@@ -35,6 +35,7 @@ import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 
 @Composable
+// Renderiza un modulo generico usando metadata servida por el backend.
 fun ServerDrivenModuleScreen(
     moduleId: String,
     serverUrl: String?,
@@ -44,6 +45,7 @@ fun ServerDrivenModuleScreen(
     onMinimize: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    // Usa la identidad visual de la empresa para mantener continuidad con el dashboard.
     val companyIdentity = remember { CompanyIdentityStore.current() }
     val primaryColor = remember(companyIdentity.primaryColor) {
         companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
@@ -55,6 +57,7 @@ fun ServerDrivenModuleScreen(
     var error by remember(moduleId) { mutableStateOf<String?>(null) }
     var loading by remember(moduleId) { mutableStateOf(false) }
 
+    // Carga la definicion del modulo cada vez que cambia el modulo o servidor.
     LaunchedEffect(moduleId, serverUrl) {
         val activeServerUrl = serverUrl
         if (activeServerUrl == null) {
@@ -86,6 +89,7 @@ fun ServerDrivenModuleScreen(
             modifier = Modifier.align(Alignment.TopCenter),
         )
 
+        // Muestra estado de carga, error o las vistas declaradas por el servidor.
         Surface(
             modifier = Modifier
                 .fillMaxWidth(0.9f)
@@ -124,6 +128,7 @@ fun ServerDrivenModuleScreen(
     }
 }
 
+// Cierra el cliente HTTP de modulos despues de cada uso suspendido.
 private suspend inline fun <T> ModuleApi.use(block: suspend (ModuleApi) -> T): T {
     return try {
         block(this)

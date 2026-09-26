@@ -12,6 +12,7 @@ sealed class NavRoute {
     object Settings : NavRoute()
 
     companion object {
+        // Reconstruye una ruta tipada desde el nombre usado por Compose Navigation.
         fun fromString(route: String): NavRoute = when (route) {
             "login" -> Login
             "dashboard" -> Dashboard
@@ -23,6 +24,7 @@ sealed class NavRoute {
             }
         }
 
+        // Convierte una ruta tipada al formato string que consume NavHost.
         fun NavRoute.routeName(): String = when (this) {
             is Login -> "login"
             is Dashboard -> "dashboard"

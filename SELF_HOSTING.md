@@ -408,6 +408,7 @@ Document verified variables in a table here as they are implemented:
 | `PROVISIONING_DB_URL` | No | PostgreSQL administration database URL used before `SET ROLE server_owner`; defaults to `DB_URL`. |
 | `TENANT_JDBC_URL_PREFIX` | No | Prefix used for newly created tenant JDBC URLs; defaults to the central DB URL up to the last `/`. |
 | `MIGRATIONS_ROOT` | No | Repository/source root containing `database/...` migrations; defaults to the server working directory. |
+| `COMPANY_BACKUPS_ROOT` | No | Server-side directory for company ZIP files created from the Empresa business-owner screen; defaults to `build/company-backups`. |
 
 `EngineMain` loads `application.conf` and starts
 `com.ideasdeveloper.idc.server.app.ApplicationKt.module`. `DatabaseFactory`
@@ -628,6 +629,19 @@ appropriate backup when they can modify persistent data.
 
 A restore procedure is as important as a backup procedure. Test
 restores.
+
+### Empresa module ZIPs
+
+**Implemented:** a signed-in `business_owner` can use the Empresa screen to
+create, list, download and delete ZIP files stored under
+`COMPANY_BACKUPS_ROOT`. The current ZIP contains company profile metadata and
+is useful for validating the UI/server flow.
+
+**Planned:** full tenant database export/import. Restoring a full ZIP is a
+destructive database operation and is not enabled in the current code. When
+implemented, it must preserve access for the active `business_owner`, validate
+tenant ownership server-side and be tested before being documented as a
+production restore workflow.
 
 ------------------------------------------------------------------------
 

@@ -28,11 +28,13 @@ import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
 import com.ideasdeveloper.idc.app.features.auth.presentation.LoginViewModel
 
 @Composable
+// Renderiza el formulario de inicio de sesion y dispara la navegacion cuando el login termina bien.
 fun LoginScreen(
     onLoginSuccess: () -> Unit,
     modifier: Modifier = Modifier,
     initialServerUrl: String = "",
 ) {
+    // Prepara el estado de login y la configuracion guardada para evitar pedir datos repetidos.
     val loginViewModel: LoginViewModel = viewModel {
         LoginViewModel()
     }
@@ -65,6 +67,7 @@ fun LoginScreen(
 
     val isLoading = state.isLoading
 
+    // Cuando el ViewModel confirma el login, limpia la contrasena y avanza al dashboard.
     LaunchedEffect(state.succeeded) {
         if (state.succeeded) {
             password = ""
@@ -88,7 +91,7 @@ fun LoginScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = CenterHorizontally
         ) {
-            // Logo Placeholder (geometric)
+            // Renderiza el logo provisional con la identidad visual configurada.
             Spacer(modifier = Modifier.height(40.dp))
             Box(
                 modifier = Modifier
@@ -119,7 +122,7 @@ fun LoginScreen(
             )
             Spacer(Modifier.height(16.dp))
             if (needsServerConfiguration) {
-                //servidor
+                // Solicita la URL solo cuando no existe configuracion local previa.
                 Box(
                     modifier = Modifier
                         .background(Color.White.copy(alpha = 0.15f), MaterialTheme.shapes.medium)
@@ -147,6 +150,7 @@ fun LoginScreen(
                 Spacer(Modifier.height(16.dp))
             }
                 if (!serverAdministration) {
+                    // Solicita codigo de empresa solo para sesiones tenant.
                     Box(
                         modifier = Modifier
                             .background(Color.White.copy(alpha = 0.15f), MaterialTheme.shapes.medium)
@@ -172,7 +176,7 @@ fun LoginScreen(
                 }
                 Spacer(Modifier.height(16.dp))
 
-            // User Field
+            // Captura el usuario con el que se autenticara contra el servidor.
             Box(
                 modifier = Modifier
                     .background(Color.White.copy(alpha = 0.15f), MaterialTheme.shapes.medium)
@@ -199,7 +203,7 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // Password Field
+            // Captura la contrasena y permite alternar su visibilidad.
             Box(
                 modifier = Modifier
                     .background(Color.White.copy(alpha = 0.15f), MaterialTheme.shapes.medium)
@@ -236,6 +240,7 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
+            // Permite persistir la sesion para que la app abra directo al dashboard.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
@@ -250,7 +255,7 @@ fun LoginScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
 
-            // error message
+            // Muestra errores de validacion local o del servidor.
             state.error?.let { message ->
                 Text(
                     text = message,
@@ -259,7 +264,7 @@ fun LoginScreen(
                 )
             }
 
-            // Login Button
+            // Envia credenciales, URL y codigo de empresa al ViewModel.
             Button(
                 onClick = {
                     loginViewModel.login(
@@ -302,7 +307,7 @@ fun LoginScreen(
             Spacer(modifier = Modifier.height(16.dp))
         }
 
-        // Footer
+        // Renderiza el pie con version y acceso oculto a administracion del servidor.
         Row(
             modifier = Modifier
                 .fillMaxWidth()

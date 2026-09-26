@@ -608,8 +608,14 @@ behavior.
 Empresa is the first Core module surfaced in the client dashboard. It is
 always active for `server_owner` and `business_owner` sessions. For
 `server_owner`, `module/empresa` opens the implemented company provisioning
-screen. Other module routes use the generic server-driven module screen and
-load display metadata from the backend.
+screen. For `business_owner`, `module/empresa` opens the implemented company
+management screen for editing the company's display name, logo URL and brand
+colors. The same screen lists company ZIP files stored by the server, can
+create a non-destructive profile ZIP and can delete stored ZIPs. Full tenant
+database export/import and destructive restore from ZIP are planned but not
+yet implemented; such restore must keep the active business owner accessible.
+Other module routes use the generic server-driven module screen and load
+display metadata from the backend.
 
 The backend source is organized under `com.ideasdeveloper.idc.server`.
 The Ktor entry point lives in `server.app`, database bootstrap in
@@ -702,11 +708,15 @@ created through the Empresa API are added to the running resolver immediately, a
 server restarts can reconstruct company tenant connections from the central
 `companies.database_name` registry plus `TENANT_JDBC_URL_PREFIX`.
 Local code includes `/auth/login`, `GET /companies`, `POST /companies`,
+`GET /companies/me`, `PUT /companies/me`, `GET /companies/me/backups`,
+`POST /companies/me/backups`, `DELETE /companies/me/backups/{fileName}`,
+`GET /companies/me/backups/{fileName}/download`,
 `PUT /companies/{code}/modules/{moduleId}`, `/modules`,
 `/modules/{moduleId}/metadata`, active-user mapping, opaque session issuance,
 session validation/revocation services and IP-based login/admin rate limits.
 Login now selects the proper database and reports server/business ownership;
-protected business operations remain incomplete. Company administration can create,
+company self-management validates a tenant-scoped `business_owner` session
+before reading or updating company profile metadata. Company administration can create,
 deactivate, reactivate and delete deactivated companies, including their central
 registry rows, tenant databases and business-owner PostgreSQL roles. The revised installation and end-to-end login still require
 clean-host validation. Do not interpret

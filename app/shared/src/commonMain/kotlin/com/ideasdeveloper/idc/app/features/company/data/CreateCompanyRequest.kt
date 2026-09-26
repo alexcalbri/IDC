@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.app.features.company.data
 import kotlinx.serialization.Serializable
 
 @Serializable
+// Payload para crear un tenant con su identidad visual y usuario dueno inicial.
 data class CreateCompanyRequest(
     val code: String,
     val name: String,

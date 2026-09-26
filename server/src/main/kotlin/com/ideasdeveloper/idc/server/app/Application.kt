@@ -10,6 +10,7 @@ import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGe
 import com.ideasdeveloper.idc.server.company.api.companyRoutes
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningService
+import com.ideasdeveloper.idc.server.company.application.CompanySelfService
 import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
@@ -24,6 +25,7 @@ import io.ktor.server.plugins.ratelimit.RateLimitName
 import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
+import java.nio.file.Path
 import kotlin.time.Duration.Companion.seconds
 
 fun main(args: Array<String>) {
@@ -98,6 +100,15 @@ fun Application.module() {
             moduleRegistry = moduleRegistry,
         )
     }
+    // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
+    val companySelfService = CompanySelfService(
+        central = DatabaseFactory.getDataSource(),
+        loginDatabases = loginDatabases,
+        backupsRoot = Path.of(
+            environment.config.propertyOrNull("company.backupsRoot")?.getString()
+                ?: "build/company-backups"
+        ),
+    )
     monitor.subscribe(ApplicationStopped) {
         loginDatabases.close()
         DatabaseFactory.close()
@@ -114,9 +125,11 @@ fun Application.module() {
             )
         }
         rateLimit(RateLimitName("admin")) {
+            // Registra rutas de provisioning server_owner y autoservicio business_owner.
             companyRoutes(
                 authorizer = ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions),
                 provisioning = companyProvisioning,
+                selfService = companySelfService,
             )
         }
         moduleRoutes(moduleRegistry)
