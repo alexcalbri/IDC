@@ -14,11 +14,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,7 +52,7 @@ fun CompanyManagementScreen(
     session: LoginResponse?,
     onSettings: () -> Unit,
     onLogout: () -> Unit,
-    onMinimize: () -> Unit,
+    onReturnToDashboard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val scope = rememberCoroutineScope()
@@ -64,10 +65,30 @@ fun CompanyManagementScreen(
     var name by remember { mutableStateOf(companyIdentity.name) }
     var logoUrl by remember { mutableStateOf(companyIdentity.logoUrl.orEmpty()) }
     var accentColor by remember { mutableStateOf(companyIdentity.accentColor) }
+    var savedName by remember { mutableStateOf(companyIdentity.name) }
+    var savedLogoUrl by remember { mutableStateOf(companyIdentity.logoUrl.orEmpty()) }
+    var savedPrimaryColor by remember { mutableStateOf(companyIdentity.primaryColor) }
+    var savedSecondaryColor by remember { mutableStateOf(companyIdentity.secondaryColor) }
+    var savedAccentColor by remember { mutableStateOf(companyIdentity.accentColor) }
     var backups by remember { mutableStateOf<List<CompanyBackupResponse>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var confirmReturnToDashboard by remember { mutableStateOf(false) }
+    val hasUnsavedChanges =
+        name != savedName ||
+                logoUrl != savedLogoUrl ||
+                primaryColor != savedPrimaryColor ||
+                secondaryColor != savedSecondaryColor ||
+                accentColor != savedAccentColor
+
+    fun requestReturnToDashboard() {
+        if (hasUnsavedChanges) {
+            confirmReturnToDashboard = true
+        } else {
+            onReturnToDashboard()
+        }
+    }
 
     // Recarga los ZIPs disponibles para la empresa autenticada.
     fun refreshBackups() {
@@ -92,6 +113,11 @@ fun CompanyManagementScreen(
         primaryColor = profile.primaryColor
         secondaryColor = profile.secondaryColor
         accentColor = profile.accentColor
+        savedName = profile.name
+        savedLogoUrl = profile.logoUrl.orEmpty()
+        savedPrimaryColor = profile.primaryColor
+        savedSecondaryColor = profile.secondaryColor
+        savedAccentColor = profile.accentColor
         CompanyIdentityStore.save(
             CompanyIdentity(
                 id = profile.code,
@@ -132,10 +158,34 @@ fun CompanyManagementScreen(
             title = "Empresa",
             subtitle = "Perfil y backups",
             primaryColor = primaryCompose,
+            onReturnToDashboard = ::requestReturnToDashboard,
             onSettings = onSettings,
             onLogout = onLogout,
             modifier = Modifier.align(Alignment.TopCenter),
         )
+
+        if (confirmReturnToDashboard) {
+            AlertDialog(
+                onDismissRequest = { confirmReturnToDashboard = false },
+                title = { Text("Salir sin guardar") },
+                text = { Text("Hay cambios sin guardar. Deseas volver al panel?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            confirmReturnToDashboard = false
+                            onReturnToDashboard()
+                        },
+                    ) {
+                        Text("Salir y volver")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmReturnToDashboard = false }) {
+                        Text("Permanecer")
+                    }
+                },
+            )
+        }
 
         Surface(
             modifier = Modifier
@@ -151,42 +201,18 @@ fun CompanyManagementScreen(
             ) {
                 Text("Datos de empresa", style = MaterialTheme.typography.titleLarge, color = primaryCompose)
 
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Nombre") },
+                CompanyProfileFields(
+                    name = name,
+                    logoUrl = logoUrl,
+                    primaryColor = primaryColor,
+                    secondaryColor = secondaryColor,
+                    accentColor = accentColor,
                     enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = logoUrl,
-                    onValueChange = { logoUrl = it },
-                    label = { Text("Logo URL") },
-                    enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = primaryColor,
-                        onValueChange = { primaryColor = it },
-                        label = { Text("Color primario") },
-                        enabled = !isLoading,
-                        modifier = Modifier.weight(1f),
-                    )
-                    OutlinedTextField(
-                        value = secondaryColor,
-                        onValueChange = { secondaryColor = it },
-                        label = { Text("Color secundario") },
-                        enabled = !isLoading,
-                        modifier = Modifier.weight(1f),
-                    )
-                }
-                OutlinedTextField(
-                    value = accentColor,
-                    onValueChange = { accentColor = it },
-                    label = { Text("Color acento") },
-                    enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
+                    onNameChange = { name = it },
+                    onLogoUrlChange = { logoUrl = it },
+                    onPrimaryColorChange = { primaryColor = it },
+                    onSecondaryColorChange = { secondaryColor = it },
+                    onAccentColorChange = { accentColor = it },
                 )
 
                 error?.let { Text(it, color = Color(0xFFB00020)) }
@@ -198,11 +224,11 @@ fun CompanyManagementScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Button(
-                        onClick = onMinimize,
+                        onClick = ::requestReturnToDashboard,
                         enabled = !isLoading,
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryCompose),
                     ) {
-                        Text("Minimizar")
+                        Text("Volver al panel")
                     }
                     Button(
                         enabled = !isLoading && serverUrl != null && session?.companyCode != null,

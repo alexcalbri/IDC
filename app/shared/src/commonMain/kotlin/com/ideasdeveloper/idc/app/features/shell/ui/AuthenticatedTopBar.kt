@@ -36,6 +36,7 @@ fun AuthenticatedTopBar(
     title: String,
     primaryColor: Color,
     subtitle: String? = null,
+    onReturnToDashboard: (() -> Unit)? = null,
     onSettings: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
@@ -106,6 +107,15 @@ fun AuthenticatedTopBar(
                 expanded = menuExpanded,
                 onDismissRequest = { menuExpanded = false },
             ) {
+                onReturnToDashboard?.let { returnToDashboard ->
+                    DropdownMenuItem(
+                        text = { Text("Volver al panel") },
+                        onClick = {
+                            menuExpanded = false
+                            returnToDashboard()
+                        },
+                    )
+                }
                 DropdownMenuItem(
                     text = { Text("Ajustes") },
                     onClick = {

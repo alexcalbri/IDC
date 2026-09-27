@@ -9,6 +9,10 @@ data class CompanySummaryResponse(
     val databaseName: String,
     val isActive: Boolean,
     val modules: List<CompanyModuleResponse>,
+    val logoUrl: String? = null,
+    val primaryColor: String = "#667EEA",
+    val secondaryColor: String = "#764BA2",
+    val accentColor: String = "#FFFFFF",
 )
 
 @Serializable
@@ -17,6 +21,15 @@ data class CompanyModuleResponse(
     val displayName: String,
     val enabled: Boolean,
     val locked: Boolean,
+)
+
+@Serializable
+data class ServerModuleResponse(
+    val moduleId: String,
+    val displayName: String,
+    val description: String,
+    val locked: Boolean,
+    val activeCompanyCount: Int,
 )
 
 @Serializable
@@ -32,4 +45,8 @@ data class UpdateCompanyStatusRequest(
 @Serializable
 data class UpdateCompanyRequest(
     val name: String,
+    val logoUrl: String? = null,
+    val primaryColor: String,
+    val secondaryColor: String,
+    val accentColor: String,
 )

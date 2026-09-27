@@ -34,7 +34,7 @@ data class ModuleViewDefinition(
 class ModuleRegistry(
     modules: List<ServerModule>,
 ) {
-    private val modulesById = modules.associateBy { it.definition.id }
+    private val modulesById = modules.associateBy { it.definition.id }.toMutableMap()
 
     val definitions: List<ModuleDefinition> =
         modulesById.values.map { it.definition }.sortedBy { it.id }
@@ -42,6 +42,8 @@ class ModuleRegistry(
     fun definition(moduleId: String): ModuleDefinition? = modulesById[moduleId]?.definition
 
     fun module(moduleId: String): ServerModule? = modulesById[moduleId]
+
+    fun remove(moduleId: String): ModuleDefinition? = modulesById.remove(moduleId)?.definition
 
     fun installRoutes(route: Route) {
         modulesById.values.forEach { module ->

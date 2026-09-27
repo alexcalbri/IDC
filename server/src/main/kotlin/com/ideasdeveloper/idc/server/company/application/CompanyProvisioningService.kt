@@ -6,6 +6,7 @@ import com.ideasdeveloper.idc.server.company.api.CreateCompanyResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.idc.server.company.api.CompanyModuleResponse
 import com.ideasdeveloper.idc.server.company.api.CompanySummaryResponse
+import com.ideasdeveloper.idc.server.company.api.ServerModuleResponse
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyRequest
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
@@ -30,7 +31,8 @@ class CompanyProvisioningService(
     private val companyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
-    private val modules: List<ModuleDefinition> = moduleRegistry.definitions
+    private val modules: List<ModuleDefinition>
+        get() = moduleRegistry.definitions
 
     fun createCompany(request: CreateCompanyRequest, provisioningRole: String): CreateCompanyResponse {
         val code = request.code.trim()
@@ -113,7 +115,7 @@ class CompanyProvisioningService(
     fun listCompanies(): List<CompanySummaryResponse> {
         val companies = central.connection.use { connection ->
             connection.prepareStatement(
-                "SELECT code, name, database_name, is_active FROM companies ORDER BY code"
+                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies ORDER BY code"
             ).use { query ->
                 query.executeQuery().use { rows ->
                     buildList {
@@ -122,6 +124,10 @@ class CompanyProvisioningService(
                                 CompanyRow(
                                     code = rows.getString("code"),
                                     name = rows.getString("name"),
+                                    logoUrl = rows.getString("logo_url"),
+                                    primaryColor = rows.getString("primary_color"),
+                                    secondaryColor = rows.getString("secondary_color"),
+                                    accentColor = rows.getString("accent_color"),
                                     databaseName = rows.getString("database_name"),
                                     isActive = rows.getBoolean("is_active"),
                                 )
@@ -139,6 +145,10 @@ class CompanyProvisioningService(
                 databaseName = company.databaseName,
                 isActive = company.isActive,
                 modules = loadCompanyModules(company.databaseName),
+                logoUrl = company.logoUrl,
+                primaryColor = company.primaryColor,
+                secondaryColor = company.secondaryColor,
+                accentColor = company.accentColor,
             )
         }
     }
@@ -147,8 +157,15 @@ class CompanyProvisioningService(
     fun updateCompany(companyCode: String, request: UpdateCompanyRequest, provisioningRole: String): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
         val companyName = request.name.trim()
+        val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (companyName.isBlank()) {
             throw CompanyProvisioningException("El nombre de la empresa es obligatorio.")
+        }
+        if (!colorPattern.matches(request.primaryColor) ||
+            !colorPattern.matches(request.secondaryColor) ||
+            !colorPattern.matches(request.accentColor)
+        ) {
+            throw CompanyProvisioningException("Los colores deben usar formato hexadecimal #RRGGBB.")
         }
 
         val company = central.connection.use { connection ->
@@ -159,9 +176,19 @@ class CompanyProvisioningService(
         central.connection.use { connection ->
             connection.autoCommit = false
             try {
-                connection.prepareStatement("UPDATE companies SET name = ? WHERE code = ?").use { update ->
+                connection.prepareStatement(
+                    """
+                    UPDATE companies
+                    SET name = ?, logo_url = ?, primary_color = ?, secondary_color = ?, accent_color = ?
+                    WHERE code = ?
+                    """.trimIndent()
+                ).use { update ->
                     update.setString(1, companyName)
-                    update.setString(2, normalizedCompanyCode)
+                    update.setString(2, logoUrl)
+                    update.setString(3, request.primaryColor)
+                    update.setString(4, request.secondaryColor)
+                    update.setString(5, request.accentColor)
+                    update.setString(6, normalizedCompanyCode)
                     if (update.executeUpdate() != 1) {
                         throw CompanyProvisioningException("No se pudo actualizar la empresa.")
                     }
@@ -189,6 +216,10 @@ class CompanyProvisioningService(
             databaseName = company.databaseName,
             isActive = company.isActive,
             modules = loadCompanyModules(company.databaseName),
+            logoUrl = logoUrl,
+            primaryColor = request.primaryColor,
+            secondaryColor = request.secondaryColor,
+            accentColor = request.accentColor,
         )
     }
 
@@ -237,6 +268,10 @@ class CompanyProvisioningService(
             databaseName = company.databaseName,
             isActive = active,
             modules = loadCompanyModules(company.databaseName),
+            logoUrl = company.logoUrl,
+            primaryColor = company.primaryColor,
+            secondaryColor = company.secondaryColor,
+            accentColor = company.accentColor,
         )
     }
 
@@ -385,7 +420,35 @@ class CompanyProvisioningService(
             databaseName = company.databaseName,
             isActive = company.isActive,
             modules = loadCompanyModules(company.databaseName),
+            logoUrl = company.logoUrl,
+            primaryColor = company.primaryColor,
+            secondaryColor = company.secondaryColor,
+            accentColor = company.accentColor,
         )
+    }
+
+    fun listServerModules(): List<ServerModuleResponse> = modules.map { definition ->
+        ServerModuleResponse(
+            moduleId = definition.id,
+            displayName = definition.displayName,
+            description = definition.description,
+            locked = definition.locked,
+            activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
+        )
+    }
+
+    fun deleteServerModule(moduleId: String) {
+        val normalizedModuleId = moduleId.trim()
+        val definition = moduleRegistry.definition(normalizedModuleId)
+            ?: throw CompanyProvisioningException("Modulo no reconocido o no instalado en el servidor.")
+        if (definition.locked) {
+            throw CompanyProvisioningException("El modulo ${definition.displayName} es base y no puede eliminarse del servidor.")
+        }
+        val activeCompanyCount = countCompaniesWithModuleEnabled(definition.id)
+        if (activeCompanyCount > 0) {
+            throw CompanyProvisioningException("No se puede eliminar ${definition.displayName}; esta activo en $activeCompanyCount empresa(s).")
+        }
+        moduleRegistry.remove(definition.id)
     }
 
     private fun validate(
@@ -575,6 +638,31 @@ class CompanyProvisioningService(
         }
     }
 
+    private fun countCompaniesWithModuleEnabled(moduleId: String): Int {
+        val companies = central.connection.use { connection ->
+            connection.prepareStatement("SELECT database_name FROM companies ORDER BY code").use { query ->
+                query.executeQuery().use { rows ->
+                    buildList {
+                        while (rows.next()) {
+                            add(rows.getString("database_name"))
+                        }
+                    }
+                }
+            }
+        }
+        return companies.count { databaseName ->
+            val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: tenantConfig(databaseName)
+            tenantRuntimeConnection(tenantConfig).use { connection ->
+                connection.prepareStatement(
+                    "SELECT 1 FROM tenant_modules WHERE module_id = ? AND status = 'enabled'"
+                ).use { query ->
+                    query.setString(1, moduleId)
+                    query.executeQuery().use { rows -> rows.next() }
+                }
+            }
+        }
+    }
+
     private fun tenantRuntimeConnection(tenant: TenantDatabaseConfig): Connection {
         val source = PGSimpleDataSource().apply {
             setURL(tenant.jdbcUrl)
@@ -606,7 +694,7 @@ class CompanyProvisioningService(
 
     private fun findCompany(connection: Connection, companyCode: String): CompanyRow? {
         connection.prepareStatement(
-            "SELECT code, name, database_name, is_active FROM companies WHERE code = ? AND is_active = TRUE"
+            "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE code = ? AND is_active = TRUE"
         ).use { query ->
             query.setString(1, companyCode)
             query.executeQuery().use { rows ->
@@ -614,6 +702,10 @@ class CompanyProvisioningService(
                     CompanyRow(
                         code = rows.getString("code"),
                         name = rows.getString("name"),
+                        logoUrl = rows.getString("logo_url"),
+                        primaryColor = rows.getString("primary_color"),
+                        secondaryColor = rows.getString("secondary_color"),
+                        accentColor = rows.getString("accent_color"),
                         databaseName = rows.getString("database_name"),
                         isActive = rows.getBoolean("is_active"),
                     )
@@ -627,7 +719,7 @@ class CompanyProvisioningService(
 
     private fun findCompanyAnyState(connection: Connection, companyCode: String): CompanyRow? {
         connection.prepareStatement(
-            "SELECT code, name, database_name, is_active FROM companies WHERE code = ?"
+            "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE code = ?"
         ).use { query ->
             query.setString(1, companyCode)
             query.executeQuery().use { rows ->
@@ -635,6 +727,10 @@ class CompanyProvisioningService(
                     CompanyRow(
                         code = rows.getString("code"),
                         name = rows.getString("name"),
+                        logoUrl = rows.getString("logo_url"),
+                        primaryColor = rows.getString("primary_color"),
+                        secondaryColor = rows.getString("secondary_color"),
+                        accentColor = rows.getString("accent_color"),
                         databaseName = rows.getString("database_name"),
                         isActive = rows.getBoolean("is_active"),
                     )
@@ -708,6 +804,10 @@ class CompanyProvisioningService(
     private data class CompanyRow(
         val code: String,
         val name: String,
+        val logoUrl: String?,
+        val primaryColor: String,
+        val secondaryColor: String,
+        val accentColor: String,
         val databaseName: String,
         val isActive: Boolean,
     )

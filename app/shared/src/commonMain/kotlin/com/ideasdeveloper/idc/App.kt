@@ -115,7 +115,7 @@ fun App(initialServerUrl: String = "") {
                             session = currentSession,
                             onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
                             onLogout = ::logout,
-                            onMinimize = ::openDashboard,
+                            onReturnToDashboard = ::openDashboard,
                         )
                     } else {
                         CompanyManagementScreen(
@@ -123,7 +123,7 @@ fun App(initialServerUrl: String = "") {
                             session = currentSession,
                             onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
                             onLogout = ::logout,
-                            onMinimize = ::openDashboard,
+                            onReturnToDashboard = ::openDashboard,
                         )
                     }
                 } else {
@@ -134,7 +134,7 @@ fun App(initialServerUrl: String = "") {
                         fallbackTitle = moduleName,
                         onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
                         onLogout = ::logout,
-                        onMinimize = ::openDashboard,
+                        onReturnToDashboard = ::openDashboard,
                     )
                 }
             }
@@ -146,7 +146,7 @@ fun App(initialServerUrl: String = "") {
                     body = "Ajustes pendientes",
                     onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
                     onLogout = ::logout,
-                    onMinimize = ::openDashboard,
+                    onReturnToDashboard = ::openDashboard,
                 )
             }
         }
@@ -170,7 +170,7 @@ private fun ModulePlaceholderScreen(
     body: String,
     onSettings: () -> Unit,
     onLogout: () -> Unit,
-    onMinimize: () -> Unit,
+    onReturnToDashboard: () -> Unit,
 ) {
     val companyIdentity = remember { CompanyIdentityStore.current() }
     val primaryColor = remember(companyIdentity.primaryColor) {
@@ -193,6 +193,7 @@ private fun ModulePlaceholderScreen(
             title = moduleName,
             subtitle = viewName,
             primaryColor = primaryColor,
+            onReturnToDashboard = onReturnToDashboard,
             onSettings = onSettings,
             onLogout = onLogout,
             modifier = Modifier.align(Alignment.TopCenter),
@@ -209,7 +210,7 @@ private fun ModulePlaceholderScreen(
             )
             Spacer(modifier = Modifier.height(18.dp))
             Button(
-                onClick = onMinimize,
+                onClick = onReturnToDashboard,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color.White,
                     contentColor = primaryColor,
@@ -218,7 +219,7 @@ private fun ModulePlaceholderScreen(
                     .width(160.dp)
                     .padding(horizontal = 8.dp),
             ) {
-                Text("Minimizar")
+                Text("Volver al panel")
             }
         }
     }

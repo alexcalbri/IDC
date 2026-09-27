@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -20,6 +21,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,6 +42,7 @@ import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.CompanySummaryResponse
 import com.ideasdeveloper.idc.app.features.company.data.CreateCompanyRequest
+import com.ideasdeveloper.idc.app.features.company.data.ServerModuleResponse
 import com.ideasdeveloper.idc.app.features.company.data.UpdateCompanyRequest
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
@@ -52,7 +55,7 @@ fun CompanyProvisioningScreen(
     session: LoginResponse?,
     onSettings: () -> Unit,
     onLogout: () -> Unit,
-    onMinimize: () -> Unit,
+    onReturnToDashboard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Usa la identidad visual activa para mantener la misma marca que dashboard y login.
@@ -75,10 +78,41 @@ fun CompanyProvisioningScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var companies by remember { mutableStateOf<List<CompanySummaryResponse>>(emptyList()) }
+    var serverModules by remember { mutableStateOf<List<ServerModuleResponse>>(emptyList()) }
     var companyPendingDeletion by remember { mutableStateOf<String?>(null) }
+    var modulePendingDeletion by remember { mutableStateOf<String?>(null) }
     var isCreateCompanyExpanded by remember { mutableStateOf(true) }
     var editingCompanyCode by remember { mutableStateOf<String?>(null) }
     var editingCompanyName by remember { mutableStateOf("") }
+    var editingCompanyLogoUrl by remember { mutableStateOf("") }
+    var editingCompanyPrimaryColor by remember { mutableStateOf("#667EEA") }
+    var editingCompanySecondaryColor by remember { mutableStateOf("#764BA2") }
+    var editingCompanyAccentColor by remember { mutableStateOf("#FFFFFF") }
+    var confirmReturnToDashboard by remember { mutableStateOf(false) }
+    val createCompanyHasChanges =
+        isCreateCompanyExpanded &&
+                (code.isNotBlank() ||
+                        name.isNotBlank() ||
+                        ownerUsername.isNotBlank() ||
+                        ownerPassword.isNotBlank() ||
+                        ownerPasswordConfirmation.isNotBlank())
+    val editingCompany = companies.firstOrNull { it.code == editingCompanyCode }
+    val editingCompanyHasChanges = editingCompany?.let { company ->
+        editingCompanyName != company.name ||
+                editingCompanyLogoUrl != company.logoUrl.orEmpty() ||
+                editingCompanyPrimaryColor != company.primaryColor ||
+                editingCompanySecondaryColor != company.secondaryColor ||
+                editingCompanyAccentColor != company.accentColor
+    } ?: false
+    val hasUnsavedChanges = createCompanyHasChanges || editingCompanyHasChanges
+
+    fun requestReturnToDashboard() {
+        if (hasUnsavedChanges) {
+            confirmReturnToDashboard = true
+        } else {
+            onReturnToDashboard()
+        }
+    }
 
     // Recarga empresas y modulos habilitables desde el servidor actual.
     fun refreshCompanies() {
@@ -87,10 +121,11 @@ fun CompanyProvisioningScreen(
         isRefreshing = true
         scope.launch {
             try {
-                val loadedCompanies = CompanyApi(activeServerUrl).use { api ->
-                    api.listCompanies(activeSession.accessToken)
+                val (loadedCompanies, loadedModules) = CompanyApi(activeServerUrl).use { api ->
+                    api.listCompanies(activeSession.accessToken) to api.listServerModules(activeSession.accessToken)
                 }
                 companies = loadedCompanies
+                serverModules = loadedModules
                 if (loadedCompanies.isNotEmpty()) {
                     isCreateCompanyExpanded = false
                 }
@@ -117,10 +152,34 @@ fun CompanyProvisioningScreen(
             title = "Empresa",
             subtitle = "Crear empresa",
             primaryColor = primaryColor,
+            onReturnToDashboard = ::requestReturnToDashboard,
             onSettings = onSettings,
             onLogout = onLogout,
             modifier = Modifier.align(Alignment.TopCenter),
         )
+
+        if (confirmReturnToDashboard) {
+            AlertDialog(
+                onDismissRequest = { confirmReturnToDashboard = false },
+                title = { Text("Salir sin guardar") },
+                text = { Text("Hay cambios sin guardar. Deseas volver al panel?") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            confirmReturnToDashboard = false
+                            onReturnToDashboard()
+                        },
+                    ) {
+                        Text("Salir y volver")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmReturnToDashboard = false }) {
+                        Text("Permanecer")
+                    }
+                },
+            )
+        }
 
         // Contiene el formulario de nueva empresa y la lista de empresas existentes.
         Surface(
@@ -214,13 +273,13 @@ fun CompanyProvisioningScreen(
                     horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // Minimiza la pantalla y vuelve al dashboard sin perder la sesion.
+                    // Vuelve al dashboard sin perder la sesion.
                     Button(
-                        onClick = onMinimize,
+                        onClick = ::requestReturnToDashboard,
                         enabled = !isLoading,
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
                     ) {
-                        Text("Cancelar")
+                        Text("Volver al panel")
                     }
                     Button(
                         enabled = !isLoading &&
@@ -276,14 +335,53 @@ fun CompanyProvisioningScreen(
                     }
                 }
 
-                Text("Modulos disponibles por empresa", style = MaterialTheme.typography.titleMedium, color = primaryColor)
-                Text(
-                    "Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa.",
-                    color = Color(0xFF666666),
-                )
+                Text("Empresas", style = MaterialTheme.typography.titleMedium, color = primaryColor)
 
                 if (isRefreshing) {
                     Text("Cargando empresas...", color = Color(0xFF666666))
+                }
+
+                Text("Modulos del servidor", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+                serverModules.forEach { module ->
+                    ServerModuleRow(
+                        module = module,
+                        primaryColor = primaryColor,
+                        enabled = !isLoading && !isRefreshing && serverUrl != null && session?.accessToken?.isNotBlank() == true,
+                        pendingDeletion = modulePendingDeletion == module.moduleId,
+                        onRequestDelete = {
+                            modulePendingDeletion = module.moduleId
+                            companyPendingDeletion = null
+                        },
+                        onCancelDelete = {
+                            modulePendingDeletion = null
+                        },
+                        onConfirmDelete = {
+                            val activeServerUrl = serverUrl
+                            val activeSession = session
+                            if (activeServerUrl != null && activeSession != null) {
+                                isRefreshing = true
+                                error = null
+                                message = null
+                                scope.launch {
+                                    try {
+                                        CompanyApi(activeServerUrl).use { api ->
+                                            api.deleteServerModule(activeSession.accessToken, module.moduleId)
+                                        }
+                                        serverModules = serverModules.filterNot { it.moduleId == module.moduleId }
+                                        companies = companies.map { company ->
+                                            company.copy(modules = company.modules.filterNot { it.moduleId == module.moduleId })
+                                        }
+                                        modulePendingDeletion = null
+                                        message = "Modulo ${module.displayName} eliminado del servidor."
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isRefreshing = false
+                                    }
+                                }
+                            }
+                        },
+                    )
                 }
 
                 companies.forEach { company ->
@@ -353,15 +451,31 @@ fun CompanyProvisioningScreen(
                         },
                         isEditing = editingCompanyCode == company.code,
                         editingName = editingCompanyName,
+                        editingLogoUrl = editingCompanyLogoUrl,
+                        editingPrimaryColor = editingCompanyPrimaryColor,
+                        editingSecondaryColor = editingCompanySecondaryColor,
+                        editingAccentColor = editingCompanyAccentColor,
                         onEditNameChange = { editingCompanyName = it },
+                        onEditLogoUrlChange = { editingCompanyLogoUrl = it },
+                        onEditPrimaryColorChange = { editingCompanyPrimaryColor = it },
+                        onEditSecondaryColorChange = { editingCompanySecondaryColor = it },
+                        onEditAccentColorChange = { editingCompanyAccentColor = it },
                         onStartEdit = {
                             editingCompanyCode = company.code
                             editingCompanyName = company.name
+                            editingCompanyLogoUrl = company.logoUrl.orEmpty()
+                            editingCompanyPrimaryColor = company.primaryColor
+                            editingCompanySecondaryColor = company.secondaryColor
+                            editingCompanyAccentColor = company.accentColor
                             companyPendingDeletion = null
                         },
                         onCancelEdit = {
                             editingCompanyCode = null
                             editingCompanyName = ""
+                            editingCompanyLogoUrl = ""
+                            editingCompanyPrimaryColor = "#667EEA"
+                            editingCompanySecondaryColor = "#764BA2"
+                            editingCompanyAccentColor = "#FFFFFF"
                         },
                         onSaveEdit = {
                             val activeServerUrl = serverUrl
@@ -376,7 +490,13 @@ fun CompanyProvisioningScreen(
                                             api.updateCompany(
                                                 activeSession.accessToken,
                                                 company.code,
-                                                UpdateCompanyRequest(editingCompanyName),
+                                                UpdateCompanyRequest(
+                                                    name = editingCompanyName,
+                                                    logoUrl = editingCompanyLogoUrl.ifBlank { null },
+                                                    primaryColor = editingCompanyPrimaryColor,
+                                                    secondaryColor = editingCompanySecondaryColor,
+                                                    accentColor = editingCompanyAccentColor,
+                                                ),
                                             )
                                         }
                                         companies = companies.map {
@@ -384,6 +504,10 @@ fun CompanyProvisioningScreen(
                                         }
                                         editingCompanyCode = null
                                         editingCompanyName = ""
+                                        editingCompanyLogoUrl = ""
+                                        editingCompanyPrimaryColor = "#667EEA"
+                                        editingCompanySecondaryColor = "#764BA2"
+                                        editingCompanyAccentColor = "#FFFFFF"
                                         message = "Empresa ${updated.name} actualizada."
                                     } catch (exception: CompanyException) {
                                         error = exception.message
@@ -427,6 +551,64 @@ fun CompanyProvisioningScreen(
 }
 
 @Composable
+// Renderiza un modulo instalado en el servidor y permite eliminarlo si ninguna empresa lo usa.
+private fun ServerModuleRow(
+    module: ServerModuleResponse,
+    primaryColor: Color,
+    enabled: Boolean,
+    pendingDeletion: Boolean,
+    onRequestDelete: () -> Unit,
+    onCancelDelete: () -> Unit,
+    onConfirmDelete: () -> Unit,
+) {
+    val canDelete = enabled && !module.locked && module.activeCompanyCount == 0
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color(0xFFF6F6FA), MaterialTheme.shapes.small)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+    ) {
+        Text(module.displayName, style = MaterialTheme.typography.titleSmall, color = primaryColor)
+        Text(module.description, color = Color(0xFF666666))
+        Text(
+            text = when {
+                module.locked -> "Modulo base del sistema"
+                module.activeCompanyCount > 0 -> "Activo en ${module.activeCompanyCount} empresa(s)"
+                else -> "Sin empresas activas"
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = if (module.activeCompanyCount > 0 || module.locked) Color(0xFF8A5A00) else Color(0xFF176B3A),
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Button(
+                enabled = canDelete,
+                onClick = if (pendingDeletion) onConfirmDelete else onRequestDelete,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (pendingDeletion) Color(0xFFB00020) else Color(0xFFE9E9EF),
+                    contentColor = if (pendingDeletion) Color.White else Color(0xFFB00020),
+                ),
+            ) {
+                Text(if (pendingDeletion) "Confirmar eliminar" else "Eliminar del servidor")
+            }
+            if (pendingDeletion) {
+                Button(
+                    enabled = enabled,
+                    onClick = onCancelDelete,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
+                ) {
+                    Text("Cancelar")
+                }
+            }
+        }
+    }
+}
+
+@Composable
 // Renderiza una empresa existente y sus modulos activables.
 private fun CompanyModulesRow(
     company: CompanySummaryResponse,
@@ -439,7 +621,15 @@ private fun CompanyModulesRow(
     onConfirmDelete: () -> Unit,
     isEditing: Boolean,
     editingName: String,
+    editingLogoUrl: String,
+    editingPrimaryColor: String,
+    editingSecondaryColor: String,
+    editingAccentColor: String,
     onEditNameChange: (String) -> Unit,
+    onEditLogoUrlChange: (String) -> Unit,
+    onEditPrimaryColorChange: (String) -> Unit,
+    onEditSecondaryColorChange: (String) -> Unit,
+    onEditAccentColorChange: (String) -> Unit,
     onStartEdit: () -> Unit,
     onCancelEdit: () -> Unit,
     onSaveEdit: () -> Unit,
@@ -453,13 +643,18 @@ private fun CompanyModulesRow(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         if (isEditing) {
-            OutlinedTextField(
-                value = editingName,
-                onValueChange = onEditNameChange,
-                label = { Text("Nombre") },
-                singleLine = true,
+            CompanyProfileFields(
+                name = editingName,
+                logoUrl = editingLogoUrl,
+                primaryColor = editingPrimaryColor,
+                secondaryColor = editingSecondaryColor,
+                accentColor = editingAccentColor,
                 enabled = enabled,
-                modifier = Modifier.fillMaxWidth(),
+                onNameChange = onEditNameChange,
+                onLogoUrlChange = onEditLogoUrlChange,
+                onPrimaryColorChange = onEditPrimaryColorChange,
+                onSecondaryColorChange = onEditSecondaryColorChange,
+                onAccentColorChange = onEditAccentColorChange,
             )
         } else {
             Text(company.name, style = MaterialTheme.typography.titleSmall, color = primaryColor)
@@ -535,26 +730,33 @@ private fun CompanyModulesRow(
             }
         }
 
-        company.modules.forEach { module ->
-            // Permite activar o desactivar cada modulo no bloqueado de la empresa.
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "${module.displayName}: ${if (module.enabled) "activo" else "inactivo"}",
-                    color = Color(0xFF333333),
-                )
-                Button(
-                    enabled = enabled && company.isActive && !module.locked,
-                    onClick = { onChangeModule(module.moduleId, !module.enabled) },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (module.enabled) Color(0xFFE9E9EF) else primaryColor,
-                        contentColor = if (module.enabled) primaryColor else Color.White,
-                    ),
+        if (isEditing) {
+            Text("Modulos disponibles", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+            Text(
+                "Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa.",
+                color = Color(0xFF666666),
+            )
+            company.modules.forEach { module ->
+                // Permite activar o desactivar cada modulo no bloqueado de la empresa.
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(if (module.enabled) "Desactivar modulo" else "Activar modulo")
+                    Text(
+                        text = "${module.displayName}: ${if (module.enabled) "activo" else "inactivo"}",
+                        color = Color(0xFF333333),
+                    )
+                    Button(
+                        enabled = enabled && company.isActive && !module.locked,
+                        onClick = { onChangeModule(module.moduleId, !module.enabled) },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (module.enabled) Color(0xFFE9E9EF) else primaryColor,
+                            contentColor = if (module.enabled) primaryColor else Color.White,
+                        ),
+                    ) {
+                        Text(if (module.enabled) "Desactivar modulo" else "Activar modulo")
+                    }
                 }
             }
         }

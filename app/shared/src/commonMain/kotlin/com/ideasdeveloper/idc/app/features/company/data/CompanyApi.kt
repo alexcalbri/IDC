@@ -238,6 +238,65 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    // Lista los modulos instalados en el servidor y su uso en empresas.
+    suspend fun listServerModules(accessToken: String): List<ServerModuleResponse> {
+        try {
+            val response = client.get("$baseUrl/server/modules") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo cargar los modulos.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Elimina del catalogo activo del servidor un modulo que no esta en uso.
+    suspend fun deleteServerModule(accessToken: String, moduleId: String) {
+        try {
+            val response = client.delete("$baseUrl/server/modules/$moduleId") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.NoContent) {
+                return
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo eliminar el modulo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
 
     // Actualiza los datos administrables de una empresa desde el dueno del servidor.
     suspend fun updateCompany(

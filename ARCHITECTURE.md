@@ -353,9 +353,13 @@ database, applies Core and tenant migrations, seeds the `business_owner`, marks
 `clientes` enabled and registers the tenant connection in the running server.
 The initial PostgreSQL `server_owner` role is the provisioning identity: after
 the backend validates a `server_owner` session token, it assumes that role for
-the provisioning operation. The same Empresa API can list companies and enable
-or disable optional modules installed on the server; `clientes` is a locked
-base module. The default server build currently installs only `clientes`. Administrative permission coverage is still narrow and registry
+the provisioning operation. The same Empresa API can list companies, list
+modules installed in the active server catalog, enable or disable optional
+modules per company, and remove an optional module from the active server
+catalog when no company has it enabled. Only `server_owner` can perform server
+module administration. `clientes` is a locked base module and cannot be
+disabled or removed. The default server build currently installs only
+`clientes`. Administrative permission coverage is still narrow and registry
 records alone do not implement all future permissions. The shared client
 login is connected to the API, keeps the session in memory and navigates to
 the existing dashboard on success. When the user selects "Mantener sesión
@@ -601,7 +605,11 @@ The current module scaffolds are `modules/empresa`, `modules/clientes`,
 `clientes` shared/server source directories and registers that server module in
 `ModuleRegistry`. The running server exposes `/modules`,
 `/modules/{moduleId}/metadata` and each module-owned namespace under
-`/modules/{moduleId}`. Downloading module packages from GitHub/distribution
+`/modules/{moduleId}`. The implemented `server_owner` Empresa screen can list
+the active server module catalog and remove non-locked modules from that
+catalog only when no company has them active. This is logical catalog removal;
+package download, package deletion from disk and persistent module installation
+records remain planned architecture. Downloading module packages from GitHub/distribution
 and loading them on demand remains planned architecture, not implemented
 behavior.
 
@@ -711,6 +719,7 @@ Local code includes `/auth/login`, `GET /companies`, `POST /companies`,
 `GET /companies/me`, `PUT /companies/me`, `GET /companies/me/backups`,
 `POST /companies/me/backups`, `DELETE /companies/me/backups/{fileName}`,
 `GET /companies/me/backups/{fileName}/download`,
+`GET /server/modules`, `DELETE /server/modules/{moduleId}`,
 `PUT /companies/{code}/modules/{moduleId}`, `/modules`,
 `/modules/{moduleId}/metadata`, active-user mapping, opaque session issuance,
 session validation/revocation services and IP-based login/admin rate limits.

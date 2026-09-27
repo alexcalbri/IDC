@@ -69,6 +69,8 @@ On startup, the Ktor server:
    - `GET /`;
    - `POST /auth/login`;
    - `GET /companies`;
+   - `GET /server/modules`;
+   - `DELETE /server/modules/{moduleId}`;
    - `POST /companies`;
    - `PUT /companies/{code}/modules/{moduleId}`;
    - `PUT /companies/{code}/status`;
@@ -280,6 +282,18 @@ Module-specific client routes like `composable("crm")` or `composable("hostpot")
 not implemented. All modules use `module/{moduleId}` and load their display
 metadata from `/modules/{moduleId}/metadata`.
 
+Authenticated views that can return to the dashboard must expose the action as
+`Volver al panel` through `AuthenticatedTopBar` when they receive an
+`onReturnToDashboard` callback. If the view contains editable state that can be
+changed without an immediate save, `onReturnToDashboard` must be wrapped by a
+local pending-change guard:
+compare the current form state with the last loaded or saved state, and show a
+confirmation dialog before leaving when they differ. The current user-facing
+confirmation asks whether the user wants to return to the panel with unsaved
+changes.
+Actions that persist immediately, such as module enable/disable requests, do
+not count as pending changes after the server call completes.
+
 ## 8. Dashboard Flow
 
 Implemented in `app/features/dashboard/ui/DashboardScreen.kt`.
@@ -363,20 +377,22 @@ Flow:
 
 1. `server_owner` opens Empresa.
 2. Client loads companies with `GET /companies`.
-3. Server returns each company's module states.
-4. Client shows module controls.
-5. `server_owner` enables or disables optional modules.
-6. Client calls `PUT /companies/{code}/modules/{moduleId}`.
-7. Server validates `server_owner` token.
-8. Server assumes PostgreSQL `server_owner` role.
-9. Server updates tenant `tenant_modules`.
-10. Server writes an audit log row.
+3. Client loads installed server modules with `GET /server/modules`.
+4. Server returns each company's module states and each server module's active-company count.
+5. Client shows server module controls only in the `server_owner` Empresa screen.
+6. `server_owner` enables or disables optional modules for a company.
+7. Client calls `PUT /companies/{code}/modules/{moduleId}`.
+8. Server validates `server_owner` token.
+9. Server assumes PostgreSQL `server_owner` role for tenant module changes.
+10. Server updates tenant `tenant_modules`.
 11. Server returns updated company state.
+12. `server_owner` can remove a module from the active server catalog with `DELETE /server/modules/{moduleId}` only when the module is not locked and no company currently has it enabled.
 
 Implemented module rules:
 
 - `clientes` is locked and always enabled.
 - Optional modules only appear after they are installed in the running server module registry.
+- Server module installation/removal is a `server_owner` responsibility. A module cannot be removed from the server catalog while any company has it active.
 
 ## 12. Company Login And Module Visibility
 
@@ -405,6 +421,9 @@ Current behavior:
 - Company identity can be restored and used by login/dashboard/module
   placeholder screens.
 - The authenticated top bar is reused by dashboard/module screens.
+- `AuthenticatedTopBar` can receive an optional `onReturnToDashboard`
+  callback. Views that pass it show `Volver al panel` in the top-bar menu, and
+  views with editable unsaved state must confirm before invoking that callback.
 
 ## 14. Installed Module Scaffolds And Server Registry
 

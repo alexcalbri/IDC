@@ -42,7 +42,7 @@ fun ServerDrivenModuleScreen(
     fallbackTitle: String,
     onSettings: () -> Unit,
     onLogout: () -> Unit,
-    onMinimize: () -> Unit,
+    onReturnToDashboard: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Usa la identidad visual de la empresa para mantener continuidad con el dashboard.
@@ -84,6 +84,7 @@ fun ServerDrivenModuleScreen(
             title = metadata?.displayName ?: fallbackTitle,
             subtitle = metadata?.views?.firstOrNull()?.title,
             primaryColor = primaryColor,
+            onReturnToDashboard = onReturnToDashboard,
             onSettings = onSettings,
             onLogout = onLogout,
             modifier = Modifier.align(Alignment.TopCenter),
@@ -118,10 +119,10 @@ fun ServerDrivenModuleScreen(
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
-                    onClick = onMinimize,
+                    onClick = onReturnToDashboard,
                     colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
                 ) {
-                    Text("Minimizar")
+                    Text("Volver al panel")
                 }
             }
         }

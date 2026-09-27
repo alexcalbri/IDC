@@ -197,6 +197,77 @@ fun Route.companyRoutes(
         call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.listCompanies() })
     }
 
+    get("/server/modules") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+        if (serverOwnerRole == null) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                CompanyErrorResponse(
+                    code = "SERVER_OWNER_REQUIRED",
+                    message = "Debes iniciar sesion como server_owner para administrar modulos del servidor.",
+                ),
+            )
+            return@get
+        }
+
+        val service = provisioning
+        if (service == null) {
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                CompanyErrorResponse(
+                    code = "PROVISIONING_NOT_CONFIGURED",
+                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                ),
+            )
+            return@get
+        }
+
+        call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.listServerModules() })
+    }
+
+    delete("/server/modules/{moduleId}") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+        if (serverOwnerRole == null) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                CompanyErrorResponse(
+                    code = "SERVER_OWNER_REQUIRED",
+                    message = "Debes iniciar sesion como server_owner para eliminar modulos del servidor.",
+                ),
+            )
+            return@delete
+        }
+
+        val service = provisioning
+        if (service == null) {
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                CompanyErrorResponse(
+                    code = "PROVISIONING_NOT_CONFIGURED",
+                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                ),
+            )
+            return@delete
+        }
+
+        val moduleId = call.parameters["moduleId"].orEmpty()
+        try {
+            withContext(Dispatchers.IO) {
+                service.deleteServerModule(moduleId)
+            }
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(
+                HttpStatusCode.Conflict,
+                CompanyErrorResponse("SERVER_MODULE_NOT_DELETED", exception.message ?: "No se pudo eliminar el modulo del servidor."),
+            )
+            return@delete
+        }
+
+        call.respond(HttpStatusCode.NoContent)
+    }
+
     post("/companies") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
 

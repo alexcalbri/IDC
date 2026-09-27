@@ -40,6 +40,10 @@ Owns the top-level Compose navigation shell.
 - Routes all other modules to `ServerDrivenModuleScreen`, which loads module metadata from the server.
 - Uses `NavRoute.Module(moduleId)` instead of hardcoded module routes like
   `hostpot` or `crm`.
+- Uses `openDashboard()` as the shared return-to-dashboard target. New authenticated
+  views that receive `onReturnToDashboard` must expose it through `AuthenticatedTopBar`
+  and must confirm before invoking it when local editable state has unsaved
+  changes.
 
 ### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/navigation/NavRoute.kt`
 
@@ -70,13 +74,29 @@ Provides the current Empresa administration UI.
   - business owner username;
   - business owner password;
   - business owner password confirmation in the client form.
+- Shows `Volver al panel` in the authenticated top-bar menu.
+- Confirms before returning to the panel when the new-company form contains unsaved input
+  or when an edited company profile differs from the loaded company state.
 - Calls `POST /companies`.
 - Loads existing companies through `GET /companies`.
 - Shows module state per company.
 - Shows PostgreSQL diagnostic details returned by protected server-owner provisioning routes when database provisioning fails.
 - Allows enabling/disabling optional modules through
   `PUT /companies/{code}/modules/{moduleId}`.
+- Lists installed server modules through `GET /server/modules`.
+- Allows deleting a server module through `DELETE /server/modules/{moduleId}`
+  only when it is not locked and no company has it active.
 - Keeps `clientes` visible as locked because it is the base customer module.
+
+### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/features/company/ui/CompanyManagementScreen.kt`
+
+Provides the current business-owner Empresa UI.
+
+- Shows `Volver al panel` in the authenticated top-bar menu.
+- Confirms before returning to the panel when company profile fields differ from the last
+  loaded or saved profile.
+- Updates the saved baseline after a successful profile save, so returning to
+  the panel after a save goes directly to the dashboard.
 
 ### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/features/company/data/*`
 
@@ -85,6 +105,8 @@ Contains client DTOs and HTTP client code for Empresa.
 - `CompanyApi.kt`
   - `createCompany(...)` calls `POST /companies`.
   - `listCompanies(...)` calls `GET /companies`.
+  - `listServerModules(...)` calls `GET /server/modules`.
+  - `deleteServerModule(...)` calls `DELETE /server/modules/{moduleId}`.
   - `updateModule(...)` calls
     `PUT /companies/{companyCode}/modules/{moduleId}`.
 - `CreateCompanyRequest.kt`
@@ -169,6 +191,14 @@ Defines company administration HTTP routes.
 - `GET /companies`
   - Requires a valid `server_owner` token.
   - Returns companies and module state.
+- `GET /server/modules`
+  - Requires a valid `server_owner` token.
+  - Returns modules currently installed in the server registry and how many
+    companies have each one active.
+- `DELETE /server/modules/{moduleId}`
+  - Requires a valid `server_owner` token.
+  - Removes a module from the active server registry only when it is not
+    locked and no company currently has it active.
 - `POST /companies`
   - Requires a valid `server_owner` token.
   - Creates/provisions a company.
@@ -231,14 +261,19 @@ Main responsibilities:
 - Insert audit records into `provisioning_audit_log`.
 - Register the tenant connection in `LoginDatabases`.
 - List companies and module states.
+- List server modules and active-company usage counts.
 - Activate or deactivate companies.
 - Delete deactivated companies, including their central registry row, tenant database and business-owner PostgreSQL role.
 - Enable or disable optional modules.
+- Remove an optional module from the active server catalog when no company has it enabled.
 
 Module rules:
 
 - `clientes` is locked and always enabled.
 - Optional modules only appear after they are installed in the server module registry.
+- Locked modules cannot be removed from the server catalog.
+- Server module removal does not add audit rows; only the `server_owner`
+  can execute it.
 
 ### `server/src/main/kotlin/com/ideasdeveloper/idc/server/company/application/CompanyProvisioningConfig.kt`
 

@@ -30,17 +30,13 @@ git_source() {
 readonly APP_DIR=/opt/ideascore
 readonly SOURCE_DIR=$APP_DIR/source
 readonly APP_RUNTIME_DIR=$APP_DIR/app
-readonly WEB_RUNTIME_DIR=$APP_DIR/web
 readonly CONFIG_FILE=/etc/ideascore/server.env
 readonly SERVICE_NAME=ideascore.service
 readonly BACKUP_ROOT=$APP_DIR/backups
 readonly UPDATE_SWAP_FILE=$APP_DIR/update.swap
 readonly UPDATE_SWAP_SIZE_MB=2048
 readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
-readonly NODE_OPTIONS_VALUE="--max-old-space-size=2048"
 readonly APP_PORT=8080
-readonly NGINX_SITE=/etc/nginx/sites-available/ideascore
-readonly ACME_ROOT=/var/www/ideascore-acme
 UPDATE_SWAP_CREATED=false
 
 cleanup_update_swap() {
@@ -79,7 +75,6 @@ ensure_update_swap() {
 run_gradle() {
     runuser -u ideascore -- env \
         JAVA_HOME="$UPDATE_JAVA_HOME" \
-        NODE_OPTIONS="$NODE_OPTIONS_VALUE" \
         bash ./gradlew \
         --no-daemon \
         --no-configuration-cache \
@@ -90,86 +85,8 @@ run_gradle() {
         "$@"
 }
 
-configure_nginx_web() {
-    if [[ ! -f $NGINX_SITE ]]; then
-        printf 'No se encontro %s; se omite la actualizacion de Nginx.\n' "$NGINX_SITE"
-        return
-    fi
-
-    local domain cert key
-    domain=$(awk '$1 == "server_name" { gsub(";", "", $2); print $2; exit }' "$NGINX_SITE")
-    [[ -n ${domain:-} ]] || die "No se pudo detectar server_name en $NGINX_SITE."
-
-    cert=$(awk '$1 == "ssl_certificate" { gsub(";", "", $2); print $2; exit }' "$NGINX_SITE")
-    key=$(awk '$1 == "ssl_certificate_key" { gsub(";", "", $2); print $2; exit }' "$NGINX_SITE")
-
-    if [[ -z ${cert:-} || -z ${key:-} ]]; then
-        cert="/etc/letsencrypt/live/ideascore-$domain/fullchain.pem"
-        key="/etc/letsencrypt/live/ideascore-$domain/privkey.pem"
-    fi
-
-    [[ -f $cert && -f $key ]] || die "No se encontraron certificados TLS para $domain."
-
-    cp -a "$NGINX_SITE" "$BACKUP_DIR/nginx-ideascore.conf"
-    cat > "$NGINX_SITE" <<NGINX
-server {
-    listen 80;
-    listen [::]:80;
-    server_name $domain;
-    location /.well-known/acme-challenge/ { root $ACME_ROOT; }
-    location / { return 301 https://$domain\$request_uri; }
-}
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-    server_name $domain;
-    ssl_certificate $cert;
-    ssl_certificate_key $key;
-    ssl_protocols TLSv1.2 TLSv1.3;
-    root $WEB_RUNTIME_DIR;
-    index index.html;
-    location /auth/ {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    location /companies {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    location /modules {
-        proxy_pass http://127.0.0.1:$APP_PORT;
-        proxy_http_version 1.1;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$remote_addr;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-    }
-    location / {
-        try_files \$uri \$uri/ /index.html;
-        add_header Cache-Control "no-cache";
-    }
-}
-NGINX
-    nginx -t
-    systemctl reload nginx
-}
-
 [[ -d $SOURCE_DIR/.git ]] || die "No se encontro el repositorio en $SOURCE_DIR."
 [[ -d $APP_RUNTIME_DIR && -x $APP_RUNTIME_DIR/bin/server ]] || die "No se encontro el servidor instalado en $APP_RUNTIME_DIR."
-WEB_ALREADY_INSTALLED=false
-if [[ -d $WEB_RUNTIME_DIR && -f $WEB_RUNTIME_DIR/index.html ]]; then
-    WEB_ALREADY_INSTALLED=true
-else
-    printf 'No se encontro la app web instalada en %s; se compilara e instalara durante esta actualizacion.\n' "$WEB_RUNTIME_DIR"
-fi
 [[ -r $CONFIG_FILE ]] || die "No se encontro $CONFIG_FILE."
 id ideascore >/dev/null 2>&1 || die 'No existe el usuario Linux ideascore.'
 systemctl cat "$SERVICE_NAME" >/dev/null 2>&1 || die "No existe $SERVICE_NAME."
@@ -186,7 +103,7 @@ fi
 
 printf 'Instalacion actual: %s (%s)\n' "$CURRENT_REF" "$CURRENT_COMMIT"
 printf 'Destino: %s\n' "$GIT_REF"
-ask CONFIRM 'Continuar con respaldo, build y reemplazo de artefactos? Escribe si' no
+ask CONFIRM 'Continuar con respaldo, build y reemplazo del servidor? Escribe si' no
 [[ $CONFIRM == si ]] || die 'Cancelado sin cambiar archivos.'
 
 if [[ -n ${JAVA_HOME:-} && -x $JAVA_HOME/bin/java ]]; then
@@ -207,42 +124,28 @@ runuser -u ideascore -- env JAVA_HOME="$UPDATE_JAVA_HOME" bash ./gradlew --stop 
 BUILD_LOG_DIR="$APP_DIR/update-logs"
 install -d -m 755 "$BUILD_LOG_DIR"
 SERVER_BUILD_LOG="$BUILD_LOG_DIR/server-$TARGET_COMMIT.log"
-WEB_BUILD_LOG="$BUILD_LOG_DIR/web-$TARGET_COMMIT.log"
 
 run_gradle -PserverOnly=true :server:test :server:installDist 2>&1 | tee "$SERVER_BUILD_LOG"
 [[ -x server/build/install/server/bin/server ]] || die 'No se genero la distribucion del servidor.'
-
-run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution 2>&1 | tee "$WEB_BUILD_LOG"
-WEB_DIST="$SOURCE_DIR/app/webApp/build/dist/js/productionExecutable"
-[[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se genero la distribucion web completa.'
 
 TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 BACKUP_DIR=$BACKUP_ROOT/$TIMESTAMP
 install -d -m 700 "$BACKUP_DIR"
 cp -a "$APP_RUNTIME_DIR" "$BACKUP_DIR/app"
-if [[ $WEB_ALREADY_INSTALLED == true ]]; then
-    cp -a "$WEB_RUNTIME_DIR" "$BACKUP_DIR/web"
-fi
 git_source rev-parse HEAD > "$BACKUP_DIR/source-commit.txt"
 
 systemctl stop "$SERVICE_NAME"
 
-rm -rf "$APP_RUNTIME_DIR.new" "$WEB_RUNTIME_DIR.new"
-install -d -m 755 "$APP_RUNTIME_DIR.new" "$WEB_RUNTIME_DIR.new"
+rm -rf "$APP_RUNTIME_DIR.new"
+install -d -m 755 "$APP_RUNTIME_DIR.new"
 cp -R server/build/install/server/. "$APP_RUNTIME_DIR.new/"
-cp -R "$WEB_DIST/." "$WEB_RUNTIME_DIR.new/"
-chown -R root:root "$APP_RUNTIME_DIR.new" "$WEB_RUNTIME_DIR.new"
-chmod -R a+rX "$APP_RUNTIME_DIR.new" "$WEB_RUNTIME_DIR.new"
-chmod -R go-w "$APP_RUNTIME_DIR.new" "$WEB_RUNTIME_DIR.new"
+chown -R root:root "$APP_RUNTIME_DIR.new"
+chmod -R a+rX "$APP_RUNTIME_DIR.new"
+chmod -R go-w "$APP_RUNTIME_DIR.new"
 
-rm -rf "$APP_RUNTIME_DIR.previous" "$WEB_RUNTIME_DIR.previous"
+rm -rf "$APP_RUNTIME_DIR.previous"
 mv "$APP_RUNTIME_DIR" "$APP_RUNTIME_DIR.previous"
-if [[ $WEB_ALREADY_INSTALLED == true ]]; then
-    mv "$WEB_RUNTIME_DIR" "$WEB_RUNTIME_DIR.previous"
-fi
 mv "$APP_RUNTIME_DIR.new" "$APP_RUNTIME_DIR"
-mv "$WEB_RUNTIME_DIR.new" "$WEB_RUNTIME_DIR"
-configure_nginx_web
 
 systemctl start "$SERVICE_NAME"
 if command -v curl >/dev/null 2>&1; then
@@ -268,7 +171,7 @@ else
     }
 fi
 
-rm -rf "$APP_RUNTIME_DIR.previous" "$WEB_RUNTIME_DIR.previous"
+rm -rf "$APP_RUNTIME_DIR.previous"
 
 printf 'IdeasCore actualizado de %s a %s.\n' "$CURRENT_COMMIT" "$TARGET_COMMIT"
 printf 'Respaldo: %s\n' "$BACKUP_DIR"
