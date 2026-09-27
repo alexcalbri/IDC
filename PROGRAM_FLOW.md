@@ -464,9 +464,13 @@ Implemented file: `scripts/ubuntu/update.sh`.
 The updater:
 
 - verifies an existing installer-created layout;
+- completes missing server environment defaults in `/etc/ideascore/server.env`
+  for tenant JDBC resolution, migrations and company backup storage;
+- adds the `/server` proxy route to the installer-managed Nginx site when it is
+  missing;
 - fetches the selected branch/tag/commit;
-- builds server and web artifacts;
-- replaces runtime app and web artifacts;
+- builds the server artifact;
+- replaces the runtime server app;
 - restarts `ideascore.service`;
 - checks the local HTTP endpoint.
 

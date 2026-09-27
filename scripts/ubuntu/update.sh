@@ -32,6 +32,7 @@ readonly SOURCE_DIR=$APP_DIR/source
 readonly APP_RUNTIME_DIR=$APP_DIR/app
 readonly CONFIG_FILE=/etc/ideascore/server.env
 readonly SERVICE_NAME=ideascore.service
+readonly NGINX_SITE=/etc/nginx/sites-available/ideascore
 readonly BACKUP_ROOT=$APP_DIR/backups
 readonly UPDATE_SWAP_FILE=$APP_DIR/update.swap
 readonly UPDATE_SWAP_SIZE_MB=2048
@@ -85,6 +86,87 @@ run_gradle() {
         "$@"
 }
 
+config_has_key() {
+    local key=$1
+    grep -Eq "^${key}=" "$CONFIG_FILE"
+}
+
+config_value() {
+    local key=$1
+    awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$CONFIG_FILE"
+}
+
+append_config_value() {
+    local key=$1
+    local value=$2
+    if config_has_key "$key"; then
+        return
+    fi
+    printf '%s=%s\n' "$key" "$value" >> "$CONFIG_FILE"
+    printf 'Configuracion agregada en server.env: %s\n' "$key"
+}
+
+configure_server_env() {
+    local db_url tenant_prefix
+    install -d -m 755 "$APP_DIR/company-backups"
+    chown ideascore:ideascore "$APP_DIR/company-backups"
+    chmod 700 "$APP_DIR/company-backups"
+
+    db_url=$(config_value DB_URL)
+    [[ -n $db_url ]] || die 'DB_URL no existe en /etc/ideascore/server.env.'
+    tenant_prefix="${db_url%/*}/"
+    [[ $tenant_prefix != "$db_url/" ]] || die 'No se pudo inferir TENANT_JDBC_URL_PREFIX desde DB_URL.'
+
+    cp -a "$CONFIG_FILE" "$CONFIG_FILE.update-backup.$(date -u +%Y%m%dT%H%M%SZ)"
+    append_config_value TENANT_DATABASES_JSON '[]'
+    append_config_value TENANT_JDBC_URL_PREFIX "$tenant_prefix"
+    append_config_value MIGRATIONS_ROOT "$SOURCE_DIR"
+    append_config_value COMPANY_BACKUPS_ROOT "$APP_DIR/company-backups"
+    chmod 600 "$CONFIG_FILE"
+}
+
+configure_nginx_server_route() {
+    if [[ ! -f $NGINX_SITE ]]; then
+        printf 'AVISO: no se encontro %s; omitiendo configuracion Nginx de /server.\n' "$NGINX_SITE" >&2
+        return
+    fi
+    if grep -Eq '^[[:space:]]*location[[:space:]]+/server([[:space:]]|\{)' "$NGINX_SITE"; then
+        return
+    fi
+    if ! grep -q "proxy_pass http://127.0.0.1:$APP_PORT" "$NGINX_SITE"; then
+        printf 'AVISO: %s no parece ser el sitio IdeasCore administrado por el instalador; no se modificara Nginx.\n' "$NGINX_SITE" >&2
+        return
+    fi
+
+    cp -a "$NGINX_SITE" "$NGINX_SITE.update-backup.$(date -u +%Y%m%dT%H%M%SZ)"
+    python3 - "$NGINX_SITE" "$APP_PORT" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+port = sys.argv[2]
+text = path.read_text()
+marker = "    location / {\n"
+block = f"""    location /server {{
+        proxy_pass http://127.0.0.1:{port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }}
+"""
+if "location /server" in text:
+    sys.exit(0)
+if marker not in text:
+    sys.exit("No se encontro el bloque location / para insertar /server.")
+path.write_text(text.replace(marker, block + marker, 1))
+PY
+    nginx -t
+    systemctl reload nginx
+    printf 'Nginx actualizado para proxyear /server al backend.\n'
+}
+
 [[ -d $SOURCE_DIR/.git ]] || die "No se encontro el repositorio en $SOURCE_DIR."
 [[ -d $APP_RUNTIME_DIR && -x $APP_RUNTIME_DIR/bin/server ]] || die "No se encontro el servidor instalado en $APP_RUNTIME_DIR."
 [[ -r $CONFIG_FILE ]] || die "No se encontro $CONFIG_FILE."
@@ -113,6 +195,8 @@ else
 fi
 [[ -x $UPDATE_JAVA_HOME/bin/java ]] || die 'No se encontro Java 21. Instala openjdk-21-jdk-headless o define JAVA_HOME.'
 ensure_update_swap
+configure_server_env
+configure_nginx_server_route
 
 git_source fetch --tags --prune origin
 git_source checkout "$GIT_REF"

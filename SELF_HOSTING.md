@@ -683,20 +683,24 @@ set and versions.
 ### Ubuntu updater
 
 `scripts/ubuntu/update.sh` updates an existing installation created by the
-Ubuntu installer. It does not create databases, change secrets or run
-module migrations. It rewrites the IdeasCore Nginx site using the current proxy
-routes for `/auth/`, `/companies` and `/modules`. It:
+Ubuntu installer. It does not create databases, change secrets or run module
+migrations. It preserves the existing Nginx site, but adds the `/server` proxy
+route when the site is the installer-managed IdeasCore site and the route is
+missing. It also completes newer non-secret server environment defaults when
+older installs do not have them. It:
 
 1. verifies `/opt/ideascore/source`, `/opt/ideascore/app`,
    `/etc/ideascore/server.env` and `ideascore.service`;
 2. refuses to continue if the checked-out source has local changes;
-3. fetches the requested branch, tag or commit;
-4. builds `:server:test :server:installDist` with `-PserverOnly=true`;
-5. builds `:app:webApp:jsBrowserDistribution` with `-PwebOnly=true`;
-6. backs up the current runtime app, and backs up web artifacts too when
-   `/opt/ideascore/web` already exists;
-7. replaces `/opt/ideascore/app` and `/opt/ideascore/web`;
-8. restarts `ideascore.service` and checks `http://127.0.0.1:8080/`.
+3. ensures `TENANT_DATABASES_JSON`, `TENANT_JDBC_URL_PREFIX`,
+   `MIGRATIONS_ROOT` and `COMPANY_BACKUPS_ROOT` exist in
+   `/etc/ideascore/server.env`;
+4. ensures the installer-managed Nginx site proxies `/server` to Ktor;
+5. fetches the requested branch, tag or commit;
+6. builds `:server:test :server:installDist` with `-PserverOnly=true`;
+7. backs up the current runtime app;
+8. replaces `/opt/ideascore/app`;
+9. restarts `ideascore.service` and checks `http://127.0.0.1:8080/`.
 
 Run it on the server with:
 
@@ -704,14 +708,9 @@ Run it on the server with:
 sudo bash /opt/ideascore/source/scripts/ubuntu/update.sh
 ```
 
-For the current package reorganization, the updater installs the new Ktor
-entry point `com.ideasdeveloper.idc.server.app.ApplicationKt.module` through
-the rebuilt server distribution. Existing `/etc/ideascore/server.env`,
-PostgreSQL databases and Nginx configuration are preserved.
-
-If the server was installed with an older installer that did not create
-`/opt/ideascore/web`, the updater builds the browser app and installs it
-there instead of skipping it.
+Existing PostgreSQL databases are preserved. Existing secrets in
+`/etc/ideascore/server.env` are preserved; the updater only appends missing
+non-secret keys needed by newer server features.
 
 The updater runs Gradle with one worker, disables configuration cache for the
 deployment build and sets Kotlin compiler execution through
