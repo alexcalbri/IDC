@@ -40,6 +40,7 @@ import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.CompanySummaryResponse
 import com.ideasdeveloper.idc.app.features.company.data.CreateCompanyRequest
+import com.ideasdeveloper.idc.app.features.company.data.UpdateCompanyRequest
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
@@ -75,6 +76,9 @@ fun CompanyProvisioningScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var companies by remember { mutableStateOf<List<CompanySummaryResponse>>(emptyList()) }
     var companyPendingDeletion by remember { mutableStateOf<String?>(null) }
+    var isCreateCompanyExpanded by remember { mutableStateOf(true) }
+    var editingCompanyCode by remember { mutableStateOf<String?>(null) }
+    var editingCompanyName by remember { mutableStateOf("") }
 
     // Recarga empresas y modulos habilitables desde el servidor actual.
     fun refreshCompanies() {
@@ -83,8 +87,12 @@ fun CompanyProvisioningScreen(
         isRefreshing = true
         scope.launch {
             try {
-                companies = CompanyApi(activeServerUrl).use { api ->
+                val loadedCompanies = CompanyApi(activeServerUrl).use { api ->
                     api.listCompanies(activeSession.accessToken)
+                }
+                companies = loadedCompanies
+                if (loadedCompanies.isNotEmpty()) {
+                    isCreateCompanyExpanded = false
                 }
                 error = null
             } catch (exception: CompanyException) {
@@ -127,64 +135,81 @@ fun CompanyProvisioningScreen(
                 modifier = Modifier.padding(18.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Text("Nueva empresa", style = MaterialTheme.typography.titleLarge, color = primaryColor)
-
-                // Captura los datos requeridos para crear el tenant y su business owner inicial.
-                OutlinedTextField(
-                    value = code,
-                    onValueChange = { code = it.trim().lowercase() },
-                    label = { Text("Codigo") },
-                    singleLine = true,
-                    enabled = !isLoading,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                Row(
                     modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Nombre") },
-                    singleLine = true,
-                    enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = ownerUsername,
-                    onValueChange = { ownerUsername = it.trim().lowercase() },
-                    label = { Text("Usuario business owner") },
-                    singleLine = true,
-                    enabled = !isLoading,
-                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = ownerPassword,
-                    onValueChange = { ownerPassword = it },
-                    label = { Text("Contrasena business owner") },
-                    singleLine = true,
-                    enabled = !isLoading,
-                    visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = ownerPasswordConfirmation,
-                    onValueChange = { ownerPasswordConfirmation = it },
-                    label = { Text("Confirmar contrasena") },
-                    singleLine = true,
-                    enabled = !isLoading,
-                    visualTransformation = PasswordVisualTransformation(),
-                    isError = ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation,
-                    supportingText = {
-                        if (ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation) {
-                            Text("Las contrasenas no coinciden.")
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Nueva empresa", style = MaterialTheme.typography.titleLarge, color = primaryColor)
+                    if (companies.isNotEmpty()) {
+                        Button(
+                            enabled = !isLoading,
+                            onClick = { isCreateCompanyExpanded = !isCreateCompanyExpanded },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
+                        ) {
+                            Text(if (isCreateCompanyExpanded) "Ocultar" else "Crear nueva")
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                    }
+                }
+
+                if (isCreateCompanyExpanded) {
+                    // Captura los datos requeridos para crear el tenant y su business owner inicial.
+                    OutlinedTextField(
+                        value = code,
+                        onValueChange = { code = it.trim().lowercase() },
+                        label = { Text("Codigo") },
+                        singleLine = true,
+                        enabled = !isLoading,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = name,
+                        onValueChange = { name = it },
+                        label = { Text("Nombre") },
+                        singleLine = true,
+                        enabled = !isLoading,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = ownerUsername,
+                        onValueChange = { ownerUsername = it.trim().lowercase() },
+                        label = { Text("Usuario business owner") },
+                        singleLine = true,
+                        enabled = !isLoading,
+                        keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = ownerPassword,
+                        onValueChange = { ownerPassword = it },
+                        label = { Text("Contrasena business owner") },
+                        singleLine = true,
+                        enabled = !isLoading,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = ownerPasswordConfirmation,
+                        onValueChange = { ownerPasswordConfirmation = it },
+                        label = { Text("Confirmar contrasena") },
+                        singleLine = true,
+                        enabled = !isLoading,
+                        visualTransformation = PasswordVisualTransformation(),
+                        isError = ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation,
+                        supportingText = {
+                            if (ownerPasswordConfirmation.isNotEmpty() && ownerPassword != ownerPasswordConfirmation) {
+                                Text("Las contrasenas no coinciden.")
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
 
                 error?.let { Text(it, color = Color(0xFFB00020)) }
                 message?.let { Text(it, color = Color(0xFF176B3A)) }
 
-                Row(
+                if (isCreateCompanyExpanded) Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
                     verticalAlignment = Alignment.CenterVertically,
@@ -232,6 +257,7 @@ fun CompanyProvisioningScreen(
                                     ownerUsername = ""
                                     ownerPassword = ""
                                     ownerPasswordConfirmation = ""
+                                    isCreateCompanyExpanded = false
                                     refreshCompanies()
                                 } catch (exception: CompanyException) {
                                     error = exception.message
@@ -325,6 +351,48 @@ fun CompanyProvisioningScreen(
                                 }
                             }
                         },
+                        isEditing = editingCompanyCode == company.code,
+                        editingName = editingCompanyName,
+                        onEditNameChange = { editingCompanyName = it },
+                        onStartEdit = {
+                            editingCompanyCode = company.code
+                            editingCompanyName = company.name
+                            companyPendingDeletion = null
+                        },
+                        onCancelEdit = {
+                            editingCompanyCode = null
+                            editingCompanyName = ""
+                        },
+                        onSaveEdit = {
+                            val activeServerUrl = serverUrl
+                            val activeSession = session
+                            if (activeServerUrl != null && activeSession != null) {
+                                isRefreshing = true
+                                error = null
+                                message = null
+                                scope.launch {
+                                    try {
+                                        val updated = CompanyApi(activeServerUrl).use { api ->
+                                            api.updateCompany(
+                                                activeSession.accessToken,
+                                                company.code,
+                                                UpdateCompanyRequest(editingCompanyName),
+                                            )
+                                        }
+                                        companies = companies.map {
+                                            if (it.code == updated.code) updated else it
+                                        }
+                                        editingCompanyCode = null
+                                        editingCompanyName = ""
+                                        message = "Empresa ${updated.name} actualizada."
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isRefreshing = false
+                                    }
+                                }
+                            }
+                        },
                         onChangeModule = { moduleId, enabled ->
                             val activeServerUrl = serverUrl
                             val activeSession = session
@@ -369,6 +437,12 @@ private fun CompanyModulesRow(
     onRequestDelete: () -> Unit,
     onCancelDelete: () -> Unit,
     onConfirmDelete: () -> Unit,
+    isEditing: Boolean,
+    editingName: String,
+    onEditNameChange: (String) -> Unit,
+    onStartEdit: () -> Unit,
+    onCancelEdit: () -> Unit,
+    onSaveEdit: () -> Unit,
     onChangeModule: (moduleId: String, enabled: Boolean) -> Unit,
 ) {
     Column(
@@ -378,7 +452,18 @@ private fun CompanyModulesRow(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text(company.name, style = MaterialTheme.typography.titleSmall, color = primaryColor)
+        if (isEditing) {
+            OutlinedTextField(
+                value = editingName,
+                onValueChange = onEditNameChange,
+                label = { Text("Nombre") },
+                singleLine = true,
+                enabled = enabled,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        } else {
+            Text(company.name, style = MaterialTheme.typography.titleSmall, color = primaryColor)
+        }
         Text("Codigo: ${company.code}", style = MaterialTheme.typography.bodySmall, color = Color(0xFF666666))
         Text(
             "Estado: ${if (company.isActive) "activa" else "desactivada"}",
@@ -391,21 +476,45 @@ private fun CompanyModulesRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (isEditing) {
+                Button(
+                    enabled = enabled && editingName.isNotBlank(),
+                    onClick = onSaveEdit,
+                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                ) {
+                    Text("Guardar")
+                }
+                Button(
+                    enabled = enabled,
+                    onClick = onCancelEdit,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
+                ) {
+                    Text("Cancelar")
+                }
+            } else {
+                Button(
+                    enabled = enabled,
+                    onClick = onStartEdit,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
+                ) {
+                    Text("Editar")
+                }
+            }
             // Cambia entre activar y desactivar la empresa completa.
             Button(
-                enabled = enabled,
+                enabled = enabled && !isEditing,
                 onClick = { onChangeStatus(!company.isActive) },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (company.isActive) Color(0xFFE9E9EF) else primaryColor,
                     contentColor = if (company.isActive) primaryColor else Color.White,
                 ),
             ) {
-                Text(if (company.isActive) "Desactivar" else "Reactivar")
+                Text(if (company.isActive) "Desactivar empresa" else "Reactivar empresa")
             }
             if (!company.isActive) {
                 // Exige una segunda pulsacion antes de borrar la base tenant.
                 Button(
-                    enabled = enabled,
+                    enabled = enabled && !isEditing,
                     onClick = if (pendingDeletion) onConfirmDelete else onRequestDelete,
                     colors = ButtonDefaults.buttonColors(
                         containerColor = if (pendingDeletion) Color(0xFFB00020) else Color(0xFFE9E9EF),
@@ -445,7 +554,7 @@ private fun CompanyModulesRow(
                         contentColor = if (module.enabled) primaryColor else Color.White,
                     ),
                 ) {
-                    Text(if (module.enabled) "Desactivar" else "Activar")
+                    Text(if (module.enabled) "Desactivar modulo" else "Activar modulo")
                 }
             }
         }

@@ -28,3 +28,8 @@ data class UpdateCompanyModuleRequest(
 data class UpdateCompanyStatusRequest(
     val active: Boolean,
 )
+
+@Serializable
+data class UpdateCompanyRequest(
+    val name: String,
+)

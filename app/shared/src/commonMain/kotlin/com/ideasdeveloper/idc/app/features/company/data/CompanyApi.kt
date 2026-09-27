@@ -239,6 +239,43 @@ class CompanyApi(serverUrl: String) {
     }
 
 
+    // Actualiza los datos administrables de una empresa desde el dueno del servidor.
+    suspend fun updateCompany(
+        accessToken: String,
+        companyCode: String,
+        request: UpdateCompanyRequest,
+    ): CompanySummaryResponse {
+        try {
+            val response = client.put("$baseUrl/companies/$companyCode") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo actualizar la empresa.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
     // Activa o desactiva una empresa sin cambiar sus modulos individualmente.
     suspend fun updateCompanyStatus(
         accessToken: String,

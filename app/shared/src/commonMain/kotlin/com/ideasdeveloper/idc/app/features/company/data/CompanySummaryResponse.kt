@@ -32,3 +32,9 @@ data class UpdateCompanyModuleRequest(
 data class UpdateCompanyStatusRequest(
     val active: Boolean,
 )
+
+@Serializable
+// Payload para actualizar los datos administrables de una empresa.
+data class UpdateCompanyRequest(
+    val name: String,
+)

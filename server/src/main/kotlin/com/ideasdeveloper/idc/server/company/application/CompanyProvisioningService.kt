@@ -6,6 +6,7 @@ import com.ideasdeveloper.idc.server.company.api.CreateCompanyResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.idc.server.company.api.CompanyModuleResponse
 import com.ideasdeveloper.idc.server.company.api.CompanySummaryResponse
+import com.ideasdeveloper.idc.server.company.api.UpdateCompanyRequest
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import org.postgresql.ds.PGSimpleDataSource
@@ -140,6 +141,55 @@ class CompanyProvisioningService(
                 modules = loadCompanyModules(company.databaseName),
             )
         }
+    }
+
+
+    fun updateCompany(companyCode: String, request: UpdateCompanyRequest, provisioningRole: String): CompanySummaryResponse {
+        val normalizedCompanyCode = companyCode.trim()
+        val companyName = request.name.trim()
+        if (companyName.isBlank()) {
+            throw CompanyProvisioningException("El nombre de la empresa es obligatorio.")
+        }
+
+        val company = central.connection.use { connection ->
+            findCompanyAnyState(connection, normalizedCompanyCode)
+                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+        }
+
+        central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement("UPDATE companies SET name = ? WHERE code = ?").use { update ->
+                    update.setString(1, companyName)
+                    update.setString(2, normalizedCompanyCode)
+                    if (update.executeUpdate() != 1) {
+                        throw CompanyProvisioningException("No se pudo actualizar la empresa.")
+                    }
+                }
+                insertAudit(
+                    connection = connection,
+                    actorRole = provisioningRole,
+                    action = "company.updated",
+                    companyCode = normalizedCompanyCode,
+                    moduleId = null,
+                    details = """{"previousName":"${company.name.escapeJson()}","name":"${companyName.escapeJson()}","databaseName":"${company.databaseName}"}""",
+                )
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+        }
+
+        return CompanySummaryResponse(
+            code = company.code,
+            name = companyName,
+            databaseName = company.databaseName,
+            isActive = company.isActive,
+            modules = loadCompanyModules(company.databaseName),
+        )
     }
 
 
@@ -641,6 +691,8 @@ class CompanyProvisioningService(
     private fun quoteIdentifier(value: String): String = "\"" + value.replace("\"", "\"\"") + "\""
 
     private fun quoteLiteral(value: String): String = "'" + value.replace("'", "''") + "'"
+
+    private fun String.escapeJson(): String = replace("\\", "\\\\").replace("\"", "\\\"")
 
     private fun Connection.setProvisioningRole(role: String) {
         createStatement().use { statement ->
