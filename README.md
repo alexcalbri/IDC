@@ -1,61 +1,117 @@
-This is a Kotlin Multiplatform project targeting Android, iOS, Web, Desktop (JVM), Server.
+# IdeasCore (IDC)
 
-For a first Ubuntu server installation (PostgreSQL, Java and the Ktor
-application), see the interactive [installer](scripts/ubuntu/install.sh)
-and its [self-hosting instructions](SELF_HOSTING.md#instalador-interactivo-para-ubuntu).
+IdeasCore es una plataforma empresarial modular y open source construida con
+Kotlin Multiplatform, Compose Multiplatform, Ktor y PostgreSQL.
 
-* [/app/iosApp](./app/iosApp/iosApp) contains an iOS application. Even if you’re sharing your UI with Compose
-  Multiplatform,
-  you need this entry point for your iOS app. This is also where you should add SwiftUI code for your project.
+El proyecto gira alrededor de una identidad compartida de Cliente/Prospecto y
+permite activar modulos funcionales por empresa sin duplicar la informacion
+central del cliente. La logica de negocio, autenticacion, autorizacion,
+aislamiento por empresa, migraciones y acceso a base de datos viven en el
+servidor; los clientes son interfaces delgadas que consumen APIs y metadatos
+del backend.
 
-* [/app/shared](./app/shared/src) is for code that will be shared across your Compose Multiplatform applications.
-  It contains several subfolders:
-    - [commonMain](./app/shared/src/commonMain/kotlin) is for code that’s common for all targets.
-    - Other folders are for Kotlin code that will be compiled for only the platform indicated in the folder name.
-      For example, if you want to use Apple’s CoreCrypto for the iOS part of your Kotlin app,
-      the [iosMain](./app/shared/src/iosMain/kotlin) folder would be the right place for such calls.
-      Similarly, if you want to edit the Desktop (JVM) specific part, the [jvmMain](./app/shared/src/jvmMain/kotlin)
-      folder is the appropriate location.
+## Estado del proyecto
 
-* [/core](./core/src) is for the code that will be shared between all targets in the project.
-  The most important subfolder is [commonMain](./core/src/commonMain/kotlin). If preferred, you
-  can add code to the platform-specific folders here too.
+IDC esta en evolucion activa. El repositorio ya contiene:
 
-* [/server](./server/src/main/kotlin) is for the Ktor server application.
+- servidor Ktor con autenticacion, sesiones, provisioning de empresas y APIs de
+  modulos;
+- cliente Compose Multiplatform compartido para Android, Desktop, Web e iOS;
+- estructura de modulos bajo `modules/`, incluyendo `clientes` y `empresa`;
+- migraciones y scripts de provisioning bajo `database/`;
+- instalador interactivo para Ubuntu bajo `scripts/ubuntu/install.sh`;
+- guia de self-hosting y arquitectura del proyecto.
 
-### Running the apps
+La arquitectura aprobada apunta a una base PostgreSQL central para la
+administracion del servidor y una base PostgreSQL por empresa/tenant. Cada
+empresa recibe Core y solo las estructuras de los modulos instalados para esa
+empresa.
 
-Use the run configurations provided by the run widget in your IDE's toolbar. You can also use these commands and
-options:
+## Estructura
 
-- Android app: `./gradlew :app:androidApp:assembleDebug`
-- Desktop app:
-    - Hot reload: `./gradlew :app:desktopApp:hotRun --auto`
-    - Standard run: `./gradlew :app:desktopApp:run`
-- Server: `./gradlew :server:run`
-- Web app:
-    - Wasm target (faster, modern browsers): `./gradlew :app:webApp:wasmJsBrowserDevelopmentRun`
-    - JS target (slower, supports older browsers): `./gradlew :app:webApp:jsBrowserDevelopmentRun`
-- iOS app: open the [/app/iosApp](./app/iosApp) directory in Xcode and run it from there.
+- `app/shared`: UI, navegacion, ViewModels, clientes API y modelos compartidos.
+- `app/androidApp`: entrada Android.
+- `app/desktopApp`: entrada Desktop JVM.
+- `app/webApp`: entrada Web Compose.
+- `app/iosApp`: entrada iOS/Xcode.
+- `core`: codigo compartido de Core.
+- `server`: aplicacion Ktor y APIs backend.
+- `modules`: modulos funcionales.
+- `database`: migraciones de Core y modulos.
+- `scripts/ubuntu`: instalacion y actualizacion para servidores Ubuntu.
+- `ARCHITECTURE.md`: guia de arquitectura y decisiones actuales.
+- `SELF_HOSTING.md`: instrucciones operativas para instalaciones propias.
 
-### Running tests
+## Requisitos locales
 
-Use the run button in your IDE's editor gutter, or run tests using Gradle tasks:
+- JDK 21.
+- Gradle Wrapper incluido en el repositorio.
+- Android SDK para compilar Android.
+- Xcode para ejecutar iOS.
+- PostgreSQL para ejecutar el backend con base de datos real.
 
-- Android tests: `./gradlew :app:shared:testAndroidHostTest`
-- Desktop tests: `./gradlew :app:shared:jvmTest`
-- Server tests: `./gradlew :server:test`
-- Web tests:
-    - Wasm target: `./gradlew :app:shared:wasmJsTest`
-    - JS target: `./gradlew :app:shared:jsTest`
-- iOS tests: `./gradlew :app:shared:iosSimulatorArm64Test`
+El servidor requiere `DB_PASSWORD`. Otras variables de entorno tienen valores
+por defecto documentados en `SELF_HOSTING.md`.
 
----
+## Comandos utiles
 
-Learn more about [Kotlin Multiplatform](https://www.jetbrains.com/help/kotlin-multiplatform-dev/get-started.html),
-[Compose Multiplatform](https://kotlinlang.org/compose-multiplatform/),
-[Kotlin/Wasm](https://kotl.in/wasm/)…
+Compilar o ejecutar el servidor:
 
-We would appreciate your feedback on Compose/Web and Kotlin/Wasm in the public Slack
-channel [#compose-web](https://slack-chats.kotlinlang.org/c/compose-web).
-If you face any issues, please report them on [YouTrack](https://youtrack.jetbrains.com/newIssue?project=CMP).
+```bash
+./gradlew :server:run
+./gradlew :server:test
+./gradlew :server:installDist -PserverOnly=true
+```
+
+Ejecutar clientes:
+
+```bash
+./gradlew :app:desktopApp:run
+./gradlew :app:webApp:jsBrowserDevelopmentRun
+./gradlew :app:webApp:wasmJsBrowserDevelopmentRun
+./gradlew :app:androidApp:assembleDebug
+```
+
+Build web de produccion:
+
+```bash
+./gradlew :app:webApp:jsBrowserDistribution -PwebOnly=true
+```
+
+Para iOS, abre `app/iosApp` en Xcode y ejecuta la app desde ahi.
+
+## Instalacion en Ubuntu
+
+Para una primera instalacion en servidor Ubuntu, usa el instalador interactivo:
+
+```bash
+sudo bash scripts/ubuntu/install.sh
+```
+
+El instalador configura PostgreSQL, Java, el build del servidor, Nginx, HTTPS
+con Let's Encrypt cuando se elige modo `https`, variables del backend y un
+servicio systemd.
+
+Lee los detalles y advertencias operativas en
+[`SELF_HOSTING.md`](SELF_HOSTING.md#instalador-interactivo-para-ubuntu).
+
+## Documentacion
+
+- [`ARCHITECTURE.md`](ARCHITECTURE.md): arquitectura, Core, modulos, tenant
+  databases, control plane, permisos y decisiones implementadas o planeadas.
+- [`SELF_HOSTING.md`](SELF_HOSTING.md): instalacion, variables de entorno,
+  PostgreSQL, proxy, backups, upgrades y troubleshooting.
+- [`COMPANY_PROVISIONING_FLOW.md`](COMPANY_PROVISIONING_FLOW.md): flujo de
+  provisioning de empresas.
+- [`PROGRAM_FLOW.md`](PROGRAM_FLOW.md): flujo general del programa.
+
+## Principios de desarrollo
+
+- El cliente no se conecta directamente a PostgreSQL.
+- Los secretos y credenciales pertenecen al servidor.
+- La visibilidad en UI no es autorizacion.
+- Los modulos opcionales no deben duplicar la identidad compartida de cliente.
+- Deshabilitar un modulo conserva datos; desinstalarlo es un flujo
+  administrativo separado y potencialmente destructivo.
+- La documentacion debe actualizarse junto con cambios de arquitectura,
+  instalacion, configuracion o comportamiento observable.
