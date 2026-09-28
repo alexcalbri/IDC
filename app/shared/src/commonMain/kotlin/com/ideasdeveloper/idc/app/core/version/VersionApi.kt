@@ -10,7 +10,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-const val ClientVersion = "0.2.0"
+const val ClientVersion = "0.1-rc"
 
 class VersionApi(serverUrl: String) {
     private val baseUrl = serverUrl.trim().trimEnd('/')
