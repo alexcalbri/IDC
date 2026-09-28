@@ -39,6 +39,8 @@ import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
 
+private const val DefaultModuleCatalogUrl = "https://github.com/alexcalbri/IDC/tree/master/modules"
+
 @Composable
 // Renderiza la administracion del catalogo de modulos instalados en el servidor.
 fun ServerModuleManagementScreen(
@@ -58,7 +60,7 @@ fun ServerModuleManagementScreen(
     }
     val scope = rememberCoroutineScope()
     var modules by remember { mutableStateOf<List<ServerModuleResponse>>(emptyList()) }
-    var catalogUrl by remember { mutableStateOf("") }
+    var catalogUrl by remember { mutableStateOf(DefaultModuleCatalogUrl) }
     var pendingDeletion by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -89,7 +91,7 @@ fun ServerModuleManagementScreen(
             try {
                 catalogUrl = CompanyApi(activeServerUrl).use { api ->
                     api.serverModuleCatalog(activeSession.accessToken).catalogUrl
-                }
+                }.ifBlank { DefaultModuleCatalogUrl }
             } catch (_: CompanyException) {
                 // La lista de modulos mostrara el error principal si el servidor no responde.
             }

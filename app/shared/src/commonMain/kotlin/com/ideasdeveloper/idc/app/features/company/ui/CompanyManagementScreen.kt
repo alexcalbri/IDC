@@ -440,7 +440,7 @@ fun CompanyManagementScreen(
                         Text(user.username, fontWeight = FontWeight.SemiBold, color = primaryCompose)
                         Text(if (user.isActive) "Activo" else "Inactivo", color = Color(0xFF666666))
                         Text(
-                            "Permisos: ${user.permissions.ifEmpty { listOf(\"sin permisos\") }.joinToString()}",
+                            "Permisos: ${user.permissions.ifEmpty { listOf("sin permisos") }.joinToString()}",
                             color = Color(0xFF333333),
                         )
                     }
