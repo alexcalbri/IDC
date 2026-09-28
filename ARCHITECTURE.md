@@ -32,8 +32,7 @@ can later participate in other modules without being duplicated.
           +------ Future modules -----+
 ```
 
-The names CRM, Hotspot, Memberships and Hotel are examples of modules
-and interaction patterns. IdeasCore is not limited to them.
+Business modules such as sales, operations, memberships or reservations are examples of module categories and interaction patterns. IdeasCore is not limited to them.
 
 ------------------------------------------------------------------------
 
@@ -137,8 +136,23 @@ Customer creation should go through a shared Core service so that
 identity resolution and future duplicate handling remain centralized.
 
 The locked `clientes` module migration creates the shared `customers` table and
-`customer_field_definitions` metadata in each company database. Functional
-customer APIs and duplicate-resolution rules remain pending.
+`customer_field_definitions` metadata in each company database. Creating a
+customer requires Nombre (`display_name`), Correo (`primary_email`) and
+Telefono (`primary_phone`). There are two dynamic-field scopes:
+
+1. Customer/Core dynamic fields are created by authorized company users from
+   the Clientes/Core administration surface. They extend the shared customer
+   view, are defined in `customer_field_definitions`, store their values in
+   `customers.flexible_attributes`, and remain available even if optional
+   business modules are uninstalled.
+2. Module dynamic fields are owned by the module that defines the module view.
+   They may relate to a shared customer, but their definitions and values must
+   live in module-owned tables or storage. If the module is truly uninstalled
+   through a destructive uninstall workflow, those module-owned fields and data
+   can be removed with the module. Disabling a module must still preserve its
+   data.
+
+Duplicate-resolution rules remain pending.
 
 ### Flexible fields
 
@@ -152,7 +166,11 @@ Recommended model:
     order, options, control type and active state.
 
 A tenant should be able to add, reorder, disable and eventually remove
-custom fields without a schema migration for every field.
+Customer/Core custom fields without a schema migration for every field.
+Optional modules must not register module-specific fields in
+`customer_field_definitions` unless the field is intentionally promoted to the
+shared customer record. Module-only fields belong to the module's own schema so
+module uninstall can remove them without damaging shared customer identity.
 
 Field definitions are also the source for server-driven client rendering.
 The server can describe a field as text, textarea, number, money, date,
@@ -229,20 +247,49 @@ Updating a shared package must not silently migrate or enable other
 companies; compatibility with each company's schema must be checked.
 Shared files cannot be removed while another company needs them.
 
-Client module delivery should be server-driven where practical. The Core app
-ships a generic module container, navigation surface and reusable controls.
-After login, it asks the server which modules are active for the company and
-visible to the user, then renders menus, forms, lists and basic actions from
-module metadata. Module metadata may include field definitions, dropdown and
-multi-select options, permissions, routes and action descriptors. The client
-must not treat hidden UI as authorization; protected server operations still
-check session, tenant, role, permissions and module availability.
+Client module delivery is server-driven by default and is a Core rule for new
+modules. The Core app ships a generic module container, navigation surface and
+reusable controls. After login, it asks the server which modules are active for
+the company and visible to the user, then renders menus, forms, lists and basic
+actions from module metadata. Module metadata must describe enough UI for the
+generic client to show the module without a client release. It may include field
+definitions, dropdown and multi-select options, permissions, routes, validation
+rules and action descriptors. The client must not treat hidden UI as
+authorization; protected server operations still check session, tenant, role,
+permissions and module availability.
+
+A module-specific Compose/client screen is an explicit exception, not the
+default path. It should be used only when the module cannot reasonably be
+expressed with metadata and reusable controls. That exception requires a normal
+client release, while installation, activation, visibility and authorization
+remain server-controlled.
+
+Modules that expose business functionality must declare permissions following
+the Core naming pattern:
+
+- `module.view` controls dashboard visibility and access to the module shell.
+- `module.create` controls record creation.
+- `module.edit` controls editing existing records.
+- `module.delete` controls deletion/deactivation.
+- `module.fields.manage` controls dynamic/configurable field administration.
+
+Modules may add more specific permissions, but these base permissions should
+exist when the module supports the corresponding capability. Backend routes
+must enforce the required permission for every protected action.
+
+The implemented server guard is `ModuleAccessService` plus
+`requireModulePermission`. New module endpoints must call that guard with the
+most specific permission available before returning tenant data or performing a
+module action. The guard validates Bearer session, `X-Company-Code`, active
+tenant module state and the declared permission. A `business_owner` is allowed
+only inside its own tenant database; regular users require explicit permissions
+such as `clientes.view` or `clientes.fields.manage`.
 
 Downloading and executing new Kotlin/Compose code inside an already compiled
-Android, iOS or desktop client is not the default architecture. Highly custom
-client experiences should ship in normal client releases, while their
-visibility and activation remain server-controlled. Web-specific bundle
-loading may be evaluated separately if a real requirement appears.
+Android, iOS or desktop client is not the architecture. Highly custom client
+experiences ship in normal client releases, while their visibility and
+activation remain server-controlled. Web-specific bundle loading may be
+evaluated separately only if a real requirement appears.
 
 The package format, release distribution and server module loading strategy
 remain to be designed. The current installer still clones the repository and
@@ -289,26 +336,30 @@ separate, potentially destructive administrative operation.
 Every IdeasCore server, including self-hosted installations, has a central
 administration database logically separate from tenant business data.
 It registers companies, their codes, database locations and active status
-(the future subscription control point). It also holds server-owner identities
-and their sessions, because these accounts do not belong to any company.
-Company users, business ownership, permissions, sessions and module installation
-state belong in each company's database, not in the central registry.
-Shared module files/version inventory is server-level infrastructure; its
-storage format remains to be designed. PostgreSQL login roles themselves
-remain cluster-wide; application membership is local to each company.
+(the future subscription control point). It also holds server-owner identities,
+their sessions and the installed server module catalog, because these accounts
+and server-level module installation decisions do not belong to any company.
+Company users, business ownership, permissions, sessions and per-company module
+enablement state belong in each company's database, not in the central
+registry. Shared module package files/version inventory is server-level
+infrastructure; its storage format remains to be designed. PostgreSQL login
+roles themselves remain cluster-wide; application membership is local to each
+company.
 
 ### Server and business ownership
 
 - `server_owner` is an IdeasCore permission level, not Ubuntu root or a
   PostgreSQL superuser. It can create companies and their databases,
-  authorize/install/enable modules, and manage users and application roles
+  install modules on the server, enable or disable modules for any company,
+  and manage users and application roles
   across all companies registered on this IdeasCore server. Its scope does
   not include unrelated databases hosted in the same PostgreSQL instance.
 - Each company has exactly one `business_owner`, enforced by the data
   model and provisioning workflow. This owner has full application control
   within that company, including its users and roles, but cannot access
-  other companies or grant itself server-level privileges. It cannot enable
-  modules that the server owner has not authorized for its company.
+  other companies or grant itself server-level privileges. It cannot install
+  modules on the server or enable/disable modules for its company; module
+  availability is a `server_owner` decision.
 - Ownership transfer replaces the company's owner atomically; it must not
   leave an active company without an owner or with multiple owners.
 - The server administration UI is visible only to `server_owner`. Ktor
@@ -354,13 +405,22 @@ database, applies Core and tenant migrations, seeds the `business_owner`, marks
 The initial PostgreSQL `server_owner` role is the provisioning identity: after
 the backend validates a `server_owner` session token, it assumes that role for
 the provisioning operation. The same Empresa API can list companies, list
-modules installed in the active server catalog, enable or disable optional
-modules per company, and remove an optional module from the active server
-catalog when no company has it enabled. Only `server_owner` can perform server
+modules available in the server build, install available modules into the
+active server catalog, enable or disable optional modules per company, and
+remove an optional module from the active server catalog when no company has it
+enabled. Only `server_owner` can perform server
 module administration. `clientes` is a locked base module and cannot be
-disabled or removed. The default server build currently installs only
-`clientes`. Administrative permission coverage is still narrow and registry
-records alone do not implement all future permissions. The shared client
+disabled or removed. Server startup discovers module providers from the
+classpath and installs locked modules by default; optional modules remain
+available until a `server_owner` installs them in the active server catalog.
+The installed catalog is persisted in the central `server_modules` table and
+restored after restart.
+User and permission administration has a tenant-scoped foundation:
+`business_owner` can create application users and assign module-declared
+permissions only inside its own company tenant database. That tenant-scoped
+privilege does not grant access to other company databases, central
+server-owner tables or server module administration. A server-owner UI/API for
+managing users across any company remains planned. The shared client
 login is connected to the API, keeps the session in memory and navigates to
 the existing dashboard on success. When the user selects "Mantener sesión
 iniciada", the client persists the issued session token locally until its
@@ -373,17 +433,21 @@ current origin as server URL when no saved configuration exists.
 This is a fresh-install layout, not an automatic upgrade of an existing server.
 
 The Empresa module is part of Core. It owns company creation, company
-registry metadata, tenant provisioning and company identity. Company identity
-includes the display name, logo URL and brand colors. Once a company identity
-is selected or restored on the client, the same identity must be used across
-login, dashboard and every module so the whole app reflects the active
+registry metadata, tenant provisioning, company identity and company-level
+administration. `server_owner` can administer any company. `business_owner`
+can administer only its own company. Company administration includes identity
+metadata, backups, tenant users and application permissions. `business_owner`
+can create users and assign permissions only in its own tenant database. Company
+identity includes the display name, logo URL and brand colors. Once a company
+identity is selected or restored on the client, the same identity must be used
+across login, dashboard and every module so the whole app reflects the active
 company.
 
 Tenant databases also include a `tenant_modules` registry. The `clientes`
 Core module is seeded as enabled for new tenant databases so every company has
 the shared Customer/Prospect surface available as a base module. The current
-tenant seed registers only `clientes`; optional modules are added only after server-side installation so
-the server owner can enable them per company.
+tenant seed registers only `clientes`; optional modules are added only after
+server-side installation so only the server owner can enable them per company.
 
 Each database records executed scripts by module, version and checksum in
 `schema_migrations`. `scripts/ubuntu/migrations.sh` executes schema changes and
@@ -460,7 +524,7 @@ capability/adapter when substitution is useful.
 Example:
 
 ``` text
-Hotel Module
+Reservation Module
      |
      v
 ReservationProvider
@@ -474,24 +538,24 @@ primary identities.
 
 ------------------------------------------------------------------------
 
-## 10. Example: CRM → Hotel → Cloudbeds
+## 10. Example: Sales Module to Reservation Provider
 
 This is an architectural example, not a fixed workflow.
 
 A prospect may exist in the shared Customer domain and participate in a
-CRM-like module.
+sales-like module.
 
 When an opportunity is concreted/won:
 
 ``` text
-CRM
+Sales Module
  |
  | OpportunityWon
  v
 Domain Event
  |
  v
-Hotel Module
+Reservation Module
  |
  | reservation workflow
  v
@@ -513,7 +577,7 @@ as:
 -   hotel-specific profile data;
 -   references to external reservations/guests.
 
-Moving a CRM stage should not automatically create an irreversible
+Moving a sales stage should not automatically create an irreversible
 third-party reservation unless that exact business rule has been
 explicitly configured.
 
@@ -600,26 +664,50 @@ The shared client is migrating toward a feature-first structure:
   installed module; the dashboard and module container are intended to be fed
   by server-provided module metadata.
 
-The current module scaffolds are `modules/empresa`, `modules/clientes`,
-`modules/hostpot` and `modules/crm`. The default server build includes only the
-`clientes` shared/server source directories and registers that server module in
-`ModuleRegistry`. The running server exposes `/modules`,
+The current base repository contains only Core/base module scaffolds:
+`modules/empresa` and `modules/clientes`. Optional business modules such as
+optional business modules must live outside the base code, normally in the public module
+repository used by the server module catalog. The server build scans local
+installed module directories for shared/server source directories, generates
+the `ServerModuleProvider` service metadata from that convention, and
+`Application.kt` loads those providers without direct imports of optional
+modules.
+
+`ModuleRegistry` installs locked modules by default and restores optional
+installed modules from the central `server_modules` table. Remote module
+availability is intentionally separate from installed server state. The
+implemented remote catalog reader uses the URL saved by `server_owner`, falling
+back to `MODULE_CATALOG_URL`. The official URL is
+`https://github.com/alexcalbri/IDC/tree/master/modules`. The reader accepts
+that normal GitHub tree URL, converts it to the GitHub Contents API, and also
+supports direct Contents API directory listings for a repository `modules`
+folder. Each folder is considered installable only when it contains a valid
+`module.json` whose `id` matches the folder name. The reader also keeps
+backward compatibility with a JSON document that has a `modules` array.
+Manifests may include `packageUrl` and
+`packageSha256`; install downloads the package to `MODULE_PACKAGES_ROOT` and
+verifies the checksum when supplied. If a module folder is removed from the
+GitHub repository before installation, it stops appearing as available for new
+installs; if it was already installed on a server, that server continues using
+its local installed package/metadata and persisted `server_modules` row until
+the `server_owner` removes it. The running server exposes `/modules`,
 `/modules/{moduleId}/metadata` and each module-owned namespace under
-`/modules/{moduleId}`. The implemented `server_owner` Empresa screen can list
-the active server module catalog and remove non-locked modules from that
-catalog only when no company has them active. This is logical catalog removal;
-package download, package deletion from disk and persistent module installation
-records remain planned architecture. Downloading module packages from GitHub/distribution
-and loading them on demand remains planned architecture, not implemented
-behavior.
+`/modules/{moduleId}` for modules installed locally. The implemented
+`server_owner` module-management screen can list installed modules and remote
+available modules, update the catalog URL, install modules into the active
+server module catalog, and remove non-locked modules from that catalog only when
+no company has them active. Executable server loading, build/restart
+orchestration, versioned package inventory and local package deletion remain
+approved architecture that still needs implementation.
 
 Empresa is the first Core module surfaced in the client dashboard. It is
 always active for `server_owner` and `business_owner` sessions. For
 `server_owner`, `module/empresa` opens the implemented company provisioning
-screen. For `business_owner`, `module/empresa` opens the implemented company
-management screen for editing the company's display name, logo URL and brand
-colors. The same screen lists company ZIP files stored by the server, can
-create a non-destructive profile ZIP and can delete stored ZIPs. Full tenant
+screen for all companies. For `business_owner`, `module/empresa` opens the
+implemented company management screen scoped to only its own company for
+editing the company's display name, logo URL and brand colors. The same screen
+lists company ZIP files stored by the server, can create a non-destructive
+profile ZIP and can delete stored ZIPs. Full tenant
 database export/import and destructive restore from ZIP are planned but not
 yet implemented; such restore must keep the active business owner accessible.
 Other module routes use the generic server-driven module screen and load
@@ -710,7 +798,9 @@ by a validated IdeasCore `server_owner` session.
 pool and verifies PostgreSQL connectivity on startup. New installations
 point it at the central database, grant the runtime role read access to
 identity tables, data access to sessions and registry write access for company
-creation. Existing installations are not upgraded automatically.
+creation and server module catalog administration. Existing installations are
+upgraded by `scripts/ubuntu/update.sh`, which applies central control-plane
+migrations before replacing the runtime.
 Tenant pools may be preloaded through server-only `TENANT_DATABASES_JSON`; tenants
 created through the Empresa API are added to the running resolver immediately, and
 server restarts can reconstruct company tenant connections from the central
@@ -719,7 +809,8 @@ Local code includes `/auth/login`, `GET /companies`, `POST /companies`,
 `GET /companies/me`, `PUT /companies/me`, `GET /companies/me/backups`,
 `POST /companies/me/backups`, `DELETE /companies/me/backups/{fileName}`,
 `GET /companies/me/backups/{fileName}/download`,
-`GET /server/modules`, `DELETE /server/modules/{moduleId}`,
+`GET /server/modules`, `POST /server/modules/{moduleId}/install`,
+`DELETE /server/modules/{moduleId}`,
 `PUT /companies/{code}/modules/{moduleId}`, `/modules`,
 `/modules/{moduleId}/metadata`, active-user mapping, opaque session issuance,
 session validation/revocation services and IP-based login/admin rate limits.

@@ -6,7 +6,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.route
 
-fun Route.moduleRoutes(registry: ModuleRegistry) {
+fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
     route("/modules") {
         get {
             call.respond(HttpStatusCode.OK, registry.definitions)
@@ -23,5 +23,5 @@ fun Route.moduleRoutes(registry: ModuleRegistry) {
         }
     }
 
-    registry.installRoutes(this)
+    registry.installRoutes(this, access)
 }

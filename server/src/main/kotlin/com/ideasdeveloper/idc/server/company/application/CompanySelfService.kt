@@ -1,10 +1,17 @@
 package com.ideasdeveloper.idc.server.company.application
 
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
+import com.ideasdeveloper.idc.server.auth.infrastructure.security.ApplicationPasswordHasher
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
 import com.ideasdeveloper.idc.server.company.api.CompanyBackupResponse
 import com.ideasdeveloper.idc.server.company.api.CompanyProfileResponse
+import com.ideasdeveloper.idc.server.company.api.CompanyPermissionResponse
+import com.ideasdeveloper.idc.server.company.api.CompanyUserResponse
+import com.ideasdeveloper.idc.server.company.api.CompanyUsersResponse
+import com.ideasdeveloper.idc.server.company.api.CreateCompanyUserRequest
+import com.ideasdeveloper.idc.server.company.api.UpdateCompanyUserPermissionsRequest
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyProfileRequest
+import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -29,10 +36,13 @@ import kotlin.io.path.outputStream
 // Error de dominio para operaciones de autoservicio de empresa.
 class CompanySelfException(message: String) : Exception(message)
 
-// Servicio de autoservicio para que el business_owner administre su propia empresa.
+// Servicio de autoservicio para que el business_owner administre solo su propia empresa
+// y, en futuras rutas, usuarios/permisos dentro de su propia base tenant.
+// Este servicio no cambia disponibilidad de modulos; esa decision pertenece a server_owner.
 class CompanySelfService(
     private val central: DataSource,
     private val loginDatabases: LoginDatabases,
+    private val moduleRegistry: ModuleRegistry,
     private val backupsRoot: Path,
 ) {
     // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
@@ -41,6 +51,7 @@ class CompanySelfService(
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
     // Restringe nombres de ZIP para evitar rutas arbitrarias o archivos ajenos al tenant.
     private val backupNamePattern = Regex("[a-z][a-z0-9_]{0,62}-backup-[0-9]{8}T[0-9]{6}Z\\.zip")
+    private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
     // Serializador usado para manifest y metadata del ZIP.
     private val json = Json {
         encodeDefaults = true
@@ -110,7 +121,7 @@ class CompanySelfService(
         }
     }
 
-    // Genera un ZIP no destructivo con manifest y perfil; el dump completo queda pendiente de aprobacion.
+    // Genera un ZIP no destructivo con manifest y perfil; la restauracion completa de PostgreSQL es operativa y externa a la app.
     fun createProfileBackup(companyCode: String, accessToken: String): CompanyBackupResponse {
         val context = authorizeBusinessOwner(companyCode, accessToken)
         val createdAt = OffsetDateTime.now(java.time.ZoneOffset.UTC)
@@ -169,6 +180,101 @@ class CompanySelfService(
         )
     }
 
+    fun users(companyCode: String, accessToken: String): CompanyUsersResponse {
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        tenantConnection(context.tenant).use { connection ->
+            syncPermissionCatalog(connection)
+            return CompanyUsersResponse(
+                users = loadUsers(connection),
+                permissions = loadPermissions(connection),
+            )
+        }
+    }
+
+    fun createUser(companyCode: String, accessToken: String, request: CreateCompanyUserRequest): CompanyUserResponse {
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val username = request.username.trim()
+        if (!postgresRolePattern.matches(username)) {
+            throw CompanySelfException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+        }
+        if (request.password.length < 12) {
+            throw CompanySelfException("La contrasena del usuario debe tener al menos 12 caracteres.")
+        }
+
+        val userId = UUID.randomUUID()
+        val passwordHash = ApplicationPasswordHasher.hash(request.password)
+        tenantConnection(context.tenant).use { connection ->
+            syncPermissionCatalog(connection)
+            validatePermissions(connection, request.permissions)
+            connection.autoCommit = false
+            try {
+                if (connection.existsUser(username)) {
+                    throw CompanySelfException("Ya existe un usuario con ese nombre.")
+                }
+                connection.prepareStatement("INSERT INTO application_users (id, postgres_role, is_active) VALUES (?, ?, TRUE)").use { insert ->
+                    insert.setObject(1, userId)
+                    insert.setString(2, username)
+                    insert.executeUpdate()
+                }
+                connection.prepareStatement(
+                    """
+                    INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
+                    VALUES (?, ?, ?, ?)
+                    """.trimIndent()
+                ).use { insert ->
+                    insert.setObject(1, userId)
+                    insert.setString(2, passwordHash.salt)
+                    insert.setString(3, passwordHash.hash)
+                    insert.setInt(4, passwordHash.iterations)
+                    insert.executeUpdate()
+                }
+                replaceUserPermissions(connection, userId, request.permissions)
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+            return loadUser(connection, userId) ?: throw CompanySelfException("No se pudo cargar el usuario creado.")
+        }
+    }
+
+    fun updateUserPermissions(
+        companyCode: String,
+        accessToken: String,
+        userId: String,
+        request: UpdateCompanyUserPermissionsRequest,
+    ): CompanyUserResponse {
+        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val targetUserId = try {
+            UUID.fromString(userId)
+        } catch (_: IllegalArgumentException) {
+            throw CompanySelfException("Usuario invalido.")
+        }
+        if (targetUserId == context.businessOwnerUserId) {
+            throw CompanySelfException("No puedes quitar permisos del business_owner desde este flujo.")
+        }
+        tenantConnection(context.tenant).use { connection ->
+            syncPermissionCatalog(connection)
+            validatePermissions(connection, request.permissions)
+            connection.autoCommit = false
+            try {
+                if (!connection.userExists(targetUserId)) {
+                    throw CompanySelfException("Usuario no encontrado.")
+                }
+                replaceUserPermissions(connection, targetUserId, request.permissions)
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+            return loadUser(connection, targetUserId) ?: throw CompanySelfException("Usuario no encontrado.")
+        }
+    }
+
     // Valida que el token pertenezca al business_owner de la empresa indicada.
     private fun authorizeBusinessOwner(companyCode: String, accessToken: String): BusinessOwnerContext {
         val code = companyCode.trim()
@@ -205,7 +311,7 @@ class CompanySelfService(
         val ownerUserId = tenantConnection(tenant).use { connection ->
             connection.prepareStatement(
                 """
-                SELECT users.id
+                SELECT users.id, users.postgres_role
                 FROM application_sessions sessions
                 JOIN application_users users ON users.id = sessions.user_id
                 JOIN business_owner owner ON owner.user_id = users.id
@@ -218,12 +324,139 @@ class CompanySelfService(
                 query.setString(1, tokenHash)
                 query.executeQuery().use { rows ->
                     if (!rows.next()) throw CompanySelfException("Debes iniciar sesion como business_owner.")
-                    rows.getObject("id", UUID::class.java)
+                    rows.getObject("id", UUID::class.java) to rows.getString("postgres_role")
                 }
             }
         }
-        return BusinessOwnerContext(company.code, company.databaseName, company.profile, ownerUserId)
+        return BusinessOwnerContext(
+            companyCode = company.code,
+            databaseName = company.databaseName,
+            tenant = tenant,
+            profile = company.profile,
+            businessOwnerUserId = ownerUserId.first,
+            businessOwnerRole = ownerUserId.second,
+        )
     }
+
+    private fun syncPermissionCatalog(connection: java.sql.Connection) {
+        val enabledModuleIds = connection.prepareStatement(
+            "SELECT module_id FROM tenant_modules WHERE status = 'enabled'"
+        ).use { query ->
+            query.executeQuery().use { rows ->
+                buildSet {
+                    add("empresa")
+                    while (rows.next()) add(rows.getString("module_id"))
+                }
+            }
+        }
+        moduleRegistry.definitions.flatMap { definition ->
+            definition.permissions.map { permission -> definition.id to permission }
+        }.filter { (moduleId, _) -> moduleId in enabledModuleIds }.forEach { (moduleId, permission) ->
+            connection.prepareStatement(
+                """
+                INSERT INTO application_permissions (permission_id, module_id, title, description)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (permission_id)
+                DO UPDATE SET module_id = EXCLUDED.module_id, title = EXCLUDED.title, description = EXCLUDED.description
+                """.trimIndent()
+            ).use { upsert ->
+                upsert.setString(1, permission.id)
+                upsert.setString(2, moduleId)
+                upsert.setString(3, permission.title)
+                upsert.setString(4, permission.description)
+                upsert.executeUpdate()
+            }
+        }
+    }
+
+    private fun loadPermissions(connection: java.sql.Connection): List<CompanyPermissionResponse> =
+        connection.prepareStatement(
+            "SELECT permission_id, module_id, title, description FROM application_permissions ORDER BY module_id, permission_id"
+        ).use { query ->
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) {
+                        add(
+                            CompanyPermissionResponse(
+                                permissionId = rows.getString("permission_id"),
+                                moduleId = rows.getString("module_id"),
+                                title = rows.getString("title"),
+                                description = rows.getString("description"),
+                            )
+                        )
+                    }
+                }
+            }
+        }
+
+    private fun loadUsers(connection: java.sql.Connection): List<CompanyUserResponse> =
+        connection.prepareStatement("SELECT id FROM application_users ORDER BY postgres_role").use { query ->
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) {
+                        loadUser(connection, rows.getObject("id", UUID::class.java))?.let(::add)
+                    }
+                }
+            }
+        }
+
+    private fun loadUser(connection: java.sql.Connection, userId: UUID): CompanyUserResponse? =
+        connection.prepareStatement("SELECT id, postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows ->
+                if (!rows.next()) return null
+                CompanyUserResponse(
+                    userId = rows.getObject("id", UUID::class.java).toString(),
+                    username = rows.getString("postgres_role"),
+                    isActive = rows.getBoolean("is_active"),
+                    permissions = loadUserPermissions(connection, userId),
+                )
+            }
+        }
+
+    private fun loadUserPermissions(connection: java.sql.Connection, userId: UUID): List<String> =
+        connection.prepareStatement("SELECT permission_id FROM application_user_permissions WHERE user_id = ? ORDER BY permission_id").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) add(rows.getString("permission_id"))
+                }
+            }
+        }
+
+    private fun validatePermissions(connection: java.sql.Connection, permissions: List<String>) {
+        val known = loadPermissions(connection).map { it.permissionId }.toSet()
+        val unknown = permissions.toSet() - known
+        if (unknown.isNotEmpty()) {
+            throw CompanySelfException("Permisos no reconocidos: ${unknown.joinToString()}.")
+        }
+    }
+
+    private fun replaceUserPermissions(connection: java.sql.Connection, userId: UUID, permissions: List<String>) {
+        connection.prepareStatement("DELETE FROM application_user_permissions WHERE user_id = ?").use { delete ->
+            delete.setObject(1, userId)
+            delete.executeUpdate()
+        }
+        permissions.distinct().forEach { permissionId ->
+            connection.prepareStatement("INSERT INTO application_user_permissions (user_id, permission_id) VALUES (?, ?)").use { insert ->
+                insert.setObject(1, userId)
+                insert.setString(2, permissionId)
+                insert.executeUpdate()
+            }
+        }
+    }
+
+    private fun java.sql.Connection.userExists(userId: UUID): Boolean =
+        prepareStatement("SELECT 1 FROM application_users WHERE id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+
+    private fun java.sql.Connection.existsUser(name: String): Boolean =
+        prepareStatement("SELECT 1 FROM application_users WHERE postgres_role = ?").use { query ->
+            query.setString(1, name)
+            query.executeQuery().use { rows -> rows.next() }
+        }
 
     // Abre una conexion runtime al tenant ya resuelto por el servidor.
     private fun tenantConnection(tenant: com.ideasdeveloper.idc.server.auth.infrastructure.database.TenantDatabaseConfig) =
@@ -263,9 +496,12 @@ class CompanySelfService(
     private data class BusinessOwnerContext(
         val companyCode: String,
         val databaseName: String,
+        val tenant: com.ideasdeveloper.idc.server.auth.infrastructure.database.TenantDatabaseConfig,
         val profile: CompanyProfileResponse,
         val businessOwnerUserId: UUID,
+        val businessOwnerRole: String,
     )
+
 }
 
 @Serializable

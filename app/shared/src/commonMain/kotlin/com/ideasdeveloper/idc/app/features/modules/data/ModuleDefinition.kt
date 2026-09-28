@@ -8,6 +8,7 @@ data class ModuleDefinition(
     val id: String,
     val displayName: String,
     val description: String,
+    val version: String = "0.1.0",
     val locked: Boolean = false,
     val views: List<ModuleViewDefinition> = emptyList(),
 )
@@ -19,4 +20,24 @@ data class ModuleViewDefinition(
     val title: String,
     val route: String,
     val kind: String,
+    val fields: List<ModuleFieldDefinition> = emptyList(),
+    val actions: List<ModuleActionDefinition> = emptyList(),
+)
+
+@Serializable
+data class ModuleFieldDefinition(
+    val key: String,
+    val label: String,
+    val type: String,
+    val required: Boolean = false,
+    val dynamic: Boolean = false,
+)
+
+@Serializable
+data class ModuleActionDefinition(
+    val id: String,
+    val title: String,
+    val route: String,
+    val method: String,
+    val permission: String,
 )

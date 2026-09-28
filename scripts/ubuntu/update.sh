@@ -30,6 +30,7 @@ git_source() {
 readonly APP_DIR=/opt/ideascore
 readonly SOURCE_DIR=$APP_DIR/source
 readonly APP_RUNTIME_DIR=$APP_DIR/app
+readonly WEB_RUNTIME_DIR=$APP_DIR/web
 readonly CONFIG_FILE=/etc/ideascore/server.env
 readonly SERVICE_NAME=ideascore.service
 readonly NGINX_SITE=/etc/nginx/sites-available/ideascore
@@ -111,6 +112,8 @@ configure_server_env() {
     install -d -m 755 "$APP_DIR/company-backups"
     chown ideascore:ideascore "$APP_DIR/company-backups"
     chmod 700 "$APP_DIR/company-backups"
+    install -d -m 700 "$APP_DIR/server-modules"
+    chown ideascore:ideascore "$APP_DIR/server-modules"
 
     db_url=$(config_value DB_URL)
     [[ -n $db_url ]] || die 'DB_URL no existe en /etc/ideascore/server.env.'
@@ -122,6 +125,9 @@ configure_server_env() {
     append_config_value TENANT_JDBC_URL_PREFIX "$tenant_prefix"
     append_config_value MIGRATIONS_ROOT "$SOURCE_DIR"
     append_config_value COMPANY_BACKUPS_ROOT "$APP_DIR/company-backups"
+    append_config_value MODULE_CATALOG_URL 'https://github.com/alexcalbri/IDC/tree/master/modules'
+    append_config_value MODULE_PACKAGES_ROOT "$APP_DIR/server-modules"
+    append_config_value VERSION_CATALOG_URL ''
     chmod 600 "$CONFIG_FILE"
 }
 
@@ -167,8 +173,52 @@ PY
     printf 'Nginx actualizado para proxyear /server al backend.\n'
 }
 
+apply_control_migrations() {
+    local db_url db_name db_user
+    db_url=$(config_value DB_URL)
+    db_user=$(config_value DB_USER)
+    [[ -n $db_url ]] || die 'DB_URL no existe en /etc/ideascore/server.env.'
+    [[ -n $db_user ]] || die 'DB_USER no existe en /etc/ideascore/server.env.'
+    db_name="${db_url##*/}"
+    [[ -n $db_name && $db_name != "$db_url" ]] || die 'No se pudo inferir la base central desde DB_URL.'
+    [[ -f scripts/ubuntu/migrations.sh ]] || die 'No se encontro scripts/ubuntu/migrations.sh.'
+    [[ -f database/control/migrations/V003__create_server_modules.sql ]] ||
+        die 'No se encontro database/control/migrations/V003__create_server_modules.sql.'
+    [[ -f database/control/migrations/V004__create_server_settings_and_module_packages.sql ]] ||
+        die 'No se encontro database/control/migrations/V004__create_server_settings_and_module_packages.sql.'
+
+    source scripts/ubuntu/migrations.sh
+    apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
+    apply_migration "$db_name" control database/control/migrations/V002__create_provisioning_audit_log.sql
+    apply_migration "$db_name" control database/control/migrations/V003__create_server_modules.sql
+    apply_migration "$db_name" control database/control/migrations/V004__create_server_settings_and_module_packages.sql
+    runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
+GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
+SQL
+
+    [[ -f database/tenant/migrations/V004__create_application_permissions.sql ]] ||
+        die 'No se encontro database/tenant/migrations/V004__create_application_permissions.sql.'
+    [[ -f database/tenant/migrations/V005__create_application_user_credentials.sql ]] ||
+        die 'No se encontro database/tenant/migrations/V005__create_application_user_credentials.sql.'
+    [[ -f modules/clientes/migrations/V002__require_customer_contact_fields.sql ]] ||
+        die 'No se encontro modules/clientes/migrations/V002__require_customer_contact_fields.sql.'
+    while IFS= read -r tenant_db; do
+        [[ -n $tenant_db ]] || continue
+        apply_migration "$tenant_db" clientes modules/clientes/migrations/V002__require_customer_contact_fields.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V004__create_application_permissions.sql
+        apply_migration "$tenant_db" tenant database/tenant/migrations/V005__create_application_user_credentials.sql
+        runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
+GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO :"db_user";
+SQL
+    done < <(runuser -u postgres -- psql -X -d "$db_name" -At -c "SELECT database_name FROM companies ORDER BY code")
+}
+
 [[ -d $SOURCE_DIR/.git ]] || die "No se encontro el repositorio en $SOURCE_DIR."
 [[ -d $APP_RUNTIME_DIR && -x $APP_RUNTIME_DIR/bin/server ]] || die "No se encontro el servidor instalado en $APP_RUNTIME_DIR."
+[[ -d $WEB_RUNTIME_DIR ]] || die "No se encontro la webapp instalada en $WEB_RUNTIME_DIR."
 [[ -r $CONFIG_FILE ]] || die "No se encontro $CONFIG_FILE."
 id ideascore >/dev/null 2>&1 || die 'No existe el usuario Linux ideascore.'
 systemctl cat "$SERVICE_NAME" >/dev/null 2>&1 || die "No existe $SERVICE_NAME."
@@ -178,6 +228,11 @@ CURRENT_REF=$(git_source rev-parse --abbrev-ref HEAD)
 CURRENT_COMMIT=$(git_source rev-parse --short HEAD)
 ask GIT_REF 'Rama, etiqueta o commit para actualizar' "$CURRENT_REF"
 [[ $GIT_REF =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*$ && $GIT_REF != *..* ]] || die 'Referencia Git invalida.'
+ask UPDATE_TARGET 'Que deseas actualizar? server, webapp o ambos' ambos
+case "$UPDATE_TARGET" in
+    server|webapp|ambos) ;;
+    *) die 'Opcion invalida. Usa server, webapp o ambos.' ;;
+esac
 
 if ! git_source diff --quiet || ! git_source diff --cached --quiet; then
     die 'El repositorio de instalacion tiene cambios locales. Resuelvelos antes de actualizar.'
@@ -185,7 +240,7 @@ fi
 
 printf 'Instalacion actual: %s (%s)\n' "$CURRENT_REF" "$CURRENT_COMMIT"
 printf 'Destino: %s\n' "$GIT_REF"
-ask CONFIRM 'Continuar con respaldo, build y reemplazo del servidor? Escribe si' no
+ask CONFIRM "Continuar con respaldo, build y reemplazo de $UPDATE_TARGET? Escribe si" no
 [[ $CONFIRM == si ]] || die 'Cancelado sin cambiar archivos.'
 
 if [[ -n ${JAVA_HOME:-} && -x $JAVA_HOME/bin/java ]]; then
@@ -202,37 +257,67 @@ git_source fetch --tags --prune origin
 git_source checkout "$GIT_REF"
 git_source pull --ff-only origin "$GIT_REF" 2>/dev/null || true
 TARGET_COMMIT=$(git_source rev-parse --short HEAD)
+if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
+    apply_control_migrations
+fi
 
 runuser -u ideascore -- env JAVA_HOME="$UPDATE_JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
 
 BUILD_LOG_DIR="$APP_DIR/update-logs"
 install -d -m 755 "$BUILD_LOG_DIR"
 SERVER_BUILD_LOG="$BUILD_LOG_DIR/server-$TARGET_COMMIT.log"
+WEB_BUILD_LOG="$BUILD_LOG_DIR/web-$TARGET_COMMIT.log"
 
-run_gradle -PserverOnly=true :server:test :server:installDist 2>&1 | tee "$SERVER_BUILD_LOG"
-[[ -x server/build/install/server/bin/server ]] || die 'No se genero la distribucion del servidor.'
+if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
+    run_gradle -PserverOnly=true :server:test :server:installDist 2>&1 | tee "$SERVER_BUILD_LOG"
+    [[ -x server/build/install/server/bin/server ]] || die 'No se genero la distribucion del servidor.'
+fi
+if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
+    run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution 2>&1 | tee "$WEB_BUILD_LOG"
+    WEB_DIST="$SOURCE_DIR/app/webApp/build/dist/js/productionExecutable"
+    [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se genero la distribucion web completa.'
+fi
 
 TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
 BACKUP_DIR=$BACKUP_ROOT/$TIMESTAMP
 install -d -m 700 "$BACKUP_DIR"
 cp -a "$APP_RUNTIME_DIR" "$BACKUP_DIR/app"
+cp -a "$WEB_RUNTIME_DIR" "$BACKUP_DIR/web"
 git_source rev-parse HEAD > "$BACKUP_DIR/source-commit.txt"
 
-systemctl stop "$SERVICE_NAME"
+if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
+    systemctl stop "$SERVICE_NAME"
+fi
 
-rm -rf "$APP_RUNTIME_DIR.new"
-install -d -m 755 "$APP_RUNTIME_DIR.new"
-cp -R server/build/install/server/. "$APP_RUNTIME_DIR.new/"
-chown -R root:root "$APP_RUNTIME_DIR.new"
-chmod -R a+rX "$APP_RUNTIME_DIR.new"
-chmod -R go-w "$APP_RUNTIME_DIR.new"
+if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
+    rm -rf "$APP_RUNTIME_DIR.new"
+    install -d -m 755 "$APP_RUNTIME_DIR.new"
+    cp -R server/build/install/server/. "$APP_RUNTIME_DIR.new/"
+    chown -R root:root "$APP_RUNTIME_DIR.new"
+    chmod -R a+rX "$APP_RUNTIME_DIR.new"
+    chmod -R go-w "$APP_RUNTIME_DIR.new"
 
-rm -rf "$APP_RUNTIME_DIR.previous"
-mv "$APP_RUNTIME_DIR" "$APP_RUNTIME_DIR.previous"
-mv "$APP_RUNTIME_DIR.new" "$APP_RUNTIME_DIR"
+    rm -rf "$APP_RUNTIME_DIR.previous"
+    mv "$APP_RUNTIME_DIR" "$APP_RUNTIME_DIR.previous"
+    mv "$APP_RUNTIME_DIR.new" "$APP_RUNTIME_DIR"
+fi
 
-systemctl start "$SERVICE_NAME"
-if command -v curl >/dev/null 2>&1; then
+if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
+    rm -rf "$WEB_RUNTIME_DIR.new"
+    install -d -m 755 "$WEB_RUNTIME_DIR.new"
+    cp -R "$WEB_DIST/." "$WEB_RUNTIME_DIR.new/"
+    chown -R root:root "$WEB_RUNTIME_DIR.new"
+    chmod -R a+rX "$WEB_RUNTIME_DIR.new"
+    chmod -R go-w "$WEB_RUNTIME_DIR.new"
+    rm -rf "$WEB_RUNTIME_DIR.previous"
+    mv "$WEB_RUNTIME_DIR" "$WEB_RUNTIME_DIR.previous"
+    mv "$WEB_RUNTIME_DIR.new" "$WEB_RUNTIME_DIR"
+fi
+
+if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
+    systemctl start "$SERVICE_NAME"
+fi
+if [[ ($UPDATE_TARGET == server || $UPDATE_TARGET == ambos) && -x "$(command -v curl)" ]]; then
     HEALTH_OK=false
     for attempt in {1..30}; do
         if systemctl is-active --quiet "$SERVICE_NAME" &&
@@ -248,15 +333,15 @@ if command -v curl >/dev/null 2>&1; then
         journalctl -u "$SERVICE_NAME" -n 80 --no-pager >&2 || true
         die 'El servicio no respondio en http://127.0.0.1:8080/ despues de 90 segundos. Los artefactos anteriores estan en *.previous y el respaldo en backups/.'
     fi
-else
+elif [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     systemctl is-active --quiet "$SERVICE_NAME" || {
         systemctl status "$SERVICE_NAME" --no-pager >&2 || true
         die 'El servicio no arranco. Los artefactos anteriores estan en *.previous y el respaldo en backups/.'
     }
 fi
 
-rm -rf "$APP_RUNTIME_DIR.previous"
+rm -rf "$APP_RUNTIME_DIR.previous" "$WEB_RUNTIME_DIR.previous"
 
-printf 'IdeasCore actualizado de %s a %s.\n' "$CURRENT_COMMIT" "$TARGET_COMMIT"
+printf 'IdeasCore actualizado (%s) de %s a %s.\n' "$UPDATE_TARGET" "$CURRENT_COMMIT" "$TARGET_COMMIT"
 printf 'Respaldo: %s\n' "$BACKUP_DIR"
 printf 'Logs: sudo journalctl -u ideascore -f\n'

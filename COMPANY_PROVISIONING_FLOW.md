@@ -37,9 +37,11 @@ Owns the top-level Compose navigation shell.
 - Reads `moduleId` from Navigation `SavedState` using `androidx.savedstate.read`.
 - Routes `module/empresa` for `server_owner` sessions to
   `CompanyProvisioningScreen`.
+- Routes `module/server-modules` for `server_owner` sessions to
+  `ServerModuleManagementScreen`.
 - Routes all other modules to `ServerDrivenModuleScreen`, which loads module metadata from the server.
 - Uses `NavRoute.Module(moduleId)` instead of hardcoded module routes like
-  `hostpot` or `crm`.
+  optional business modules.
 - Uses `openDashboard()` as the shared return-to-dashboard target. New authenticated
   views that receive `onReturnToDashboard` must expose it through `AuthenticatedTopBar`
   and must confirm before invoking it when local editable state has unsaved
@@ -83,10 +85,19 @@ Provides the current Empresa administration UI.
 - Shows PostgreSQL diagnostic details returned by protected server-owner provisioning routes when database provisioning fails.
 - Allows enabling/disabling optional modules through
   `PUT /companies/{code}/modules/{moduleId}`.
-- Lists installed server modules through `GET /server/modules`.
+- Keeps `clientes` visible as locked because it is the base customer module.
+
+### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/features/company/ui/ServerModuleManagementScreen.kt`
+
+Provides the current server module catalog UI for `server_owner`.
+
+- Loads installed server modules through `GET /server/modules`.
+- Shows available repository modules that are not installed yet.
+- Allows installing a server module through
+  `POST /server/modules/{moduleId}/install`.
+- Shows whether each module is locked or active in companies.
 - Allows deleting a server module through `DELETE /server/modules/{moduleId}`
   only when it is not locked and no company has it active.
-- Keeps `clientes` visible as locked because it is the base customer module.
 
 ### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/features/company/ui/CompanyManagementScreen.kt`
 
@@ -106,6 +117,7 @@ Contains client DTOs and HTTP client code for Empresa.
   - `createCompany(...)` calls `POST /companies`.
   - `listCompanies(...)` calls `GET /companies`.
   - `listServerModules(...)` calls `GET /server/modules`.
+  - `installServerModule(...)` calls `POST /server/modules/{moduleId}/install`.
   - `deleteServerModule(...)` calls `DELETE /server/modules/{moduleId}`.
   - `updateModule(...)` calls
     `PUT /companies/{companyCode}/modules/{moduleId}`.
@@ -125,6 +137,10 @@ Provides the generic module client flow.
 - `ModuleApi.kt` calls `/modules/{moduleId}/metadata`.
 - `ModuleDefinition.kt` mirrors the server metadata contract.
 - `ServerDrivenModuleScreen.kt` renders module title, description and view list from server metadata.
+- New modules must target this server-driven flow by default. Module packages
+  must provide enough metadata for the generic client to render their views.
+  A dedicated Compose screen is an explicit exception and requires a client
+  release.
 
 ### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/features/auth/data/LoginResponse.kt`
 
@@ -193,15 +209,40 @@ Defines company administration HTTP routes.
   - Returns companies and module state.
 - `GET /server/modules`
   - Requires a valid `server_owner` token.
-  - Returns modules currently installed in the server registry and how many
-    companies have each one active.
+  - Returns modules installed locally plus modules available in the remote JSON
+    catalog configured through `MODULE_CATALOG_URL`.
+  - Indicates whether each module is installed in the persisted active server
+    registry and how many companies have it active.
+- `GET /server/modules/catalog`
+  - Requires a valid `server_owner` token.
+  - Returns the active remote catalog URL.
+- `PUT /server/modules/catalog`
+  - Requires a valid `server_owner` token.
+  - Updates the remote catalog URL stored in central `server_settings`.
+- `POST /server/modules/{moduleId}/install`
+  - Requires a valid `server_owner` token.
+  - Adds an available module to the active server registry and persists it in
+    central `server_modules`.
+  - Downloads the module package to `MODULE_PACKAGES_ROOT` when the catalog
+    provides `packageUrl`, and verifies `packageSha256` when present.
 - `DELETE /server/modules/{moduleId}`
   - Requires a valid `server_owner` token.
   - Removes a module from the active server registry only when it is not
-    locked and no company currently has it active.
+    locked and no company currently has it active, then deletes it from central
+    `server_modules`.
 - `POST /companies`
   - Requires a valid `server_owner` token.
   - Creates/provisions a company.
+- `GET /companies/me/users`
+  - Requires a valid `business_owner` token and `X-Company-Code`.
+  - Lists users and module-declared permissions for the owner company.
+- `POST /companies/me/users`
+  - Requires a valid `business_owner` token and `X-Company-Code`.
+  - Creates an application user inside that tenant database and assigns selected
+    permissions.
+- `PUT /companies/me/users/{userId}/permissions`
+  - Requires a valid `business_owner` token and `X-Company-Code`.
+  - Replaces permissions for a user inside that same tenant database.
 - `PUT /companies/{code}/modules/{moduleId}`
   - Requires a valid `server_owner` token.
   - Enables or disables optional modules for a company.
@@ -232,7 +273,9 @@ Defines the server module contract and registry.
 
 - `ServerModule.kt` declares module metadata and optional route installation.
 - `ModuleRoutes.kt` exposes `/modules`, `/modules/{moduleId}/metadata` and installs module-owned routes.
-- Current default server bundle includes only `clientes`. GitHub/package download and ZIP installation are planned architecture, not implemented behavior.
+- The server bundle discovers module providers from compiled `modules/*`
+  sources. GitHub/package download and ZIP installation are planned
+  architecture, not implemented behavior.
 
 ### `server/src/main/kotlin/com/ideasdeveloper/idc/server/company/application/CompanyProvisioningService.kt`
 
@@ -262,18 +305,33 @@ Main responsibilities:
 - Register the tenant connection in `LoginDatabases`.
 - List companies and module states.
 - List server modules and active-company usage counts.
+- Install available modules into the active server catalog and persist them in
+  central `server_modules`.
 - Activate or deactivate companies.
 - Delete deactivated companies, including their central registry row, tenant database and business-owner PostgreSQL role.
-- Enable or disable optional modules.
+- Enable or disable optional modules for any company. This remains exclusive to
+  `server_owner`.
 - Remove an optional module from the active server catalog when no company has it enabled.
 
 Module rules:
 
 - `clientes` is locked and always enabled.
 - Optional modules only appear after they are installed in the server module registry.
+- Available modules come from module providers discovered by the server. The
+  core server startup must not import optional module classes directly.
+- Installed server modules survive restart through central `server_modules`.
 - Locked modules cannot be removed from the server catalog.
 - Server module removal does not add audit rows; only the `server_owner`
   can execute it.
+
+Company administration scope:
+
+- `server_owner` administers any company and owns all server-level module
+  decisions.
+- `business_owner` administers only its own company profile, backups and
+  company users/permissions inside its own tenant database.
+- `business_owner` cannot install server modules or enable/disable modules for
+  its company.
 
 ### `server/src/main/kotlin/com/ideasdeveloper/idc/server/company/application/CompanyProvisioningConfig.kt`
 
@@ -348,6 +406,15 @@ Used to track:
 - module enable;
 - module disable.
 
+### `database/control/migrations/V003__create_server_modules.sql`
+
+Creates central server module catalog table:
+
+- `server_modules`
+
+Used to persist which compiled module providers are installed in the active
+server catalog.
+
 ### `database/tenant/migrations/V001__create_business_owner.sql`
 
 Creates singleton `business_owner`.
@@ -364,6 +431,19 @@ Creates shared customer identity structures:
 This belongs to the locked `clientes` module because all modules share Customer/Prospect
 identity through that base module.
 
+Customer creation requires Nombre (`display_name`), Correo (`primary_email`)
+and Telefono (`primary_phone`).
+
+Dynamic customer data has two scopes:
+
+- Customer/Core fields created by authorized users in the Clientes view are
+  defined in `customer_field_definitions`, stored in
+  `customers.flexible_attributes`, and remain even if optional modules are
+  removed.
+- Module fields are defined and stored by the owning module. They appear in
+  that module's own server-driven views and may be removed only by a true module
+  uninstall workflow, not by disabling the module.
+
 ### `database/tenant/migrations/V003__create_tenant_modules.sql`
 
 Creates `tenant_modules`.
@@ -374,6 +454,37 @@ Initial rows:
 
 Optional modules are inserted only after they are installed on the server.
 
+### `database/tenant/migrations/V004__create_application_permissions.sql`
+
+Creates tenant application permission tables:
+
+- `application_permissions`
+- `application_user_permissions`
+
+Permissions are declared by Core and module metadata. The `business_owner`
+receives the base Empresa permissions.
+
+Module permissions follow the base naming pattern:
+
+- `module.view`
+- `module.create`
+- `module.edit`
+- `module.delete`
+- `module.fields.manage`
+
+`module.view` controls whether a non-owner company user sees a module in the
+dashboard. The other permissions control the corresponding module actions.
+
+### `database/tenant/migrations/V005__create_application_user_credentials.sql`
+
+Creates tenant application password table:
+
+- `application_user_credentials`
+
+Users created by `business_owner` authenticate with these tenant-scoped
+application credentials. This avoids creating PostgreSQL roles from a
+business-owner action.
+
 ## Module Scaffolds
 
 ### `modules/clientes`
@@ -383,22 +494,45 @@ Core module scaffold for the shared customer surface.
 - `ClientesModule.id = "clientes"`
 - Enabled by default in new tenant DBs.
 - Locked from disable in backend module administration.
+- Declares base permissions:
+  - `clientes.view`
+  - `clientes.create`
+  - `clientes.edit`
+  - `clientes.delete`
+  - `clientes.fields.manage`
 
-### `modules/hostpot`
+### External optional modules
 
-Repository scaffold for a future optional module package.
+Optional business modules are not part of the Core repository.
+They must live in the external module repository/catalog. The server-owner
+module administration view should list them as available only while the remote
+catalog exposes them. Removing a module from the remote catalog prevents new
+server installations, but it must not break a server that already installed the
+module; installed servers rely on their local package plus the persisted
+`server_modules` row until the `server_owner` removes the module.
 
-- Not included in the default server build.
-- Not inserted into tenant `tenant_modules` until a module installation flow is implemented.
-- Future installation will come from a trusted GitHub package or a validated ZIP upload.
+The implemented catalog reader uses `MODULE_CATALOG_URL` and expects JSON:
 
-### `modules/crm`
+```json
+{
+  "modules": [
+    {
+      "id": "example",
+      "displayName": "Example",
+      "description": "Gestion comercial",
+      "locked": false,
+      "packageUrl": "https://example.com/modules/example.zip",
+      "packageSha256": "64_hex_characters_when_available",
+      "views": [],
+      "permissions": []
+    }
+  ]
+}
+```
 
-Repository scaffold for a future optional module package.
-
-- Not included in the default server build.
-- Not inserted into tenant `tenant_modules` until a module installation flow is implemented.
-- Future installation will come from a trusted GitHub package or a validated ZIP upload.
+Each external module package must expose a `ServerModuleProvider`, declare its
+permissions, own its migrations and protect its module-owned routes with
+`requireModulePermission`.
 
 ## Installer
 
@@ -466,12 +600,12 @@ Known production hardening still recommended:
 
 ## Current Validation Status
 
-No Gradle build has been run in this workspace because Java/JDK is not
-available in `PATH` and `JAVA_HOME` is not set to a valid JDK.
+Gradle validation was run in a clean temporary copy because the local
+`server/build` directory can be locked by Windows processes in this workspace.
 
 Static checks performed:
 
-- Confirmed no module-specific Compose routes remain for `hostpot` or `crm`.
+- Confirmed no module-specific Compose routes remain for optional business modules.
 - Confirmed the old `getString("moduleId")` Navigation issue is gone.
 - Confirmed no `PROVISIONING_DB_USER` or `PROVISIONING_DB_PASSWORD` references
   remain.
@@ -490,7 +624,8 @@ Static checks performed:
    - company code.
 7. Confirm the dashboard shows `Clientes`.
 8. Log back in as `server_owner`.
-9. Open Empresa.
-10. Enable `CRM` or `Hostpot` for the company.
-11. Log back in to that company.
-12. Confirm enabled modules appear in the dashboard.
+9. Open Modulos del servidor and install an available optional module if needed.
+10. Open Empresa.
+11. Enable the installed optional module for the company.
+12. Log back in to that company.
+13. Confirm enabled modules appear in the dashboard.

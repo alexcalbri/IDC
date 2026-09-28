@@ -6,11 +6,15 @@ import com.ideasdeveloper.idc.server.company.api.CreateCompanyResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.idc.server.company.api.CompanyModuleResponse
 import com.ideasdeveloper.idc.server.company.api.CompanySummaryResponse
+import com.ideasdeveloper.idc.server.company.api.ServerModuleCatalogResponse
 import com.ideasdeveloper.idc.server.company.api.ServerModuleResponse
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyRequest
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
+import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
+import com.ideasdeveloper.idc.server.modules.RemoteModulePackage
 import org.postgresql.ds.PGSimpleDataSource
+import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -27,10 +31,14 @@ class CompanyProvisioningService(
     private val config: CompanyProvisioningConfig,
     private val loginDatabases: LoginDatabases,
     private val moduleRegistry: ModuleRegistry,
+    private val remoteModuleCatalog: RemoteModuleCatalog,
+    private val defaultCatalogUrl: String,
+    private val modulePackagesRoot: Path,
 ) {
     private val companyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
+    private val moduleCatalogSettingKey = "module.catalog.url"
     private val modules: List<ModuleDefinition>
         get() = moduleRegistry.definitions
 
@@ -427,13 +435,95 @@ class CompanyProvisioningService(
         )
     }
 
-    fun listServerModules(): List<ServerModuleResponse> = modules.map { definition ->
-        ServerModuleResponse(
+    fun listServerModules(): List<ServerModuleResponse> {
+        ensureLockedServerModulesPersisted()
+        val remotePackages = syncRemoteAvailableModules()
+        return moduleRegistry.availableDefinitions.map { definition ->
+            val remotePackage = remotePackages[definition.id]
+            val installedPackage = installedPackage(definition.id)
+            ServerModuleResponse(
+                moduleId = definition.id,
+                displayName = definition.displayName,
+                description = definition.description,
+                version = installedPackage?.version ?: definition.version,
+                latestVersion = remotePackage?.definition?.version,
+                locked = definition.locked,
+                installed = moduleRegistry.isInstalled(definition.id),
+                activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
+                packageUrl = remotePackage?.packageUrl ?: installedPackage?.packageUrl,
+                packageSha256 = remotePackage?.packageSha256 ?: installedPackage?.packageSha256,
+                installedPackagePath = installedPackage?.installedPackagePath,
+            )
+        }
+    }
+
+    fun serverModuleCatalog(): ServerModuleCatalogResponse =
+        ServerModuleCatalogResponse(catalogUrl = moduleCatalogUrl())
+
+    fun updateServerModuleCatalog(catalogUrl: String): ServerModuleCatalogResponse {
+        val normalized = catalogUrl.trim()
+        if (normalized.isNotBlank() && !normalized.startsWith("https://") && !normalized.startsWith("http://")) {
+            throw CompanyProvisioningException("La URL del catalogo debe iniciar con http:// o https://.")
+        }
+        central.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO server_settings (setting_key, setting_value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (setting_key)
+                DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+                """.trimIndent()
+            ).use { upsert ->
+                upsert.setString(1, moduleCatalogSettingKey)
+                upsert.setString(2, normalized)
+                upsert.executeUpdate()
+            }
+        }
+        return ServerModuleCatalogResponse(catalogUrl = normalized)
+    }
+
+    fun installServerModule(moduleId: String): ServerModuleResponse {
+        val normalizedModuleId = moduleId.trim()
+        val remotePackages = syncRemoteAvailableModules()
+        val definition = moduleRegistry.availableDefinition(normalizedModuleId)
+            ?: throw CompanyProvisioningException("Modulo no encontrado en el repositorio del servidor.")
+        val remotePackage = remotePackages[definition.id]
+        val installedPackagePath = remotePackage?.let { downloadModulePackage(it) }
+
+        central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                upsertServerModule(
+                    connection = connection,
+                    definition = definition,
+                    packageUrl = remotePackage?.packageUrl,
+                    packageSha256 = remotePackage?.packageSha256,
+                    installedPackagePath = installedPackagePath?.toString(),
+                )
+                if (!moduleRegistry.isInstalled(definition.id)) {
+                    moduleRegistry.install(definition.id)
+                }
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+        }
+
+        return ServerModuleResponse(
             moduleId = definition.id,
             displayName = definition.displayName,
             description = definition.description,
+            version = definition.version,
+            latestVersion = remotePackage?.definition?.version,
             locked = definition.locked,
+            installed = true,
             activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
+            packageUrl = remotePackage?.packageUrl,
+            packageSha256 = remotePackage?.packageSha256,
+            installedPackagePath = installedPackagePath?.toString() ?: installedPackage(definition.id)?.installedPackagePath,
         )
     }
 
@@ -448,7 +538,143 @@ class CompanyProvisioningService(
         if (activeCompanyCount > 0) {
             throw CompanyProvisioningException("No se puede eliminar ${definition.displayName}; esta activo en $activeCompanyCount empresa(s).")
         }
-        moduleRegistry.remove(definition.id)
+
+        central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement("DELETE FROM server_modules WHERE module_id = ? AND locked = FALSE").use { delete ->
+                    delete.setString(1, definition.id)
+                    if (delete.executeUpdate() != 1) {
+                        throw CompanyProvisioningException("No se pudo eliminar ${definition.displayName} del catalogo activo.")
+                    }
+                }
+                moduleRegistry.remove(definition.id)
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+        }
+    }
+
+    private fun ensureLockedServerModulesPersisted() {
+        central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                moduleRegistry.availableDefinitions
+                    .filter { it.locked }
+                    .forEach { definition ->
+                        upsertServerModule(connection, definition)
+                        if (!moduleRegistry.isInstalled(definition.id)) {
+                            moduleRegistry.install(definition.id)
+                        }
+                    }
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+        }
+    }
+
+    private fun syncRemoteAvailableModules(): Map<String, RemoteModulePackage> {
+        return remoteModuleCatalog.modules(moduleCatalogUrl()).associateBy { remotePackage ->
+            moduleRegistry.registerAvailable(remotePackage.definition)
+            remotePackage.definition.id
+        }
+    }
+
+    private fun moduleCatalogUrl(): String {
+        return try {
+            central.connection.use { connection ->
+                connection.prepareStatement("SELECT setting_value FROM server_settings WHERE setting_key = ?").use { query ->
+                    query.setString(1, moduleCatalogSettingKey)
+                    query.executeQuery().use { rows ->
+                        if (rows.next()) rows.getString(1) else defaultCatalogUrl
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            defaultCatalogUrl
+        }.trim()
+    }
+
+    private fun downloadModulePackage(remotePackage: RemoteModulePackage): Path? {
+        val packageUrl = remotePackage.packageUrl ?: return null
+        val moduleId = remotePackage.definition.id
+        val moduleDirectory = modulePackagesRoot.resolve(moduleId).normalize()
+        Files.createDirectories(moduleDirectory)
+        val target = moduleDirectory.resolve("$moduleId.zip").normalize()
+        val bytes = URI.create(packageUrl).toURL().openStream().use { stream ->
+            stream.readBytes()
+        }
+        val actualSha256 = sha256(bytes)
+        val expectedSha256 = remotePackage.packageSha256
+        if (!expectedSha256.isNullOrBlank() && actualSha256 != expectedSha256) {
+            throw CompanyProvisioningException("El paquete de ${remotePackage.definition.displayName} no coincide con el checksum publicado.")
+        }
+        Files.write(target, bytes)
+        return target
+    }
+
+    private fun installedPackage(moduleId: String): InstalledModulePackage? = central.connection.use { connection ->
+        connection.prepareStatement(
+            "SELECT version, package_url, package_sha256, installed_package_path FROM server_modules WHERE module_id = ?"
+        ).use { query ->
+            query.setString(1, moduleId)
+            query.executeQuery().use { rows ->
+                if (!rows.next()) {
+                    null
+                } else {
+                    InstalledModulePackage(
+                        version = rows.getString("version"),
+                        packageUrl = rows.getString("package_url"),
+                        packageSha256 = rows.getString("package_sha256"),
+                        installedPackagePath = rows.getString("installed_package_path"),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun upsertServerModule(
+        connection: Connection,
+        definition: ModuleDefinition,
+        packageUrl: String? = null,
+        packageSha256: String? = null,
+        installedPackagePath: String? = null,
+    ) {
+        connection.prepareStatement(
+            """
+            INSERT INTO server_modules (
+                module_id, display_name, description, version, locked, package_url, package_sha256, installed_package_path
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (module_id)
+            DO UPDATE SET
+                display_name = EXCLUDED.display_name,
+                description = EXCLUDED.description,
+                version = EXCLUDED.version,
+                locked = server_modules.locked OR EXCLUDED.locked,
+                package_url = COALESCE(EXCLUDED.package_url, server_modules.package_url),
+                package_sha256 = COALESCE(EXCLUDED.package_sha256, server_modules.package_sha256),
+                installed_package_path = COALESCE(EXCLUDED.installed_package_path, server_modules.installed_package_path)
+            """.trimIndent()
+        ).use { upsert ->
+            upsert.setString(1, definition.id)
+            upsert.setString(2, definition.displayName)
+            upsert.setString(3, definition.description)
+            upsert.setString(4, definition.version)
+            upsert.setBoolean(5, definition.locked)
+            upsert.setString(6, packageUrl)
+            upsert.setString(7, packageSha256)
+            upsert.setString(8, installedPackagePath)
+            upsert.executeUpdate()
+        }
     }
 
     private fun validate(
@@ -513,6 +739,8 @@ class CompanyProvisioningService(
             "database/core/migrations/V002__create_application_sessions.sql" to "core",
             "database/tenant/migrations/V001__create_business_owner.sql" to "tenant",
             "database/tenant/migrations/V003__create_tenant_modules.sql" to "tenant",
+            "database/tenant/migrations/V004__create_application_permissions.sql" to "tenant",
+            "database/tenant/migrations/V005__create_application_user_credentials.sql" to "tenant",
         ).forEach { (relativePath, module) ->
             applyMigration(connection, module, Path.of(config.migrationsRoot).resolve(relativePath))
         }
@@ -612,9 +840,14 @@ class CompanyProvisioningService(
             statement.executeUpdate("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
             statement.executeUpdate("GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(ownerUsername)}")
-            statement.executeUpdate("GRANT SELECT ON application_users, business_owner, tenant_modules TO ${quoteIdentifier(config.runtimeUser)}")
+            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE ON application_users TO ${quoteIdentifier(config.runtimeUser)}")
+            statement.executeUpdate("GRANT SELECT ON business_owner, tenant_modules TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(config.runtimeUser)}")
+            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO ${quoteIdentifier(config.runtimeUser)}")
+            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON customers, customer_field_definitions TO ${quoteIdentifier(config.runtimeUser)}")
+            statement.executeUpdate("GRANT SELECT ON application_users, business_owner, tenant_modules, application_permissions, application_user_permissions TO ${quoteIdentifier(ownerUsername)}")
+            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(ownerUsername)}")
         }
     }
 
@@ -800,6 +1033,18 @@ class CompanyProvisioningService(
         val bytes = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
         return HexFormat.of().formatHex(bytes)
     }
+
+    private fun sha256(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return HexFormat.of().formatHex(digest)
+    }
+
+    private data class InstalledModulePackage(
+        val version: String,
+        val packageUrl: String?,
+        val packageSha256: String?,
+        val installedPackagePath: String?,
+    )
 
     private data class CompanyRow(
         val code: String,

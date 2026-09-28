@@ -1,29 +1,12 @@
 package com.ideasdeveloper.idc
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -34,10 +17,10 @@ import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.features.auth.ui.LoginScreen
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyManagementScreen
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyProvisioningScreen
+import com.ideasdeveloper.idc.app.features.company.ui.ServerModuleManagementScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
-import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
-import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
+import com.ideasdeveloper.idc.app.features.settings.ui.SettingsScreen
 import com.ideasdeveloper.idc.navigation.NavRoute
 import com.ideasdeveloper.idc.navigation.NavRoute.Companion.routeName
 
@@ -98,6 +81,7 @@ fun App(initialServerUrl: String = "") {
                 // Muestra el punto de entrada autenticado con los modulos disponibles.
                 DashboardScreen(
                     session = currentSession,
+                    serverUrl = clientConfiguration?.serverUrl,
                     onNavigateTo = { route -> navController.navigate(route.routeName()) },
                     onLogout = ::logout,
                 )
@@ -108,7 +92,15 @@ fun App(initialServerUrl: String = "") {
                 }.orEmpty()
                 val moduleName = moduleId.toModuleTitle()
                 // La administracion de Empresa usa pantallas propias para dueno del servidor y dueno del negocio.
-                if (moduleId == "empresa") {
+                if (moduleId == "server-modules" && currentSession?.role == "server_owner") {
+                    ServerModuleManagementScreen(
+                        serverUrl = clientConfiguration?.serverUrl,
+                        session = currentSession,
+                        onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                        onLogout = ::logout,
+                        onReturnToDashboard = ::openDashboard,
+                    )
+                } else if (moduleId == "empresa") {
                     if (currentSession?.role == "server_owner") {
                         CompanyProvisioningScreen(
                             serverUrl = clientConfiguration?.serverUrl,
@@ -131,6 +123,7 @@ fun App(initialServerUrl: String = "") {
                     ServerDrivenModuleScreen(
                         moduleId = moduleId,
                         serverUrl = clientConfiguration?.serverUrl,
+                        session = currentSession,
                         fallbackTitle = moduleName,
                         onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
                         onLogout = ::logout,
@@ -139,14 +132,17 @@ fun App(initialServerUrl: String = "") {
                 }
             }
             composable("settings") {
-                // Mantiene disponible la ruta de ajustes mientras se implementa la pantalla final.
-                ModulePlaceholderScreen(
-                    moduleName = "Ajustes",
-                    viewName = "Preferencias",
-                    body = "Ajustes pendientes",
-                    onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                SettingsScreen(
+                    configuration = clientConfiguration,
+                    session = currentSession,
                     onLogout = ::logout,
                     onReturnToDashboard = ::openDashboard,
+                    onClearLocalConfiguration = {
+                        ClientConfigurationStore.clear()
+                        CompanyIdentityStore.clear()
+                        clientConfiguration = null
+                        logout()
+                    },
                 )
             }
         }
@@ -156,71 +152,13 @@ fun App(initialServerUrl: String = "") {
 // Convierte ids de modulo en titulos legibles para las pantallas internas.
 private fun String.toModuleTitle(): String = when (this) {
     "empresa" -> "Empresa"
+    "server-modules" -> "Modulos del servidor"
     "clientes" -> "Clientes"
-    "hostpot" -> "Hostpot"
-    "crm" -> "CRM"
-    else -> replace("-", " ").replace("_", " ")
-}
-
-@Composable
-// Renderiza una pantalla temporal con la barra autenticada y una accion para volver al dashboard.
-private fun ModulePlaceholderScreen(
-    moduleName: String,
-    viewName: String?,
-    body: String,
-    onSettings: () -> Unit,
-    onLogout: () -> Unit,
-    onReturnToDashboard: () -> Unit,
-) {
-    val companyIdentity = remember { CompanyIdentityStore.current() }
-    val primaryColor = remember(companyIdentity.primaryColor) {
-        companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
-    }
-    val secondaryColor = remember(companyIdentity.secondaryColor) {
-        companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2))
-    }
-
-    Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(primaryColor, secondaryColor)
-                )
-            )
-    ) {
-        AuthenticatedTopBar(
-            title = moduleName,
-            subtitle = viewName,
-            primaryColor = primaryColor,
-            onReturnToDashboard = onReturnToDashboard,
-            onSettings = onSettings,
-            onLogout = onLogout,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
-
-        Column(
-            modifier = Modifier.align(Alignment.Center),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Text(
-                text = body,
-                color = Color.White,
-                fontWeight = FontWeight.Bold,
-            )
-            Spacer(modifier = Modifier.height(18.dp))
-            Button(
-                onClick = onReturnToDashboard,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color.White,
-                    contentColor = primaryColor,
-                ),
-                modifier = Modifier
-                    .width(160.dp)
-                    .padding(horizontal = 8.dp),
-            ) {
-                Text("Volver al panel")
-            }
+    else -> replace("-", " ")
+        .replace("_", " ")
+        .split(" ")
+        .filter { it.isNotBlank() }
+        .joinToString(" ") { segment ->
+            segment.replaceFirstChar { char -> char.uppercase() }
         }
-    }
 }

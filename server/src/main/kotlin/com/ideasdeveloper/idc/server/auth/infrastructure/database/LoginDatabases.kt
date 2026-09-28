@@ -120,13 +120,30 @@ class LoginDatabases(
                 scope = if (server) "server" else "company",
                 companyCode = if (server) null else credentials.companyCode,
                 role = if (server) "server_owner" else if (owner) "business_owner" else "user",
-                enabledModules = if (server) emptyList() else enabledModules(source))
+                enabledModules = if (server) emptyList() else visibleModules(source, java.util.UUID.fromString(user.id.toString()), owner))
         }
     }
 
-    private fun enabledModules(source: DataSource): List<String> {
+    private fun visibleModules(source: DataSource, userId: java.util.UUID, owner: Boolean): List<String> {
         return source.connection.use { connection ->
-            connection.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled' ORDER BY module_id").use { query ->
+            val sql = if (owner) {
+                "SELECT module_id FROM tenant_modules WHERE status = 'enabled' ORDER BY module_id"
+            } else {
+                """
+                SELECT modules.module_id
+                FROM tenant_modules modules
+                WHERE modules.status = 'enabled'
+                  AND EXISTS (
+                      SELECT 1
+                      FROM application_user_permissions user_permissions
+                      WHERE user_permissions.user_id = ?
+                        AND user_permissions.permission_id = modules.module_id || '.view'
+                  )
+                ORDER BY modules.module_id
+                """.trimIndent()
+            }
+            connection.prepareStatement(sql).use { query ->
+                if (!owner) query.setObject(1, userId)
                 query.executeQuery().use { rows ->
                     buildList {
                         while (rows.next()) {

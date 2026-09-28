@@ -161,6 +161,85 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    suspend fun companyUsers(accessToken: String, companyCode: String): CompanyUsersResponse {
+        try {
+            val response = client.get("$baseUrl/companies/me/users") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun createCompanyUser(
+        accessToken: String,
+        companyCode: String,
+        request: CreateCompanyUserRequest,
+    ): CompanyUserResponse {
+        try {
+            val response = client.post("$baseUrl/companies/me/users") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                contentType(ContentType.Application.Json)
+                setBody(request)
+            }
+
+            if (response.status == HttpStatusCode.Created) {
+                return response.body()
+            }
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun updateCompanyUserPermissions(
+        accessToken: String,
+        companyCode: String,
+        userId: String,
+        permissions: List<String>,
+    ): CompanyUserResponse {
+        try {
+            val response = client.put("$baseUrl/companies/me/users/$userId/permissions") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateCompanyUserPermissionsRequest(permissions))
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            val error = response.body<CompanyErrorResponse>()
+            throw CompanyException(error.message)
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
     // Cliente Ktor usado por las operaciones administrativas de empresa.
     private val client = HttpClient {
         expectSuccess = false
@@ -267,6 +346,66 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    suspend fun serverModuleCatalog(accessToken: String): ServerModuleCatalogResponse {
+        try {
+            val response = client.get("$baseUrl/server/modules/catalog") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo cargar el catalogo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    suspend fun updateServerModuleCatalog(accessToken: String, catalogUrl: String): ServerModuleCatalogResponse {
+        try {
+            val response = client.put("$baseUrl/server/modules/catalog") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateServerModuleCatalogRequest(catalogUrl))
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo actualizar el catalogo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
     // Elimina del catalogo activo del servidor un modulo que no esta en uso.
     suspend fun deleteServerModule(accessToken: String, moduleId: String) {
         try {
@@ -288,6 +427,36 @@ class CompanyApi(serverUrl: String) {
             }
 
             throw CompanyException("El servidor no pudo eliminar el modulo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Instala en el catalogo activo un modulo disponible en el repositorio del servidor.
+    suspend fun installServerModule(accessToken: String, moduleId: String): ServerModuleResponse {
+        try {
+            val response = client.post("$baseUrl/server/modules/$moduleId/install") {
+                bearerAuth(accessToken)
+            }
+
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo instalar el modulo.")
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {

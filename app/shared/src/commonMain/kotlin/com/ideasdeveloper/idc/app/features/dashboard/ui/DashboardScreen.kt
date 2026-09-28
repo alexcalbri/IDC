@@ -7,7 +7,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
@@ -16,6 +20,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.idc.app.core.version.ClientVersion
+import com.ideasdeveloper.idc.app.core.version.VersionApi
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
@@ -25,12 +31,14 @@ import com.ideasdeveloper.idc.navigation.NavRoute
 // Renderiza el dashboard principal con las acciones disponibles para la sesion actual.
 fun DashboardScreen(
     session: LoginResponse?,
+    serverUrl: String?,
     onNavigateTo: (NavRoute) -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Determina si el usuario puede entrar a la administracion de empresa.
     val canSeeEmpresa = session?.role in setOf("server_owner", "business_owner")
+    val canManageServerModules = session?.role == "server_owner"
     // Obtiene los modulos activos que el servidor envio durante el inicio de sesion.
     val enabledModules = session?.enabledModules.orEmpty()
     // Carga la identidad visual de la empresa para pintar el dashboard.
@@ -40,6 +48,22 @@ fun DashboardScreen(
     }
     val secondaryColor = remember(companyIdentity.secondaryColor) {
         companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2))
+    }
+    var versionNotice by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(serverUrl, session?.role) {
+        if (session?.role == "server_owner" && !serverUrl.isNullOrBlank()) {
+            val version = VersionApi(serverUrl).use { it.version() }
+            val notices = buildList {
+                version?.latestCoreVersion?.takeIf { it.isNotBlank() && it != version.coreVersion }?.let { add("Core $it") }
+                version?.latestAppVersion?.takeIf { it.isNotBlank() && it != ClientVersion }?.let { add("App $it") }
+                version?.moduleUpdates
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.joinToString { update -> "${update.displayName} ${update.latestVersion}" }
+                    ?.let { add("Modulos: $it") }
+            }
+            versionNotice = notices.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Actualizaciones disponibles: ")
+        }
     }
 
     // Renderiza el fondo principal con los colores configurados para la empresa.
@@ -83,6 +107,14 @@ fun DashboardScreen(
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 24.dp)
             )
 
+            versionNotice?.let {
+                Text(
+                    text = it,
+                    color = Color.White,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+            }
+
             // Renderiza la tarjeta de Empresa para roles autorizados.
             if (canSeeEmpresa) {
                 DashboardActionCard(
@@ -95,9 +127,20 @@ fun DashboardScreen(
                 Spacer(modifier = Modifier.height(12.dp))
             }
 
+            if (canManageServerModules) {
+                DashboardActionCard(
+                    title = "Modulos del servidor",
+                    description = "Administra los modulos instalados en este servidor",
+                    iconText = "M",
+                    primaryColor = primaryColor,
+                    onClick = { onNavigateTo(NavRoute.Module("server-modules")) }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+            }
+
             // Renderiza los modulos activos recibidos desde el servidor.
             enabledModules
-                .filter { it != "empresa" }
+                .filter { it != "empresa" && it != "server-modules" }
                 .forEach { moduleId ->
                     val module = moduleId.toDashboardModule()
                     DashboardActionCard(
@@ -112,6 +155,14 @@ fun DashboardScreen(
 
             Spacer(modifier = Modifier.height(40.dp))
         }
+    }
+}
+
+private suspend inline fun <T> VersionApi.use(block: suspend (VersionApi) -> T): T {
+    return try {
+        block(this)
+    } finally {
+        close()
     }
 }
 

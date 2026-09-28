@@ -3,8 +3,8 @@ BEGIN;
 CREATE TABLE customers (
     id UUID NOT NULL,
     display_name TEXT NOT NULL CHECK (length(trim(display_name)) > 0),
-    primary_email TEXT,
-    primary_phone TEXT,
+    primary_email TEXT NOT NULL CHECK (length(trim(primary_email)) > 0),
+    primary_phone TEXT NOT NULL CHECK (length(trim(primary_phone)) > 0),
     status VARCHAR(32) NOT NULL DEFAULT 'active'
         CHECK (status IN ('prospect', 'active', 'inactive', 'archived')),
     flexible_attributes JSONB NOT NULL DEFAULT '{}'::jsonb
@@ -30,6 +30,10 @@ CREATE INDEX customers_primary_phone_idx
 CREATE INDEX customers_flexible_attributes_gin_idx
     ON customers USING GIN (flexible_attributes);
 
+-- Customer/Core dynamic fields created from the Clientes administration view.
+-- Module-owned dynamic fields must live in the owning module schema instead,
+-- so uninstalling that module can remove its own fields without damaging the
+-- shared customer record.
 CREATE TABLE customer_field_definitions (
     id UUID NOT NULL,
     field_key VARCHAR(63) NOT NULL CHECK (field_key ~ '^[a-z][a-z0-9_]{0,62}$'),

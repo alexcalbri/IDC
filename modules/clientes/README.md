@@ -13,4 +13,16 @@ The customer schema is owned by this module and lives in:
 modules/clientes/migrations/V001__create_customers.sql
 ```
 
-Functional screens, server routes and customer creation services remain pending.
+Implemented baseline:
+
+- `GET /modules/clientes/customers` lists customers for users with
+  `clientes.view`.
+- `POST /modules/clientes/customers` creates customers for users with
+  `clientes.create`.
+- Creating a customer requires Nombre, Correo and Telefono.
+- Extra Customer/Core fields created from the Clientes administration surface
+  are backed by `customer_field_definitions` and stored in
+  `customers.flexible_attributes`.
+- Module-specific fields must be stored by the owning module, not in the shared
+  Clientes field table, unless they are intentionally promoted to the shared
+  customer record.

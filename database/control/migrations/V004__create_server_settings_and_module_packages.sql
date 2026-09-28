@@ -1,0 +1,11 @@
+ALTER TABLE server_modules
+    ADD COLUMN IF NOT EXISTS version TEXT NOT NULL DEFAULT '0.1.0',
+    ADD COLUMN IF NOT EXISTS package_url TEXT,
+    ADD COLUMN IF NOT EXISTS package_sha256 VARCHAR(64),
+    ADD COLUMN IF NOT EXISTS installed_package_path TEXT;
+
+CREATE TABLE IF NOT EXISTS server_settings (
+    setting_key VARCHAR(120) PRIMARY KEY,
+    setting_value TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);

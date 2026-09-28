@@ -11,7 +11,9 @@ class AuthenticationService(
 ) {
 
     fun authenticate(credentials: LoginCredentials): ApplicationUser? {
-        if (!credentialVerifier.verify(credentials)) {
+        if (!credentialVerifier.verify(credentials) &&
+            !userRepository.verifyApplicationPassword(credentials.username, credentials.password)
+        ) {
             return null
         }
 

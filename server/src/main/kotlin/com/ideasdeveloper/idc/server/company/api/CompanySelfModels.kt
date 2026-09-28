@@ -37,3 +37,37 @@ data class CompanyBackupResponse(
 data class CompanyBackupListResponse(
     val backups: List<CompanyBackupResponse>,
 )
+
+@Serializable
+data class CompanyPermissionResponse(
+    val permissionId: String,
+    val moduleId: String,
+    val title: String,
+    val description: String,
+)
+
+@Serializable
+data class CompanyUserResponse(
+    val userId: String,
+    val username: String,
+    val isActive: Boolean,
+    val permissions: List<String>,
+)
+
+@Serializable
+data class CompanyUsersResponse(
+    val users: List<CompanyUserResponse>,
+    val permissions: List<CompanyPermissionResponse>,
+)
+
+@Serializable
+data class CreateCompanyUserRequest(
+    val username: String,
+    val password: String,
+    val permissions: List<String> = emptyList(),
+)
+
+@Serializable
+data class UpdateCompanyUserPermissionsRequest(
+    val permissions: List<String>,
+)

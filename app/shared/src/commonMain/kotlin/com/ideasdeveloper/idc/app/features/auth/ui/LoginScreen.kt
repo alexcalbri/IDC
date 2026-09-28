@@ -25,6 +25,8 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
+import com.ideasdeveloper.idc.app.core.version.ClientVersion
+import com.ideasdeveloper.idc.app.core.version.VersionApi
 import com.ideasdeveloper.idc.app.features.auth.presentation.LoginViewModel
 
 @Composable
@@ -61,6 +63,7 @@ fun LoginScreen(
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
     var keepSignedIn by rememberSaveable { mutableStateOf(false) }
+    var versionMessage by remember { mutableStateOf<String?>(null) }
     var administratorClickCount by rememberSaveable { mutableStateOf(0) }
     var administratorToggleVisible by rememberSaveable { mutableStateOf(false) }
     val needsServerConfiguration = savedConfiguration == null
@@ -72,6 +75,15 @@ fun LoginScreen(
         if (state.succeeded) {
             password = ""
             onLoginSuccess()
+        }
+    }
+
+    LaunchedEffect(serverUrl) {
+        if (serverUrl.isNotBlank()) {
+            val version = VersionApi(serverUrl).use { it.version() }
+            versionMessage = version?.latestAppVersion
+                ?.takeIf { it.isNotBlank() && it != ClientVersion }
+                ?.let { "Nueva version de la app disponible: $it" }
         }
     }
 
@@ -263,6 +275,13 @@ fun LoginScreen(
                     modifier = Modifier.padding(vertical = 8.dp),
                 )
             }
+            versionMessage?.let { message ->
+                Text(
+                    text = message,
+                    color = Color.White,
+                    modifier = Modifier.padding(vertical = 8.dp),
+                )
+            }
 
             // Envia credenciales, URL y codigo de empresa al ViewModel.
             Button(
@@ -344,7 +363,7 @@ fun LoginScreen(
                 horizontalAlignment = Alignment.End
             ) {
                 Text(
-                    text = "IdeasCore v0.2.0",
+                    text = "IdeasCore v$ClientVersion",
                     color = Color.White.copy(alpha = 0.7f),
                     fontSize = 12.sp
                 )
@@ -362,4 +381,12 @@ private fun String.toComposeColor(fallback: Color): Color {
     val hex = trim().removePrefix("#")
     if (hex.length != 6) return fallback
     return hex.toLongOrNull(16)?.let { Color((0xFF000000L or it).toInt()) } ?: fallback
+}
+
+private suspend inline fun <T> VersionApi.use(block: suspend (VersionApi) -> T): T {
+    return try {
+        block(this)
+    } finally {
+        close()
+    }
 }

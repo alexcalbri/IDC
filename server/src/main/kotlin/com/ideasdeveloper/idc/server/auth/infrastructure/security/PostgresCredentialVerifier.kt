@@ -28,7 +28,7 @@ class PostgresCredentialVerifier(jdbcUrl: String) {
                 true
             }
         } catch (exception: SQLException) {
-            if (exception.sqlState == "28P01" || exception.sqlState == "42501") {
+            if (exception.sqlState?.startsWith("28") == true || exception.sqlState == "42501") {
                 false
             } else {
                 throw exception

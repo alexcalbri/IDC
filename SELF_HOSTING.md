@@ -43,9 +43,9 @@ The installer now asks for a central administration database and one set of
 credentials for `server_owner`. It does not create the first company. The
 server owner is a PostgreSQL login role with tenant-provisioning privileges,
 not a SQL superuser. The
-central database holds server-owner users/sessions and an initially empty
-company registry with code, name, database, active status and branding fields.
-Company users, sessions, the singleton `business_owner` record, the shared
+central database holds server-owner users/sessions, an initially empty company
+registry with code, name, database, active status and branding fields, and the
+installed server module catalog. Company users, sessions, the singleton `business_owner` record, the shared
 Customer/Prospect schema and the tenant module registry will live inside each
 company database after the Empresa core module provisions it. The tenant module
 registry seeds `clientes` as an enabled base module.
@@ -55,20 +55,25 @@ migrations to the central database. The database records scripts in
 `schema_migrations` by module, version and checksum. Database ownership remains
 with the provisioning administrator. The runtime account receives the
 table permissions needed for authentication and the company registry, plus
-membership in the `server_owner` role so it can provision tenants only after
-the backend validates a `server_owner` session token. `DB_URL`
+server module catalog permissions and membership in the `server_owner` role so
+it can provision tenants only after the backend validates a `server_owner`
+session token. `DB_URL`
 points at the central database; root-only `TENANT_DATABASES_JSON` starts as
 `[]`. The Empresa screen can create a company database, apply tenant
 migrations, seed its `business_owner` and register the tenant in the running
 server so company login works without restart. From the same screen,
 `server_owner` can enable or disable modules that are installed on the server;
-`clientes` stays enabled as the base customer module. The default installation
-only includes `clientes`.
+`business_owner` cannot change module availability. `clientes` stays enabled as
+the base customer module. Optional module providers compiled into the server
+are available to install, but only installed modules can be enabled per company.
+The Empresa screen also includes a basic tenant user flow: `business_owner`
+can create application users and assign permissions declared by active modules
+inside its own tenant database.
 
 Before reporting success, the installer tests `/auth/login` with the
 `server_owner`, revokes the test session, and rejects passwordless
-authentication for that account. This verifies login only: administrative
-endpoints and their authorization remain pending; the client login is wired but
+authentication for that account. This verifies login and the backend is wired
+for server-owner company/module administration and business-owner self-service;
 end-to-end verification against a new Ubuntu installation is pending. Module files
 are not yet downloaded selectively; the installer still clones the repository.
 
@@ -173,9 +178,8 @@ con validación del certificado y una renovación de prueba con Certbot.
 La comprobación HTTPS es obligatoria. Si solo falla la simulación de
 renovación, el instalador muestra una advertencia y marca esa prueba como
 pendiente; no declara la renovación verificada ni deshace la instalación.
-Todavía no crea tablas de usuarios, login, migraciones ni control plane.
-La instalación configura una sola base; la resolución multi-tenant es
-arquitectura prevista.
+The installer creates central authentication/control-plane tables. Tenant user
+and permission tables are created when each company is provisioned.
 
 ```bash
 sudo systemctl status ideascore --no-pager
@@ -327,12 +331,12 @@ Example only:
 ``` text
 ideascore_company_a
 ├── Core
-├── CRM-like module
+├── Sales-like module
 └── Hotel-like module
 
 ideascore_company_b
 ├── Core
-└── Hotspot-like module
+└── Access-like module
 ```
 
 Exact database names and schemas are deployment choices.
@@ -409,6 +413,58 @@ Document verified variables in a table here as they are implemented:
 | `TENANT_JDBC_URL_PREFIX` | No | Prefix used for newly created tenant JDBC URLs; defaults to the central DB URL up to the last `/`. |
 | `MIGRATIONS_ROOT` | No | Repository/source root containing `database/...` migrations; defaults to the server working directory. |
 | `COMPANY_BACKUPS_ROOT` | No | Server-side directory for company ZIP files created from the Empresa business-owner screen; defaults to `build/company-backups`. |
+| `MODULE_CATALOG_URL` | No | URL of the remote module repository directory. Installer default: `https://github.com/alexcalbri/IDC/tree/master/modules`. GitHub tree URLs and Contents API URLs are accepted. Empty means no remote modules are shown for new installs. |
+| `MODULE_PACKAGES_ROOT` | No | Server-side directory where downloaded module packages are stored; defaults to `build/server-modules`. |
+| `VERSION_CATALOG_URL` | No | URL of the remote JSON version catalog used by `/version`. Official URL: `https://raw.githubusercontent.com/alexcalbri/IDC/master/version.json`. |
+
+The root `version.json` file exposes:
+
+```json
+{
+  "latestCoreVersion": "0.2.1",
+  "latestAppVersion": "0.2.1"
+}
+```
+
+Module versions are not global. Each installed module is compared
+independently against the module version published in that module's
+`module.json`.
+
+The official remote module source is
+`https://github.com/alexcalbri/IDC/tree/master/modules`. It is a repository
+directory containing one folder per module. Each folder becomes installable
+only when it contains a valid `module.json`. This lets server owners switch to
+non-official repositories without editing a central registry file.
+
+Example repository layout:
+
+```text
+modules/
+├── example/
+│   └── module.json
+└── hotel/
+    └── module.json
+```
+
+Example module manifest:
+
+```json
+{
+  "id": "example",
+  "displayName": "Example",
+  "description": "Gestion comercial",
+  "version": "0.1.0",
+  "packageUrl": "https://example.com/modules/example.zip",
+  "packageSha256": "64_hex_characters_when_available",
+  "views": [],
+  "permissions": []
+}
+```
+
+Only module folders currently present with a valid manifest are shown as
+available for new installation. Modules already installed on a server remain
+registered locally in `server_modules` even if the remote repository later
+removes them.
 
 `EngineMain` loads `application.conf` and starts
 `com.ideasdeveloper.idc.server.app.ApplicationKt.module`. `DatabaseFactory`
@@ -636,16 +692,17 @@ restores.
 
 ### Empresa module ZIPs
 
-**Implemented:** a signed-in `business_owner` can use the Empresa screen to
-create, list, download and delete ZIP files stored under
-`COMPANY_BACKUPS_ROOT`. The current ZIP contains company profile metadata and
-is useful for validating the UI/server flow.
+**Implemented for the first production core:** a signed-in `business_owner`
+can use the Empresa screen to create, list, download, upload and delete ZIP
+files stored under `COMPANY_BACKUPS_ROOT`. The current ZIP contains company
+profile metadata. Uploading a ZIP stores it for safekeeping after validating it
+is readable; it does not restore or overwrite PostgreSQL data.
 
-**Planned:** full tenant database export/import. Restoring a full ZIP is a
-destructive database operation and is not enabled in the current code. When
-implemented, it must preserve access for the active `business_owner`, validate
-tenant ownership server-side and be tested before being documented as a
-production restore workflow.
+Full PostgreSQL backup and restore are operational responsibilities for the
+self-hosted server. For production, configure external `pg_dump`/`pg_restore`
+or managed PostgreSQL backups for the central database and every tenant
+database. The app deliberately does not expose a destructive database restore
+button in the first core release.
 
 ------------------------------------------------------------------------
 

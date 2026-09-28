@@ -27,14 +27,67 @@ dependencies {
     implementation(libs.ktor.serverContentNegotiation)
     implementation(libs.ktor.serializationKotlinxJson)
     implementation(libs.ktor.serverRateLimit)
+    implementation(libs.ktor.clientCore)
+    implementation(libs.ktor.clientContentNegotiation)
+    implementation(libs.ktor.clientEngineDefaults)
     /* === End DB === */
+}
+
+val generatedModuleServicesDir = layout.buildDirectory.dir("generated/resources/module-services")
+
+val moduleProviderServiceFile = generatedModuleServicesDir.get()
+    .file("META-INF/services/com.ideasdeveloper.idc.server.modules.ServerModuleProvider")
+    .asFile
+
+val moduleProviderEntries = rootProject.layout.projectDirectory.dir("modules").asFile
+    .listFiles()
+    ?.filter { moduleDir ->
+        moduleDir.isDirectory &&
+            moduleDir.resolve("server/src/main/kotlin").isDirectory
+    }
+    ?.sortedBy { it.name }
+    ?.mapNotNull { moduleDir ->
+        val moduleName = moduleDir.name
+        val providerPrefix = moduleName
+            .split('-', '_')
+            .filter { it.isNotBlank() }
+            .joinToString("") { part ->
+                part.replaceFirstChar { char -> char.uppercase() }
+            }
+        val providerName = "${providerPrefix}ServerModuleProvider"
+        val declaresProvider = moduleDir
+            .resolve("server/src/main/kotlin")
+            .walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .any { it.readText().contains("class $providerName") }
+
+        if (declaresProvider) {
+            "com.ideasdeveloper.idc.modules.$moduleName.$providerName"
+        } else {
+            null
+        }
+    }
+    .orEmpty()
+
+moduleProviderServiceFile.parentFile.mkdirs()
+moduleProviderServiceFile.writeText(moduleProviderEntries.joinToString(separator = "\n", postfix = "\n"))
+
+sourceSets {
+    main {
+        resources.srcDir(generatedModuleServicesDir)
+    }
 }
 
 kotlin {
     sourceSets {
         main {
-            kotlin.srcDir("../modules/clientes/shared/src/commonMain/kotlin")
-            kotlin.srcDir("../modules/clientes/server/src/main/kotlin")
+            rootProject.layout.projectDirectory.dir("modules").asFile.listFiles()
+                ?.filter { it.isDirectory }
+                ?.sortedBy { it.name }
+                ?.forEach { moduleDir ->
+                    kotlin.srcDir(moduleDir.resolve("shared/src/commonMain/kotlin"))
+                    kotlin.srcDir(moduleDir.resolve("server/src/main/kotlin"))
+                }
         }
     }
 }

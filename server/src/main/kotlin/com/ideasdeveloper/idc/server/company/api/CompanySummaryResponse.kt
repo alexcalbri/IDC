@@ -28,8 +28,24 @@ data class ServerModuleResponse(
     val moduleId: String,
     val displayName: String,
     val description: String,
+    val version: String,
+    val latestVersion: String? = null,
     val locked: Boolean,
+    val installed: Boolean,
     val activeCompanyCount: Int,
+    val packageUrl: String? = null,
+    val packageSha256: String? = null,
+    val installedPackagePath: String? = null,
+)
+
+@Serializable
+data class ServerModuleCatalogResponse(
+    val catalogUrl: String,
+)
+
+@Serializable
+data class UpdateServerModuleCatalogRequest(
+    val catalogUrl: String,
 )
 
 @Serializable

@@ -3,8 +3,8 @@
 Status: documents only features currently implemented in the repository. It
 does not describe planned architecture as working behavior.
 
-Build validation is pending in this workspace because Java/JDK is not available
-in `PATH` and `JAVA_HOME` is not set to a valid JDK.
+Build validation was run in a clean temporary copy because the local
+`server/build` directory can be locked by Windows processes in this workspace.
 
 ## 1. Fresh Ubuntu Installation
 
@@ -26,7 +26,8 @@ The installer:
    - Core users;
    - Core sessions;
    - server registry;
-   - provisioning audit log.
+   - provisioning audit log;
+   - installed server module catalog.
 8. Creates the initial PostgreSQL `server_owner` login role.
 9. Registers that server owner in `application_users` and `server_owners`.
 10. Grants the runtime role the table permissions needed by the server.
@@ -48,6 +49,7 @@ Files involved:
 - `database/core/migrations/V002__create_application_sessions.sql`
 - `database/control/migrations/V001__create_server_registry.sql`
 - `database/control/migrations/V002__create_provisioning_audit_log.sql`
+- `database/control/migrations/V003__create_server_modules.sql`
 
 ## 2. Server Startup
 
@@ -63,13 +65,15 @@ On startup, the Ktor server:
 4. Creates `LoginDatabases`, which owns login database selection.
 5. Creates a central `SessionService` for validating server-owner tokens.
 6. Creates `CompanyProvisioningService`.
-7. Builds the server module registry with the currently installed server modules:
-   - `clientes` as the locked base module.
-8. Registers routes:
+7. Discovers server module providers from the classpath.
+8. Restores installed modules from central `server_modules`; locked modules
+   such as `clientes` are always installed.
+9. Registers routes:
    - `GET /`;
    - `POST /auth/login`;
    - `GET /companies`;
    - `GET /server/modules`;
+   - `POST /server/modules/{moduleId}/install`;
    - `DELETE /server/modules/{moduleId}`;
    - `POST /companies`;
    - `PUT /companies/{code}/modules/{moduleId}`;
@@ -94,6 +98,25 @@ Implemented environment variables include:
 - `PROVISIONING_DB_URL`
 - `TENANT_JDBC_URL_PREFIX`
 - `MIGRATIONS_ROOT`
+- `COMPANY_BACKUPS_ROOT`
+- `MODULE_CATALOG_URL`
+- `MODULE_PACKAGES_ROOT`
+- `VERSION_CATALOG_URL`
+
+`scripts/ubuntu/update.sh` asks whether to update `server`, `webapp` or
+`ambos`. Server updates run server migrations and replace `/opt/ideascore/app`.
+Webapp updates rebuild and replace `/opt/ideascore/web`.
+
+`GET /version` returns the installed core/app versions and, when
+`VERSION_CATALOG_URL` is configured, the latest published core/app versions.
+The official version catalog URL is
+`https://raw.githubusercontent.com/alexcalbri/IDC/master/version.json`.
+Module updates are checked per installed module against the remote module
+repository configured in `MODULE_CATALOG_URL` or by the `server_owner`. The
+official URL is `https://github.com/alexcalbri/IDC/tree/master/modules`; there
+is no single global module version. The login screen warns about a newer client
+app version. The server-owner dashboard warns about newer core, app or
+installed module versions.
 
 ## 3. Central Database Structures
 
@@ -165,12 +188,16 @@ Stores the singleton business owner user for that company.
 Created by `modules/clientes/migrations/V001__create_customers.sql`.
 
 Stores shared Customer/Prospect identity for all modules in the tenant.
+Creating a customer requires Nombre, Correo and Telefono. Customer/Core dynamic
+fields created from the Clientes view are stored in `flexible_attributes`.
 
 ### `customer_field_definitions`
 
 Created by `modules/clientes/migrations/V001__create_customers.sql`.
 
-Stores tenant-defined field metadata for future server-driven customer forms.
+Stores tenant-defined field metadata for Customer/Core server-driven customer
+forms. Module-specific dynamic fields belong to the owning module's tables and
+are shown in that module's views.
 
 ### `tenant_modules`
 
@@ -203,9 +230,10 @@ Flow:
 3. If `companyCode` is present, login resolves the company in central
    `companies`.
 4. For company login, `LoginDatabases` opens or reuses the tenant database pool. If the tenant is not preloaded in `TENANT_DATABASES_JSON`, it infers the JDBC URL from `companies.database_name`, `TENANT_JDBC_URL_PREFIX` and the server runtime DB credentials.
-5. `PostgresCredentialVerifier` validates the submitted credentials against
-   PostgreSQL.
-6. `ApplicationUserRepository` confirms the PostgreSQL role maps to an active
+5. `PostgresCredentialVerifier` validates PostgreSQL-backed credentials, or
+   the tenant verifies an application password stored in
+   `application_user_credentials`.
+6. `ApplicationUserRepository` confirms the username maps to an active
    `application_users` row.
 7. Server login requires a row in `server_owners`.
 8. Company login checks whether the user is the singleton `business_owner`.
@@ -275,12 +303,17 @@ Implemented route behavior:
 - `login` shows `LoginScreen`.
 - `dashboard` shows `DashboardScreen`.
 - `module/empresa` shows `CompanyProvisioningScreen` for `server_owner`.
+- `module/server-modules` shows `ServerModuleManagementScreen` for `server_owner`.
 - Other `module/{moduleId}` values show `ServerDrivenModuleScreen`, which requests module metadata from the server.
-- `settings` shows a placeholder screen.
+- `settings` shows `SettingsScreen`, where the authenticated user can see the
+  saved server/company configuration, current session, client version, manually
+  check for a newer client version and clear local configuration.
 
-Module-specific client routes like `composable("crm")` or `composable("hostpot")` are
-not implemented. All modules use `module/{moduleId}` and load their display
-metadata from `/modules/{moduleId}/metadata`.
+Module-specific client routes like `composable("custom-module")` are
+not part of the default architecture. New modules must use `module/{moduleId}`
+and provide enough server metadata through `/modules/{moduleId}/metadata` for
+the generic `ServerDrivenModuleScreen` to render the module. A dedicated
+Compose route is an exception that requires a normal client release.
 
 Authenticated views that can return to the dashboard must expose the action as
 `Volver al panel` through `AuthenticatedTopBar` when they receive an
@@ -377,22 +410,49 @@ Flow:
 
 1. `server_owner` opens Empresa.
 2. Client loads companies with `GET /companies`.
-3. Client loads installed server modules with `GET /server/modules`.
-4. Server returns each company's module states and each server module's active-company count.
-5. Client shows server module controls only in the `server_owner` Empresa screen.
-6. `server_owner` enables or disables optional modules for a company.
-7. Client calls `PUT /companies/{code}/modules/{moduleId}`.
-8. Server validates `server_owner` token.
-9. Server assumes PostgreSQL `server_owner` role for tenant module changes.
-10. Server updates tenant `tenant_modules`.
-11. Server returns updated company state.
-12. `server_owner` can remove a module from the active server catalog with `DELETE /server/modules/{moduleId}` only when the module is not locked and no company currently has it enabled.
+3. Server returns each company's module states.
+4. `server_owner` enables or disables optional modules for a company.
+5. Client calls `PUT /companies/{code}/modules/{moduleId}`.
+6. Server validates `server_owner` token.
+7. Server assumes PostgreSQL `server_owner` role for tenant module changes.
+8. Server updates tenant `tenant_modules`.
+9. Server returns updated company state.
+
+Server module catalog flow:
+
+1. `server_owner` opens Modulos del servidor.
+2. Client loads the current catalog URL with `GET /server/modules/catalog`.
+3. `server_owner` can update the URL with `PUT /server/modules/catalog`.
+4. Client loads installed server modules with `GET /server/modules`.
+5. Server merges local installed modules with valid remote module folders from
+   the saved repository URL, or `MODULE_CATALOG_URL` when no DB setting exists.
+   In GitHub mode, the URL points to the Contents API for the `modules`
+   directory and each module folder must contain a valid `module.json`.
+6. Server returns installed and available modules with each server module's
+   active-company count, installed version and latest available version when the
+   module is present in the remote catalog.
+7. `server_owner` can install an available module with `POST /server/modules/{moduleId}/install`; the server downloads the package when `packageUrl` is present, verifies `packageSha256` when present, and persists the row in central `server_modules` with that module's own version.
+8. `server_owner` can remove an installed module from the active server catalog with `DELETE /server/modules/{moduleId}` only when the module is not locked and no company currently has it enabled; the server deletes that row from central `server_modules`.
 
 Implemented module rules:
 
 - `clientes` is locked and always enabled.
-- Optional modules only appear after they are installed in the running server module registry.
+- Optional modules only appear for companies after they are installed in the running server module registry.
 - Server module installation/removal is a `server_owner` responsibility. A module cannot be removed from the server catalog while any company has it active.
+- Enabling or disabling modules for a company is also a `server_owner`
+  responsibility. `business_owner` can administer only its own company data and
+  users/permissions inside its own tenant database, not module availability.
+- Installed server modules survive restarts because the catalog is stored in
+  the central `server_modules` table.
+
+Company administration scope:
+
+- `server_owner` can create, update, activate, deactivate and delete companies,
+  and can manage users/permissions for any company when the server-owner UI/API
+  is added.
+- `business_owner` can administer only its own company profile, backups and
+  company users/permissions inside its own tenant database.
+- Other roles do not see Empresa in the dashboard.
 
 ## 12. Company Login And Module Visibility
 
@@ -402,10 +462,13 @@ Flow:
 
 1. User logs in with `companyCode`.
 2. Server resolves the tenant DB from central `companies`.
-3. Server authenticates the PostgreSQL role against the tenant DB.
+3. Server authenticates PostgreSQL-backed credentials or tenant application
+   credentials.
 4. Server reads enabled modules from tenant `tenant_modules`.
-5. Server returns `enabledModules` in login response.
-6. Client dashboard renders module cards from `enabledModules`.
+5. For non-owner company users, server keeps only modules where the user has
+   `module.view`.
+6. Server returns visible `enabledModules` in login response.
+7. Client dashboard renders module cards from `enabledModules`.
 
 ## 13. Branding And Shell
 
@@ -415,15 +478,18 @@ Implemented files:
 - `app/core/company/CompanyIdentityStore.kt`
 - platform `PersistentCompanyIdentityStore.*.kt`
 - `app/features/shell/ui/AuthenticatedTopBar.kt`
+- `app/features/settings/ui/SettingsScreen.kt`
 
 Current behavior:
 
-- Company identity can be restored and used by login/dashboard/module
-  placeholder screens.
+- Company identity can be restored and used by login/dashboard/module/settings
+  screens.
 - The authenticated top bar is reused by dashboard/module screens.
 - `AuthenticatedTopBar` can receive an optional `onReturnToDashboard`
   callback. Views that pass it show `Volver al panel` in the top-bar menu, and
   views with editable unsaved state must confirm before invoking that callback.
+- Settings is a local client screen. It can clear saved client configuration and
+  the local session, but it does not modify server data.
 
 ## 14. Installed Module Scaffolds And Server Registry
 
@@ -431,20 +497,34 @@ Implemented scaffold directories:
 
 - `modules/clientes`
 - `modules/empresa`
-- `modules/hostpot`
-- `modules/crm`
 
 Working behavior:
 
-- The server build includes only the `clientes` module source directories by default.
-- `Application.kt` registers `clientes` in `ModuleRegistry`.
+- The base repository includes only Core/base module source. Optional business
+  modules such as optional business modules are not part of the core codebase.
+- The server build includes local installed module source directories by
+  scanning `modules/*` instead of naming optional modules in the core build
+  file.
+- `Application.kt` discovers server modules through `ServerModuleProvider`
+  services and creates `ModuleRegistry` without importing module packages
+  directly.
+- `ModuleRegistry` restores installed optional modules from central
+  `server_modules` and treats locked modules as installed even if the row is
+  missing.
 - `GET /modules` returns the module definitions known by the running server.
 - `GET /modules/{moduleId}/metadata` returns display metadata for the generic client screen.
 - Each bundled module owns its server route namespace under `/modules/{moduleId}`.
+- Module-owned business endpoints must call `requireModulePermission` before returning data or performing an action. The guard checks session, tenant, active module status and the declared permission server-side.
 - `clientes` is seeded as enabled in tenant DBs.
 - `clientes` owns its customer schema migration under `modules/clientes/migrations`.
-- `crm` and `hostpot` remain repository scaffolds; they are not installed in the default server build and are not listed for companies.
-- Functional module screens still render metadata/placeholders; full business UI and data flows are not implemented yet.
+- Available-for-install modules come from module folders in the external
+  repository configured through `MODULE_CATALOG_URL`. If a module folder or its
+  `module.json` is removed before installation, it no longer appears as
+  available. If it was already installed on a server, the local installed
+  metadata/package and `server_modules` row keep that server working until the
+  `server_owner` removes it.
+- Functional optional module screens and data flows belong to their own module
+  packages, not to the Core repository.
 
 ## 15. Web Deployment Flow
 
@@ -498,14 +578,11 @@ Implemented controls:
 These are not implemented as working features yet:
 
 - Real customer UI beyond the database schema.
-- Functional CRM module screens.
-- Functional Hostpot module screens.
-- Settings screen.
+- Build/classpath loading and restart orchestration for downloaded external
+  modules after package download.
 - Full server-driven form/list rendering.
 - PostgreSQL `SECURITY DEFINER` replacement for direct `CREATEDB`/`CREATEROLE`.
-- Automated upgrade/migration of already installed servers for the new company
-  provisioning permissions.
-- Build/test validation in this workspace.
+- Server-owner UI/API for administering users in any company.
 
 ## 18. Manual Test Flow
 
@@ -517,7 +594,8 @@ Use a fresh install with the updated installer.
 4. Open Empresa.
 5. Create a company.
 6. Confirm it appears in the company list.
-7. Enable `CRM` or `Hostpot`.
-8. Log out.
-9. Log in with the company's business owner credentials and company code.
-10. Confirm dashboard shows `Clientes` and any enabled optional modules.
+7. Open Modulos del servidor and install an optional module if needed.
+8. Open Empresa and enable that installed module for the company.
+9. Log out.
+10. Log in with the company's business owner credentials and company code.
+11. Confirm dashboard shows `Clientes` and any enabled optional modules.

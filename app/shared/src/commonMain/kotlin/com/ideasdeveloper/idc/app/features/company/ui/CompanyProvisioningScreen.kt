@@ -42,7 +42,6 @@ import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.CompanySummaryResponse
 import com.ideasdeveloper.idc.app.features.company.data.CreateCompanyRequest
-import com.ideasdeveloper.idc.app.features.company.data.ServerModuleResponse
 import com.ideasdeveloper.idc.app.features.company.data.UpdateCompanyRequest
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
@@ -78,9 +77,7 @@ fun CompanyProvisioningScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var companies by remember { mutableStateOf<List<CompanySummaryResponse>>(emptyList()) }
-    var serverModules by remember { mutableStateOf<List<ServerModuleResponse>>(emptyList()) }
     var companyPendingDeletion by remember { mutableStateOf<String?>(null) }
-    var modulePendingDeletion by remember { mutableStateOf<String?>(null) }
     var isCreateCompanyExpanded by remember { mutableStateOf(true) }
     var editingCompanyCode by remember { mutableStateOf<String?>(null) }
     var editingCompanyName by remember { mutableStateOf("") }
@@ -121,11 +118,10 @@ fun CompanyProvisioningScreen(
         isRefreshing = true
         scope.launch {
             try {
-                val (loadedCompanies, loadedModules) = CompanyApi(activeServerUrl).use { api ->
-                    api.listCompanies(activeSession.accessToken) to api.listServerModules(activeSession.accessToken)
+                val loadedCompanies = CompanyApi(activeServerUrl).use { api ->
+                    api.listCompanies(activeSession.accessToken)
                 }
                 companies = loadedCompanies
-                serverModules = loadedModules
                 if (loadedCompanies.isNotEmpty()) {
                     isCreateCompanyExpanded = false
                 }
@@ -279,7 +275,7 @@ fun CompanyProvisioningScreen(
                         enabled = !isLoading,
                         colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
                     ) {
-                        Text("Volver al panel")
+                        Text("Cancelar")
                     }
                     Button(
                         enabled = !isLoading &&
@@ -339,49 +335,6 @@ fun CompanyProvisioningScreen(
 
                 if (isRefreshing) {
                     Text("Cargando empresas...", color = Color(0xFF666666))
-                }
-
-                Text("Modulos del servidor", style = MaterialTheme.typography.titleMedium, color = primaryColor)
-                serverModules.forEach { module ->
-                    ServerModuleRow(
-                        module = module,
-                        primaryColor = primaryColor,
-                        enabled = !isLoading && !isRefreshing && serverUrl != null && session?.accessToken?.isNotBlank() == true,
-                        pendingDeletion = modulePendingDeletion == module.moduleId,
-                        onRequestDelete = {
-                            modulePendingDeletion = module.moduleId
-                            companyPendingDeletion = null
-                        },
-                        onCancelDelete = {
-                            modulePendingDeletion = null
-                        },
-                        onConfirmDelete = {
-                            val activeServerUrl = serverUrl
-                            val activeSession = session
-                            if (activeServerUrl != null && activeSession != null) {
-                                isRefreshing = true
-                                error = null
-                                message = null
-                                scope.launch {
-                                    try {
-                                        CompanyApi(activeServerUrl).use { api ->
-                                            api.deleteServerModule(activeSession.accessToken, module.moduleId)
-                                        }
-                                        serverModules = serverModules.filterNot { it.moduleId == module.moduleId }
-                                        companies = companies.map { company ->
-                                            company.copy(modules = company.modules.filterNot { it.moduleId == module.moduleId })
-                                        }
-                                        modulePendingDeletion = null
-                                        message = "Modulo ${module.displayName} eliminado del servidor."
-                                    } catch (exception: CompanyException) {
-                                        error = exception.message
-                                    } finally {
-                                        isRefreshing = false
-                                    }
-                                }
-                            }
-                        },
-                    )
                 }
 
                 companies.forEach { company ->
@@ -545,64 +498,6 @@ fun CompanyProvisioningScreen(
                 }
 
                 Spacer(modifier = Modifier.height(2.dp))
-            }
-        }
-    }
-}
-
-@Composable
-// Renderiza un modulo instalado en el servidor y permite eliminarlo si ninguna empresa lo usa.
-private fun ServerModuleRow(
-    module: ServerModuleResponse,
-    primaryColor: Color,
-    enabled: Boolean,
-    pendingDeletion: Boolean,
-    onRequestDelete: () -> Unit,
-    onCancelDelete: () -> Unit,
-    onConfirmDelete: () -> Unit,
-) {
-    val canDelete = enabled && !module.locked && module.activeCompanyCount == 0
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(Color(0xFFF6F6FA), MaterialTheme.shapes.small)
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Text(module.displayName, style = MaterialTheme.typography.titleSmall, color = primaryColor)
-        Text(module.description, color = Color(0xFF666666))
-        Text(
-            text = when {
-                module.locked -> "Modulo base del sistema"
-                module.activeCompanyCount > 0 -> "Activo en ${module.activeCompanyCount} empresa(s)"
-                else -> "Sin empresas activas"
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = if (module.activeCompanyCount > 0 || module.locked) Color(0xFF8A5A00) else Color(0xFF176B3A),
-        )
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Button(
-                enabled = canDelete,
-                onClick = if (pendingDeletion) onConfirmDelete else onRequestDelete,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = if (pendingDeletion) Color(0xFFB00020) else Color(0xFFE9E9EF),
-                    contentColor = if (pendingDeletion) Color.White else Color(0xFFB00020),
-                ),
-            ) {
-                Text(if (pendingDeletion) "Confirmar eliminar" else "Eliminar del servidor")
-            }
-            if (pendingDeletion) {
-                Button(
-                    enabled = enabled,
-                    onClick = onCancelDelete,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
-                ) {
-                    Text("Cancelar")
-                }
             }
         }
     }
