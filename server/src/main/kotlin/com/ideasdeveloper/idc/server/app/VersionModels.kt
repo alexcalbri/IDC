@@ -2,7 +2,7 @@ package com.ideasdeveloper.idc.server.app
 
 import kotlinx.serialization.Serializable
 
-const val IdeasCoreVersion = "0.1-rc"
+const val IdeasCoreVersion = "0.1.0"
 
 @Serializable
 data class VersionResponse(

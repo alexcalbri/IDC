@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.ideasdeveloper.idc"
-version = "0.1-rc"
+version = "0.1.0"
 application {
     mainClass = "com.ideasdeveloper.idc.server.app.ApplicationKt"
 }
