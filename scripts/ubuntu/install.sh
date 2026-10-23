@@ -128,6 +128,27 @@ run_gradle() {
         "$@"
 }
 
+# `systemctl reload nginx` returns before new workers serve requests, so retry.
+# On failure, show what answered instead of the app to make diagnosis possible.
+verify_web_index() {
+    local scheme=$1 port=$2 response status body expected
+    expected=$(cat "$APP_DIR/web/index.html")
+    for attempt in {1..10}; do
+        response=$(curl --noproxy '*' --silent --show-error --max-time 15 \
+            --resolve "$DOMAIN:$port:127.0.0.1" --write-out '\n%{http_code}' \
+            "$scheme://$DOMAIN/") || response=$'\n000'
+        status=${response##*$'\n'}
+        body=$(printf '%s' "${response%$'\n'*}")
+        [[ $status == 200 && $body == "$expected" ]] && return
+        sleep 2
+    done
+    printf '\nRespuesta recibida para %s://%s/ (HTTP %s):\n' "$scheme" "$DOMAIN" "$status" >&2
+    printf '%s\n' "$body" | head -n 15 >&2 || true
+    printf '\nSitios Nginx habilitados (listen/server_name/root):\n' >&2
+    nginx -T 2>/dev/null | grep -nE '^# configuration file|listen|server_name|root ' >&2 || true
+    die "El dominio no esta sirviendo el index.html de la app por ${scheme^^}."
+}
+
 verify_acme_challenge() {
     local address=$1
     local resolve_address=$address
@@ -679,9 +700,7 @@ NGINX
     systemctl enable --now nginx
     systemctl reload nginx
 
-    WEB_INDEX=$(curl --noproxy '*' --fail --silent --show-error --max-time 15 \
-        --resolve "$DOMAIN:80:127.0.0.1" "http://$DOMAIN/")
-    [[ $WEB_INDEX == "$(cat "$APP_DIR/web/index.html")" ]] || die 'El dominio no esta sirviendo el index.html de la app por HTTP.'
+    verify_web_index http 80
     curl --noproxy '*' --fail --silent --show-error --max-time 15 \
         --resolve "$DOMAIN:80:127.0.0.1" "http://$DOMAIN/webApp.js" >/dev/null
     LOGIN_STATUS=$(curl --noproxy '*' --silent --show-error --max-time 15 \
@@ -776,9 +795,7 @@ UNIT
     chmod 644 /etc/systemd/system/ideascore-certbot.{service,timer}
     systemctl daemon-reload
     systemctl enable --now ideascore-certbot.timer
-    WEB_INDEX=$(curl --noproxy '*' --fail --silent --show-error --max-time 15 \
-        --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/")
-    [[ $WEB_INDEX == "$(cat "$APP_DIR/web/index.html")" ]] || die 'El dominio no esta sirviendo el index.html de la app.'
+    verify_web_index https 443
     curl --noproxy '*' --fail --silent --show-error --max-time 15 \
         --resolve "$DOMAIN:443:127.0.0.1" "https://$DOMAIN/webApp.js" >/dev/null
     LOGIN_STATUS=$(curl --noproxy '*' --silent --show-error --max-time 15 \
