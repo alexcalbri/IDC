@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Prepares a release of develop to master without test sources, as a pull request.
+# Prepares a release of develop to master without tests or modules in development, as a pull request.
 #
 # Tests live only on develop. The script creates a release/<date>-<commit> branch from
 # master, merges develop into it, removes every test source directory (src/test,
-# src/commonTest, src/jvmTest, ...) in the same merge commit, pushes the branch and opens
-# a pull request to master. master is never pushed directly, so its protection rules apply.
+# src/commonTest, src/jvmTest, ...) and every module marked with modules/<id>/.development
+# in the same merge commit, pushes the branch and opens a pull request to master. master is never pushed directly, so its protection rules apply.
 #
 #   bash scripts/release-to-master.sh            # push the branch and open the pull request
 #   bash scripts/release-to-master.sh --dry-run  # build the release commit locally only
@@ -17,6 +17,8 @@ readonly SOURCE=develop
 readonly TARGET=master
 # Any Kotlin/Gradle test source set: src/test, src/commonTest, src/jvmTest, src/androidUnitTest...
 readonly TEST_DIR_PATTERN='(^|/)src/[A-Za-z]*([Tt]est)/'
+# Empty marker that keeps a module out of master until it is ready.
+readonly DEVELOPMENT_MARKER_PATTERN='^modules/[^/]+/\.development$'
 
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 
@@ -77,20 +79,30 @@ if (( ${#test_dirs[@]} > 0 )); then
     rm -rf -- "${test_dirs[@]}"
 fi
 
+# Modules marked with modules/<id>/.development are still in development and stay on develop.
+mapfile -t development_modules < <(git ls-files | { grep -E "$DEVELOPMENT_MARKER_PATTERN" || true; } | sed -E 's#/\.development$##' | sort -u)
+if (( ${#development_modules[@]} > 0 )); then
+    printf 'Quitando modulos en desarrollo:\n'
+    printf ' - %s\n' "${development_modules[@]}"
+    git rm -r -q --cached -- "${development_modules[@]}"
+    rm -rf -- "${development_modules[@]}"
+fi
+
 unmerged=$(git diff --name-only --diff-filter=U)
 if [[ -n $unmerged ]]; then
-    printf 'Conflictos fuera de los tests; resuelvelos en %s:\n%s\n' "$SOURCE" "$unmerged" >&2
+    printf 'Conflictos fuera de los tests y modulos en desarrollo; resuelvelos en %s:\n%s\n' "$SOURCE" "$unmerged" >&2
     false
 fi
-if git ls-files | grep -Eq "$TEST_DIR_PATTERN"; then
-    printf 'Quedaron archivos de test en la publicacion.\n' >&2
+if git ls-files | grep -Eq "$TEST_DIR_PATTERN|$DEVELOPMENT_MARKER_PATTERN"; then
+    printf 'Quedaron tests o modulos en desarrollo en la publicacion.\n' >&2
     false
 fi
 
 TITLE="Release $SOURCE $SOURCE_COMMIT to $TARGET"
 git commit -q -m "$TITLE
 
-Merged $SOURCE into $TARGET and removed test sources; tests stay on $SOURCE."
+Merged $SOURCE into $TARGET and removed test sources and modules in development;
+they stay on $SOURCE."
 CHANGED=$(git diff --name-only "$REMOTE/$TARGET" HEAD | wc -l | tr -d ' ')
 COMMITS=$(git rev-list --count "$REMOTE/$TARGET..$SOURCE")
 trap - ERR
@@ -108,7 +120,7 @@ git checkout -q "$STARTING_BRANCH"
 # The branch lives on the remote for the pull request; the local copy is no longer needed.
 git branch -q -D "$RELEASE_BRANCH"
 
-BODY="Publica \`$SOURCE\` ($SOURCE_COMMIT, $COMMITS commits) en \`$TARGET\` sin los tests, que solo viven en \`$SOURCE\`.
+BODY="Publica \`$SOURCE\` ($SOURCE_COMMIT, $COMMITS commits) en \`$TARGET\` sin los tests ni los modulos en desarrollo, que solo viven en \`$SOURCE\`.
 
 Fusiona con **Create a merge commit** (no squash ni rebase) para que la siguiente publicacion comparta historial con \`$SOURCE\`."
 
