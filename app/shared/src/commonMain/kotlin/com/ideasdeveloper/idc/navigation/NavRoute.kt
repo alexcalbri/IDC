@@ -8,25 +8,27 @@ package com.ideasdeveloper.idc.navigation
 sealed class NavRoute {
     object Login : NavRoute()
     object Dashboard : NavRoute()
-    object Clientes : NavRoute()
-    object Memberships : NavRoute()
+    data class Module(val moduleId: String) : NavRoute()
     object Settings : NavRoute()
 
     companion object {
+        // Reconstruye una ruta tipada desde el nombre usado por Compose Navigation.
         fun fromString(route: String): NavRoute = when (route) {
             "login" -> Login
             "dashboard" -> Dashboard
-            "clientes" -> Clientes
-            "memberships" -> Memberships
             "settings" -> Settings
-            else -> Login
+            else -> if (route.startsWith("module/")) {
+                Module(route.removePrefix("module/"))
+            } else {
+                Login
+            }
         }
 
+        // Convierte una ruta tipada al formato string que consume NavHost.
         fun NavRoute.routeName(): String = when (this) {
             is Login -> "login"
             is Dashboard -> "dashboard"
-            is Clientes -> "clientes"
-            is Memberships -> "memberships"
+            is Module -> "module/$moduleId"
             is Settings -> "settings"
         }
     }
