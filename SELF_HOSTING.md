@@ -122,15 +122,17 @@ vas a utilizar. Desde una terminal SSH en Ubuntu:
 sudo apt-get update
 sudo apt-get install -y ca-certificates curl
 curl --fail --show-error --location \
-  https://raw.githubusercontent.com/alexcalbri/IDC/develop/scripts/ubuntu/install.sh \
+  https://raw.githubusercontent.com/alexcalbri/IDC/master/scripts/ubuntu/install.sh \
   --output install-ideascore.sh
 less install-ideascore.sh
 sudo bash install-ideascore.sh
 ```
 
-El comando presupone que los archivos ya están publicados en `develop`.
-Para otra rama o etiqueta, cambia `develop` en la URL y selecciona esa
-misma referencia cuando pregunte el instalador. El repositorio debe poder
+`master` es la rama estable: recibe `develop` sin los tests mediante
+`bash scripts/release-to-master.sh`. Para probar lo último, cambia `master`
+por `develop` en la URL y escribe `develop` cuando pregunte el instalador.
+Antes de limpiar o modificar el servidor, el instalador verifica que la rama
+elegida tenga todos los archivos que necesita; si no, se detiene sin tocar nada. El repositorio debe poder
 clonarse públicamente por HTTPS; este instalador no gestiona credenciales
 para repositorios privados. Necesita Internet para APT, GitHub, Gradle y
 las dependencias, además de memoria suficiente para compilar (el proyecto
@@ -140,7 +142,7 @@ y 10 GiB libres en disco duro antes de iniciar la instalación.
 
 Preguntas del instalador:
 
-- Rama o etiqueta que se instalará (predeterminada: `develop`).
+- Rama o etiqueta que se instalará (predeterminada: `master`).
 - Dominio público del backend, sin protocolo ni rutas (por ejemplo `api.tuempresa.com`).
 - Correo para registrar la cuenta de Let’s Encrypt.
 - Base PostgreSQL nueva (predeterminada: `idc`).

@@ -115,3 +115,14 @@ Lee los detalles y advertencias operativas en
   administrativo separado y potencialmente destructivo.
 - La documentacion debe actualizarse junto con cambios de arquitectura,
   instalacion, configuracion o comportamiento observable.
+
+## Ramas
+
+- `develop`: desarrollo y pruebas; incluye los tests.
+- `master`: version estable para instalar; no incluye tests.
+
+Para publicar `develop` en `master` (fusiona, quita los tests y sube):
+
+```bash
+bash scripts/release-to-master.sh
+```

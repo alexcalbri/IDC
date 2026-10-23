@@ -64,6 +64,20 @@ readonly APP_DIR=/opt/ideascore
 readonly CONFIG_DIR=/etc/ideascore
 readonly SERVICE_FILE=/etc/systemd/system/ideascore.service
 readonly REPO_URL=https://github.com/alexcalbri/IDC.git
+readonly REPO_RAW_BASE=https://raw.githubusercontent.com/alexcalbri/IDC
+# Files this installer needs from the selected branch. They are checked before the
+# server is modified and again after cloning.
+readonly REQUIRED_FILES=(
+    scripts/ubuntu/migrations.sh
+    scripts/ubuntu/domains-sync.sh
+    database/core/migrations/V001__create_application_users.sql
+    database/core/migrations/V002__create_application_sessions.sql
+    database/control/migrations/V001__create_server_registry.sql
+    database/control/migrations/V002__create_provisioning_audit_log.sql
+    database/control/migrations/V003__create_server_modules.sql
+    database/control/migrations/V004__create_server_settings_and_module_packages.sql
+    database/control/migrations/V005__create_public_domains.sql
+)
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
 readonly APP_PORT=8080
@@ -126,6 +140,36 @@ run_gradle() {
         "-Dorg.gradle.jvmargs=$GRADLE_JVM_ARGS" \
         "-Pkotlin.compiler.execution.strategy=in-process" \
         "$@"
+}
+
+# Checks over HTTPS that the selected branch has every file the installer needs, before
+# cleaning or changing anything on this server. If it cannot be checked (no curl or no
+# network), the same check runs again after cloning.
+verify_branch_files() {
+    local file status
+    local missing=()
+    if ! command -v curl >/dev/null 2>&1; then
+        printf 'curl no esta instalado; la rama %s se verificara despues de descargarla.\n' "$GIT_REF"
+        return
+    fi
+    printf 'Verificando que la rama %s tenga todo lo necesario...\n' "$GIT_REF"
+    for file in "${REQUIRED_FILES[@]}"; do
+        status=$(curl --silent --location --output /dev/null --write-out '%{http_code}' --max-time 15 \
+            "$REPO_RAW_BASE/$GIT_REF/$file") || status=000
+        case "$status" in
+            200) ;;
+            404) missing+=("$file") ;;
+            *)
+                printf 'AVISO: no se pudo verificar la rama (HTTP %s); se verificara despues de descargarla.\n' "$status"
+                return
+                ;;
+        esac
+    done
+    if (( ${#missing[@]} > 0 )); then
+        printf 'La rama %s no tiene:\n' "$GIT_REF" >&2
+        printf ' - %s\n' "${missing[@]}" >&2
+        die "La rama $GIT_REF no sirve para este instalador (version antigua o inexistente). Elige una rama actualizada (normalmente master). No se modifico nada en el servidor."
+    fi
 }
 
 # `systemctl reload nginx` returns before new workers serve requests, so retry.
@@ -282,8 +326,9 @@ if [[ $PUBLIC_SCHEME == http ]]; then
     ask HTTP_CONFIRM 'Para confirmar HTTP escribe HTTP' no
     [[ $HTTP_CONFIRM == HTTP ]] || die 'Cancelado antes de publicar por HTTP.'
 fi
-ask GIT_REF 'Rama o etiqueta de GitHub' develop
+ask GIT_REF 'Rama o etiqueta de GitHub (master = estable, develop = pruebas)' master
 [[ $GIT_REF =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*$ && $GIT_REF != *..* ]] || die 'Referencia Git inválida.'
+verify_branch_files
 ask DOMAIN 'Dominio público que apunta a este Ubuntu (sin https:// ni rutas)' ''
 DOMAIN=${DOMAIN,,}
 [[ ${#DOMAIN} -le 240 && $DOMAIN == *.* && $DOMAIN =~ ^[a-z0-9.-]+$ && ! $DOMAIN =~ ^[0-9.]+$ ]] ||
@@ -479,16 +524,8 @@ JAVA_HOME="/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture)"
 runuser -u ideascore -- git clone --depth 1 --branch "$GIT_REF" -- "$REPO_URL" "$APP_DIR/source"
 cd "$APP_DIR/source"
 ensure_install_swap
-[[ -f scripts/ubuntu/migrations.sh ]] || die 'La rama descargada no incluye el ejecutor de migraciones.'
-for migration in database/core/migrations/V001__create_application_users.sql \
-    database/core/migrations/V002__create_application_sessions.sql \
-    database/control/migrations/V001__create_server_registry.sql \
-    database/control/migrations/V002__create_provisioning_audit_log.sql \
-    database/control/migrations/V003__create_server_modules.sql \
-    database/control/migrations/V004__create_server_settings_and_module_packages.sql \
-    database/control/migrations/V005__create_public_domains.sql \
-    scripts/ubuntu/domains-sync.sh; do
-    [[ -f $migration ]] || die "La rama descargada no incluye $migration. Publica los cambios antes de instalar."
+for required_file in "${REQUIRED_FILES[@]}"; do
+    [[ -f $required_file ]] || die "La rama descargada no incluye $required_file. Publica los cambios antes de instalar."
 done
 runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
 run_gradle -PserverOnly=true :server:tasks --all
