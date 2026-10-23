@@ -19,4 +19,4 @@ captures
 node_modules/
 
 # Local reference implementation with real credentials; never commit.
-modules/hotspot/ejemplo/
+/reference/

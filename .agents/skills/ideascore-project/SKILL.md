@@ -254,17 +254,13 @@ modules/
 └── future-module/
 ```
 
-A module may contain:
-
--   domain logic;
--   server code;
--   shared/client code;
--   migrations;
--   permissions;
--   configuration;
--   tests;
--   event handlers;
--   integration contracts.
+The required layout of each module (`README.md`, optional `module.json`,
+`migrations/`, `server/src/{main/kotlin,main/resources,test/kotlin}`) is defined
+in `modules/README.md` and enforced by `./gradlew :server:validateModules`,
+which runs before the server compiles. Modules contain server code, migrations,
+permissions, resources and tests, but never app/client code: the app draws
+modules through the shared server-driven UI contract in `core` or shows their
+web pages.
 
 Exact Gradle project boundaries must be introduced deliberately. Do not
 perform a mass repository restructure unless requested or approved.
@@ -312,13 +308,10 @@ Conceptually:
 
 ``` text
 database/
-├── core/
-│   └── migrations/
-└── modules/
-    ├── module-a/
-    │   └── migrations/
-    └── module-b/
-        └── migrations/
+└── core/ control/ tenant/      Core migrations
+modules/
+├── module-a/migrations/        module-owned tenant migrations
+└── module-b/migrations/
 ```
 
 Installing a module applies that module's migrations to the selected

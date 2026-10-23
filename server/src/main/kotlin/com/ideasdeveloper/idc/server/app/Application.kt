@@ -123,7 +123,7 @@ fun Application.module() {
         ),
     )
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
-    val moduleAccessService = ModuleAccessService(DatabaseFactory.getDataSource(), loginDatabases, serverMailSettings())
+    val moduleAccessService = ModuleAccessService(DatabaseFactory.getDataSource(), loginDatabases, serverMailSettings(), moduleRegistry::isInstalled)
     val companySelfService = CompanySelfService(
         central = DatabaseFactory.getDataSource(),
         loginDatabases = loginDatabases,

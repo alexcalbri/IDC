@@ -48,7 +48,7 @@ class RemoteModuleCatalog : AutoCloseable {
             connectTimeoutMillis = 5_000
         }
     }
-    private val moduleIdPattern = Regex("[a-z][a-z0-9_-]{0,62}")
+    private val moduleIdPattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val checksumPattern = Regex("[A-Fa-f0-9]{64}")
 
     fun modules(catalogUrl: String): List<RemoteModulePackage> {

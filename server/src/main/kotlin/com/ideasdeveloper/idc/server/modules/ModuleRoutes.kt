@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.server.modules
 
 import io.ktor.http.Cookie
 import io.ktor.http.HttpStatusCode
+import io.ktor.server.http.content.staticResources
 import io.ktor.server.plugins.origin
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondRedirect
@@ -92,4 +93,16 @@ internal object ModuleWebTickets {
     // Single use: the ticket is removed even when it belongs to another module or expired.
     fun consume(ticket: String, moduleId: String): Ticket? =
         tickets.remove(ticket)?.takeIf { it.moduleId == moduleId && it.expiresAt >= System.currentTimeMillis() }
+}
+
+/**
+ * Serves a web-UI module's static pages from modules/{moduleId}/server/src/main/resources/modules/{moduleId}/web/
+ * at /modules/{moduleId}/web/. Use it from ServerModule.routes and declare
+ * ModuleUiEntry(type = "web", entry = "/modules/{moduleId}/web/"). The pages' data calls stay
+ * protected by requireModulePermission through the module cookies.
+ */
+fun Route.moduleWebResources(moduleId: String) {
+    staticResources("/modules/$moduleId/web", "modules/$moduleId/web") {
+        default("index.html")
+    }
 }

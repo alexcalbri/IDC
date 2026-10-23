@@ -20,9 +20,67 @@ installable only when it contains a valid `module.json` manifest. Removing a
 module folder from the remote repository prevents new installations, but it does
 not break servers that already installed the module.
 
+## Module layout (required)
+
+Every module follows this layout. `./gradlew :server:validateModules` checks it
+and runs automatically before the server compiles, so a module that breaks the
+rules fails the build with a list of the problems.
+
+```text
+modules/<id>/
+├── README.md                     required: purpose, data, routes, permissions, setup
+├── module.json                   optional: only for the remote module catalog
+├── migrations/                   optional: tenant database migrations
+│   ├── README.md                 optional
+│   └── VNNN__description.sql     e.g. V001__create_orders.sql
+└── server/                       required when the module has code
+    └── src/
+        ├── main/kotlin/com/ideasdeveloper/idc/modules/<id>/
+        │   ├── <Id>Module.kt             id and display name constants
+        │   ├── <Id>ServerModule.kt       ServerModule: definition, migrations, routes
+        │   └── ...                       other server code of the module
+        ├── main/resources/modules/<id>/  optional resources
+        │   └── web/                      pages of a web-UI module (index.html, js, css)
+        └── test/kotlin/com/ideasdeveloper/idc/modules/<id>/
+                                          optional tests, run with :server:test
+```
+
+Rules:
+
+- `<id>` is the folder name, the module id and the last part of the Kotlin
+  package. It must match `[a-z][a-z0-9_]{0,62}`.
+- Only `README.md`, `module.json`, `migrations/` and `server/` are allowed at the
+  module root (hidden files are ignored). There is no `shared/` or client folder:
+  **modules never contain app code**. The app draws modules from the server
+  (native pieces) or shows their web pages (see *Module user interface*).
+- All Kotlin code uses the package `com.ideasdeveloper.idc.modules.<id>` and lives
+  under the matching folder.
+- A module that implements `ServerModule` must declare
+  `class <Id>ServerModuleProvider : ServerModuleProvider`, where `<Id>` is the id
+  in PascalCase (`ventas_online` -> `VentasOnlineServerModuleProvider`). The build
+  registers it automatically; without it the server never loads the module.
+- Resources live under `resources/modules/<id>/` so two modules cannot overwrite
+  each other's files. Web-UI modules call `route.moduleWebResources("<id>")` in
+  `routes` to serve `resources/modules/<id>/web/` at `/modules/<id>/web/`.
+- Migrations are named `VNNN__description.sql`, wrap all statements in one
+  `BEGIN;` ... `COMMIT;`, are listed in the module's `migrationPaths` and are never
+  edited after release (the checksum is verified); add a new version instead.
+- Tables created by migrations that the backend reads or writes are listed in
+  `runtimeTables` so the runtime role receives access when the module is enabled.
+- Module routes live under `/modules/<id>/` and check access with
+  `requireModulePermission` or `requireModuleAccess`. The server registers the
+  routes of every compiled module at startup, installed or not, so installing or
+  removing a module takes effect without a restart; those helpers reject modules
+  the server owner has not installed. Public routes without a session (such as
+  the hotspot portal) must check `access.isInstalled("<id>")` themselves.
+
+Empty scaffold folders (only directories, as Git leaves them) are ignored by the
+check.
+
 ## Installable module manifest
 
-Each installable module folder must contain `module.json`:
+`module.json` is optional. Add it only when the module is distributed through
+the remote catalog; modules compiled into the server do not need it.
 
 ```json
 {
@@ -39,7 +97,8 @@ Each installable module folder must contain `module.json`:
 
 Validation rules:
 
-- `id` must match the folder name and the pattern `[a-z][a-z0-9_-]{0,62}`.
+- `id` must match the folder name (and therefore `[a-z][a-z0-9_]{0,62}`, see
+  *Module layout*).
 - `displayName`, `description` and `version` must not be blank.
 - `packageUrl`, when present, must start with `http://` or `https://`.
 - `packageSha256`, when present, must be a 64-character SHA-256 hex digest.

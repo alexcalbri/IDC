@@ -31,8 +31,13 @@ class ModuleAccessService(
     private val loginDatabases: LoginDatabases,
     // Server-wide SMTP configured by the server administrator; modules may allow a company override.
     val serverMail: SmtpSettings? = null,
+    // Whether the server owner installed the module; routes of every compiled module exist from startup.
+    private val moduleInstalled: (String) -> Boolean = { true },
 ) {
     private val tokenGenerator = SessionTokenGenerator()
+
+    // Public module endpoints (e.g. a captive portal) must check this before serving anything.
+    fun isInstalled(moduleId: String): Boolean = moduleInstalled(moduleId)
 
     // Central control-plane connection for module-owned central tables such as public_domains.
     fun centralConnection(): Connection = central.connection
@@ -78,6 +83,9 @@ class ModuleAccessService(
      * in the module, so a screen can show only the sections the user may use.
      */
     fun permissions(call: ApplicationCall, moduleId: String): ModulePermissionLookup {
+        if (!moduleInstalled(moduleId)) {
+            return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_not_installed", "El modulo no esta instalado en el servidor."))
+        }
         val token = accessToken(call)
             ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", "La sesion es requerida."))
         val companyCode = companyCode(call)

@@ -319,6 +319,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val host = request.host().lowercase().removeSuffix(".")
         val html = try {
             withContext(Dispatchers.IO) {
+                // The portal stops answering as soon as the server owner removes the module.
+                if (!access.isInstalled(HotspotModule.id)) return@withContext null
                 val companyCode = access.centralConnection().use { central ->
                     central.prepareStatement(
                         "SELECT company_code FROM public_domains WHERE domain = ? AND module_id = ? AND status <> 'removing'"

@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.server.modules
 
 import com.ideasdeveloper.idc.ui.ModuleUiEntry
+import java.util.concurrent.ConcurrentHashMap
 import io.ktor.server.routing.Route
 import kotlinx.serialization.Serializable
 
@@ -84,8 +85,9 @@ class ModuleRegistry(
     installedModuleIds: Set<String> = modules.filter { it.definition.locked }.map { it.definition.id }.toSet(),
 ) {
     private val modulesById = modules.associateBy { it.definition.id }.toMutableMap()
-    private val externalDefinitionsById = mutableMapOf<String, ModuleDefinition>()
-    private val installedIds = installedModuleIds.toMutableSet()
+    private val externalDefinitionsById = ConcurrentHashMap<String, ModuleDefinition>()
+    // Read on every module request and changed when the server owner installs or removes modules.
+    private val installedIds: MutableSet<String> = ConcurrentHashMap.newKeySet<String>().apply { addAll(installedModuleIds) }
 
     val definitions: List<ModuleDefinition>
         get() = installedIds.mapNotNull { definitionOrExternal(it) }.sortedBy { it.id }
@@ -129,11 +131,18 @@ class ModuleRegistry(
 
     fun installedModuleIds(): Set<String> = installedIds.toSet()
 
+    /**
+     * Registers the routes of every module compiled into the server, installed or not, because
+     * Ktor routes cannot be added after startup. Installing or removing a module therefore takes
+     * effect immediately: ModuleAccessService rejects requests to modules that are not installed.
+     */
     fun installRoutes(route: Route, access: ModuleAccessService) {
-        installedIds.mapNotNull { modulesById[it] }.forEach { module ->
+        routedModules().forEach { module ->
             module.routes(route, access)
         }
     }
+
+    internal fun routedModules(): Collection<ServerModule> = modulesById.values
 
     private fun definitionOrExternal(moduleId: String): ModuleDefinition? =
         modulesById[moduleId]?.definition ?: externalDefinitionsById[moduleId]
