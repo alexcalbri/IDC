@@ -38,6 +38,8 @@ import com.ideasdeveloper.idc.app.core.version.ClientVersion
 import com.ideasdeveloper.idc.app.core.version.VersionApi
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
+import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
 
@@ -77,73 +79,81 @@ fun SettingsScreen(
             modifier = Modifier.align(Alignment.TopCenter),
         )
 
-        Column(
+        // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
+        ClosableView(
+            onClose = onReturnToDashboard,
             modifier = Modifier
-                .fillMaxWidth(0.9f)
                 .align(Alignment.Center)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .fillMaxWidth(0.9f),
         ) {
-            SettingsCard(primaryColor = primaryColor) {
-                Text("Conexion", fontWeight = FontWeight.Bold, color = primaryColor)
-                Spacer(Modifier.height(10.dp))
-                SettingRow("Servidor", configuration?.serverUrl ?: "Sin configurar")
-                SettingRow("Empresa", configuration?.companyCode ?: "Administracion del servidor")
-            }
-
-            SettingsCard(primaryColor = primaryColor) {
-                Text("Sesion", fontWeight = FontWeight.Bold, color = primaryColor)
-                Spacer(Modifier.height(10.dp))
-                SettingRow("Usuario", session?.username ?: "Sin sesion")
-                SettingRow("Rol", session?.role ?: "Sin rol")
-                SettingRow("Empresa activa", session?.companyCode ?: "Servidor")
-            }
-
-            SettingsCard(primaryColor = primaryColor) {
-                Text("Version", fontWeight = FontWeight.Bold, color = primaryColor)
-                Spacer(Modifier.height(10.dp))
-                SettingRow("Cliente", ClientVersion)
-                versionStatus?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(it, color = Color(0xFF444444))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Conexion", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Servidor", configuration?.serverUrl ?: "Sin configurar")
+                    SettingRow("Empresa", configuration?.companyCode ?: "Administracion del servidor")
                 }
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = {
-                        val serverUrl = configuration?.serverUrl.orEmpty()
-                        if (serverUrl.isBlank()) {
-                            versionStatus = "No hay servidor configurado para revisar actualizaciones."
-                            return@Button
-                        }
-                        checkingVersion = true
-                        scope.launch {
-                            val version = VersionApi(serverUrl).use { it.version() }
-                            versionStatus = when {
-                                version == null -> "No se pudo consultar la version del servidor."
-                                !version.latestAppVersion.isNullOrBlank() && version.latestAppVersion != ClientVersion ->
-                                    "Nueva version del cliente disponible: ${version.latestAppVersion}."
-                                else -> "El cliente esta actualizado."
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Sesion", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Usuario", session?.username ?: "Sin sesion")
+                    SettingRow("Rol", session?.role ?: "Sin rol")
+                    SettingRow("Empresa activa", session?.companyCode ?: "Servidor")
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Version", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Cliente", ClientVersion)
+                    versionStatus?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = Color(0xFF444444))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            val serverUrl = configuration?.serverUrl.orEmpty()
+                            if (serverUrl.isBlank()) {
+                                versionStatus = "No hay servidor configurado para revisar actualizaciones."
+                                return@Button
                             }
-                            checkingVersion = false
-                        }
-                    },
-                    enabled = !checkingVersion,
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-                ) {
-                    Text(if (checkingVersion) "Revisando..." else "Revisar actualizaciones")
+                            checkingVersion = true
+                            scope.launch {
+                                val version = VersionApi(serverUrl).use { it.version() }
+                                versionStatus = when {
+                                    version == null -> "No se pudo consultar la version del servidor."
+                                    !version.latestAppVersion.isNullOrBlank() && version.latestAppVersion != ClientVersion ->
+                                        "Nueva version del cliente disponible: ${version.latestAppVersion}."
+                                    else -> "El cliente esta actualizado."
+                                }
+                                checkingVersion = false
+                            }
+                        },
+                        enabled = !checkingVersion,
+                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                    ) {
+                        Text(if (checkingVersion) "Revisando..." else "Revisar actualizaciones")
+                    }
                 }
-            }
 
-            SettingsCard(primaryColor = primaryColor) {
-                Text("Datos locales", fontWeight = FontWeight.Bold, color = primaryColor)
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = "Limpia la URL, empresa guardada y sesion local. No modifica datos del servidor.",
-                    color = Color(0xFF555555),
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(onClick = onClearLocalConfiguration) {
-                    Text("Limpiar configuracion local")
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Datos locales", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "Limpia la URL, empresa guardada y sesion local. No modifica datos del servidor.",
+                        color = Color(0xFF555555),
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(onClick = onClearLocalConfiguration) {
+                        Text("Limpiar configuracion local")
+                    }
                 }
             }
         }

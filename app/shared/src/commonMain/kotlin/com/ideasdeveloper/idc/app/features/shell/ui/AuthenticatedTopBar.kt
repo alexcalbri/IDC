@@ -1,7 +1,6 @@
 package com.ideasdeveloper.idc.app.features.shell.ui
 
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,9 +26,6 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -58,12 +54,6 @@ fun AuthenticatedTopBar(
             .padding(horizontal = 20.dp, vertical = 18.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Toda pantalla que no es el panel se cierra con este boton y vuelve al panel.
-        onReturnToDashboard?.let { close ->
-            CloseButton(onClick = close)
-            Spacer(modifier = Modifier.width(12.dp))
-        }
-
         // Muestra el logo provisional de la empresa o servidor.
         Box(
             modifier = Modifier
@@ -142,24 +132,6 @@ fun AuthenticatedTopBar(
                     },
                 )
             }
-        }
-    }
-}
-
-@Composable
-// Boton circular con una X dibujada, con el mismo estilo que el boton de menu.
-private fun CloseButton(onClick: () -> Unit) {
-    IconButton(
-        onClick = onClick,
-        modifier = Modifier
-            .size(48.dp)
-            .background(Color.White.copy(alpha = 0.18f), CircleShape)
-            .semantics { contentDescription = "Cerrar" },
-    ) {
-        Canvas(modifier = Modifier.size(16.dp)) {
-            val stroke = 2.5.dp.toPx()
-            drawLine(Color.White, Offset.Zero, Offset(size.width, size.height), strokeWidth = stroke, cap = StrokeCap.Round)
-            drawLine(Color.White, Offset(size.width, 0f), Offset(0f, size.height), strokeWidth = stroke, cap = StrokeCap.Round)
         }
     }
 }

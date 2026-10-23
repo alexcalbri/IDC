@@ -28,6 +28,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -42,6 +44,8 @@ import com.ideasdeveloper.idc.app.features.modules.data.ModuleApi
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleDefinition
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleException
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
+import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
@@ -109,10 +113,18 @@ fun ServerDrivenModuleScreen(
                 onSettings = onSettings,
                 onLogout = onLogout,
             )
-            if (ui.type == "native") {
-                NativeModuleHost(ui, callContext, primaryColor, Modifier.weight(1f))
-            } else {
-                WebModuleHost(moduleId, callContext, primaryColor, Modifier.weight(1f))
+            // El modulo se muestra como un panel con la X en su esquina superior derecha.
+            ClosableView(
+                onClose = onReturnToDashboard,
+                modifier = Modifier.weight(1f).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+            ) {
+                val panel = Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))
+                if (ui.type == "native") {
+                    NativeModuleHost(ui, callContext, primaryColor, panel)
+                } else {
+                    // Los navegadores embebidos se dibujan encima de Compose: se deja aire para que no tapen la X.
+                    WebModuleHost(moduleId, callContext, primaryColor, Modifier.padding(top = 20.dp).then(panel))
+                }
             }
         }
         return
@@ -133,46 +145,54 @@ fun ServerDrivenModuleScreen(
             modifier = Modifier.align(Alignment.TopCenter),
         )
 
-        Surface(
+        // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
+        ClosableView(
+            onClose = onReturnToDashboard,
             modifier = Modifier
-                .fillMaxWidth(0.9f)
                 .align(Alignment.Center)
-                .verticalScroll(rememberScrollState()),
-            color = Color.White,
-            shape = MaterialTheme.shapes.medium,
+                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .fillMaxWidth(0.9f),
         ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                color = Color.White,
+                shape = MaterialTheme.shapes.medium,
             ) {
-                when {
-                    loading -> CircularProgressIndicator(color = primaryColor)
-                    error != null -> Text(error.orEmpty(), color = Color(0xFFB00020))
-                    metadata != null && moduleId == "clientes" -> CustomerServerDrivenContent(
-                        serverUrl = serverUrl,
-                        session = session,
-                        primaryColor = primaryColor,
-                    )
-                    metadata != null && ui != null && callContext == null -> Text(
-                        "Este modulo requiere iniciar sesion en una empresa.",
-                        color = Color(0xFFB00020),
-                    )
-                    metadata != null && ui != null -> Text(
-                        "Este modulo usa un tipo de interfaz (${ui.type}) que esta version de la app no conoce.",
-                        color = Color(0xFF666666),
-                    )
-                    metadata != null -> {
-                        Text(metadata?.description.orEmpty(), color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
-                        Text("Este modulo no declara una interfaz para la app.", color = Color(0xFF666666))
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-                Button(
-                    onClick = onReturnToDashboard,
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    Text("Volver al panel")
+                    when {
+                        loading -> CircularProgressIndicator(color = primaryColor)
+                        error != null -> Text(error.orEmpty(), color = Color(0xFFB00020))
+                        metadata != null && moduleId == "clientes" -> CustomerServerDrivenContent(
+                            serverUrl = serverUrl,
+                            session = session,
+                            primaryColor = primaryColor,
+                        )
+                        metadata != null && ui != null && callContext == null -> Text(
+                            "Este modulo requiere iniciar sesion en una empresa.",
+                            color = Color(0xFFB00020),
+                        )
+                        metadata != null && ui != null -> Text(
+                            "Este modulo usa un tipo de interfaz (${ui.type}) que esta version de la app no conoce.",
+                            color = Color(0xFF666666),
+                        )
+                        metadata != null -> {
+                            Text(metadata?.description.orEmpty(), color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
+                            Text("Este modulo no declara una interfaz para la app.", color = Color(0xFF666666))
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Button(
+                        onClick = onReturnToDashboard,
+                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                    ) {
+                        Text("Volver al panel")
+                    }
                 }
             }
         }

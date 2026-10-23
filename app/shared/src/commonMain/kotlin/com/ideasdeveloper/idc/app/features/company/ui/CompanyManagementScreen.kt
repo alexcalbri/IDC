@@ -47,6 +47,8 @@ import com.ideasdeveloper.idc.app.features.company.data.CompanyUserResponse
 import com.ideasdeveloper.idc.app.features.company.data.CreateCompanyUserRequest
 import com.ideasdeveloper.idc.app.features.company.data.UpdateCompanyProfileRequest
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
+import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
 
@@ -200,49 +202,104 @@ fun CompanyManagementScreen(
             )
         }
 
-        Surface(
+        // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
+        ClosableView(
+            onClose = ::requestReturnToDashboard,
             modifier = Modifier
-                .fillMaxWidth(0.92f)
                 .align(Alignment.Center)
-                .verticalScroll(rememberScrollState()),
-            shape = MaterialTheme.shapes.medium,
-            color = Color.White,
+                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .fillMaxWidth(0.92f),
         ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                shape = MaterialTheme.shapes.medium,
+                color = Color.White,
             ) {
-                Text("Datos de empresa", style = MaterialTheme.typography.titleLarge, color = primaryCompose)
-
-                CompanyProfileFields(
-                    name = name,
-                    logoUrl = logoUrl,
-                    primaryColor = primaryColor,
-                    secondaryColor = secondaryColor,
-                    accentColor = accentColor,
-                    enabled = !isLoading,
-                    onNameChange = { name = it },
-                    onLogoUrlChange = { logoUrl = it },
-                    onPrimaryColorChange = { primaryColor = it },
-                    onSecondaryColorChange = { secondaryColor = it },
-                    onAccentColorChange = { accentColor = it },
-                )
-
-                error?.let { Text(it, color = Color(0xFFB00020)) }
-                message?.let { Text(it, color = Color(0xFF176B3A)) }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
-                    verticalAlignment = Alignment.CenterVertically,
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Button(
-                        onClick = ::requestReturnToDashboard,
+                    Text("Datos de empresa", style = MaterialTheme.typography.titleLarge, color = primaryCompose)
+
+                    CompanyProfileFields(
+                        name = name,
+                        logoUrl = logoUrl,
+                        primaryColor = primaryColor,
+                        secondaryColor = secondaryColor,
+                        accentColor = accentColor,
                         enabled = !isLoading,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryCompose),
+                        onNameChange = { name = it },
+                        onLogoUrlChange = { logoUrl = it },
+                        onPrimaryColorChange = { primaryColor = it },
+                        onSecondaryColorChange = { secondaryColor = it },
+                        onAccentColorChange = { accentColor = it },
+                    )
+
+                    error?.let { Text(it, color = Color(0xFFB00020)) }
+                    message?.let { Text(it, color = Color(0xFF176B3A)) }
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp, Alignment.End),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Volver al panel")
+                        Button(
+                            onClick = ::requestReturnToDashboard,
+                            enabled = !isLoading,
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryCompose),
+                        ) {
+                            Text("Volver al panel")
+                        }
+                        Button(
+                            enabled = !isLoading && serverUrl != null && session?.companyCode != null,
+                            onClick = {
+                                val activeServerUrl = serverUrl ?: return@Button
+                                val activeSession = session ?: return@Button
+                                val companyCode = activeSession.companyCode ?: return@Button
+                                isLoading = true
+                                error = null
+                                message = null
+                                scope.launch {
+                                    try {
+                                        val profile = CompanyApi(activeServerUrl).use { api ->
+                                            api.updateCompanyProfile(
+                                                activeSession.accessToken,
+                                                companyCode,
+                                                UpdateCompanyProfileRequest(
+                                                    name = name,
+                                                    logoUrl = logoUrl.ifBlank { null },
+                                                    primaryColor = primaryColor,
+                                                    secondaryColor = secondaryColor,
+                                                    accentColor = accentColor,
+                                                ),
+                                            )
+                                        }
+                                        applyProfile(profile)
+                                        message = "Empresa actualizada."
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isLoading = false
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
+                        ) {
+                            if (isLoading) {
+                                CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
+                            } else {
+                                Text("Guardar")
+                            }
+                        }
                     }
+
+                    Text("Exportar e importar", style = MaterialTheme.typography.titleMedium, color = primaryCompose)
+                    Text(
+                        "Los ZIPs de esta pantalla guardan el perfil de empresa. La restauracion completa de PostgreSQL se realiza fuera de la app con backups operativos del servidor.",
+                        color = Color(0xFF666666),
+                    )
                     Button(
                         enabled = !isLoading && serverUrl != null && session?.companyCode != null,
                         onClick = {
@@ -254,21 +311,11 @@ fun CompanyManagementScreen(
                             message = null
                             scope.launch {
                                 try {
-                                    val profile = CompanyApi(activeServerUrl).use { api ->
-                                        api.updateCompanyProfile(
-                                            activeSession.accessToken,
-                                            companyCode,
-                                            UpdateCompanyProfileRequest(
-                                                name = name,
-                                                logoUrl = logoUrl.ifBlank { null },
-                                                primaryColor = primaryColor,
-                                                secondaryColor = secondaryColor,
-                                                accentColor = accentColor,
-                                            ),
-                                        )
+                                    val created = CompanyApi(activeServerUrl).use { api ->
+                                        api.createBackup(activeSession.accessToken, companyCode)
                                     }
-                                    applyProfile(profile)
-                                    message = "Empresa actualizada."
+                                    message = "Backup ${created.fileName} creado."
+                                    refreshBackups()
                                 } catch (exception: CompanyException) {
                                     error = exception.message
                                 } finally {
@@ -278,175 +325,138 @@ fun CompanyManagementScreen(
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
                     ) {
-                        if (isLoading) {
-                            CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
-                        } else {
-                            Text("Guardar")
-                        }
+                        Text("Exportar ZIP")
                     }
-                }
 
-                Text("Exportar e importar", style = MaterialTheme.typography.titleMedium, color = primaryCompose)
-                Text(
-                    "Los ZIPs de esta pantalla guardan el perfil de empresa. La restauracion completa de PostgreSQL se realiza fuera de la app con backups operativos del servidor.",
-                    color = Color(0xFF666666),
-                )
-                Button(
-                    enabled = !isLoading && serverUrl != null && session?.companyCode != null,
-                    onClick = {
-                        val activeServerUrl = serverUrl ?: return@Button
-                        val activeSession = session ?: return@Button
-                        val companyCode = activeSession.companyCode ?: return@Button
-                        isLoading = true
-                        error = null
-                        message = null
-                        scope.launch {
-                            try {
-                                val created = CompanyApi(activeServerUrl).use { api ->
-                                    api.createBackup(activeSession.accessToken, companyCode)
+                    backups.forEach { backup ->
+                        BackupRow(
+                            backup = backup,
+                            serverUrl = serverUrl.orEmpty(),
+                            primaryColor = primaryCompose,
+                            enabled = !isLoading && session?.companyCode != null,
+                            onDelete = {
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                val companyCode = activeSession?.companyCode
+                                if (activeServerUrl != null && activeSession != null && companyCode != null) {
+                                    scope.launch {
+                                        try {
+                                            CompanyApi(activeServerUrl).use { api ->
+                                                api.deleteBackup(activeSession.accessToken, companyCode, backup.fileName)
+                                            }
+                                            backups = backups.filterNot { it.fileName == backup.fileName }
+                                            message = "Backup eliminado."
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        }
+                                    }
                                 }
-                                message = "Backup ${created.fileName} creado."
-                                refreshBackups()
-                            } catch (exception: CompanyException) {
-                                error = exception.message
-                            } finally {
-                                isLoading = false
+                            },
+                        )
+                    }
+
+                    Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = primaryCompose)
+                    Text(
+                        "El business owner puede crear usuarios solo dentro de esta empresa. Los permisos disponibles vienen de los modulos activos.",
+                        color = Color(0xFF666666),
+                    )
+                    OutlinedTextField(
+                        value = newUsername,
+                        onValueChange = { newUsername = it },
+                        label = { Text("Usuario") },
+                        singleLine = true,
+                        enabled = !isLoading,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    OutlinedTextField(
+                        value = newPassword,
+                        onValueChange = { newPassword = it },
+                        label = { Text("Contrasena inicial") },
+                        singleLine = true,
+                        enabled = !isLoading,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                    permissions.forEach { permission ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(
+                                checked = selectedPermissions.contains(permission.permissionId),
+                                onCheckedChange = { checked ->
+                                    selectedPermissions = if (checked) {
+                                        selectedPermissions + permission.permissionId
+                                    } else {
+                                        selectedPermissions - permission.permissionId
+                                    }
+                                },
+                                enabled = !isLoading,
+                            )
+                            Column {
+                                Text(permission.title, fontWeight = FontWeight.SemiBold, color = primaryCompose)
+                                Text("${permission.moduleId}: ${permission.description}", color = Color(0xFF666666))
                             }
                         }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
-                ) {
-                    Text("Exportar ZIP")
-                }
-
-                backups.forEach { backup ->
-                    BackupRow(
-                        backup = backup,
-                        serverUrl = serverUrl.orEmpty(),
-                        primaryColor = primaryCompose,
-                        enabled = !isLoading && session?.companyCode != null,
-                        onDelete = {
-                            val activeServerUrl = serverUrl
-                            val activeSession = session
-                            val companyCode = activeSession?.companyCode
-                            if (activeServerUrl != null && activeSession != null && companyCode != null) {
-                                scope.launch {
-                                    try {
-                                        CompanyApi(activeServerUrl).use { api ->
-                                            api.deleteBackup(activeSession.accessToken, companyCode, backup.fileName)
-                                        }
-                                        backups = backups.filterNot { it.fileName == backup.fileName }
-                                        message = "Backup eliminado."
-                                    } catch (exception: CompanyException) {
-                                        error = exception.message
+                    }
+                    Button(
+                        enabled = !isLoading && serverUrl != null && session?.companyCode != null && newUsername.isNotBlank() && newPassword.isNotBlank(),
+                        onClick = {
+                            val activeServerUrl = serverUrl ?: return@Button
+                            val activeSession = session ?: return@Button
+                            val companyCode = activeSession.companyCode ?: return@Button
+                            isLoading = true
+                            error = null
+                            message = null
+                            scope.launch {
+                                try {
+                                    CompanyApi(activeServerUrl).use { api ->
+                                        api.createCompanyUser(
+                                            activeSession.accessToken,
+                                            companyCode,
+                                            CreateCompanyUserRequest(
+                                                username = newUsername,
+                                                password = newPassword,
+                                                permissions = selectedPermissions.toList(),
+                                            ),
+                                        )
+                                        val userData = api.companyUsers(activeSession.accessToken, companyCode)
+                                        users = userData.users
+                                        permissions = userData.permissions
                                     }
+                                    newUsername = ""
+                                    newPassword = ""
+                                    selectedPermissions = emptySet()
+                                    message = "Usuario creado."
+                                } catch (exception: CompanyException) {
+                                    error = exception.message
+                                } finally {
+                                    isLoading = false
                                 }
                             }
                         },
-                    )
-                }
-
-                Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = primaryCompose)
-                Text(
-                    "El business owner puede crear usuarios solo dentro de esta empresa. Los permisos disponibles vienen de los modulos activos.",
-                    color = Color(0xFF666666),
-                )
-                OutlinedTextField(
-                    value = newUsername,
-                    onValueChange = { newUsername = it },
-                    label = { Text("Usuario") },
-                    singleLine = true,
-                    enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                OutlinedTextField(
-                    value = newPassword,
-                    onValueChange = { newPassword = it },
-                    label = { Text("Contrasena inicial") },
-                    singleLine = true,
-                    enabled = !isLoading,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                permissions.forEach { permission ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
+                        colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
                     ) {
-                        Checkbox(
-                            checked = selectedPermissions.contains(permission.permissionId),
-                            onCheckedChange = { checked ->
-                                selectedPermissions = if (checked) {
-                                    selectedPermissions + permission.permissionId
-                                } else {
-                                    selectedPermissions - permission.permissionId
-                                }
-                            },
-                            enabled = !isLoading,
-                        )
-                        Column {
-                            Text(permission.title, fontWeight = FontWeight.SemiBold, color = primaryCompose)
-                            Text("${permission.moduleId}: ${permission.description}", color = Color(0xFF666666))
+                        Text("Crear usuario")
+                    }
+                    users.forEach { user ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(Color(0xFFF6F6FA), MaterialTheme.shapes.small)
+                                .padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(user.username, fontWeight = FontWeight.SemiBold, color = primaryCompose)
+                            Text(if (user.isActive) "Activo" else "Inactivo", color = Color(0xFF666666))
+                            Text(
+                                "Permisos: ${user.permissions.ifEmpty { listOf("sin permisos") }.joinToString()}",
+                                color = Color(0xFF333333),
+                            )
                         }
                     }
-                }
-                Button(
-                    enabled = !isLoading && serverUrl != null && session?.companyCode != null && newUsername.isNotBlank() && newPassword.isNotBlank(),
-                    onClick = {
-                        val activeServerUrl = serverUrl ?: return@Button
-                        val activeSession = session ?: return@Button
-                        val companyCode = activeSession.companyCode ?: return@Button
-                        isLoading = true
-                        error = null
-                        message = null
-                        scope.launch {
-                            try {
-                                CompanyApi(activeServerUrl).use { api ->
-                                    api.createCompanyUser(
-                                        activeSession.accessToken,
-                                        companyCode,
-                                        CreateCompanyUserRequest(
-                                            username = newUsername,
-                                            password = newPassword,
-                                            permissions = selectedPermissions.toList(),
-                                        ),
-                                    )
-                                    val userData = api.companyUsers(activeSession.accessToken, companyCode)
-                                    users = userData.users
-                                    permissions = userData.permissions
-                                }
-                                newUsername = ""
-                                newPassword = ""
-                                selectedPermissions = emptySet()
-                                message = "Usuario creado."
-                            } catch (exception: CompanyException) {
-                                error = exception.message
-                            } finally {
-                                isLoading = false
-                            }
-                        }
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
-                ) {
-                    Text("Crear usuario")
-                }
-                users.forEach { user ->
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(Color(0xFFF6F6FA), MaterialTheme.shapes.small)
-                            .padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Text(user.username, fontWeight = FontWeight.SemiBold, color = primaryCompose)
-                        Text(if (user.isActive) "Activo" else "Inactivo", color = Color(0xFF666666))
-                        Text(
-                            "Permisos: ${user.permissions.ifEmpty { listOf("sin permisos") }.joinToString()}",
-                            color = Color(0xFF333333),
-                        )
-                    }
-                }
 
-                Spacer(modifier = Modifier.height(2.dp))
+                    Spacer(modifier = Modifier.height(2.dp))
+                }
             }
         }
     }

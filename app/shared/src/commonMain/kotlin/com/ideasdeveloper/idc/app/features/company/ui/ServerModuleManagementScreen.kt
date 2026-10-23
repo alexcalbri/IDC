@@ -36,6 +36,8 @@ import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.ServerModuleResponse
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
+import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -141,147 +143,155 @@ fun ServerModuleManagementScreen(
             modifier = Modifier.align(Alignment.TopCenter),
         )
 
-        Surface(
+        // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
+        ClosableView(
+            onClose = onReturnToDashboard,
             modifier = Modifier
-                .fillMaxWidth(0.92f)
                 .align(Alignment.Center)
-                .verticalScroll(rememberScrollState()),
-            shape = MaterialTheme.shapes.medium,
-            color = Color.White,
+                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .fillMaxWidth(0.92f),
         ) {
-            Column(
-                modifier = Modifier.padding(18.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                shape = MaterialTheme.shapes.medium,
+                color = Color.White,
             ) {
-                Text("Modulos instalados", style = MaterialTheme.typography.titleLarge, color = primaryColor)
-                Text("Repositorio de modulos", style = MaterialTheme.typography.titleMedium, color = primaryColor)
-                OutlinedTextField(
-                    value = catalogUrl,
-                    onValueChange = { catalogUrl = it },
-                    label = { Text("URL del repositorio de modulos") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Button(
-                        enabled = !isLoading && serverUrl != null && session?.accessToken?.isNotBlank() == true,
-                        onClick = {
-                            val activeServerUrl = serverUrl
-                            val activeSession = session
-                            if (activeServerUrl != null && activeSession != null) {
-                                isLoading = true
-                                error = null
-                                message = null
-                                scope.launch {
-                                    try {
-                                        catalogUrl = CompanyApi(activeServerUrl).use { api ->
-                                            api.updateServerModuleCatalog(activeSession.accessToken, catalogUrl).catalogUrl
-                                        }
-                                        message = "Catalogo actualizado."
-                                        refreshModules()
-                                    } catch (exception: CompanyException) {
-                                        error = exception.message
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-                    ) {
-                        Text("Guardar catalogo")
-                    }
-                    Button(
-                        enabled = !isLoading,
-                        onClick = {
-                            refreshCatalog()
-                            refreshModules()
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
-                    ) {
-                        Text("Actualizar lista")
-                    }
-                }
-                error?.let { Text(it, color = Color(0xFFB00020)) }
-                message?.let { Text(it, color = Color(0xFF176B3A)) }
-                if (isLoading) {
-                    Text("Cargando modulos...", color = Color(0xFF666666))
-                }
-
-                modules.forEach { module ->
-                    ServerModuleRow(
-                        module = module,
-                        primaryColor = primaryColor,
-                        enabled = !isLoading && serverUrl != null && session?.accessToken?.isNotBlank() == true,
-                        pendingDeletion = pendingDeletion == module.moduleId,
-                        onInstall = {
-                            val activeServerUrl = serverUrl
-                            val activeSession = session
-                            if (activeServerUrl != null && activeSession != null) {
-                                isLoading = true
-                                error = null
-                                message = null
-                                scope.launch {
-                                    try {
-                                        val installed = CompanyApi(activeServerUrl).use { api ->
-                                            api.installServerModule(activeSession.accessToken, module.moduleId)
-                                        }
-                                        modules = modules.map {
-                                            if (it.moduleId == installed.moduleId) installed else it
-                                        }
-                                        message = when (installed.status) {
-                                            "installing", "restarting" ->
-                                                "Instalando ${installed.displayName}: el servidor descarga y compila el modulo y luego se reinicia unos segundos."
-                                            "failed" -> null
-                                            else -> "Modulo ${installed.displayName} instalado."
-                                        }
-                                        if (installed.status == "failed") error = installed.statusMessage
-                                    } catch (exception: CompanyException) {
-                                        error = exception.message
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            }
-                        },
-                        onRequestDelete = { pendingDeletion = module.moduleId },
-                        onCancelDelete = { pendingDeletion = null },
-                        onConfirmDelete = {
-                            val activeServerUrl = serverUrl
-                            val activeSession = session
-                            if (activeServerUrl != null && activeSession != null) {
-                                isLoading = true
-                                error = null
-                                message = null
-                                scope.launch {
-                                    try {
-                                        CompanyApi(activeServerUrl).use { api ->
-                                            api.deleteServerModule(activeSession.accessToken, module.moduleId)
-                                        }
-                                        modules = modules.map {
-                                            if (it.moduleId == module.moduleId) {
-                                                it.copy(installed = false, activeCompanyCount = 0)
-                                            } else {
-                                                it
-                                            }
-                                        }
-                                        pendingDeletion = null
-                                        message = "Modulo ${module.displayName} eliminado del servidor."
-                                    } catch (exception: CompanyException) {
-                                        error = exception.message
-                                    } finally {
-                                        isLoading = false
-                                    }
-                                }
-                            }
-                        },
+                    Text("Modulos instalados", style = MaterialTheme.typography.titleLarge, color = primaryColor)
+                    Text("Repositorio de modulos", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+                    OutlinedTextField(
+                        value = catalogUrl,
+                        onValueChange = { catalogUrl = it },
+                        label = { Text("URL del repositorio de modulos") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
                     )
-                }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                    ) {
+                        Button(
+                            enabled = !isLoading && serverUrl != null && session?.accessToken?.isNotBlank() == true,
+                            onClick = {
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isLoading = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            catalogUrl = CompanyApi(activeServerUrl).use { api ->
+                                                api.updateServerModuleCatalog(activeSession.accessToken, catalogUrl).catalogUrl
+                                            }
+                                            message = "Catalogo actualizado."
+                                            refreshModules()
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isLoading = false
+                                        }
+                                    }
+                                }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                        ) {
+                            Text("Guardar catalogo")
+                        }
+                        Button(
+                            enabled = !isLoading,
+                            onClick = {
+                                refreshCatalog()
+                                refreshModules()
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
+                        ) {
+                            Text("Actualizar lista")
+                        }
+                    }
+                    error?.let { Text(it, color = Color(0xFFB00020)) }
+                    message?.let { Text(it, color = Color(0xFF176B3A)) }
+                    if (isLoading) {
+                        Text("Cargando modulos...", color = Color(0xFF666666))
+                    }
 
-                Spacer(modifier = Modifier.height(2.dp))
+                    modules.forEach { module ->
+                        ServerModuleRow(
+                            module = module,
+                            primaryColor = primaryColor,
+                            enabled = !isLoading && serverUrl != null && session?.accessToken?.isNotBlank() == true,
+                            pendingDeletion = pendingDeletion == module.moduleId,
+                            onInstall = {
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isLoading = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            val installed = CompanyApi(activeServerUrl).use { api ->
+                                                api.installServerModule(activeSession.accessToken, module.moduleId)
+                                            }
+                                            modules = modules.map {
+                                                if (it.moduleId == installed.moduleId) installed else it
+                                            }
+                                            message = when (installed.status) {
+                                                "installing", "restarting" ->
+                                                    "Instalando ${installed.displayName}: el servidor descarga y compila el modulo y luego se reinicia unos segundos."
+                                                "failed" -> null
+                                                else -> "Modulo ${installed.displayName} instalado."
+                                            }
+                                            if (installed.status == "failed") error = installed.statusMessage
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isLoading = false
+                                        }
+                                    }
+                                }
+                            },
+                            onRequestDelete = { pendingDeletion = module.moduleId },
+                            onCancelDelete = { pendingDeletion = null },
+                            onConfirmDelete = {
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isLoading = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            CompanyApi(activeServerUrl).use { api ->
+                                                api.deleteServerModule(activeSession.accessToken, module.moduleId)
+                                            }
+                                            modules = modules.map {
+                                                if (it.moduleId == module.moduleId) {
+                                                    it.copy(installed = false, activeCompanyCount = 0)
+                                                } else {
+                                                    it
+                                                }
+                                            }
+                                            pendingDeletion = null
+                                            message = "Modulo ${module.displayName} eliminado del servidor."
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isLoading = false
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(2.dp))
+                }
             }
         }
     }
