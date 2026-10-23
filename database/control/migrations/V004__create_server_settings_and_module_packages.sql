@@ -1,3 +1,5 @@
+BEGIN;
+
 ALTER TABLE server_modules
     ADD COLUMN IF NOT EXISTS version TEXT NOT NULL DEFAULT '0.1.0',
     ADD COLUMN IF NOT EXISTS package_url TEXT,
@@ -9,3 +11,5 @@ CREATE TABLE IF NOT EXISTS server_settings (
     setting_value TEXT NOT NULL,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+COMMIT;

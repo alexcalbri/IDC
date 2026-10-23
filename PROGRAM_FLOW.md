@@ -16,30 +16,30 @@ The installer:
 2. Asks whether to run a clean installation. When confirmed with `LIMPIAR`, it removes previous IdeasCore files, service, Linux user, Nginx site and selected PostgreSQL objects before continuing.
 3. Asks for the public mode: `https` or `http`. HTTP requires an extra `HTTP` confirmation because it does not encrypt credentials or tokens.
 4. Installs/checks required system packages.
-3. Clones the selected Git branch/tag into `/opt/ideascore/source`.
-4. Builds:
+5. Clones the selected Git branch/tag into `/opt/ideascore/source`.
+6. Builds:
    - backend server distribution;
    - browser web application.
-5. Creates a central PostgreSQL database.
-6. Creates the runtime PostgreSQL role.
-7. Applies central migrations:
+7. Creates a central PostgreSQL database.
+8. Creates the runtime PostgreSQL role.
+9. Applies central migrations:
    - Core users;
    - Core sessions;
    - server registry;
    - provisioning audit log;
    - installed server module catalog.
-8. Creates the initial PostgreSQL `server_owner` login role.
-9. Registers that server owner in `application_users` and `server_owners`.
-10. Grants the runtime role the table permissions needed by the server.
-11. Grants the PostgreSQL `server_owner` role to the runtime role so the
+10. Creates the initial PostgreSQL `server_owner` login role.
+11. Registers that server owner in `application_users` and `server_owners`.
+12. Grants the runtime role the table permissions needed by the server.
+13. Grants the PostgreSQL `server_owner` role to the runtime role so the
     backend can run `SET ROLE` after validating a `server_owner` token.
-12. Writes `/etc/ideascore/server.env`.
-13. Installs the Ktor server under `/opt/ideascore/app`.
-14. Installs the web app under `/opt/ideascore/web`.
-15. Creates a systemd service.
-16. Configures Nginx to serve the web app and proxy `/auth/`, `/companies` and `/modules` to Ktor.
-17. Uses HTTPS with Let's Encrypt when `https` is selected, or plain HTTP when `http` is explicitly confirmed.
-18. Tests server-owner login.
+14. Writes `/etc/ideascore/server.env`.
+15. Installs the Ktor server under `/opt/ideascore/app`.
+16. Installs the web app under `/opt/ideascore/web`.
+17. Creates a systemd service.
+18. Configures Nginx to serve the web app and proxy `/auth/`, `/companies`, `/server` and `/modules` to Ktor.
+19. Uses HTTPS with Let's Encrypt when `https` is selected, or plain HTTP when `http` is explicitly confirmed.
+20. Tests server-owner login.
 
 Files involved:
 
@@ -82,8 +82,7 @@ On startup, the Ktor server:
    - `GET /modules`;
    - `GET /modules/{moduleId}/metadata`;
    - module-owned endpoints under `/modules/{moduleId}`.
-9. Closes tenant pools and central database pool on application stop.
-8. Closes tenant pools and central database pool on application stop.
+10. Closes tenant pools and central database pool on application stop.
 
 Config is read from `server/src/main/resources/application.conf`.
 
@@ -555,7 +554,7 @@ The updater:
 - checks the local HTTP endpoint.
 
 This document does not claim the updater applies new database migrations or
-privilege changes. Fresh install is the cleanest way to test the current
+privilege changes. Fresh installation is the cleanest way to test the current
 company provisioning flow.
 
 ## 17. Security Behavior Implemented
@@ -573,7 +572,7 @@ Implemented controls:
 - `clientes` cannot be disabled.
 - Client-side module visibility is not used as authorization.
 
-## 17. Known Functional Limits
+## 18. Known Functional Limits
 
 These are not implemented as working features yet:
 
@@ -584,9 +583,9 @@ These are not implemented as working features yet:
 - PostgreSQL `SECURITY DEFINER` replacement for direct `CREATEDB`/`CREATEROLE`.
 - Server-owner UI/API for administering users in any company.
 
-## 18. Manual Test Flow
+## 19. Manual Test Flow
 
-Use a fresh install with the updated installer.
+Use a fresh installation with the updated installer.
 
 1. Install server with `scripts/ubuntu/install.sh`.
 2. Open the web app.

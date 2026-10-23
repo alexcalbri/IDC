@@ -131,6 +131,22 @@ configure_server_env() {
     chmod 600 "$CONFIG_FILE"
 }
 
+# The unit uses ProtectSystem=strict; backups and module packages need write access.
+configure_service_writable_paths() {
+    local dropin_dir=/etc/systemd/system/$SERVICE_NAME.d
+    local dropin=$dropin_dir/writable-paths.conf
+    local expected
+    expected=$(printf '[Service]\nReadWritePaths=%s %s\n' "$APP_DIR/company-backups" "$APP_DIR/server-modules")
+    if [[ -f $dropin && $(cat "$dropin") == "$expected" ]]; then
+        return
+    fi
+    install -d -m 755 "$dropin_dir"
+    printf '%s\n' "$expected" > "$dropin"
+    chmod 644 "$dropin"
+    systemctl daemon-reload
+    printf 'Servicio actualizado con rutas escribibles para backups y modulos.\n'
+}
+
 configure_nginx_server_route() {
     if [[ ! -f $NGINX_SITE ]]; then
         printf 'AVISO: no se encontro %s; omitiendo configuracion Nginx de /server.\n' "$NGINX_SITE" >&2
@@ -193,6 +209,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V003__create_server_modules.sql
     apply_migration "$db_name" control database/control/migrations/V004__create_server_settings_and_module_packages.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
+GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
 SQL
@@ -251,6 +268,7 @@ fi
 [[ -x $UPDATE_JAVA_HOME/bin/java ]] || die 'No se encontro Java 21. Instala openjdk-21-jdk-headless o define JAVA_HOME.'
 ensure_update_swap
 configure_server_env
+configure_service_writable_paths
 configure_nginx_server_route
 
 git_source fetch --tags --prune origin
