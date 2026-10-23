@@ -71,9 +71,11 @@ configuration again retries a domain in `error`.
 
 ## Setup checklist
 
-1. Update the server (`update.sh`) so it includes this module and migration V005.
-2. Server owner: *Modulos del servidor* → install **Hotspot**; *Empresa* → enable
-   it for the company.
+1. Update the server (`update.sh`) so it has migration V005 and the module builder.
+2. Server owner: *Modulos del servidor* → catalog URL
+   `https://github.com/alexcalbri/IDC/tree/develop/modules` while Hotspot is in
+   development → install **Hotspot** (the server builds it and restarts) →
+   *Empresa* → enable it for the company.
 3. Create a DNS A/AAAA record for the portal domain pointing to the server.
 4. Company: *Hotspot → Configuracion* → domain, UniFi console id, site id and
    API key, times, email and appearance. Wait for domain status **Activo**.

@@ -30,7 +30,7 @@ rules fails the build with a list of the problems.
 modules/<id>/
 ├── README.md                     required: purpose, data, routes, permissions, setup
 ├── .development                  optional: module still in development (not released)
-├── module.json                   optional: only for the remote module catalog
+├── module.json                   required: catalog entry (id, displayName, description, version, bundled)
 ├── migrations/                   optional: tenant database migrations
 │   ├── README.md                 optional
 │   └── VNNN__description.sql     e.g. V001__create_orders.sql
@@ -61,7 +61,7 @@ Rules:
   in PascalCase (`ventas_online` -> `VentasOnlineServerModuleProvider`). The build
   registers it automatically; without it the server never loads the module.
 - Resources live under `resources/modules/<id>/` so two modules cannot overwrite
-  each other's files. Web-UI modules call `route.moduleWebResources("<id>")` in
+  each other's files. Web-UI modules call `route.moduleWebResources("<id>", javaClass.classLoader)` in
   `routes` to serve `resources/modules/<id>/web/` at `/modules/<id>/web/`.
 - Migrations are named `VNNN__description.sql`, wrap all statements in one
   `BEGIN;` ... `COMMIT;`, are listed in the module's `migrationPaths` and are never
@@ -85,8 +85,11 @@ check.
 
 ## Installable module manifest
 
-`module.json` is optional. Add it only when the module is distributed through
-the remote catalog; modules compiled into the server do not need it.
+Every module has `module.json`. Base modules (`"bundled": true`, today Clientes
+and Empresa) are compiled into the server and never offered by the catalog; every
+other module is optional and is listed only by the catalog URL configured on the
+server. The `version` must equal the `ModuleDefinition` version (the build checks
+it).
 
 ```json
 {
@@ -109,6 +112,34 @@ Validation rules:
 - `packageUrl`, when present, must start with `http://` or `https://`.
 - `packageSha256`, when present, must be a 64-character SHA-256 hex digest.
 - `locked` is ignored for remote modules; base locked modules belong to Core.
+
+## How optional modules reach a server
+
+The server distribution contains the core and the base modules only. Optional
+modules come from the **catalog URL** configured in *Modulos del servidor*
+(default `.../tree/master/modules`; use `.../tree/develop/modules` to try modules
+still in development). The installed branch does not matter.
+
+When the server owner installs an optional module, the server:
+
+1. downloads that branch from GitHub and extracts `modules/<id>/`;
+2. checks the module layout;
+3. compiles the module with the Kotlin compiler shipped in the distribution
+   (`compiler/`) against the core it is running. If the module does not fit this
+   core version, the installation fails with the compiler error and nothing changes;
+4. stores the package in `MODULE_PACKAGES_ROOT/<id>/<id>-<version>.jar` (code,
+   migrations, resources and `module.json`) and records it in `server_modules`;
+5. restarts itself (systemd brings it back in a few seconds) and loads the
+   package in its own class loader.
+
+The module list shows the progress (`installing`, `restarting`, `failed`). When
+the catalog offers a newer version of an installed module, *Actualizar* rebuilds
+it. Removing a module deletes its package; its routes reject requests at once.
+A package that cannot be loaded after a core update is skipped at startup (the
+server still starts) and must be installed again.
+
+Locally, `./gradlew :server:run` loads optional modules from the source tree, and
+every build compiles them to catch errors early.
 
 ## Module user interface
 

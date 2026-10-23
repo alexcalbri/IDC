@@ -2,7 +2,9 @@ package com.ideasdeveloper.idc.server.modules
 
 import io.ktor.http.Cookie
 import io.ktor.http.HttpStatusCode
-import io.ktor.server.http.content.staticResources
+import io.ktor.http.ContentType
+import io.ktor.http.defaultForFilePath
+import io.ktor.server.response.respondBytes
 import io.ktor.server.plugins.origin
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondRedirect
@@ -97,12 +99,18 @@ internal object ModuleWebTickets {
 
 /**
  * Serves a web-UI module's static pages from modules/{moduleId}/server/src/main/resources/modules/{moduleId}/web/
- * at /modules/{moduleId}/web/. Use it from ServerModule.routes and declare
- * ModuleUiEntry(type = "web", entry = "/modules/{moduleId}/web/"). The pages' data calls stay
- * protected by requireModulePermission through the module cookies.
+ * at /modules/{moduleId}/web/. Call it from ServerModule.routes as
+ * `route.moduleWebResources("<id>", javaClass.classLoader)` so pages are found inside the module's
+ * package, and declare ModuleUiEntry(type = "web", entry = "/modules/{moduleId}/web/"). The pages'
+ * data calls stay protected by requireModulePermission through the module cookies.
  */
-fun Route.moduleWebResources(moduleId: String) {
-    staticResources("/modules/$moduleId/web", "modules/$moduleId/web") {
-        default("index.html")
+fun Route.moduleWebResources(moduleId: String, classLoader: ClassLoader) {
+    get("/modules/$moduleId/web/{path...}") {
+        val segments = call.parameters.getAll("path").orEmpty().filter { it.isNotEmpty() }
+        if (segments.any { it == ".." || it.contains('\\') }) return@get call.respond(HttpStatusCode.BadRequest)
+        val path = segments.joinToString("/").ifEmpty { "index.html" }
+        val bytes = classLoader.getResourceAsStream("modules/$moduleId/web/$path")?.use { it.readAllBytes() }
+            ?: return@get call.respond(HttpStatusCode.NotFound)
+        call.respondBytes(bytes, ContentType.defaultForFilePath(path))
     }
 }

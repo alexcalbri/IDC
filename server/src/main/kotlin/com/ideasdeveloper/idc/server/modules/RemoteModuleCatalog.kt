@@ -53,10 +53,13 @@ class RemoteModuleCatalog : AutoCloseable {
 
     fun modules(catalogUrl: String): List<RemoteModulePackage> {
         val url = catalogUrl.trim().takeIf { it.isNotBlank() }?.toGitHubContentsApiUrl() ?: return emptyList()
+        // Modules are built from this repository folder when the server owner installs them.
+        val source = GitHubLocation.parse(catalogUrl)
         return runBlocking {
             try {
                 modulesFrom(url)
                     .filter(::isValid)
+                    .map { it.copy(source = source) }
                     .distinctBy { it.definition.id }
                     .sortedBy { it.definition.id }
             } catch (_: Exception) {
@@ -110,6 +113,8 @@ class RemoteModuleCatalog : AutoCloseable {
 
         val definition = json.decodeFromJsonElement(RemoteModuleDefinition.serializer(), manifest)
         if (expectedFolder != null && definition.id != expectedFolder) return null
+        // Base modules ship inside the server; the catalog only offers optional ones.
+        if (definition.bundled) return null
         return definition.toPackage()
     }
 
@@ -163,6 +168,8 @@ data class RemoteModulePackage(
     val definition: ModuleDefinition,
     val packageUrl: String?,
     val packageSha256: String?,
+    // Repository folder of the catalog; null when the catalog is not a GitHub folder.
+    val source: GitHubLocation? = null,
 )
 
 @Serializable
@@ -181,6 +188,7 @@ data class RemoteModuleDefinition(
     val permissions: List<ModulePermissionDefinition> = emptyList(),
     val packageUrl: String? = null,
     val packageSha256: String? = null,
+    val bundled: Boolean = false,
 ) {
     fun toDefinition(): ModuleDefinition = ModuleDefinition(
         id = id,

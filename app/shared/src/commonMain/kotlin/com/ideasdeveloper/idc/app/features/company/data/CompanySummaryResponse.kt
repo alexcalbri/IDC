@@ -39,6 +39,9 @@ data class ServerModuleResponse(
     val packageUrl: String? = null,
     val packageSha256: String? = null,
     val installedPackagePath: String? = null,
+    // Instalacion en segundo plano de un modulo opcional: installing, restarting o failed.
+    val status: String? = null,
+    val statusMessage: String? = null,
 )
 
 @Serializable

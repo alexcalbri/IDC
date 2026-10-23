@@ -37,6 +37,7 @@ import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.ServerModuleResponse
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 private const val DefaultModuleCatalogUrl = "https://github.com/alexcalbri/IDC/tree/master/modules"
@@ -101,6 +102,28 @@ fun ServerModuleManagementScreen(
     LaunchedEffect(serverUrl, session?.accessToken) {
         refreshCatalog()
         refreshModules()
+    }
+
+    // Mientras un modulo se compila o el servidor se reinicia para cargarlo, la lista se consulta
+    // cada pocos segundos; durante el reinicio el servidor no responde y se reintenta.
+    val busyModules = modules.any { it.status == "installing" || it.status == "restarting" }
+    LaunchedEffect(busyModules, serverUrl, session?.accessToken) {
+        val activeServerUrl = serverUrl ?: return@LaunchedEffect
+        val activeSession = session ?: return@LaunchedEffect
+        if (!busyModules) return@LaunchedEffect
+        repeat(60) {
+            delay(5_000)
+            try {
+                val latest = CompanyApi(activeServerUrl).use { api -> api.listServerModules(activeSession.accessToken) }
+                val finished = modules.filter { it.status == "installing" || it.status == "restarting" }
+                    .mapNotNull { previous -> latest.firstOrNull { it.moduleId == previous.moduleId && it.installed && it.status == null } }
+                modules = latest
+                finished.forEach { message = "Modulo ${it.displayName} instalado y cargado." }
+                if (latest.none { it.status == "installing" || it.status == "restarting" }) return@LaunchedEffect
+            } catch (_: CompanyException) {
+                // El servidor se esta reiniciando para cargar el modulo.
+            }
+        }
     }
 
     Box(
@@ -209,7 +232,13 @@ fun ServerModuleManagementScreen(
                                         modules = modules.map {
                                             if (it.moduleId == installed.moduleId) installed else it
                                         }
-                                        message = "Modulo ${installed.displayName} instalado."
+                                        message = when (installed.status) {
+                                            "installing", "restarting" ->
+                                                "Instalando ${installed.displayName}: el servidor descarga y compila el modulo y luego se reinicia unos segundos."
+                                            "failed" -> null
+                                            else -> "Modulo ${installed.displayName} instalado."
+                                        }
+                                        if (installed.status == "failed") error = installed.statusMessage
                                     } catch (exception: CompanyException) {
                                         error = exception.message
                                     } finally {
@@ -270,7 +299,9 @@ private fun ServerModuleRow(
     onCancelDelete: () -> Unit,
     onConfirmDelete: () -> Unit,
 ) {
-    val canInstall = enabled && !module.installed
+    val inProgress = module.status == "installing" || module.status == "restarting"
+    val updateAvailable = module.installed && !module.locked && !module.latestVersion.isNullOrBlank() && module.latestVersion != module.version
+    val canInstall = enabled && !inProgress && (!module.installed || updateAvailable)
     val canDelete = enabled && module.installed && !module.locked && module.activeCompanyCount == 0
     Column(
         modifier = Modifier
@@ -305,18 +336,36 @@ private fun ServerModuleRow(
             style = MaterialTheme.typography.bodySmall,
             color = if (module.activeCompanyCount > 0 || module.locked) Color(0xFF8A5A00) else Color(0xFF176B3A),
         )
+        module.statusMessage?.takeIf { module.status != null }?.let { status ->
+            Text(
+                text = when (module.status) {
+                    "installing" -> "Instalando: $status..."
+                    "restarting" -> "$status..."
+                    else -> "No se pudo instalar: $status"
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = if (module.status == "failed") Color(0xFFB00020) else Color(0xFF1A4F9C),
+            )
+        }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (!module.installed) {
+            if (!module.installed || updateAvailable) {
                 Button(
                     enabled = canInstall,
                     onClick = onInstall,
                     colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
                 ) {
-                    Text("Instalar")
+                    Text(
+                        when {
+                            inProgress -> "Instalando..."
+                            updateAvailable -> "Actualizar a ${module.latestVersion}"
+                            module.status == "failed" -> "Reintentar"
+                            else -> "Instalar"
+                        }
+                    )
                 }
             }
             Button(

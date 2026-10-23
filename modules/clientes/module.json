@@ -1,0 +1,7 @@
+{
+  "id": "clientes",
+  "displayName": "Clientes",
+  "description": "Gestiona la identidad compartida de clientes.",
+  "version": "0.3.0",
+  "bundled": true
+}

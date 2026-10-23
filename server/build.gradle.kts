@@ -10,6 +10,12 @@ application {
     mainClass = "com.ideasdeveloper.idc.server.app.ApplicationKt"
 }
 
+// Kotlin compiler shipped in the distribution (compiler/) so the server can build optional
+// modules from source when the server owner installs them. Same version as the server.
+val moduleCompiler: Configuration = configurations.create("moduleCompiler") {
+    isCanBeConsumed = false
+}
+
 dependencies {
     testImplementation(kotlin("test"))
     api(project(":core"))
@@ -32,63 +38,76 @@ dependencies {
     implementation(libs.ktor.clientEngineDefaults)
     /* === End DB === */
     implementation(libs.angus.mail)
+
+    moduleCompiler("org.jetbrains.kotlin:kotlin-compiler-embeddable:${libs.versions.kotlin.asProvider().get()}")
+    moduleCompiler("org.jetbrains.kotlin:kotlin-serialization-compiler-plugin-embeddable:${libs.versions.kotlin.asProvider().get()}")
 }
 
-val generatedModuleServicesDir = layout.buildDirectory.dir("generated/resources/module-services")
+val modulesRoot = rootProject.layout.projectDirectory.dir("modules").asFile
 
-val moduleProviderServiceFile = generatedModuleServicesDir.get()
-    .file("META-INF/services/com.ideasdeveloper.idc.server.modules.ServerModuleProvider")
-    .asFile
-
-val moduleProviderEntries = rootProject.layout.projectDirectory.dir("modules").asFile
-    .listFiles()
-    ?.filter { moduleDir ->
-        moduleDir.isDirectory &&
-            moduleDir.resolve("server/src/main/kotlin").isDirectory
-    }
-    ?.sortedBy { it.name }
-    ?.mapNotNull { moduleDir ->
-        val moduleName = moduleDir.name
-        val providerPrefix = moduleName
-            .split('-', '_')
-            .filter { it.isNotBlank() }
-            .joinToString("") { part ->
-                part.replaceFirstChar { char -> char.uppercase() }
-            }
-        val providerName = "${providerPrefix}ServerModuleProvider"
-        val declaresProvider = moduleDir
-            .resolve("server/src/main/kotlin")
-            .walkTopDown()
-            .filter { it.isFile && it.extension == "kt" }
-            .any { it.readText().contains("class $providerName") }
-
-        if (declaresProvider) {
-            "com.ideasdeveloper.idc.modules.$moduleName.$providerName"
-        } else {
-            null
-        }
-    }
-    .orEmpty()
-
-moduleProviderServiceFile.parentFile.mkdirs()
-moduleProviderServiceFile.writeText(moduleProviderEntries.joinToString(separator = "\n", postfix = "\n"))
-
-val moduleDirs = rootProject.layout.projectDirectory.dir("modules").asFile.listFiles()
-    ?.filter { it.isDirectory }
+// Folders under modules/ that contain files (empty scaffolds left by Git are ignored).
+val moduleDirs = modulesRoot.listFiles()
+    ?.filter { dir -> dir.isDirectory && dir.walkTopDown().any { it.isFile } }
     ?.sortedBy { it.name }
     .orEmpty()
+
+// Base modules ("bundled": true in module.json) are compiled into the server. Every other
+// module is optional: it is compiled here only to catch errors and for :server:run, and the
+// installed server builds it from the configured catalog when the server owner installs it.
+fun isBundled(moduleDir: File): Boolean = moduleDir.resolve("module.json").takeIf { it.isFile }
+    ?.let { runCatching { (groovy.json.JsonSlurper().parse(it) as? Map<*, *>)?.get("bundled") == true }.getOrDefault(false) }
+    ?: false
+
+val bundledModuleDirs = moduleDirs.filter(::isBundled)
+val optionalModuleDirs = moduleDirs.filterNot(::isBundled)
+
+fun providerEntries(dirs: List<File>): List<String> = dirs.mapNotNull { moduleDir ->
+    val moduleName = moduleDir.name
+    val providerName = moduleName.split('_').filter { it.isNotBlank() }
+        .joinToString("") { part -> part.replaceFirstChar { it.uppercase() } } + "ServerModuleProvider"
+    val declaresProvider = moduleDir.resolve("server/src/main/kotlin").walkTopDown()
+        .filter { it.isFile && it.extension == "kt" }
+        .any { it.readText().contains("class $providerName") }
+    if (declaresProvider) "com.ideasdeveloper.idc.modules.$moduleName.$providerName" else null
+}
+
+fun writeProviderFile(directory: Provider<Directory>, entries: List<String>) {
+    val file = directory.get().file("META-INF/services/com.ideasdeveloper.idc.server.modules.ServerModuleProvider").asFile
+    file.parentFile.mkdirs()
+    file.writeText(entries.joinToString(separator = "\n", postfix = "\n"))
+}
+
+val bundledServicesDir = layout.buildDirectory.dir("generated/resources/module-services")
+val optionalServicesDir = layout.buildDirectory.dir("generated/resources/optional-module-services")
+writeProviderFile(bundledServicesDir, providerEntries(bundledModuleDirs))
+writeProviderFile(optionalServicesDir, providerEntries(optionalModuleDirs))
 
 sourceSets {
     main {
-        resources.srcDir(generatedModuleServicesDir)
-        moduleDirs.forEach { resources.srcDir(it.resolve("server/src/main/resources")) }
+        resources.srcDir(bundledServicesDir)
+        bundledModuleDirs.forEach { resources.srcDir(it.resolve("server/src/main/resources")) }
     }
+    create("modules") {
+        resources.srcDir(optionalServicesDir)
+        optionalModuleDirs.forEach { resources.srcDir(it.resolve("server/src/main/resources")) }
+    }
+}
+
+configurations["modulesImplementation"].extendsFrom(configurations["implementation"], configurations["api"])
+configurations["modulesRuntimeOnly"].extendsFrom(configurations["runtimeOnly"])
+
+dependencies {
+    "modulesImplementation"(sourceSets.main.get().output)
+    testImplementation(sourceSets["modules"].output)
 }
 
 kotlin {
     sourceSets {
         main {
-            moduleDirs.forEach { kotlin.srcDir(it.resolve("server/src/main/kotlin")) }
+            bundledModuleDirs.forEach { kotlin.srcDir(it.resolve("server/src/main/kotlin")) }
+        }
+        named("modules") {
+            optionalModuleDirs.forEach { kotlin.srcDir(it.resolve("server/src/main/kotlin")) }
         }
         test {
             moduleDirs.forEach { kotlin.srcDir(it.resolve("server/src/test/kotlin")) }
@@ -96,12 +115,25 @@ kotlin {
     }
 }
 
+// Local development runs optional modules from the source tree; the distribution does not.
+tasks.named<JavaExec>("run") {
+    classpath += sourceSets["modules"].runtimeClasspath
+}
+
+distributions {
+    main {
+        contents {
+            from(moduleCompiler) { into("compiler") }
+        }
+    }
+}
+
 // Enforces the module layout documented in modules/README.md before the server compiles.
-val validateModules by tasks.registering {
+val validateModules = tasks.register("validateModules") {
     group = "verification"
     description = "Checks that every folder under modules/ follows the IdeasCore module layout."
-    val modulesRoot = rootProject.layout.projectDirectory.dir("modules").asFile
-    inputs.dir(modulesRoot)
+    val modulesDir = modulesRoot
+    inputs.dir(modulesDir)
     doLast {
         val idPattern = Regex("[a-z][a-z0-9_]{0,62}")
         val migrationPattern = Regex("V[0-9]{3}__[a-z0-9_]+\\.sql")
@@ -109,7 +141,7 @@ val validateModules by tasks.registering {
         val allowedSourceRoots = setOf("src/main/kotlin", "src/main/resources", "src/test/kotlin")
         val problems = mutableListOf<String>()
 
-        modulesRoot.listFiles().orEmpty().filter { it.isDirectory }.sortedBy { it.name }.forEach { module ->
+        modulesDir.listFiles().orEmpty().filter { it.isDirectory }.sortedBy { it.name }.forEach { module ->
             val id = module.name
             // Empty scaffolds (only folders, as left by Git) are skipped.
             if (module.walkTopDown().none { it.isFile }) return@forEach
@@ -121,7 +153,11 @@ val validateModules by tasks.registering {
                 .filter { !it.name.startsWith(".") && it.name !in allowedTopLevel }
                 .forEach { problem("'${it.name}' is not allowed here; only ${allowedTopLevel.joinToString()} (see modules/README.md).") }
 
-            module.resolve("module.json").takeIf { it.isFile }?.let { manifest ->
+            val manifest = module.resolve("module.json")
+            var manifestVersion: String? = null
+            if (!manifest.isFile) {
+                problem("module.json is required (the module catalog lists modules from it).")
+            } else {
                 val json = runCatching { groovy.json.JsonSlurper().parse(manifest) as? Map<*, *> }.getOrNull()
                 if (json == null) {
                     problem("module.json is not a valid JSON object.")
@@ -130,6 +166,8 @@ val validateModules by tasks.registering {
                     listOf("displayName", "description", "version").forEach { key ->
                         if ((json[key] as? String).isNullOrBlank()) problem("module.json requires '$key'.")
                     }
+                    if (json.containsKey("bundled") && json["bundled"] !is Boolean) problem("module.json 'bundled' must be true or false.")
+                    manifestVersion = json["version"] as? String
                 }
             }
 
@@ -166,8 +204,14 @@ val validateModules by tasks.registering {
                 }
                 val mainKotlin = server.resolve("src/main/kotlin").walkTopDown().filter { it.isFile && it.extension == "kt" }.map { it.readText() }.toList()
                 val provider = id.split('_').joinToString("") { part -> part.replaceFirstChar { it.uppercase() } } + "ServerModuleProvider"
-                if (mainKotlin.any { it.contains(Regex(":\\s*ServerModule\\b")) } && mainKotlin.none { it.contains("class $provider") }) {
+                val serverModuleSource = mainKotlin.firstOrNull { it.contains(Regex(":\\s*ServerModule\\b")) }
+                if (serverModuleSource != null && mainKotlin.none { it.contains("class $provider") }) {
                     problem("implements ServerModule but does not declare class $provider, so the server would never load it.")
+                }
+                // The catalog shows module.json; the server reports the version in the code. Keep them equal.
+                val codeVersion = serverModuleSource?.let { Regex("\\bversion\\s*=\\s*\"([^\"]+)\"").find(it)?.groupValues?.get(1) }
+                if (codeVersion != null && manifestVersion != null && codeVersion != manifestVersion) {
+                    problem("module.json version '$manifestVersion' differs from the ModuleDefinition version '$codeVersion'.")
                 }
             }
         }
@@ -179,3 +223,6 @@ val validateModules by tasks.registering {
 }
 
 tasks.named("compileKotlin") { dependsOn(validateModules) }
+tasks.named("compileModulesKotlin") { dependsOn(validateModules) }
+// Optional modules must compile even though the distribution does not include them.
+tasks.named("installDist") { dependsOn("modulesClasses") }

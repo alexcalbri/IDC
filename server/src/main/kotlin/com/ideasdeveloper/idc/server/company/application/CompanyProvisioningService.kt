@@ -13,6 +13,13 @@ import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.idc.server.modules.RemoteModulePackage
+import com.ideasdeveloper.idc.server.modules.GitHubLocation
+import com.ideasdeveloper.idc.server.modules.ModuleBuildException
+import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
+import com.ideasdeveloper.idc.server.modules.ServerModule
+import org.slf4j.LoggerFactory
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import org.postgresql.ds.PGSimpleDataSource
 import java.net.URI
 import java.nio.file.Files
@@ -34,7 +41,15 @@ class CompanyProvisioningService(
     private val remoteModuleCatalog: RemoteModuleCatalog,
     private val defaultCatalogUrl: String,
     private val modulePackagesRoot: Path,
+    // Null outside an installed distribution (e.g. :server:run), where modules cannot be built.
+    private val modulePackageBuilder: ModulePackageBuilder?,
+    private val requestRestart: () -> Unit,
 ) {
+    private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
+    // Progress of optional modules being built for installation, shown in the module list.
+    private val installStates = ConcurrentHashMap<String, ModuleInstallState>()
+    // One build at a time: compiling uses about 1 GB of memory.
+    private val buildExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "module-build").apply { isDaemon = true } }
     private val companyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
@@ -435,26 +450,36 @@ class CompanyProvisioningService(
         )
     }
 
+    /**
+     * Base modules, installed modules and the modules offered by the catalog URL configured now.
+     * Modules of a previously configured catalog that were never installed are not shown.
+     */
     fun listServerModules(): List<ServerModuleResponse> {
         ensureLockedServerModulesPersisted()
         val remotePackages = syncRemoteAvailableModules()
-        return moduleRegistry.availableDefinitions.map { definition ->
-            val remotePackage = remotePackages[definition.id]
-            val installedPackage = installedPackage(definition.id)
-            ServerModuleResponse(
-                moduleId = definition.id,
-                displayName = definition.displayName,
-                description = definition.description,
-                version = installedPackage?.version ?: definition.version,
-                latestVersion = remotePackage?.definition?.version,
-                locked = definition.locked,
-                installed = moduleRegistry.isInstalled(definition.id),
-                activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
-                packageUrl = remotePackage?.packageUrl ?: installedPackage?.packageUrl,
-                packageSha256 = remotePackage?.packageSha256 ?: installedPackage?.packageSha256,
-                installedPackagePath = installedPackage?.installedPackagePath,
-            )
-        }
+        val shown = moduleRegistry.availableDefinitions
+            .filter { moduleRegistry.hasCode(it.id) || moduleRegistry.isInstalled(it.id) || it.id in remotePackages || installStates.containsKey(it.id) }
+        return shown.map { definition -> moduleResponse(definition, remotePackages[definition.id]) }
+    }
+
+    private fun moduleResponse(definition: ModuleDefinition, remotePackage: RemoteModulePackage?): ServerModuleResponse {
+        val installedPackage = installedPackage(definition.id)
+        val state = installStates[definition.id]
+        return ServerModuleResponse(
+            moduleId = definition.id,
+            displayName = definition.displayName,
+            description = definition.description,
+            version = installedPackage?.version ?: definition.version,
+            latestVersion = remotePackage?.definition?.version,
+            locked = definition.locked,
+            installed = moduleRegistry.isInstalled(definition.id),
+            activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
+            packageUrl = installedPackage?.packageUrl,
+            packageSha256 = installedPackage?.packageSha256,
+            installedPackagePath = installedPackage?.installedPackagePath,
+            status = state?.status,
+            statusMessage = state?.message,
+        )
     }
 
     fun serverModuleCatalog(): ServerModuleCatalogResponse =
@@ -482,24 +507,42 @@ class CompanyProvisioningService(
         return ServerModuleCatalogResponse(catalogUrl = normalized)
     }
 
+    /**
+     * Installs a module. Modules whose code is already loaded are activated at once. Optional
+     * modules are downloaded from the configured catalog branch and built in the background; when
+     * the package is ready the server restarts to load it. The response reports the progress.
+     */
     fun installServerModule(moduleId: String): ServerModuleResponse {
         val normalizedModuleId = moduleId.trim()
         val remotePackages = syncRemoteAvailableModules()
         val definition = moduleRegistry.availableDefinition(normalizedModuleId)
-            ?: throw CompanyProvisioningException("Modulo no encontrado en el repositorio del servidor.")
+            ?: throw CompanyProvisioningException("Modulo no encontrado en el catalogo configurado.")
         val remotePackage = remotePackages[definition.id]
-        val installedPackagePath = remotePackage?.let { downloadModulePackage(it) }
+        if (installStates[definition.id]?.status in setOf(InstallStatus.Installing, InstallStatus.Restarting)) {
+            return moduleResponse(definition, remotePackage)
+        }
 
+        val update = moduleRegistry.isPackaged(definition.id) && remotePackage != null &&
+            remotePackage.definition.version != moduleRegistry.loadedVersion(definition.id)
+        if (moduleRegistry.hasCode(definition.id) && !update) {
+            activateLoadedModule(definition)
+            return moduleResponse(definition, remotePackage)
+        }
+
+        val builder = modulePackageBuilder
+            ?: throw CompanyProvisioningException("Este servidor no puede compilar modulos: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh.")
+        val source = remotePackage?.source
+            ?: throw CompanyProvisioningException("${definition.displayName} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.")
+        installStates[definition.id] = ModuleInstallState(InstallStatus.Installing, "En cola para compilar")
+        buildExecutor.execute { buildAndInstall(definition, builder, source) }
+        return moduleResponse(definition, remotePackage)
+    }
+
+    private fun activateLoadedModule(definition: ModuleDefinition) {
         central.connection.use { connection ->
             connection.autoCommit = false
             try {
-                upsertServerModule(
-                    connection = connection,
-                    definition = definition,
-                    packageUrl = remotePackage?.packageUrl,
-                    packageSha256 = remotePackage?.packageSha256,
-                    installedPackagePath = installedPackagePath?.toString(),
-                )
+                upsertServerModule(connection, definition)
                 if (!moduleRegistry.isInstalled(definition.id)) {
                     moduleRegistry.install(definition.id)
                 }
@@ -511,20 +554,33 @@ class CompanyProvisioningService(
                 connection.autoCommit = true
             }
         }
+    }
 
-        return ServerModuleResponse(
-            moduleId = definition.id,
-            displayName = definition.displayName,
-            description = definition.description,
-            version = definition.version,
-            latestVersion = remotePackage?.definition?.version,
-            locked = definition.locked,
-            installed = true,
-            activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
-            packageUrl = remotePackage?.packageUrl,
-            packageSha256 = remotePackage?.packageSha256,
-            installedPackagePath = installedPackagePath?.toString() ?: installedPackage(definition.id)?.installedPackagePath,
-        )
+    private fun buildAndInstall(definition: ModuleDefinition, builder: ModulePackageBuilder, source: GitHubLocation) {
+        val moduleId = definition.id
+        try {
+            val built = builder.build(moduleId, source) { step ->
+                installStates[moduleId] = ModuleInstallState(InstallStatus.Installing, step)
+            }
+            central.connection.use { connection ->
+                upsertServerModule(
+                    connection = connection,
+                    definition = definition.copy(version = built.version),
+                    packageUrl = source.archiveUrl,
+                    packageSha256 = built.sha256,
+                    installedPackagePath = built.jar.toString(),
+                )
+            }
+            log.info("Module {} {} built from {}@{}; restarting to load it.", moduleId, built.version, source.repo, source.ref)
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting, "Reiniciando el servidor para cargar ${definition.displayName}")
+            requestRestart()
+        } catch (failure: ModuleBuildException) {
+            log.warn("Module {} could not be built: {}", moduleId, failure.message)
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, failure.message.orEmpty())
+        } catch (failure: Exception) {
+            log.error("Module {} installation failed", moduleId, failure)
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, "Error inesperado: ${failure.message}")
+        }
     }
 
     fun deleteServerModule(moduleId: String) {
@@ -556,6 +612,11 @@ class CompanyProvisioningService(
             } finally {
                 connection.autoCommit = true
             }
+        }
+        installStates.remove(definition.id)
+        // The loaded classes stay in memory until the next restart, but the routes reject the module.
+        if (moduleRegistry.isPackaged(definition.id)) {
+            modulePackagesRoot.resolve(definition.id).toFile().deleteRecursively()
         }
     }
 
@@ -601,24 +662,6 @@ class CompanyProvisioningService(
         } catch (_: Exception) {
             defaultCatalogUrl
         }.trim()
-    }
-
-    private fun downloadModulePackage(remotePackage: RemoteModulePackage): Path? {
-        val packageUrl = remotePackage.packageUrl ?: return null
-        val moduleId = remotePackage.definition.id
-        val moduleDirectory = modulePackagesRoot.resolve(moduleId).normalize()
-        Files.createDirectories(moduleDirectory)
-        val target = moduleDirectory.resolve("$moduleId.zip").normalize()
-        val bytes = URI.create(packageUrl).toURL().openStream().use { stream ->
-            stream.readBytes()
-        }
-        val actualSha256 = sha256(bytes)
-        val expectedSha256 = remotePackage.packageSha256
-        if (!expectedSha256.isNullOrBlank() && actualSha256 != expectedSha256) {
-            throw CompanyProvisioningException("El paquete de ${remotePackage.definition.displayName} no coincide con el checksum publicado.")
-        }
-        Files.write(target, bytes)
-        return target
     }
 
     private fun installedPackage(moduleId: String): InstalledModulePackage? = central.connection.use { connection ->
@@ -742,7 +785,7 @@ class CompanyProvisioningService(
             "database/tenant/migrations/V004__create_application_permissions.sql" to "tenant",
             "database/tenant/migrations/V005__create_application_user_credentials.sql" to "tenant",
         ).forEach { (relativePath, module) ->
-            applyMigration(connection, module, Path.of(config.migrationsRoot).resolve(relativePath))
+            applyMigration(connection, module, relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
         }
     }
 
@@ -759,7 +802,7 @@ class CompanyProvisioningService(
             applyBaseModuleMigrations(connection)
         }
         module.migrationPaths.forEach { relativePath ->
-            applyMigration(connection, module.migrationModule, Path.of(config.migrationsRoot).resolve(relativePath))
+            applyMigration(connection, module.migrationModule, relativePath, migrationSql(module, relativePath))
         }
         if (module.runtimeTables.isNotEmpty()) {
             val tables = module.runtimeTables.joinToString(", ") { quoteIdentifier(it) }
@@ -769,12 +812,18 @@ class CompanyProvisioningService(
         }
     }
 
-    private fun applyMigration(connection: Connection, module: String, path: Path) {
-        val sql = Files.readString(path).trim()
+    // Packaged modules carry their migrations; modules compiled into the server read the source tree.
+    private fun migrationSql(module: ServerModule, relativePath: String): String =
+        module.javaClass.classLoader.getResourceAsStream(relativePath)?.use { String(it.readAllBytes(), Charsets.UTF_8) }
+            ?: Path.of(config.migrationsRoot).resolve(relativePath).takeIf { Files.isRegularFile(it) }?.let(Files::readString)
+            ?: throw CompanyProvisioningException("No se encontro la migracion $relativePath del modulo ${module.definition.id}.")
+
+    private fun applyMigration(connection: Connection, module: String, relativePath: String, content: String) {
+        val sql = content.trim()
         require(sql.startsWith("BEGIN;") && sql.endsWith("COMMIT;")) {
-            "Migration $path must have outer BEGIN/COMMIT"
+            "Migration $relativePath must have outer BEGIN/COMMIT"
         }
-        val version = path.name.removeSuffix(".sql")
+        val version = relativePath.substringAfterLast('/').removeSuffix(".sql")
         val checksum = sha256(sql)
         connection.autoCommit = false
         try {
@@ -1075,3 +1124,11 @@ class CompanyProvisioningService(
             locked = locked,
         )
 }
+
+private object InstallStatus {
+    const val Installing = "installing"
+    const val Restarting = "restarting"
+    const val Failed = "failed"
+}
+
+private data class ModuleInstallState(val status: String, val message: String)
