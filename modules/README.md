@@ -29,6 +29,7 @@ rules fails the build with a list of the problems.
 ```text
 modules/<id>/
 ├── README.md                     required: purpose, data, routes, permissions, setup
+├── .development                  optional: module still in development (not released)
 ├── module.json                   optional: only for the remote module catalog
 ├── migrations/                   optional: tenant database migrations
 │   ├── README.md                 optional
@@ -73,6 +74,11 @@ Rules:
   removing a module takes effect without a restart; those helpers reject modules
   the server owner has not installed. Public routes without a session (such as
   the hotspot portal) must check `access.isInstalled("<id>")` themselves.
+
+- A module in development carries an empty `.development` file at its root. It
+  stays on `develop`: `scripts/release-to-master.sh` removes it from `master`
+  together with the tests. Delete the file when the module is ready; the next
+  release includes it.
 
 Empty scaffold folders (only directories, as Git leaves them) are ignored by the
 check.
