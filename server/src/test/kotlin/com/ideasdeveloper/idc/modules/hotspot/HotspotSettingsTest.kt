@@ -50,9 +50,9 @@ class HotspotSettingsTest {
     @Test
     fun formValuesNeverExposeSecrets() {
         val form = HotspotSettingsRepository.toFormValues(defaults, "Activo", serverMailAvailable = false)
-        assertEquals(JsonPrimitive(""), form["unifiApiKey"])
-        assertEquals(JsonPrimitive(""), form["smtpPassword"])
-        assertEquals(JsonPrimitive("Si"), form["unifiApiKeyConfigured"])
+        assertEquals("", form["unifiApiKey"])
+        assertEquals("", form["smtpPassword"])
+        assertEquals("Si", form["unifiApiKeyConfigured"])
     }
 
     @Test

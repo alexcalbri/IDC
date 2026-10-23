@@ -15,8 +15,10 @@ networks managed through the UniFi Site Manager cloud API (`api.ui.com`).
   (`AUTHORIZE_GUEST_ACCESS`) for the configured time, data and speed limits.
 - An email can connect again only after the **reconnection time** since its last
   successful access; after that it receives a new code.
-- Configuration and report screens are rendered by the app's generic
-  server-driven views (`form` and `report`); no module-specific client code.
+- Administration uses **native UI pieces** (`ui.type = "native"`): Dashboard,
+  Visitantes, Reportes, Portal cautivo and Configuracion, modeled on the
+  Conectiva panel and responsive (sidebar on wide screens, top bar on phones).
+  The app contains no hotspot-specific code.
 
 ## Data
 
@@ -40,8 +42,8 @@ tenant database and never returned to the client.
 | `GET /guest/s/default/` | Public, resolved by `Host`. UniFi passes `id` (MAC), `ap`, `ssid`, `url`. |
 | `POST /guest/s/default/register` | Public. Validates, applies reconnection rule, emails code. |
 | `POST /guest/s/default/verify` | Public. Checks code and authorizes in UniFi. |
-| `GET/PUT /modules/hotspot/settings` | `hotspot.settings.view` / `hotspot.settings.manage` |
-| `GET /modules/hotspot/report?from=&to=` | `hotspot.reports.view` |
+| `GET /modules/hotspot/ui/{screen}` | Native screens: `dashboard`, `visitors`, `reports` (`hotspot.reports.view`), `portal`, `settings` (`hotspot.settings.view`). Sections without permission are hidden. |
+| `POST /modules/hotspot/ui/portal`, `/ui/settings` | `hotspot.settings.manage`; returns the screen with a notice. |
 | `GET /modules/hotspot/report/export?from=&to=` | `hotspot.reports.export` (CSV) |
 
 ## Domains and HTTPS
@@ -86,8 +88,8 @@ configuration again retries a domain in `error`.
 ## Not implemented yet
 
 - Local UniFi controller API (only the cloud connector).
-- Exporting CSV from the Android and iOS apps (web and desktop work).
-- Uploading the logo file (the logo is a URL).
+- Uploading the logo file (the logo is a URL; the Portal cautivo section shows a
+  preview).
 
 Clearing the domain field and saving unpublishes the portal; the helper removes
 its Nginx site and certificate on the next run.

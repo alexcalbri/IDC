@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.server.modules
 
+import com.ideasdeveloper.idc.ui.ModuleUiEntry
 import io.ktor.server.routing.Route
 import kotlinx.serialization.Serializable
 
@@ -33,6 +34,8 @@ data class ModuleDefinition(
     val locked: Boolean = false,
     val views: List<ModuleViewDefinition> = emptyList(),
     val permissions: List<ModulePermissionDefinition> = emptyList(),
+    // How clients show the module: native pieces (UiScreen) or the module's own web pages.
+    val ui: ModuleUiEntry? = null,
 )
 
 @Serializable

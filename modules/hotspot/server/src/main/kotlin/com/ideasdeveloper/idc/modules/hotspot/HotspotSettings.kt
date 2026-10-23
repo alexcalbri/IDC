@@ -2,7 +2,6 @@ package com.ideasdeveloper.idc.modules.hotspot
 
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import java.sql.Connection
@@ -180,7 +179,7 @@ object HotspotSettingsRepository {
         settings: HotspotSettings,
         domainStatus: String,
         serverMailAvailable: Boolean,
-    ): JsonObject {
+    ): Map<String, String> {
         fun yesNo(value: Boolean) = if (value) "Si" else "No"
         val values = mapOf(
             "domain" to settings.domain.orEmpty(),
@@ -218,7 +217,7 @@ object HotspotSettingsRepository {
             "footerText" to settings.footerText,
             "successUrl" to settings.successUrl.orEmpty(),
         )
-        return JsonObject(values.mapValues { JsonPrimitive(it.value) })
+        return values
     }
 
     private fun ResultSet.toSettings() = HotspotSettings(

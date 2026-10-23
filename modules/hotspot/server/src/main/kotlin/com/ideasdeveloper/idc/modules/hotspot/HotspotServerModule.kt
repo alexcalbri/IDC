@@ -1,31 +1,38 @@
 package com.ideasdeveloper.idc.modules.hotspot
 
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
-import com.ideasdeveloper.idc.server.modules.ModuleActionDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
-import com.ideasdeveloper.idc.server.modules.ModuleFieldDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
-import com.ideasdeveloper.idc.server.modules.ModuleViewDefinition
+import com.ideasdeveloper.idc.server.modules.ModulePermissions
 import com.ideasdeveloper.idc.server.modules.ServerModule
 import com.ideasdeveloper.idc.server.modules.ServerModuleProvider
+import com.ideasdeveloper.idc.server.modules.requireModuleAccess
 import com.ideasdeveloper.idc.server.modules.requireModulePermission
+import com.ideasdeveloper.idc.ui.ModuleUiEntry
+import com.ideasdeveloper.idc.ui.UiJson
+import com.ideasdeveloper.idc.ui.UiNotice
+import com.ideasdeveloper.idc.ui.UiScreen
+import com.ideasdeveloper.idc.ui.UiTone
 import io.ktor.http.ContentDisposition
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
-import io.ktor.server.request.receive
+import io.ktor.server.request.receiveText
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
-import io.ktor.server.routing.put
+import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.LocalDate
@@ -42,156 +49,94 @@ object HotspotServerModule : ServerModule {
         "hotspot_accesses",
     )
 
-    private const val SettingsRoute = "/modules/hotspot/settings"
-    private const val ReportRoute = "/modules/hotspot/report"
-
     override val definition = ModuleDefinition(
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con registro de visitantes, codigo por correo y autorizacion en UniFi.",
-        version = "0.1.0",
+        version = "0.2.0",
         permissions = listOf(
-            ModulePermissionDefinition("hotspot.settings.view", "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
-            ModulePermissionDefinition("hotspot.settings.manage", "Configurar hotspot", "Permite cambiar dominio, UniFi, correo, tiempos y apariencia del portal."),
-            ModulePermissionDefinition("hotspot.reports.view", "Ver reportes del hotspot", "Permite consultar registros y conexiones del portal WiFi."),
-            ModulePermissionDefinition("hotspot.reports.export", "Exportar reportes del hotspot", "Permite descargar los registros en CSV."),
+            ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
+            ModulePermissionDefinition(HotspotScreens.SettingsManage, "Configurar hotspot", "Permite cambiar dominio, UniFi, correo, tiempos y apariencia del portal."),
+            ModulePermissionDefinition(HotspotScreens.ReportsView, "Ver reportes del hotspot", "Permite consultar el dashboard, visitantes y reportes del portal WiFi."),
+            ModulePermissionDefinition(HotspotScreens.ReportsExport, "Exportar reportes del hotspot", "Permite descargar los registros en CSV."),
         ),
-        views = listOf(
-            ModuleViewDefinition(
-                id = "report",
-                title = "Reporte",
-                route = ReportRoute,
-                kind = "report",
-                fields = listOf(
-                    ModuleFieldDefinition("from", "Desde", "date"),
-                    ModuleFieldDefinition("to", "Hasta", "date"),
-                ),
-                actions = listOf(
-                    ModuleActionDefinition("load", "Consultar", ReportRoute, "GET", "hotspot.reports.view"),
-                    ModuleActionDefinition("export", "Exportar CSV", "$ReportRoute/export", "GET", "hotspot.reports.export"),
-                ),
-            ),
-            ModuleViewDefinition(
-                id = "settings",
-                title = "Configuracion",
-                route = SettingsRoute,
-                kind = "form",
-                fields = settingsFields(),
-                actions = listOf(
-                    ModuleActionDefinition("load", "Cargar", SettingsRoute, "GET", "hotspot.settings.view"),
-                    ModuleActionDefinition("save", "Guardar", SettingsRoute, "PUT", "hotspot.settings.manage"),
-                ),
-            ),
-        ),
+        ui = ModuleUiEntry(type = "native", entry = HotspotScreens.UiRoute, home = "dashboard"),
     )
-
-    private fun settingsFields(): List<ModuleFieldDefinition> {
-        val domain = "Dominio"
-        val unifi = "UniFi"
-        val access = "Acceso"
-        val mail = "Correo"
-        val look = "Apariencia del portal"
-        return listOf(
-            ModuleFieldDefinition("domain", "Dominio del portal", "text", section = domain,
-                help = "Ej: wifi.miempresa.com. Crea un registro DNS A/AAAA que apunte a este servidor; HTTPS se configura solo en unos minutos."),
-            ModuleFieldDefinition("portalUrl", "Direccion para UniFi (portal externo)", "text", readOnly = true, section = domain),
-            ModuleFieldDefinition("domainStatus", "Estado del dominio", "text", readOnly = true, section = domain),
-
-            ModuleFieldDefinition("unifiConsoleId", "ID de consola", "text", section = unifi,
-                help = "Aparece en la URL de unifi.ui.com/consoles/<ID>/..."),
-            ModuleFieldDefinition("unifiSiteId", "ID de sitio", "text", section = unifi),
-            ModuleFieldDefinition("unifiApiKey", "API key de UniFi", "password", section = unifi,
-                help = "Dejalo vacio para conservar la clave guardada."),
-            ModuleFieldDefinition("unifiApiKeyConfigured", "API key guardada", "text", readOnly = true, section = unifi),
-
-            ModuleFieldDefinition("accessMinutes", "Tiempo de acceso (minutos)", "number", required = true, section = access),
-            ModuleFieldDefinition("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", required = true, section = access,
-                help = "Un mismo correo no puede volver a conectarse hasta que pase este tiempo desde su ultimo acceso. 0 = sin espera."),
-            ModuleFieldDefinition("codeTtlMinutes", "Vigencia del codigo (minutos)", "number", required = true, section = access),
-            ModuleFieldDefinition("dataLimitMb", "Limite de datos (MB, 0 = sin limite)", "number", section = access),
-            ModuleFieldDefinition("rxKbps", "Velocidad de descarga (kbps, 0 = sin limite)", "number", section = access),
-            ModuleFieldDefinition("txKbps", "Velocidad de subida (kbps, 0 = sin limite)", "number", section = access),
-
-            ModuleFieldDefinition("smtpMode", "Enviar correos con", "select", required = true, options = listOf("servidor", "empresa"), section = mail,
-                help = "servidor: usa el SMTP configurado por el administrador del servidor. empresa: usa los datos de abajo."),
-            ModuleFieldDefinition("serverMailAvailable", "SMTP del servidor disponible", "text", readOnly = true, section = mail),
-            ModuleFieldDefinition("smtpHost", "Servidor SMTP", "text", section = mail),
-            ModuleFieldDefinition("smtpPort", "Puerto SMTP", "number", section = mail),
-            ModuleFieldDefinition("smtpSecurity", "Seguridad SMTP", "select", options = listOf("starttls", "ssl", "none"), section = mail),
-            ModuleFieldDefinition("smtpUsername", "Usuario SMTP", "text", section = mail),
-            ModuleFieldDefinition("smtpPassword", "Contrasena SMTP", "password", section = mail,
-                help = "Dejala vacia para conservar la contrasena guardada."),
-            ModuleFieldDefinition("smtpPasswordConfigured", "Contrasena SMTP guardada", "text", readOnly = true, section = mail),
-            ModuleFieldDefinition("smtpFrom", "Remitente", "email", section = mail),
-            ModuleFieldDefinition("emailSubject", "Asunto del correo", "text", required = true, section = mail),
-
-            ModuleFieldDefinition("networkName", "Nombre de la red WiFi", "text", required = true, section = look),
-            ModuleFieldDefinition("portalTitle", "Titulo", "text", required = true, section = look),
-            ModuleFieldDefinition("portalSubtitle", "Subtitulo", "text", section = look),
-            ModuleFieldDefinition("logoUrl", "URL del logo", "url", section = look),
-            ModuleFieldDefinition("primaryColor", "Color principal", "color", required = true, section = look),
-            ModuleFieldDefinition("textColor", "Color del texto sobre el color principal", "color", required = true, section = look),
-            ModuleFieldDefinition("consentText", "Texto de consentimiento", "textarea", required = true, section = look),
-            ModuleFieldDefinition("termsUrl", "URL de terminos", "url", section = look),
-            ModuleFieldDefinition("privacyUrl", "URL de privacidad", "url", section = look),
-            ModuleFieldDefinition("footerText", "Pie de pagina", "text", section = look),
-            ModuleFieldDefinition("successUrl", "Abrir al conectarse (URL)", "url", section = look),
-        )
-    }
 
     override fun routes(route: Route, access: ModuleAccessService) {
         HotspotPortal(access).install(route)
 
-        route.route("/modules/hotspot") {
-            get("/settings") {
-                if (!call.requireModulePermission(access, HotspotModule.id, "hotspot.settings.view")) return@get
-                call.withTenant(access) { tenant, companyCode ->
-                    val settings = HotspotSettingsRepository.load(tenant)
-                    val status = domainStatus(access, companyCode, settings.domain)
-                    call.respond(HttpStatusCode.OK, HotspotSettingsRepository.toFormValues(settings, status, access.serverMail != null))
-                }
+        route.route(HotspotScreens.UiRoute) {
+            get("/{screen}") {
+                val permissions = call.requireModuleAccess(access, HotspotModule.id) ?: return@get
+                val screen = call.screenId(permissions) ?: return@get
+                val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
+                call.respondScreen(access) { tenant -> render(access, tenant, permissions, screen, params) }
             }
 
-            put("/settings") {
-                if (!call.requireModulePermission(access, HotspotModule.id, "hotspot.settings.manage")) return@put
-                val values = call.receive<JsonObject>()
-                call.withTenant(access) { tenant, companyCode ->
-                    val current = HotspotSettingsRepository.load(tenant)
-                    val updated = try {
-                        HotspotSettingsRepository.merge(current, values)
-                    } catch (failure: HotspotValidationException) {
-                        return@withTenant call.respond(HttpStatusCode.BadRequest, HotspotErrorResponse("INVALID_SETTINGS", failure.message.orEmpty()))
-                    }
-                    if (!registerDomain(access, companyCode, updated.domain)) {
-                        return@withTenant call.respond(HttpStatusCode.Conflict, HotspotErrorResponse("DOMAIN_IN_USE", "Ese dominio ya esta registrado en este servidor."))
-                    }
-                    HotspotSettingsRepository.save(tenant, updated)
-                    val status = domainStatus(access, companyCode, updated.domain)
-                    call.respond(HttpStatusCode.OK, HotspotSettingsRepository.toFormValues(updated, status, access.serverMail != null))
+            // Saves the "portal" and "settings" forms and answers with the same screen and a notice.
+            post("/{screen}") {
+                val permissions = call.requireModuleAccess(access, HotspotModule.id) ?: return@post
+                val screen = call.screenId(permissions)?.takeIf { it == "portal" || it == "settings" }
+                    ?: return@post call.respond(HttpStatusCode.NotFound, HotspotErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada."))
+                if (!permissions.has(HotspotScreens.SettingsManage)) {
+                    return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "No tienes permiso para cambiar la configuracion."))
                 }
-            }
-
-            get("/report") {
-                if (!call.requireModulePermission(access, HotspotModule.id, "hotspot.reports.view")) return@get
-                val range = call.dateRange() ?: return@get
-                call.withTenant(access) { tenant, _ ->
-                    call.respond(HttpStatusCode.OK, HotspotReports.report(tenant, range.first, range.second))
-                }
-            }
-
-            get("/report/export") {
-                if (!call.requireModulePermission(access, HotspotModule.id, "hotspot.reports.export")) return@get
-                val range = call.dateRange() ?: return@get
-                call.withTenant(access) { tenant, companyCode ->
-                    val csv = HotspotReports.csv(tenant, range.first, range.second)
-                    call.response.header(
-                        HttpHeaders.ContentDisposition,
-                        ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, "hotspot-$companyCode-${range.first}-${range.second}.csv").toString(),
-                    )
-                    call.respondText(csv, ContentType.Text.CSV.withParameter("charset", "utf-8"))
-                }
+                val values = runCatching { UiJson.parseToJsonElement(call.receiveText()).jsonObject }.getOrNull()
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, HotspotErrorResponse("INVALID_BODY", "Datos invalidos."))
+                call.respondScreen(access) { tenant -> save(access, tenant, permissions, screen, values) }
             }
         }
+
+        route.get(HotspotScreens.ExportRoute) {
+            if (!call.requireModulePermission(access, HotspotModule.id, HotspotScreens.ReportsExport)) return@get
+            val range = call.dateRange() ?: return@get
+            val companyCode = access.companyCode(call).orEmpty()
+            call.respondScreen(access) { tenant ->
+                val csv = HotspotReports.csv(tenant, range.first, range.second)
+                call.response.header(
+                    HttpHeaders.ContentDisposition,
+                    ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, "hotspot-$companyCode-${range.first}-${range.second}.csv").toString(),
+                )
+                call.respondText(csv, ContentType.Text.CSV.withParameter("charset", "utf-8"))
+                null
+            }
+        }
+    }
+
+    private fun render(
+        access: ModuleAccessService,
+        tenant: Connection,
+        permissions: ModulePermissions,
+        screen: String,
+        params: Map<String, String>,
+        notice: UiNotice? = null,
+        submittedValues: Map<String, String>? = null,
+    ): UiScreen {
+        val settings = HotspotSettingsRepository.load(tenant)
+        val (status, active) = domainState(access, permissions.companyCode, settings.domain)
+        return HotspotScreens.build(screen, tenant, permissions, params, status, active, access.serverMail != null, notice, submittedValues)
+    }
+
+    private fun save(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, screen: String, values: JsonObject): UiScreen {
+        val current = HotspotSettingsRepository.load(tenant)
+        val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
+        fun failed(message: String): UiScreen {
+            // Keep what the user typed so the error can be corrected without retyping.
+            val (status, _) = domainState(access, permissions.companyCode, current.domain)
+            val shown = HotspotSettingsRepository.toFormValues(current, status, access.serverMail != null) + submitted
+            return render(access, tenant, permissions, screen, emptyMap(), UiNotice(message, UiTone.Danger), shown)
+        }
+        val updated = try {
+            HotspotSettingsRepository.merge(current, values)
+        } catch (failure: HotspotValidationException) {
+            return failed(failure.message.orEmpty())
+        }
+        if (!registerDomain(access, permissions.companyCode, updated.domain)) {
+            return failed("Ese dominio ya esta registrado en este servidor.")
+        }
+        HotspotSettingsRepository.save(tenant, updated)
+        return render(access, tenant, permissions, screen, emptyMap(), UiNotice("Cambios guardados.", UiTone.Success))
     }
 
     /**
@@ -248,8 +193,9 @@ object HotspotServerModule : ServerModule {
             }
         }
 
-    private fun domainStatus(access: ModuleAccessService, companyCode: String, domain: String?): String {
-        if (domain == null) return "Sin dominio configurado"
+    // Human-readable domain status and whether the portal is published.
+    private fun domainState(access: ModuleAccessService, companyCode: String, domain: String?): Pair<String, Boolean> {
+        if (domain == null) return "Sin dominio configurado" to false
         return access.centralConnection().use { central ->
             central.prepareStatement(
                 "SELECT status, last_error FROM public_domains WHERE domain = ? AND company_code = ? AND module_id = ?"
@@ -259,25 +205,36 @@ object HotspotServerModule : ServerModule {
                 query.setString(3, HotspotModule.id)
                 query.executeQuery().use { rows ->
                     if (!rows.next()) {
-                        "No registrado; guarda la configuracion de nuevo"
+                        "No registrado; guarda la configuracion de nuevo" to false
                     } else when (rows.getString("status")) {
-                        "active" -> "Activo"
-                        "pending" -> "Pendiente: el servidor esta configurando Nginx y HTTPS (puede tardar unos minutos)"
-                        "error" -> "Error: ${rows.getString("last_error").orEmpty()} Corrige el DNS y guarda de nuevo para reintentar."
-                        else -> rows.getString("status")
+                        "active" -> "Activo: $domain" to true
+                        "pending" -> "Pendiente: el servidor esta configurando Nginx y HTTPS (puede tardar unos minutos)" to false
+                        "error" -> "Error: ${rows.getString("last_error").orEmpty()} Corrige el DNS y guarda de nuevo para reintentar." to false
+                        else -> rows.getString("status") to false
                     }
                 }
             }
         }
     }
 
-    private suspend fun ApplicationCall.withTenant(access: ModuleAccessService, block: suspend (Connection, String) -> Unit) {
+    private suspend fun ApplicationCall.screenId(permissions: ModulePermissions): String? {
+        val requested = parameters["screen"].orEmpty()
+        val screen = if (requested == "home") HotspotScreens.home(permissions) else requested.takeIf { HotspotScreens.isScreen(it) }
+        if (screen == null) {
+            respond(HttpStatusCode.NotFound, HotspotErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada o sin permisos."))
+        }
+        return screen
+    }
+
+    // Opens the tenant database of the authorized company, runs [block] and responds with its screen.
+    private suspend fun ApplicationCall.respondScreen(access: ModuleAccessService, block: suspend (Connection) -> UiScreen?) {
         val companyCode = access.companyCode(this)
             ?: return respond(HttpStatusCode.BadRequest, HotspotErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
         val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
             ?: return respond(HttpStatusCode.Forbidden, HotspotErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
         try {
-            connection.use { tenant -> block(tenant, companyCode) }
+            val screen = connection.use { tenant -> withContext(Dispatchers.IO) { block(tenant) } }
+            if (screen != null) respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
         } catch (failure: SQLException) {
             respond(HttpStatusCode.InternalServerError, HotspotErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
         }

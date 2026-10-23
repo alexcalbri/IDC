@@ -87,6 +87,37 @@ fun ServerDrivenModuleScreen(
         }
     }
 
+    val definition = metadata
+    val ui = definition?.ui
+    val companyCode = session?.companyCode
+    val callContext = remember(serverUrl, session?.accessToken, companyCode) {
+        if (serverUrl != null && session != null && companyCode != null) ModuleCallContext(serverUrl, session.accessToken, companyCode) else null
+    }
+
+    if (ui != null && callContext != null && (ui.type == "native" || ui.type == "web")) {
+        // Los modulos con interfaz propia ocupan toda la pantalla debajo de la barra superior.
+        Column(
+            modifier = modifier
+                .fillMaxSize()
+                .background(Brush.horizontalGradient(listOf(primaryColor, secondaryColor)))
+        ) {
+            AuthenticatedTopBar(
+                title = definition?.displayName ?: fallbackTitle,
+                subtitle = definition?.description,
+                primaryColor = primaryColor,
+                onReturnToDashboard = onReturnToDashboard,
+                onSettings = onSettings,
+                onLogout = onLogout,
+            )
+            if (ui.type == "native") {
+                NativeModuleHost(ui, callContext, primaryColor, Modifier.weight(1f))
+            } else {
+                WebModuleHost(moduleId, callContext, primaryColor, Modifier.weight(1f))
+            }
+        }
+        return
+    }
+
     Box(
         modifier = modifier
             .fillMaxSize()
@@ -123,13 +154,18 @@ fun ServerDrivenModuleScreen(
                         session = session,
                         primaryColor = primaryColor,
                     )
-                    metadata != null -> GenericModuleContent(
-                        moduleId = moduleId,
-                        metadata = metadata!!,
-                        serverUrl = serverUrl,
-                        session = session,
-                        primaryColor = primaryColor,
+                    metadata != null && ui != null && callContext == null -> Text(
+                        "Este modulo requiere iniciar sesion en una empresa.",
+                        color = Color(0xFFB00020),
                     )
+                    metadata != null && ui != null -> Text(
+                        "Este modulo usa un tipo de interfaz (${ui.type}) que esta version de la app no conoce.",
+                        color = Color(0xFF666666),
+                    )
+                    metadata != null -> {
+                        Text(metadata?.description.orEmpty(), color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
+                        Text("Este modulo no declara una interfaz para la app.", color = Color(0xFF666666))
+                    }
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
@@ -140,49 +176,6 @@ fun ServerDrivenModuleScreen(
                 }
             }
         }
-    }
-}
-
-@Composable
-// Dibuja las vistas declaradas por el modulo; los tipos desconocidos piden actualizar la app.
-private fun GenericModuleContent(
-    moduleId: String,
-    metadata: ModuleDefinition,
-    serverUrl: String?,
-    session: LoginResponse?,
-    primaryColor: Color,
-) {
-    val companyCode = session?.companyCode
-    if (serverUrl == null || session == null || companyCode == null) {
-        Text("Este modulo requiere iniciar sesion en una empresa.", color = Color(0xFFB00020))
-        return
-    }
-    val context = remember(serverUrl, session.accessToken, companyCode) {
-        ModuleCallContext(serverUrl, session.accessToken, companyCode)
-    }
-    var selectedViewId by remember(moduleId) { mutableStateOf(metadata.views.firstOrNull()?.id) }
-    Text(metadata.description, color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
-    if (metadata.views.size > 1) {
-        androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            metadata.views.forEach { view ->
-                val selected = view.id == selectedViewId
-                Button(
-                    onClick = { selectedViewId = view.id },
-                    colors = if (selected) {
-                        ButtonDefaults.buttonColors(containerColor = primaryColor)
-                    } else {
-                        ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor)
-                    },
-                ) { Text(view.title) }
-            }
-        }
-    }
-    val view = metadata.views.firstOrNull { it.id == selectedViewId }
-    when (view?.kind) {
-        null -> Text("Este modulo no declara vistas.", color = Color(0xFF666666))
-        "form" -> ModuleFormView(view, context, primaryColor)
-        "report" -> ModuleReportView(moduleId, view, context, primaryColor)
-        else -> Text("La vista ${view.title} requiere una version mas reciente de la app.", color = Color(0xFF666666))
     }
 }
 

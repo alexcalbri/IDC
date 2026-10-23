@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.modules.data
 
+import com.ideasdeveloper.idc.ui.ModuleUiEntry
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -11,6 +12,8 @@ data class ModuleDefinition(
     val version: String = "0.1.0",
     val locked: Boolean = false,
     val views: List<ModuleViewDefinition> = emptyList(),
+    // Como mostrar el modulo: piezas nativas (UiScreen) o paginas web propias del modulo.
+    val ui: ModuleUiEntry? = null,
 )
 
 @Serializable
@@ -46,26 +49,3 @@ data class ModuleActionDefinition(
     val method: String,
     val permission: String,
 )
-
-@Serializable
-// Respuesta generica de vistas kind = "report": metricas, graficos de barras y tablas.
-data class ModuleReport(
-    val metrics: List<ModuleReportMetric> = emptyList(),
-    val charts: List<ModuleReportChart> = emptyList(),
-    val tables: List<ModuleReportTable> = emptyList(),
-)
-
-@Serializable
-data class ModuleReportMetric(val label: String, val value: String, val help: String = "")
-
-@Serializable
-data class ModuleReportChart(val title: String, val points: List<ModuleReportPoint>)
-
-@Serializable
-data class ModuleReportPoint(val label: String, val value: Double)
-
-@Serializable
-data class ModuleReportTable(val title: String, val columns: List<ModuleReportColumn>, val rows: List<Map<String, String>>)
-
-@Serializable
-data class ModuleReportColumn(val key: String, val label: String)

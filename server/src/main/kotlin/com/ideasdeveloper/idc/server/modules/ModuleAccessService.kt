@@ -37,7 +37,17 @@ class ModuleAccessService(
     // Central control-plane connection for module-owned central tables such as public_domains.
     fun centralConnection(): Connection = central.connection
 
-    fun companyCode(call: ApplicationCall): String? = call.request.header("X-Company-Code")
+    // Web module pages authenticate with cookies scoped to /modules/{moduleId}/ instead of headers.
+    fun companyCode(call: ApplicationCall): String? = (call.request.header("X-Company-Code") ?: call.request.cookies[CompanyCookie])
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+
+    private fun accessToken(call: ApplicationCall): String? = (
+        call.request.header(HttpHeaders.Authorization)
+            ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
+            ?.substringAfter(' ')
+            ?: call.request.cookies[TokenCookie]
+        )
         ?.trim()
         ?.takeIf { it.isNotBlank() }
 
@@ -53,23 +63,30 @@ class ModuleAccessService(
         return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
     }
 
-    fun authorize(call: ApplicationCall, moduleId: String, permissionId: String): ModuleAccessDecision {
-        val token = call.request.header(HttpHeaders.Authorization)
-            ?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }
-            ?.substringAfter(' ')
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: return ModuleAccessDecision.Unauthorized("missing_token", "La sesion es requerida.")
+    fun authorize(call: ApplicationCall, moduleId: String, permissionId: String): ModuleAccessDecision =
+        when (val lookup = permissions(call, moduleId)) {
+            is ModulePermissionLookup.Granted -> if (lookup.permissions.has(permissionId)) {
+                ModuleAccessDecision.Allowed
+            } else {
+                ModuleAccessDecision.Forbidden("missing_permission", "No tienes permiso para usar esta funcion.")
+            }
+            is ModulePermissionLookup.Denied -> lookup.decision
+        }
 
-        val companyCode = call.request.header("X-Company-Code")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: return ModuleAccessDecision.Unauthorized("missing_company", "La empresa es requerida.")
+    /**
+     * Validates session, company and module state once and returns every permission the user holds
+     * in the module, so a screen can show only the sections the user may use.
+     */
+    fun permissions(call: ApplicationCall, moduleId: String): ModulePermissionLookup {
+        val token = accessToken(call)
+            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", "La sesion es requerida."))
+        val companyCode = companyCode(call)
+            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_company", "La empresa es requerida."))
 
         val databaseName = findActiveDatabase(companyCode)
-            ?: return ModuleAccessDecision.Forbidden("company_not_found", "La empresa no esta activa.")
+            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("company_not_found", "La empresa no esta activa."))
         val tenantConfig = loginDatabases.tenantConfig(databaseName)
-            ?: return ModuleAccessDecision.Forbidden("tenant_not_configured", "La base de datos de la empresa no esta configurada.")
+            ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_not_configured", "La base de datos de la empresa no esta configurada."))
 
         return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password).use { connection ->
             val user = connection.prepareStatement(
@@ -95,28 +112,32 @@ class ModuleAccessService(
                         )
                     }
                 }
-            } ?: return ModuleAccessDecision.Unauthorized("invalid_session", "La sesion no es valida.")
+            } ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", "La sesion no es valida."))
 
             if (!moduleEnabled(connection, moduleId)) {
-                return ModuleAccessDecision.Forbidden("module_disabled", "El modulo no esta activo para esta empresa.")
+                return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_disabled", "El modulo no esta activo para esta empresa."))
             }
 
-            if (user.businessOwner || hasPermission(connection, user.id, permissionId)) {
-                ModuleAccessDecision.Allowed
-            } else {
-                ModuleAccessDecision.Forbidden("missing_permission", "No tienes permiso para usar esta funcion.")
+            val granted = if (user.businessOwner) emptySet() else connection.prepareStatement(
+                "SELECT permission_id FROM application_user_permissions WHERE user_id = ?"
+            ).use { query ->
+                query.setObject(1, user.id)
+                query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
             }
+            ModulePermissionLookup.Granted(ModulePermissions(companyCode, token, user.businessOwner, granted))
         }
     }
 
     fun tenantConnection(call: ApplicationCall): Connection? {
-        val companyCode = call.request.header("X-Company-Code")
-            ?.trim()
-            ?.takeIf { it.isNotBlank() }
-            ?: return null
+        val companyCode = companyCode(call) ?: return null
         val databaseName = findActiveDatabase(companyCode) ?: return null
         val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null
         return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
+    }
+
+    companion object {
+        const val TokenCookie = "idc_module_token"
+        const val CompanyCookie = "idc_module_company"
     }
 
     private fun findActiveDatabase(companyCode: String): String? = central.connection.use { connection ->
@@ -138,14 +159,21 @@ class ModuleAccessService(
         query.setString(1, moduleId)
         query.executeQuery().use { rows -> rows.next() }
     }
+}
 
-    private fun hasPermission(connection: Connection, userId: UUID, permissionId: String): Boolean = connection.prepareStatement(
-        "SELECT 1 FROM application_user_permissions WHERE user_id = ? AND permission_id = ?"
-    ).use { query ->
-        query.setObject(1, userId)
-        query.setString(2, permissionId)
-        query.executeQuery().use { rows -> rows.next() }
-    }
+// Permissions of the current user in one module. business_owner holds every permission.
+class ModulePermissions(
+    val companyCode: String,
+    internal val accessToken: String,
+    val businessOwner: Boolean,
+    private val granted: Set<String>,
+) {
+    fun has(permissionId: String): Boolean = businessOwner || permissionId in granted
+}
+
+sealed class ModulePermissionLookup {
+    data class Granted(val permissions: ModulePermissions) : ModulePermissionLookup()
+    data class Denied(val decision: ModuleAccessDecision) : ModulePermissionLookup()
 }
 
 sealed class ModuleAccessDecision {
@@ -158,6 +186,29 @@ sealed class ModuleAccessDecision {
 data class ModuleAccessErrorResponse(val code: String, val message: String)
 
 private data class ModuleUser(val id: UUID, val businessOwner: Boolean)
+
+/**
+ * Like [requireModulePermission] but returns all the user's permissions in the module, or
+ * responds 401/403 and returns null. Use it for screens that adapt to what the user may do.
+ */
+suspend fun ApplicationCall.requireModuleAccess(access: ModuleAccessService, moduleId: String): ModulePermissions? {
+    val lookup = try {
+        withContext(Dispatchers.IO) { access.permissions(this@requireModuleAccess, moduleId) }
+    } catch (_: SQLException) {
+        ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_access_error", "No se pudo validar el acceso a la empresa."))
+    }
+    return when (lookup) {
+        is ModulePermissionLookup.Granted -> lookup.permissions
+        is ModulePermissionLookup.Denied -> {
+            when (val decision = lookup.decision) {
+                is ModuleAccessDecision.Unauthorized -> respond(HttpStatusCode.Unauthorized, ModuleAccessErrorResponse(decision.code, decision.message))
+                is ModuleAccessDecision.Forbidden -> respond(HttpStatusCode.Forbidden, ModuleAccessErrorResponse(decision.code, decision.message))
+                ModuleAccessDecision.Allowed -> Unit
+            }
+            null
+        }
+    }
+}
 
 /**
  * Guard reutilizable para nuevas vistas/rutas de módulos.

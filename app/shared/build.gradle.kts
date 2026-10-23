@@ -61,6 +61,10 @@ kotlin {
         jsMain.dependencies {
             implementation(libs.wrappers.browser)
         }
+        jvmMain.dependencies {
+            // Chromium embebido (JCEF) para modulos con interfaz web; descarga sus binarios en el primer uso.
+            implementation(libs.jcefmaven)
+        }
     }
 }
 

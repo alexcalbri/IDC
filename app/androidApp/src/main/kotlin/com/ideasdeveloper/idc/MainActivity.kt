@@ -8,6 +8,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
 import com.ideasdeveloper.idc.app.core.company.PersistentCompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
+import com.ideasdeveloper.idc.app.core.platform.AndroidFileExport
 import com.ideasdeveloper.idc.app.core.session.PersistentSessionStore
 
 class MainActivity : ComponentActivity() {
@@ -17,6 +18,7 @@ class MainActivity : ComponentActivity() {
         ClientConfigurationStore.initialize(this)
         PersistentCompanyIdentityStore.initialize(this)
         PersistentSessionStore.initialize(this)
+        AndroidFileExport.initialize(this)
 
         setContent {
             App()
