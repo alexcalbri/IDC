@@ -121,8 +121,12 @@ Lee los detalles y advertencias operativas en
 - `develop`: desarrollo y pruebas; incluye los tests.
 - `master`: version estable para instalar; no incluye tests.
 
-Para publicar `develop` en `master` (fusiona, quita los tests y sube):
+Para publicar `develop` en `master` (prepara una rama `release/...` sin tests y abre un pull request):
 
 ```bash
 bash scripts/release-to-master.sh
 ```
+
+El script nunca sube directo a `master`: respeta su proteccion. Aprueba el pull request con
+**Create a merge commit** (no squash ni rebase) para que la siguiente publicacion comparta historial
+con `develop`. Con `--dry-run` arma la publicacion solo en local para revisarla.
