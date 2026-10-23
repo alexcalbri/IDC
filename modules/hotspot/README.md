@@ -1,6 +1,6 @@
 # Hotspot Module
 
-Status: implemented (first version). Captive WiFi portal per company for UniFi
+Status: in development (marked with `.development`; not released to `master`). Captive WiFi portal per company for UniFi
 networks managed through the UniFi Site Manager cloud API (`api.ui.com`).
 
 ## What it does

@@ -118,10 +118,13 @@ Lee los detalles y advertencias operativas en
 
 ## Ramas
 
-- `develop`: desarrollo y pruebas; incluye los tests.
-- `master`: version estable para instalar; no incluye tests.
+- `develop`: desarrollo y pruebas; incluye los tests y los modulos en desarrollo.
+- `master`: version estable para instalar; sin tests ni modulos en desarrollo.
 
-Para publicar `develop` en `master` (prepara una rama `release/...` sin tests y abre un pull request):
+Un modulo en desarrollo lleva el archivo `modules/<id>/.development`; se borra
+cuando el modulo esta listo para publicarse.
+
+Para publicar `develop` en `master` (prepara una rama `release/...` sin tests ni modulos en desarrollo y abre un pull request):
 
 ```bash
 bash scripts/release-to-master.sh
