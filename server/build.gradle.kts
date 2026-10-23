@@ -31,6 +31,7 @@ dependencies {
     implementation(libs.ktor.clientContentNegotiation)
     implementation(libs.ktor.clientEngineDefaults)
     /* === End DB === */
+    implementation(libs.angus.mail)
 }
 
 val generatedModuleServicesDir = layout.buildDirectory.dir("generated/resources/module-services")

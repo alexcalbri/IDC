@@ -123,16 +123,13 @@ fun ServerDrivenModuleScreen(
                         session = session,
                         primaryColor = primaryColor,
                     )
-                    metadata != null -> {
-                        Text(
-                            text = metadata?.description.orEmpty(),
-                            color = Color(0xFF333333),
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        metadata?.views.orEmpty().forEach { view ->
-                            Text("${view.title} (${view.kind})", color = Color(0xFF666666))
-                        }
-                    }
+                    metadata != null -> GenericModuleContent(
+                        moduleId = moduleId,
+                        metadata = metadata!!,
+                        serverUrl = serverUrl,
+                        session = session,
+                        primaryColor = primaryColor,
+                    )
                 }
                 Spacer(modifier = Modifier.height(8.dp))
                 Button(
@@ -143,6 +140,49 @@ fun ServerDrivenModuleScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+// Dibuja las vistas declaradas por el modulo; los tipos desconocidos piden actualizar la app.
+private fun GenericModuleContent(
+    moduleId: String,
+    metadata: ModuleDefinition,
+    serverUrl: String?,
+    session: LoginResponse?,
+    primaryColor: Color,
+) {
+    val companyCode = session?.companyCode
+    if (serverUrl == null || session == null || companyCode == null) {
+        Text("Este modulo requiere iniciar sesion en una empresa.", color = Color(0xFFB00020))
+        return
+    }
+    val context = remember(serverUrl, session.accessToken, companyCode) {
+        ModuleCallContext(serverUrl, session.accessToken, companyCode)
+    }
+    var selectedViewId by remember(moduleId) { mutableStateOf(metadata.views.firstOrNull()?.id) }
+    Text(metadata.description, color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
+    if (metadata.views.size > 1) {
+        androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            metadata.views.forEach { view ->
+                val selected = view.id == selectedViewId
+                Button(
+                    onClick = { selectedViewId = view.id },
+                    colors = if (selected) {
+                        ButtonDefaults.buttonColors(containerColor = primaryColor)
+                    } else {
+                        ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor)
+                    },
+                ) { Text(view.title) }
+            }
+        }
+    }
+    val view = metadata.views.firstOrNull { it.id == selectedViewId }
+    when (view?.kind) {
+        null -> Text("Este modulo no declara vistas.", color = Color(0xFF666666))
+        "form" -> ModuleFormView(view, context, primaryColor)
+        "report" -> ModuleReportView(moduleId, view, context, primaryColor)
+        else -> Text("La vista ${view.title} requiere una version mas reciente de la app.", color = Color(0xFF666666))
     }
 }
 
@@ -293,7 +333,7 @@ private fun CustomerServerDrivenContent(
     } else {
         customers.forEach { customer ->
             Column(modifier = Modifier.fillMaxWidth().background(Color(0xFFF6F6FA), MaterialTheme.shapes.small).padding(10.dp)) {
-                Text("${customer.displayName} - ${customer.primaryEmail} - ${customer.primaryPhone}", color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
+                Text("${customer.displayName} - ${customer.primaryEmail} - ${customer.primaryPhone}" + if (customer.customerType != "general") " (${customer.customerType})" else "", color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
                 androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
                         editingId = customer.id

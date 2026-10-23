@@ -19,6 +19,7 @@ import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.idc.server.modules.ServerModule
 import com.ideasdeveloper.idc.server.modules.ServerModuleProvider
+import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import com.ideasdeveloper.idc.server.modules.moduleRoutes
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.*
@@ -122,7 +123,7 @@ fun Application.module() {
         ),
     )
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
-    val moduleAccessService = ModuleAccessService(DatabaseFactory.getDataSource(), loginDatabases)
+    val moduleAccessService = ModuleAccessService(DatabaseFactory.getDataSource(), loginDatabases, serverMailSettings())
     val companySelfService = CompanySelfService(
         central = DatabaseFactory.getDataSource(),
         loginDatabases = loginDatabases,
@@ -292,6 +293,18 @@ private fun loadInstalledServerModuleDefinitions(central: DataSource, modules: L
     } catch (_: SQLException) {
         lockedDefinitions
     }
+}
+
+private fun Application.serverMailSettings(): SmtpSettings? {
+    fun value(key: String) = environment.config.propertyOrNull("mail.$key")?.getString()?.trim().orEmpty()
+    return SmtpSettings(
+        host = value("host"),
+        port = value("port").toIntOrNull() ?: 587,
+        username = value("username"),
+        password = environment.config.propertyOrNull("mail.password")?.getString().orEmpty(),
+        from = value("from"),
+        security = value("security").ifBlank { "starttls" },
+    ).takeIf { it.isUsable }
 }
 
 private fun Application.companyProvisioningConfig(): CompanyProvisioningConfig {

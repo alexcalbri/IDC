@@ -128,6 +128,18 @@ configure_server_env() {
     append_config_value MODULE_CATALOG_URL 'https://github.com/alexcalbri/IDC/tree/master/modules'
     append_config_value MODULE_PACKAGES_ROOT "$APP_DIR/server-modules"
     append_config_value VERSION_CATALOG_URL ''
+    if [[ -f $NGINX_SITE ]] && grep -Eq 'listen[[:space:]]+443' "$NGINX_SITE"; then
+        append_config_value PUBLIC_SCHEME https
+    else
+        append_config_value PUBLIC_SCHEME http
+    fi
+    append_config_value ACME_EMAIL ''
+    append_config_value SMTP_HOST ''
+    append_config_value SMTP_PORT 587
+    append_config_value SMTP_USERNAME ''
+    append_config_value SMTP_PASSWORD ''
+    append_config_value SMTP_FROM ''
+    append_config_value SMTP_SECURITY starttls
     chmod 600 "$CONFIG_FILE"
 }
 
@@ -202,16 +214,20 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V003__create_server_modules.sql.'
     [[ -f database/control/migrations/V004__create_server_settings_and_module_packages.sql ]] ||
         die 'No se encontro database/control/migrations/V004__create_server_settings_and_module_packages.sql.'
+    [[ -f database/control/migrations/V005__create_public_domains.sql ]] ||
+        die 'No se encontro database/control/migrations/V005__create_public_domains.sql.'
 
     source scripts/ubuntu/migrations.sh
     apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
     apply_migration "$db_name" control database/control/migrations/V002__create_provisioning_audit_log.sql
     apply_migration "$db_name" control database/control/migrations/V003__create_server_modules.sql
     apply_migration "$db_name" control database/control/migrations/V004__create_server_settings_and_module_packages.sql
+    apply_migration "$db_name" control database/control/migrations/V005__create_public_domains.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
 SQL
 
     [[ -f database/tenant/migrations/V004__create_application_permissions.sql ]] ||
@@ -220,9 +236,12 @@ SQL
         die 'No se encontro database/tenant/migrations/V005__create_application_user_credentials.sql.'
     [[ -f modules/clientes/migrations/V002__require_customer_contact_fields.sql ]] ||
         die 'No se encontro modules/clientes/migrations/V002__require_customer_contact_fields.sql.'
+    [[ -f modules/clientes/migrations/V003__add_customer_type.sql ]] ||
+        die 'No se encontro modules/clientes/migrations/V003__add_customer_type.sql.'
     while IFS= read -r tenant_db; do
         [[ -n $tenant_db ]] || continue
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V002__require_customer_contact_fields.sql
+        apply_migration "$tenant_db" clientes modules/clientes/migrations/V003__add_customer_type.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V004__create_application_permissions.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V005__create_application_user_credentials.sql
         runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
@@ -277,6 +296,7 @@ git_source pull --ff-only origin "$GIT_REF" 2>/dev/null || true
 TARGET_COMMIT=$(git_source rev-parse --short HEAD)
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     apply_control_migrations
+    bash scripts/ubuntu/domains-sync.sh --install
 fi
 
 runuser -u ideascore -- env JAVA_HOME="$UPDATE_JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true

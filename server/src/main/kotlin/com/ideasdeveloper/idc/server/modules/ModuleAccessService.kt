@@ -29,8 +29,29 @@ import javax.sql.DataSource
 class ModuleAccessService(
     private val central: DataSource,
     private val loginDatabases: LoginDatabases,
+    // Server-wide SMTP configured by the server administrator; modules may allow a company override.
+    val serverMail: SmtpSettings? = null,
 ) {
     private val tokenGenerator = SessionTokenGenerator()
+
+    // Central control-plane connection for module-owned central tables such as public_domains.
+    fun centralConnection(): Connection = central.connection
+
+    fun companyCode(call: ApplicationCall): String? = call.request.header("X-Company-Code")
+        ?.trim()
+        ?.takeIf { it.isNotBlank() }
+
+    /**
+     * Opens an active company's tenant database without a user session.
+     *
+     * Only for public module endpoints (for example a captive portal) that resolved the
+     * company from server-side data such as a registered domain, never from client input.
+     */
+    fun tenantConnectionForCompany(companyCode: String): Connection? {
+        val databaseName = findActiveDatabase(companyCode) ?: return null
+        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return null
+        return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
+    }
 
     fun authorize(call: ApplicationCall, moduleId: String, permissionId: String): ModuleAccessDecision {
         val token = call.request.header(HttpHeaders.Authorization)

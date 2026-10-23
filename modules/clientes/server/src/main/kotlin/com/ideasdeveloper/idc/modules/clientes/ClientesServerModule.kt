@@ -29,13 +29,14 @@ object ClientesServerModule : ServerModule {
     override val migrationPaths = listOf(
         "modules/clientes/migrations/V001__create_customers.sql",
         "modules/clientes/migrations/V002__require_customer_contact_fields.sql",
+        "modules/clientes/migrations/V003__add_customer_type.sql",
     )
 
     override val definition = ModuleDefinition(
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.2.0",
+        version = "0.3.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -54,6 +55,7 @@ object ClientesServerModule : ServerModule {
                     ModuleFieldDefinition("displayName", "Nombre", "text", required = true),
                     ModuleFieldDefinition("primaryEmail", "Correo", "email", required = true),
                     ModuleFieldDefinition("primaryPhone", "Telefono", "phone", required = true),
+                    ModuleFieldDefinition("customerType", "Tipo", "text", readOnly = true),
                 ),
                 actions = listOf(
                     ModuleActionDefinition("list", "Listar clientes", "/modules/clientes/customers", "GET", "clientes.view"),
@@ -112,7 +114,7 @@ object ClientesServerModule : ServerModule {
                 connection.use { tenant ->
                     tenant.prepareStatement(
                         """
-                        SELECT id, display_name, primary_email, primary_phone, status, flexible_attributes::text AS flexible_attributes
+                        SELECT id, display_name, primary_email, primary_phone, status, customer_type, flexible_attributes::text AS flexible_attributes
                         FROM customers
                         WHERE status <> 'archived'
                         ORDER BY lower(display_name), created_at DESC
@@ -236,6 +238,7 @@ object ClientesServerModule : ServerModule {
         primaryEmail = rows.getString("primary_email"),
         primaryPhone = rows.getString("primary_phone"),
         status = rows.getString("status"),
+        customerType = rows.getString("customer_type"),
         dynamicFields = Json.parseToJsonElement(rows.getString("flexible_attributes")).jsonObject,
     )
 
@@ -255,7 +258,7 @@ data class CustomerFieldResponse(val id: String, val fieldKey: String, val label
 data class CustomerFieldsResponse(val fields: List<CustomerFieldResponse>)
 
 @Serializable
-data class CustomerResponse(val id: String, val displayName: String, val primaryEmail: String, val primaryPhone: String, val status: String, val dynamicFields: JsonObject = JsonObject(emptyMap()))
+data class CustomerResponse(val id: String, val displayName: String, val primaryEmail: String, val primaryPhone: String, val status: String, val dynamicFields: JsonObject = JsonObject(emptyMap()), val customerType: String = "general")
 
 @Serializable
 data class CustomersResponse(val customers: List<CustomerResponse>)

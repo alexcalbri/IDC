@@ -9,7 +9,12 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.parameter
 import io.ktor.client.request.put
+import io.ktor.client.request.request
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpMethod
+import io.ktor.http.isSuccess
 import io.ktor.client.request.setBody
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
@@ -20,6 +25,9 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 // Cliente HTTP para consultar metadata de modulos server-driven.
 class ModuleApi(serverUrl: String) {
@@ -172,6 +180,44 @@ class ModuleApi(serverUrl: String) {
     }
 
     // Libera recursos del cliente HTTP.
+    /**
+     * Ejecuta una accion declarada en la metadata del modulo y devuelve el cuerpo como texto.
+     * La UI generica decide como interpretarlo segun el tipo de vista.
+     */
+    suspend fun action(
+        accessToken: String,
+        companyCode: String,
+        action: ModuleActionDefinition,
+        query: Map<String, String> = emptyMap(),
+        body: JsonObject? = null,
+    ): String {
+        if (!action.route.startsWith("/modules/")) throw ModuleException("La accion ${action.title} no es valida.")
+        try {
+            val response = client.request("$baseUrl${action.route}") {
+                method = HttpMethod.parse(action.method.uppercase())
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                query.forEach { (key, value) -> if (value.isNotBlank()) parameter(key, value) }
+                if (body != null) {
+                    contentType(ContentType.Application.Json)
+                    setBody(body)
+                }
+            }
+            val text = response.bodyAsText()
+            if (response.status.isSuccess()) return text
+            val message = runCatching {
+                Json.parseToJsonElement(text).jsonObject["message"]?.jsonPrimitive?.contentOrNull
+            }.getOrNull()
+            throw ModuleException(message ?: "El servidor rechazo la accion ${action.title} (${response.status.value}).")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: ModuleException) {
+            throw exception
+        } catch (_: Exception) {
+            throw ModuleException("No se pudo completar la accion ${action.title}.")
+        }
+    }
+
     fun close() {
         client.close()
     }
@@ -195,6 +241,7 @@ data class CustomerResponse(
     val primaryPhone: String,
     val status: String,
     val dynamicFields: JsonObject = JsonObject(emptyMap()),
+    val customerType: String = "general",
 )
 
 @Serializable

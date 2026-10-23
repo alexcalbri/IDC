@@ -754,8 +754,18 @@ class CompanyProvisioningService(
 
     private fun applyModuleMigrations(connection: Connection, definition: ModuleDefinition) {
         val module = moduleRegistry.module(definition.id) ?: return
+        if (!definition.locked) {
+            // Optional modules may build on base modules (e.g. Clientes); bring those schemas up to date first.
+            applyBaseModuleMigrations(connection)
+        }
         module.migrationPaths.forEach { relativePath ->
             applyMigration(connection, module.migrationModule, Path.of(config.migrationsRoot).resolve(relativePath))
+        }
+        if (module.runtimeTables.isNotEmpty()) {
+            val tables = module.runtimeTables.joinToString(", ") { quoteIdentifier(it) }
+            connection.createStatement().use { statement ->
+                statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON $tables TO ${quoteIdentifier(config.runtimeUser)}")
+            }
         }
     }
 

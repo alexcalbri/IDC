@@ -9,6 +9,9 @@ interface ServerModule {
         get() = definition.id
     val migrationPaths: List<String>
         get() = emptyList()
+    // Tenant tables created by this module's migrations that the runtime role must read and write.
+    val runtimeTables: List<String>
+        get() = emptyList()
 
     fun routes(route: Route, access: ModuleAccessService) {
     }
@@ -56,6 +59,12 @@ data class ModuleFieldDefinition(
     val type: String,
     val required: Boolean = false,
     val dynamic: Boolean = false,
+    // Values allowed by "select" fields.
+    val options: List<String> = emptyList(),
+    val readOnly: Boolean = false,
+    val help: String = "",
+    // Consecutive fields with the same section are grouped under one heading.
+    val section: String = "",
 )
 
 @Serializable

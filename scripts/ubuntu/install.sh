@@ -179,7 +179,10 @@ clean_files_and_services() {
     systemctl stop ideascore-certbot.timer ideascore-certbot.service >/dev/null 2>&1 || true
     systemctl disable ideascore-certbot.timer ideascore-certbot.service >/dev/null 2>&1 || true
     rm -f "$SERVICE_FILE" /etc/systemd/system/ideascore-certbot.service /etc/systemd/system/ideascore-certbot.timer
+    systemctl disable --now ideascore-domains.timer ideascore-domains-renew.timer >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/ideascore-domains{,-renew}.{service,timer} /usr/local/sbin/ideascore-domains-sync
     rm -f /etc/nginx/sites-enabled/ideascore "$NGINX_SITE"
+    rm -f /etc/nginx/sites-enabled/ideascore-domain-* /etc/nginx/sites-available/ideascore-domain-*
     rm -rf "$APP_DIR" "$CONFIG_DIR" "$ACME_ROOT"
     if getent passwd ideascore >/dev/null; then
         userdel -r ideascore >/dev/null 2>&1 || userdel ideascore >/dev/null 2>&1 || true
@@ -482,7 +485,9 @@ for migration in database/core/migrations/V001__create_application_users.sql \
     database/control/migrations/V001__create_server_registry.sql \
     database/control/migrations/V002__create_provisioning_audit_log.sql \
     database/control/migrations/V003__create_server_modules.sql \
-    database/control/migrations/V004__create_server_settings_and_module_packages.sql; do
+    database/control/migrations/V004__create_server_settings_and_module_packages.sql \
+    database/control/migrations/V005__create_public_domains.sql \
+    scripts/ubuntu/domains-sync.sh; do
     [[ -f $migration ]] || die "La rama descargada no incluye $migration. Publica los cambios antes de instalar."
 done
 runuser -u ideascore -- env JAVA_HOME="$JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
@@ -531,6 +536,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V001__create_serv
 apply_migration "$DB_NAME" control database/control/migrations/V002__create_provisioning_audit_log.sql
 apply_migration "$DB_NAME" control database/control/migrations/V003__create_server_modules.sql
 apply_migration "$DB_NAME" control database/control/migrations/V004__create_server_settings_and_module_packages.sql
+apply_migration "$DB_NAME" control database/control/migrations/V005__create_public_domains.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
@@ -551,6 +557,7 @@ GRANT SELECT, INSERT ON provisioning_audit_log TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
 COMMIT;
 SQL
 PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
@@ -576,6 +583,11 @@ install -d -m 700 "$CONFIG_DIR"
     printf 'MODULE_CATALOG_URL=%s\n' "$DEFAULT_MODULE_CATALOG_URL"
     printf 'MODULE_PACKAGES_ROOT=%s\n' "$MODULE_PACKAGES_DIR"
     printf 'VERSION_CATALOG_URL=\n'
+    # Read by the root domain helper (hotspot portals and other module domains).
+    printf 'PUBLIC_SCHEME=%s\n' "$PUBLIC_SCHEME"
+    printf 'ACME_EMAIL=%s\n' "${ACME_EMAIL:-}"
+    # Server-wide SMTP used by modules that send email; edit and restart ideascore to enable.
+    printf 'SMTP_HOST=\nSMTP_PORT=587\nSMTP_USERNAME=\nSMTP_PASSWORD=\nSMTP_FROM=\nSMTP_SECURITY=starttls\n'
 } > "$CONFIG_DIR/server.env"
 chmod 600 "$CONFIG_DIR/server.env"
 unset DB_PASSWORD
@@ -818,7 +830,9 @@ UNIT
         printf 'Renovacion automatica configurada; prueba de renovacion PENDIENTE. No vuelvas a ejecutar todo el instalador.\n'
     fi
 fi
+bash "$APP_DIR/source/scripts/ubuntu/domains-sync.sh" --install
 printf 'Configuracion: /etc/ideascore/server.env\nLogs: sudo journalctl -u ideascore -f\n'
+printf 'Correo SMTP del servidor: completa SMTP_* en server.env y ejecuta sudo systemctl restart ideascore.\n'
 printf 'Login disponible: POST %s://%s/auth/login\n' "$PUBLIC_SCHEME" "$DOMAIN"
 printf 'Aplicacion web disponible: %s://%s/\n' "$PUBLIC_SCHEME" "$DOMAIN"
 printf 'Propietario del servidor: %s\n' "$SERVER_OWNER"
