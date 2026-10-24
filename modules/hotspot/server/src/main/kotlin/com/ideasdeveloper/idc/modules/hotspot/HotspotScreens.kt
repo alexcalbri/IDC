@@ -22,14 +22,14 @@ import com.ideasdeveloper.idc.ui.UiStatus
 import com.ideasdeveloper.idc.ui.UiTable
 import com.ideasdeveloper.idc.ui.UiText
 import com.ideasdeveloper.idc.ui.UiTextStyle
-import com.ideasdeveloper.idc.ui.UiTheme
 import com.ideasdeveloper.idc.ui.UiTone
 import java.sql.Connection
 import java.time.LocalDate
 
 /**
  * Hotspot administration built only from generic UI pieces, modeled on the Conectiva panel:
- * Dashboard, Visitantes, Reportes, Portal cautivo and Configuracion.
+ * Dashboard, Visitantes, Reportes, Portal cautivo and Configuracion. The screens carry no colors:
+ * the app draws them with the theme the user chose.
  */
 object HotspotScreens {
     const val UiRoute = "/modules/hotspot/ui"
@@ -95,19 +95,6 @@ object HotspotScreens {
         body: List<UiNode>,
     ) = UiScreen(
         title = title,
-        theme = UiTheme(
-            background = "#05060B",
-            surface = "#11121B",
-            surfaceAlt = "#181A2A",
-            border = "#26293A",
-            text = "#F5F5F5",
-            muted = "#9EA3B5",
-            accent = settings.primaryColor,
-            onAccent = settings.textColor,
-            success = "#3DD68C",
-            warning = "#FF9B4A",
-            danger = "#FF6B6B",
-        ),
         navigation = UiNavigation(
             title = settings.networkName,
             items = sections.filter { permissions.has(it.permission) }.map { UiNavItem(it.id, it.label, UiNavigate(it.id)) },

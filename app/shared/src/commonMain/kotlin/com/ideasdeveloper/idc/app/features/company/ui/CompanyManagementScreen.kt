@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -156,7 +157,8 @@ fun CompanyManagementScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.horizontalGradient(listOf(primaryCompose, secondaryCompose)))
+            // Vista previa en vivo de los colores de marca que se estan editando.
+            .background(AppTheme.colors.copy(accent = primaryCompose, accentSecondary = secondaryCompose).screenBrush)
     ) {
         AuthenticatedTopBar(
             title = "Empresa",
@@ -204,7 +206,7 @@ fun CompanyManagementScreen(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
                 shape = MaterialTheme.shapes.medium,
-                color = Color.White,
+                color = AppTheme.colors.surface,
             ) {
                 Column(
                     modifier = Modifier.padding(18.dp),
@@ -226,8 +228,8 @@ fun CompanyManagementScreen(
                         onAccentColorChange = { accentColor = it },
                     )
 
-                    error?.let { Text(it, color = Color(0xFFB00020)) }
-                    message?.let { Text(it, color = Color(0xFF176B3A)) }
+                    error?.let { Text(it, color = AppTheme.colors.danger) }
+                    message?.let { Text(it, color = AppTheme.colors.success) }
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -237,7 +239,7 @@ fun CompanyManagementScreen(
                         Button(
                             onClick = ::requestReturnToDashboard,
                             enabled = !isLoading,
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryCompose),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryCompose),
                         ) {
                             Text("Volver al panel")
                         }
@@ -277,7 +279,7 @@ fun CompanyManagementScreen(
                             colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
                         ) {
                             if (isLoading) {
-                                CircularProgressIndicator(color = Color.White, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
+                                CircularProgressIndicator(color = AppTheme.colors.onAccent, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
                             } else {
                                 Text("Guardar")
                             }
@@ -287,7 +289,7 @@ fun CompanyManagementScreen(
                     Text("Exportar e importar", style = MaterialTheme.typography.titleMedium, color = primaryCompose)
                     Text(
                         "Los ZIPs de esta pantalla guardan el perfil de empresa. La restauracion completa de PostgreSQL se realiza fuera de la app con backups operativos del servidor.",
-                        color = Color(0xFF666666),
+                        color = AppTheme.colors.muted,
                     )
                     Button(
                         enabled = !isLoading && serverUrl != null && session?.companyCode != null,
@@ -371,18 +373,18 @@ private fun BackupRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFFF6F6FA), MaterialTheme.shapes.small)
+            .background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(backup.fileName, fontWeight = FontWeight.SemiBold, color = primaryColor)
-        Text("Tamano: ${backup.sizeBytes} bytes", color = Color(0xFF666666))
-        Text("Descarga: ${serverUrl.trimEnd('/')}${backup.downloadUrl}", color = Color(0xFF333333))
+        Text("Tamano: ${backup.sizeBytes} bytes", color = AppTheme.colors.muted)
+        Text("Descarga: ${serverUrl.trimEnd('/')}${backup.downloadUrl}", color = AppTheme.colors.text)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
             Button(
                 enabled = enabled,
                 onClick = onDelete,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = Color(0xFFB00020)),
+                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.danger),
             ) {
                 Text("Eliminar")
             }

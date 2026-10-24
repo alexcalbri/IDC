@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.server.modules
 
 import io.ktor.http.Cookie
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.Parameters
 import io.ktor.http.ContentType
 import io.ktor.http.defaultForFilePath
 import io.ktor.server.response.respondBytes
@@ -12,7 +13,9 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.route
+import com.ideasdeveloper.idc.ui.UiAppThemes
 import kotlinx.serialization.Serializable
+import java.net.URLEncoder
 import java.security.SecureRandom
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -21,6 +24,11 @@ fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
     route("/modules") {
         get {
             call.respond(HttpStatusCode.OK, registry.definitions)
+        }
+
+        // Public so the login screen can use them too; themes hold only colors and names.
+        get("/themes") {
+            call.respond(HttpStatusCode.OK, UiAppThemes(registry.themes()))
         }
 
         get("/{moduleId}/metadata") {
@@ -66,11 +74,28 @@ fun Route.moduleRoutes(registry: ModuleRegistry, access: ModuleAccessService) {
                     )
                 )
             }
-            call.respondRedirect(ui.entry)
+            call.respondRedirect(ui.entry + webThemeQuery(ui.entry, call.request.queryParameters))
         }
     }
 
     registry.installRoutes(this, access)
+}
+
+// Theme the app is using, forwarded to the web module's first page (idc-theme=light|dark and
+// idc-<color>=#RRGGBB) so the module can draw itself with the app colors.
+private val WebThemeColor = Regex("^#[0-9A-Fa-f]{6}$")
+private val WebThemeKeys = listOf("background", "surface", "surfaceAlt", "border", "text", "muted", "accent", "onAccent", "success", "warning", "danger")
+
+private fun webThemeQuery(entry: String, parameters: Parameters): String {
+    val values = buildList {
+        parameters["idc-theme"]?.takeIf { it == "light" || it == "dark" }?.let { add("idc-theme" to it) }
+        WebThemeKeys.forEach { key ->
+            parameters["idc-$key"]?.takeIf { WebThemeColor.matches(it) }?.let { add("idc-$key" to it) }
+        }
+    }
+    if (values.isEmpty()) return ""
+    val query = values.joinToString("&") { (key, value) -> "$key=${URLEncoder.encode(value, Charsets.UTF_8)}" }
+    return (if (entry.contains('?')) "&" else "?") + query
 }
 
 @Serializable

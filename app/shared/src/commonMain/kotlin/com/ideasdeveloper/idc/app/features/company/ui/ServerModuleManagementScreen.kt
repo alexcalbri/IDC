@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,12 +58,8 @@ fun ServerModuleManagementScreen(
     modifier: Modifier = Modifier,
 ) {
     val companyIdentity = remember { CompanyIdentityStore.current() }
-    val primaryColor = remember(companyIdentity.primaryColor) {
-        companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
-    }
-    val secondaryColor = remember(companyIdentity.secondaryColor) {
-        companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2))
-    }
+    val colors = AppTheme.colors
+    val primaryColor = colors.accent
     val scope = rememberCoroutineScope()
     var modules by remember { mutableStateOf<List<ServerModuleResponse>>(emptyList()) }
     var catalogUrl by remember { mutableStateOf(DefaultModuleCatalogUrl) }
@@ -133,7 +130,7 @@ fun ServerModuleManagementScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.horizontalGradient(listOf(primaryColor, secondaryColor)))
+            .background(colors.screenBrush)
     ) {
         AuthenticatedTopBar(
             title = "Modulos del servidor",
@@ -158,7 +155,7 @@ fun ServerModuleManagementScreen(
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
                 shape = MaterialTheme.shapes.medium,
-                color = Color.White,
+                color = AppTheme.colors.surface,
             ) {
                 Column(
                     modifier = Modifier.padding(18.dp),
@@ -211,15 +208,15 @@ fun ServerModuleManagementScreen(
                                 refreshCatalog()
                                 refreshModules()
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
                         ) {
                             Text("Actualizar lista")
                         }
                     }
-                    error?.let { Text(it, color = Color(0xFFB00020)) }
-                    message?.let { Text(it, color = Color(0xFF176B3A)) }
+                    error?.let { Text(it, color = AppTheme.colors.danger) }
+                    message?.let { Text(it, color = AppTheme.colors.success) }
                     if (isLoading) {
-                        Text("Cargando modulos...", color = Color(0xFF666666))
+                        Text("Cargando modulos...", color = AppTheme.colors.muted)
                     }
 
                     modules.forEach { module ->
@@ -348,12 +345,12 @@ private fun ServerModuleRow(
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color(0xFFF6F6FA), MaterialTheme.shapes.small)
+            .background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small)
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
         Text(module.displayName, style = MaterialTheme.typography.titleSmall, color = primaryColor)
-        Text(module.description, color = Color(0xFF666666))
+        Text(module.description, color = AppTheme.colors.muted)
         Text(
             text = buildString {
                 append("Version instalada: ${module.version}")
@@ -365,9 +362,9 @@ private fun ServerModuleRow(
             },
             style = MaterialTheme.typography.bodySmall,
             color = if (module.updateAvailable) {
-                Color(0xFF8A5A00)
+                AppTheme.colors.warning
             } else {
-                Color(0xFF555555)
+                AppTheme.colors.muted
             },
         )
         Text(
@@ -378,7 +375,7 @@ private fun ServerModuleRow(
                 else -> "Instalado sin empresas activas"
             },
             style = MaterialTheme.typography.bodySmall,
-            color = if (module.activeCompanyCount > 0 || module.locked) Color(0xFF8A5A00) else Color(0xFF176B3A),
+            color = if (module.activeCompanyCount > 0 || module.locked) AppTheme.colors.warning else AppTheme.colors.success,
         )
         if (module.installed && !inProgress) {
             // Los modulos base quedan siempre activos una vez creado el espacio del servidor.
@@ -392,7 +389,7 @@ private fun ServerModuleRow(
                 Text(
                     text = if (fixed) "Usar en el servidor (modulo base, siempre activo)" else "Usar en el servidor",
                     style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF333333),
+                    color = AppTheme.colors.text,
                 )
             }
         }
@@ -405,7 +402,7 @@ private fun ServerModuleRow(
                     else -> "No se pudo instalar: $status"
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = if (module.status == "failed" || module.status == "attention") Color(0xFFB00020) else Color(0xFF1A4F9C),
+                color = if (module.status == "failed" || module.status == "attention") AppTheme.colors.danger else AppTheme.colors.accent,
             )
         }
         Row(
@@ -433,8 +430,8 @@ private fun ServerModuleRow(
                 enabled = canDelete,
                 onClick = if (pendingDeletion) onConfirmDelete else onRequestDelete,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (pendingDeletion) Color(0xFFB00020) else Color(0xFFE9E9EF),
-                    contentColor = if (pendingDeletion) Color.White else Color(0xFFB00020),
+                    containerColor = if (pendingDeletion) AppTheme.colors.danger else AppTheme.colors.surfaceAlt,
+                    contentColor = if (pendingDeletion) Color.White else AppTheme.colors.danger,
                 ),
             ) {
                 Text(if (pendingDeletion) "Confirmar eliminar" else "Eliminar del servidor")
@@ -443,7 +440,7 @@ private fun ServerModuleRow(
                 Button(
                     enabled = enabled,
                     onClick = onCancelDelete,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
                 ) {
                     Text("Cancelar")
                 }

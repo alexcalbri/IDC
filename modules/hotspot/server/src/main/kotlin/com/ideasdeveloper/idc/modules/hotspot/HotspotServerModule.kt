@@ -55,7 +55,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con registro de visitantes, codigo por correo y autorizacion en UniFi.",
-        version = "0.2.3",
+        version = "0.2.4",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsManage, "Configurar hotspot", "Permite cambiar dominio, UniFi, correo, tiempos y apariencia del portal."),

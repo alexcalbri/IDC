@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -64,12 +65,8 @@ fun ServerDrivenModuleScreen(
     modifier: Modifier = Modifier,
 ) {
     val companyIdentity = remember { CompanyIdentityStore.current() }
-    val primaryColor = remember(companyIdentity.primaryColor) {
-        companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
-    }
-    val secondaryColor = remember(companyIdentity.secondaryColor) {
-        companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2))
-    }
+    val colors = AppTheme.colors
+    val primaryColor = colors.accent
     var metadata by remember(moduleId) { mutableStateOf<ModuleDefinition?>(null) }
     var error by remember(moduleId) { mutableStateOf<String?>(null) }
     var loading by remember(moduleId) { mutableStateOf(false) }
@@ -104,7 +101,7 @@ fun ServerDrivenModuleScreen(
         Column(
             modifier = modifier
                 .fillMaxSize()
-                .background(Brush.horizontalGradient(listOf(primaryColor, secondaryColor)))
+                .background(colors.screenBrush)
         ) {
             AuthenticatedTopBar(
                 title = definition?.displayName ?: fallbackTitle,
@@ -134,7 +131,7 @@ fun ServerDrivenModuleScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.horizontalGradient(listOf(primaryColor, secondaryColor)))
+            .background(colors.screenBrush)
     ) {
         AuthenticatedTopBar(
             title = metadata?.displayName ?: fallbackTitle,
@@ -158,7 +155,7 @@ fun ServerDrivenModuleScreen(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
-                color = Color.White,
+                color = AppTheme.colors.surface,
                 shape = MaterialTheme.shapes.medium,
             ) {
                 Column(
@@ -168,7 +165,7 @@ fun ServerDrivenModuleScreen(
                 ) {
                     when {
                         loading -> CircularProgressIndicator(color = primaryColor)
-                        error != null -> Text(error.orEmpty(), color = Color(0xFFB00020))
+                        error != null -> Text(error.orEmpty(), color = AppTheme.colors.danger)
                         metadata != null && moduleId == "clientes" -> CustomerServerDrivenContent(
                             serverUrl = serverUrl,
                             session = session,
@@ -176,15 +173,15 @@ fun ServerDrivenModuleScreen(
                         )
                         metadata != null && ui != null && callContext == null -> Text(
                             "Este modulo requiere iniciar sesion en una empresa.",
-                            color = Color(0xFFB00020),
+                            color = AppTheme.colors.danger,
                         )
                         metadata != null && ui != null -> Text(
                             "Este modulo usa un tipo de interfaz (${ui.type}) que esta version de la app no conoce.",
-                            color = Color(0xFF666666),
+                            color = AppTheme.colors.muted,
                         )
                         metadata != null -> {
-                            Text(metadata?.description.orEmpty(), color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
-                            Text("Este modulo no declara una interfaz para la app.", color = Color(0xFF666666))
+                            Text(metadata?.description.orEmpty(), color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
+                            Text("Este modulo no declara una interfaz para la app.", color = AppTheme.colors.muted)
                         }
                     }
                     Spacer(modifier = Modifier.height(8.dp))
@@ -304,7 +301,7 @@ private fun CustomerServerDrivenContent(
         colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
     ) { Text(if (editingId == null) "Crear cliente" else "Guardar cambios") }
     if (editingId != null) {
-        Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor)) { Text("Cancelar edicion") }
+        Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) { Text("Cancelar edicion") }
     }
 
     Text("Campos dinamicos de Clientes", style = MaterialTheme.typography.titleMedium, color = primaryColor)
@@ -339,15 +336,15 @@ private fun CustomerServerDrivenContent(
         colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
     ) { Text("Agregar campo") }
 
-    message?.let { Text(it, color = Color(0xFF176B3A)) }
-    error?.let { Text(it, color = Color(0xFFB00020)) }
+    message?.let { Text(it, color = AppTheme.colors.success) }
+    error?.let { Text(it, color = AppTheme.colors.danger) }
     Text("Clientes", style = MaterialTheme.typography.titleMedium, color = primaryColor)
     if (customers.isEmpty()) {
-        Text("Aun no hay clientes.", color = Color(0xFF666666))
+        Text("Aun no hay clientes.", color = AppTheme.colors.muted)
     } else {
         customers.forEach { customer ->
-            Column(modifier = Modifier.fillMaxWidth().background(Color(0xFFF6F6FA), MaterialTheme.shapes.small).padding(10.dp)) {
-                Text("${customer.displayName} - ${customer.primaryEmail} - ${customer.primaryPhone}" + if (customer.customerType != "general") " (${customer.customerType})" else "", color = Color(0xFF333333), fontWeight = FontWeight.SemiBold)
+            Column(modifier = Modifier.fillMaxWidth().background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small).padding(10.dp)) {
+                Text("${customer.displayName} - ${customer.primaryEmail} - ${customer.primaryPhone}" + if (customer.customerType != "general") " (${customer.customerType})" else "", color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
                 androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
                         editingId = customer.id
@@ -355,7 +352,7 @@ private fun CustomerServerDrivenContent(
                         email = customer.primaryEmail
                         phone = customer.primaryPhone
                         dynamicValues = customer.dynamicFields.mapValues { it.value.toString().trim('"') }
-                    }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE9E9EF), contentColor = primaryColor)) { Text("Editar") }
+                    }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) { Text("Editar") }
                     Button(onClick = {
                         val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
                         loading = true
@@ -371,7 +368,7 @@ private fun CustomerServerDrivenContent(
                                 loading = false
                             }
                         }
-                    }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB00020))) { Text("Eliminar") }
+                    }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.danger)) { Text("Eliminar") }
                 }
             }
         }

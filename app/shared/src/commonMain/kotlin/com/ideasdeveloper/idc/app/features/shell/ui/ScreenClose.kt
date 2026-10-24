@@ -18,6 +18,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 
 // Altura de AuthenticatedTopBar (boton de 48dp + 18dp arriba y abajo); las vistas empiezan debajo.
 val AuthenticatedTopBarHeight = 84.dp
@@ -36,8 +37,8 @@ fun ClosableView(onClose: (() -> Unit)?, modifier: Modifier = Modifier, content:
     }
 }
 
-// Circulo visible de 30dp dentro de un area tactil de 40dp; el fondo oscuro translucido se ve
-// sobre contenidos claros y oscuros.
+// Circulo visible de 30dp dentro de un area tactil de 40dp; translucido oscuro en temas claros y
+// claro en temas oscuros para que se vea sobre cualquier contenido.
 @Composable
 private fun ViewCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) {
     Box(
@@ -50,7 +51,10 @@ private fun ViewCloseButton(onClick: () -> Unit, modifier: Modifier = Modifier) 
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.size(30.dp).background(Color.Black.copy(alpha = 0.45f), CircleShape),
+            modifier = Modifier.size(30.dp).background(
+                if (AppTheme.colors.dark) Color.White.copy(alpha = 0.22f) else Color.Black.copy(alpha = 0.45f),
+                CircleShape,
+            ),
         ) {
             Canvas(modifier = Modifier.size(11.dp)) {
                 val stroke = 2.dp.toPx()

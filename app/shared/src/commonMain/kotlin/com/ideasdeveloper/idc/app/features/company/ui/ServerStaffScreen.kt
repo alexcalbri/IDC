@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,14 +39,14 @@ fun ServerStaffScreen(
     modifier: Modifier = Modifier,
 ) {
     val companyIdentity = remember { CompanyIdentityStore.current() }
-    val primaryColor = remember(companyIdentity.primaryColor) { companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA)) }
-    val secondaryColor = remember(companyIdentity.secondaryColor) { companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2)) }
+    val colors = AppTheme.colors
+    val primaryColor = colors.accent
     val workspaceCode = session?.workspaceCompanyCode
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.horizontalGradient(listOf(primaryColor, secondaryColor)))
+            .background(colors.screenBrush)
     ) {
         AuthenticatedTopBar(
             title = "Personal del servidor",
@@ -67,7 +68,7 @@ fun ServerStaffScreen(
         ) {
             Surface(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
-                color = Color.White,
+                color = AppTheme.colors.surface,
                 shape = MaterialTheme.shapes.medium,
             ) {
                 Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -76,13 +77,13 @@ fun ServerStaffScreen(
                         Text(
                             "Activa al menos un modulo con \"Usar en el servidor\" en Modulos del servidor. " +
                                 "Eso crea el espacio del servidor y despues podras crear su personal aqui.",
-                            color = Color(0xFF444444),
+                            color = AppTheme.colors.muted,
                         )
                     } else {
                         Text(
                             "El personal inicia sesion con su usuario, su contrasena y el codigo de empresa \"$workspaceCode\". " +
                                 "Solo ve los modulos para los que tiene permiso.",
-                            color = Color(0xFF444444),
+                            color = AppTheme.colors.muted,
                         )
                         CompanyUsersSection(
                             serverUrl = serverUrl,

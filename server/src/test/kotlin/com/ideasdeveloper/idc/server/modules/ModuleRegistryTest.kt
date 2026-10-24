@@ -1,5 +1,7 @@
 package com.ideasdeveloper.idc.server.modules
 
+import com.ideasdeveloper.idc.ui.UiAppTheme
+import com.ideasdeveloper.idc.ui.UiTheme
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -31,5 +33,21 @@ class ModuleRegistryTest {
         assertFalse(registry.isInstalled("hotspot"))
         assertTrue(registry.isInstalled("clientes"))
         assertEquals(listOf("clientes"), registry.definitions.map { it.id })
+    }
+
+    @Test
+    fun onlyInstalledModulesPublishTheirValidThemes() {
+        val themed = object : ServerModule {
+            override val definition = ModuleDefinition(id = "marca", displayName = "Marca", description = "Marca")
+            override val themes = listOf(
+                UiAppTheme("oceano", "Oceano", dark = true, colors = UiTheme(background = "#04131F")),
+                UiAppTheme("roto", "Roto", dark = false, colors = UiTheme(surface = "white")),
+            )
+        }
+        val registry = ModuleRegistry(listOf(module("clientes", locked = true), themed))
+        assertEquals(emptyList(), registry.themes())
+
+        registry.install("marca")
+        assertEquals(listOf("marca.oceano"), registry.themes().map { it.id })
     }
 }

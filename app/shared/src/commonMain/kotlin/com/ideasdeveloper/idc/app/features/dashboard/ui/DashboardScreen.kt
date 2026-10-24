@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.dashboard.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -43,12 +44,8 @@ fun DashboardScreen(
     val enabledModules = session?.enabledModules.orEmpty()
     // Carga la identidad visual de la empresa para pintar el dashboard.
     val companyIdentity = remember { CompanyIdentityStore.current() }
-    val primaryColor = remember(companyIdentity.primaryColor) {
-        companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
-    }
-    val secondaryColor = remember(companyIdentity.secondaryColor) {
-        companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2))
-    }
+    val colors = AppTheme.colors
+    val primaryColor = colors.accent
     var versionNotice by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(serverUrl, session?.role) {
@@ -70,11 +67,7 @@ fun DashboardScreen(
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(
-                brush = Brush.horizontalGradient(
-                    colors = listOf(primaryColor, secondaryColor)
-                )
-            )
+            .background(colors.screenBrush)
     ) {
         // Renderiza la barra superior autenticada con acceso a ajustes y cierre de sesion.
         AuthenticatedTopBar(
@@ -97,20 +90,20 @@ fun DashboardScreen(
                 text = "Panel de control",
                 fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
-                color = Color.White,
+                color = AppTheme.colors.onScreen,
             )
 
             Text(
                 text = companyIdentity.name,
                 fontSize = 16.sp,
-                color = Color(0xFFE0E0E0),
+                color = AppTheme.colors.onScreenMuted,
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 24.dp)
             )
 
             versionNotice?.let {
                 Text(
                     text = it,
-                    color = Color.White,
+                    color = AppTheme.colors.onScreen,
                     modifier = Modifier.padding(bottom = 16.dp),
                 )
             }
@@ -213,7 +206,7 @@ private fun DashboardActionCard(
         modifier = Modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
-            containerColor = Color.White,
+            containerColor = AppTheme.colors.surface,
             contentColor = primaryColor,
         ),
     ) {
@@ -246,7 +239,7 @@ private fun DashboardActionCard(
                 Text(
                     text = description,
                     fontSize = 14.sp,
-                    color = Color(0xFF666666)
+                    color = AppTheme.colors.muted
                 )
             }
         }

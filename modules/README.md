@@ -216,7 +216,7 @@ is the next `UiScreen`; optional confirmation), `UiDownload` (text file such as
 CSV; saved to Downloads on Android and desktop, to Files > On my iPhone > IDC on
 iOS, downloaded by the browser on web), `UiOpenUrl`. Any action with `formId` carries that form's values.
 `UiScreen.navigation` adds module sections (sidebar on wide screens, top bar on
-phones) and `UiScreen.theme` sets the module colors.
+phones). Screens carry no colors: see [Colors and themes](#colors-and-themes).
 
 Compatibility: clients skip pieces and actions they do not know, so a newer
 server never breaks an older app. New piece types are added to the shared
@@ -240,3 +240,60 @@ start, the app offers to open the module in the system browser. `/modules/{modul
 cookies limited to `/modules/{moduleId}/`, so the module's pages and API calls
 pass the same `requireModulePermission` / `requireModuleAccess` checks without
 handling tokens. The session token never appears in a URL.
+
+The first page also receives the app theme as query parameters, so it can
+draw itself with the same colors: `idc-theme=light|dark` and
+`idc-background`, `idc-surface`, `idc-surfaceAlt`, `idc-border`, `idc-text`,
+`idc-muted`, `idc-accent`, `idc-onAccent`, `idc-success`, `idc-warning`,
+`idc-danger` as `#RRGGBB`. Keep them (for example in CSS variables) for the
+rest of the session.
+
+## Colors and themes
+
+The app has two built-in themes that every user picks in **Ajustes >
+Apariencia** (saved on the device; **Automatico** follows the system):
+
+- **Claro**: the core palette, white cards over the company brand gradient.
+- **Oscuro**: the hotspot panel palette (`#05060B` background, `#11121B` cards).
+
+The company brand colors (Empresa > primary and secondary) are always the
+accent: buttons, highlights and the gradient.
+
+Modules must respect the app colors. Native pieces are drawn with the active
+theme, so a module never sets colors on its screens (`UiScreen.theme` is
+ignored and only kept so older packages still load). Use tones (`success`,
+`warning`, `danger`, `info`) to give meaning to texts, metrics and statuses.
+Web modules read the theme from the query parameters above.
+
+A module can add themes to the app. They appear in Ajustes next to Claro and
+Oscuro while the module is installed on the server (`GET /modules/themes`,
+public), and they paint the whole app, not only the module:
+
+```kotlin
+object ExampleServerModule : ServerModule {
+    override val themes = listOf(
+        UiAppTheme(
+            id = "ocean",
+            name = "Oceano",
+            dark = true,
+            colors = UiTheme(
+                background = "#04131F",
+                surface = "#0B2233",
+                surfaceAlt = "#12304A",
+                border = "#1E4560",
+                text = "#EAF6FF",
+                muted = "#8FB3C9",
+                success = "#3DD6A0",
+                warning = "#FFB454",
+                danger = "#FF6B6B",
+            ),
+        ),
+    )
+}
+```
+
+Colors are `#RRGGBB`; a missing one comes from the built-in theme of the same
+mode (`dark`). `accent` and `onAccent` are ignored because the accent is the
+company brand. `brandBackground = true` paints the screen background with the
+brand gradient, as Claro does. The server publishes the theme as
+`<moduleId>.<id>` and skips themes with invalid colors.

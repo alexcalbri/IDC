@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -71,7 +72,7 @@ fun CompanyUsersSection(
     }
 
     Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = primaryColor)
-    Text(description, color = Color(0xFF666666))
+    Text(description, color = AppTheme.colors.muted)
     OutlinedTextField(
         value = newUsername,
         onValueChange = { newUsername = it },
@@ -106,7 +107,7 @@ fun CompanyUsersSection(
             )
             Column {
                 Text(permission.title, fontWeight = FontWeight.SemiBold, color = primaryColor)
-                Text("${permission.moduleId}: ${permission.description}", color = Color(0xFF666666))
+                Text("${permission.moduleId}: ${permission.description}", color = AppTheme.colors.muted)
             }
         }
     }
@@ -150,21 +151,21 @@ fun CompanyUsersSection(
     ) {
         Text("Crear usuario")
     }
-    message?.let { Text(it, color = Color(0xFF176B3A)) }
-    error?.let { Text(it, color = Color(0xFFB00020)) }
+    message?.let { Text(it, color = AppTheme.colors.success) }
+    error?.let { Text(it, color = AppTheme.colors.danger) }
     users.forEach { user ->
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color(0xFFF6F6FA), MaterialTheme.shapes.small)
+                .background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small)
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text(user.username, fontWeight = FontWeight.SemiBold, color = primaryColor)
-            Text(if (user.isActive) "Activo" else "Inactivo", color = Color(0xFF666666))
+            Text(if (user.isActive) "Activo" else "Inactivo", color = AppTheme.colors.muted)
             Text(
                 "Permisos: ${user.permissions.ifEmpty { listOf("sin permisos") }.joinToString()}",
-                color = Color(0xFF333333),
+                color = AppTheme.colors.text,
             )
         }
     }

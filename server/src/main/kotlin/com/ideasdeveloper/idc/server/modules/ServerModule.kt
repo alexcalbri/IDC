@@ -1,6 +1,8 @@
 package com.ideasdeveloper.idc.server.modules
 
 import com.ideasdeveloper.idc.ui.ModuleUiEntry
+import com.ideasdeveloper.idc.ui.UiAppTheme
+import com.ideasdeveloper.idc.ui.isValid
 import java.util.concurrent.ConcurrentHashMap
 import io.ktor.server.routing.Route
 import kotlinx.serialization.Serializable
@@ -13,6 +15,9 @@ interface ServerModule {
         get() = emptyList()
     // Tenant tables created by this module's migrations that the runtime role must read and write.
     val runtimeTables: List<String>
+        get() = emptyList()
+    // Themes this module adds to the app while it is installed (see UiAppTheme).
+    val themes: List<UiAppTheme>
         get() = emptyList()
 
     fun routes(route: Route, access: ModuleAccessService) {
@@ -152,6 +157,13 @@ class ModuleRegistry(
     }
 
     internal fun routedModules(): Collection<ServerModule> = modulesById.values
+
+    // Valid themes of installed modules, with ids prefixed by the module id.
+    fun themes(): List<UiAppTheme> = installedIds.sorted().flatMap { moduleId ->
+        modulesById[moduleId]?.themes.orEmpty()
+            .filter { it.id.isNotBlank() && it.name.isNotBlank() && it.colors.isValid() }
+            .map { it.copy(id = "$moduleId.${it.id}") }
+    }
 
     private fun definitionOrExternal(moduleId: String): ModuleDefinition? =
         modulesById[moduleId]?.definition ?: externalDefinitionsById[moduleId]
