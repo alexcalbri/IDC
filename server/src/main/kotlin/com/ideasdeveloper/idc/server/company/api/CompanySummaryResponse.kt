@@ -39,6 +39,9 @@ data class ServerModuleResponse(
     // Background installation of an optional module: installing, restarting or failed.
     val status: String? = null,
     val statusMessage: String? = null,
+    // The catalog offers a newer version, or the installed one is newer than the catalog's.
+    val updateAvailable: Boolean = false,
+    val newerThanCatalog: Boolean = false,
 )
 
 @Serializable

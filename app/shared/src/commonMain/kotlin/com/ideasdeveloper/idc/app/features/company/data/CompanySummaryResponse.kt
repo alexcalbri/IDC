@@ -42,6 +42,9 @@ data class ServerModuleResponse(
     // Instalacion en segundo plano de un modulo opcional: installing, restarting o failed.
     val status: String? = null,
     val statusMessage: String? = null,
+    // El servidor compara versiones: hay una mas nueva en el catalogo, o la instalada es mas nueva.
+    val updateAvailable: Boolean = false,
+    val newerThanCatalog: Boolean = false,
 )
 
 @Serializable

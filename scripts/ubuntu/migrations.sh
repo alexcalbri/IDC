@@ -2,10 +2,12 @@
 # Sourced by the fresh-install script. Run as the provisioning administrator.
 # Migration files must contain one outer BEGIN/COMMIT and transactional SQL.
 apply_migration() {
-    local target=$1 module=$2 file=$3 version checksum
+    local target=$1 module=$2 file=$3 version checksum trimmed_checksum
     version=$(basename "$file" .sql)
     checksum=$(sha256sum "$file")
     checksum=${checksum%% *}
+    # Earlier servers recorded the hash of the trimmed text; both mean the migration is unchanged.
+    trimmed_checksum=$(python3 -c 'import hashlib, pathlib, sys; print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8").strip().encode()).hexdigest())' "$file")
     # Keep the history record and schema changes in the same transaction.
     {
         cat <<'SQL'
@@ -19,7 +21,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
     PRIMARY KEY (module, version)
 );
 SELECT EXISTS (SELECT 1 FROM schema_migrations WHERE module = :'module' AND version = :'version') AS applied,
-       EXISTS (SELECT 1 FROM schema_migrations WHERE module = :'module' AND version = :'version' AND checksum <> :'checksum') AS changed \gset
+       EXISTS (SELECT 1 FROM schema_migrations WHERE module = :'module' AND version = :'version' AND checksum <> :'checksum' AND checksum <> :'trimmed_checksum') AS changed \gset
 \if :changed
     DO $$ BEGIN RAISE EXCEPTION 'An applied migration has changed'; END $$;
 \endif
@@ -42,5 +44,5 @@ INSERT INTO schema_migrations (module, version, checksum) VALUES (:'module', :'v
 COMMIT;
 SQL
     } | runuser -u postgres -- psql -X -d "$target" -v ON_ERROR_STOP=1 \
-        -v module="$module" -v version="$version" -v checksum="$checksum"
+        -v module="$module" -v version="$version" -v checksum="$checksum" -v trimmed_checksum="$trimmed_checksum"
 }

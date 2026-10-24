@@ -133,6 +133,9 @@ fun Application.module() {
         modulePackageBuilder = ModulePackageBuilder.forRunningServer(modulePackagesRoot),
         requestRestart = ::restartToLoadModules,
     )
+    // Applies migrations of newly loaded module versions to the companies that use them, without
+    // delaying startup.
+    Thread({ companyProvisioning.applyPendingModuleMigrations() }, "module-migrations").apply { isDaemon = true }.start()
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
     val moduleAccessService = ModuleAccessService(DatabaseFactory.getDataSource(), loginDatabases, serverMailSettings(), moduleRegistry::isInstalled)
     val companySelfService = CompanySelfService(
@@ -334,17 +337,10 @@ private fun loadInstalledServerModuleDefinitions(central: DataSource, modules: L
                     buildList {
                         addAll(lockedDefinitions)
                         while (rows.next()) {
+                            // Only modules whose code is loaded count as installed. Rows left by older
+                            // servers or by a package that no longer loads show as available to install.
                             val moduleId = rows.getString("module_id")
-                            val localDefinition = modules.firstOrNull { it.definition.id == moduleId }?.definition
-                            add(
-                                localDefinition ?: ModuleDefinition(
-                                    id = moduleId,
-                                    displayName = rows.getString("display_name"),
-                                    description = rows.getString("description"),
-                                    version = rows.getString("version"),
-                                    locked = rows.getBoolean("locked"),
-                                )
-                            )
+                            modules.firstOrNull { it.definition.id == moduleId }?.definition?.let(::add)
                         }
                     }.distinctBy { it.id }
                 }

@@ -310,7 +310,7 @@ private fun ServerModuleRow(
     onConfirmDelete: () -> Unit,
 ) {
     val inProgress = module.status == "installing" || module.status == "restarting"
-    val updateAvailable = module.installed && !module.locked && !module.latestVersion.isNullOrBlank() && module.latestVersion != module.version
+    val updateAvailable = module.updateAvailable
     val canInstall = enabled && !inProgress && (!module.installed || updateAvailable)
     val canDelete = enabled && module.installed && !module.locked && module.activeCompanyCount == 0
     Column(
@@ -325,12 +325,14 @@ private fun ServerModuleRow(
         Text(
             text = buildString {
                 append("Version instalada: ${module.version}")
-                module.latestVersion
-                    ?.takeIf { it.isNotBlank() && it != module.version }
-                    ?.let { append(" · Disponible: $it") }
+                when {
+                    module.updateAvailable -> append(" · Disponible: ${module.latestVersion}")
+                    // Cambiar a un catalogo con una version anterior nunca degrada el modulo.
+                    module.newerThanCatalog -> append(" · Mas nueva que la del catalogo (${module.latestVersion})")
+                }
             },
             style = MaterialTheme.typography.bodySmall,
-            color = if (!module.latestVersion.isNullOrBlank() && module.latestVersion != module.version) {
+            color = if (module.updateAvailable) {
                 Color(0xFF8A5A00)
             } else {
                 Color(0xFF555555)
@@ -351,10 +353,11 @@ private fun ServerModuleRow(
                 text = when (module.status) {
                     "installing" -> "Instalando: $status..."
                     "restarting" -> "$status..."
+                    "attention" -> "Atencion: $status"
                     else -> "No se pudo instalar: $status"
                 },
                 style = MaterialTheme.typography.bodySmall,
-                color = if (module.status == "failed") Color(0xFFB00020) else Color(0xFF1A4F9C),
+                color = if (module.status == "failed" || module.status == "attention") Color(0xFFB00020) else Color(0xFF1A4F9C),
             )
         }
         Row(

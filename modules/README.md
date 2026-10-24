@@ -141,6 +141,29 @@ server still starts) and must be installed again.
 Locally, `./gradlew :server:run` loads optional modules from the source tree, and
 every build compiles them to catch errors early.
 
+## Versions and updates
+
+- Publishing a new version means raising `version` in `module.json` and in the
+  `ModuleDefinition` (the build requires both to match) on the catalog branch.
+  Changing the code without raising the version is invisible to servers.
+- When the server owner opens *Modulos del servidor*, the server compares the
+  installed version with the catalog's. Versions compare numerically
+  (`0.10.0` > `0.9.0`; `1.0.0-beta` < `1.0.0`). *Actualizar* appears only when the
+  catalog version is newer; an older catalog version (for example after switching
+  from `develop` to `master`) is reported but never installed, so a module is never
+  downgraded.
+- Updating rebuilds the module from the catalog branch. If the new version does not
+  compile against the installed core, the update fails and the current version keeps
+  running.
+- New migrations of a module version are applied to every company that already uses
+  the module when the server starts with that version; companies that enable the
+  module later receive them on activation. Applied migrations are recorded and never
+  run twice. A failing migration is logged and shown on the module as needing
+  attention; other companies continue.
+- Never edit a released migration; add `V00N__...sql`. The server and
+  `scripts/ubuntu/migrations.sh` reject an applied migration whose content changed.
+- Base modules (Clientes, Empresa) are updated with the server (`update.sh`).
+
 ## Module user interface
 
 Modules are independent of the app: the app never contains module-specific

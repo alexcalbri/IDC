@@ -13,6 +13,7 @@ import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.idc.server.modules.RemoteModulePackage
+import com.ideasdeveloper.idc.ModuleVersion
 import com.ideasdeveloper.idc.server.modules.GitHubLocation
 import com.ideasdeveloper.idc.server.modules.ModuleBuildException
 import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
@@ -465,11 +466,16 @@ class CompanyProvisioningService(
     private fun moduleResponse(definition: ModuleDefinition, remotePackage: RemoteModulePackage?): ServerModuleResponse {
         val installedPackage = installedPackage(definition.id)
         val state = installStates[definition.id]
+        val installedVersion = installedPackage?.version ?: definition.version
+        val catalogVersion = remotePackage?.definition?.version
+        val installed = moduleRegistry.isInstalled(definition.id)
+        // Base modules are updated with the server, never from the catalog.
+        val comparable = installed && !definition.locked && catalogVersion != null
         return ServerModuleResponse(
             moduleId = definition.id,
             displayName = definition.displayName,
             description = definition.description,
-            version = installedPackage?.version ?: definition.version,
+            version = installedVersion,
             latestVersion = remotePackage?.definition?.version,
             locked = definition.locked,
             installed = moduleRegistry.isInstalled(definition.id),
@@ -479,6 +485,8 @@ class CompanyProvisioningService(
             installedPackagePath = installedPackage?.installedPackagePath,
             status = state?.status,
             statusMessage = state?.message,
+            updateAvailable = comparable && ModuleVersion.isNewer(catalogVersion!!, installedVersion),
+            newerThanCatalog = comparable && ModuleVersion.isNewer(installedVersion, catalogVersion!!),
         )
     }
 
@@ -522,8 +530,10 @@ class CompanyProvisioningService(
             return moduleResponse(definition, remotePackage)
         }
 
-        val update = moduleRegistry.isPackaged(definition.id) && remotePackage != null &&
-            remotePackage.definition.version != moduleRegistry.loadedVersion(definition.id)
+        // Only a newer catalog version replaces a loaded package; an older one never downgrades it.
+        val loadedVersion = moduleRegistry.loadedVersion(definition.id)
+        val update = moduleRegistry.isPackaged(definition.id) && remotePackage != null && loadedVersion != null &&
+            ModuleVersion.isNewer(remotePackage.definition.version, loadedVersion)
         if (moduleRegistry.hasCode(definition.id) && !update) {
             activateLoadedModule(definition)
             return moduleResponse(definition, remotePackage)
@@ -554,6 +564,62 @@ class CompanyProvisioningService(
                 connection.autoCommit = true
             }
         }
+    }
+
+    /**
+     * Brings every company up to date with the migrations of the modules it uses: base modules for
+     * all companies and optional modules where they are enabled. Runs at startup, so a module
+     * version loaded after an installation or update applies its new migrations to the companies
+     * that already had the module. Applied migrations are skipped (schema_migrations).
+     */
+    fun applyPendingModuleMigrations() {
+        val provisioningRole = firstServerOwnerRole() ?: run {
+            log.warn("No server owner found; pending module migrations were not applied.")
+            return
+        }
+        val companies = central.connection.use { connection ->
+            connection.prepareStatement("SELECT code, database_name FROM companies ORDER BY code").use { query ->
+                query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
+            }
+        }
+        companies.forEach { (companyCode, databaseName) ->
+            val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return@forEach
+            try {
+                tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+                    val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
+                        query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+                    }
+                    moduleRegistry.definitions
+                        .filter { (it.locked || it.id in enabled) && moduleRegistry.module(it.id) != null }
+                        .forEach { definition ->
+                            try {
+                                applyModuleMigrations(tenant, definition)
+                            } catch (failure: Exception) {
+                                log.error("Migrations of module {} failed for company {}", definition.id, companyCode, failure)
+                                installStates[definition.id] = ModuleInstallState(
+                                    InstallStatus.Attention,
+                                    "Una migracion fallo en la empresa $companyCode: ${failure.message}",
+                                )
+                            }
+                        }
+                }
+            } catch (failure: Exception) {
+                log.error("Pending module migrations could not run for company {}", companyCode, failure)
+            }
+        }
+    }
+
+    private fun firstServerOwnerRole(): String? = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT users.postgres_role
+            FROM server_owners owners
+            JOIN application_users users ON users.id = owners.user_id
+            WHERE users.is_active
+            ORDER BY users.postgres_role
+            LIMIT 1
+            """.trimIndent()
+        ).use { query -> query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null } }
     }
 
     private fun buildAndInstall(definition: ModuleDefinition, builder: ModulePackageBuilder, source: GitHubLocation) {
@@ -824,7 +890,10 @@ class CompanyProvisioningService(
             "Migration $relativePath must have outer BEGIN/COMMIT"
         }
         val version = relativePath.substringAfterLast('/').removeSuffix(".sql")
-        val checksum = sha256(sql)
+        // scripts/ubuntu/migrations.sh hashes the whole file; earlier servers hashed the trimmed text.
+        // Either one identifies an unchanged migration, so both installers can share tenants.
+        val checksum = sha256(content)
+        val acceptedChecksums = setOf(checksum, sha256(sql))
         connection.autoCommit = false
         try {
             connection.createStatement().use { statement ->
@@ -845,7 +914,7 @@ class CompanyProvisioningService(
                 query.setString(2, version)
                 query.executeQuery().use { rows ->
                     if (rows.next()) {
-                        if (rows.getString(1) != checksum) {
+                        if (rows.getString(1) !in acceptedChecksums) {
                             throw CompanyProvisioningException("La migracion $version ya fue aplicada con otro checksum.")
                         }
                         connection.commit()
@@ -1129,6 +1198,8 @@ private object InstallStatus {
     const val Installing = "installing"
     const val Restarting = "restarting"
     const val Failed = "failed"
+    // Installed and loaded, but something needs the server owner's attention (e.g. a migration).
+    const val Attention = "attention"
 }
 
 private data class ModuleInstallState(val status: String, val message: String)
