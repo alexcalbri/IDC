@@ -74,6 +74,25 @@ class HotspotSettingsTest {
     }
 
     @Test
+    fun successUrlsAreACommaSeparatedList() {
+        val merged = HotspotSettingsRepository.merge(defaults, values("successUrl" to " https://a.test ,, https://b.test/x?y=1 "))
+        assertEquals("https://a.test, https://b.test/x?y=1", merged.successUrl)
+        assertEquals(listOf("https://a.test", "https://b.test/x?y=1"), merged.successUrls)
+        assertNull(HotspotSettingsRepository.merge(defaults, values("successUrl" to " , ")).successUrl)
+        assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("successUrl" to "https://a.test, ftp://b.test")) }
+    }
+
+    @Test
+    fun successPageRedirectsAndFormsSubmitOnce() {
+        val success = HotspotPortalPages.success(defaults, "Ana", "https://a.test/?q=\"x\"")
+        assertTrue(success.contains("http-equiv=\"refresh\" content=\"3;url=https://a.test/?q=&quot;x&quot;\""))
+        assertFalse(HotspotPortalPages.success(defaults, "Ana", null).contains("http-equiv"))
+        val code = HotspotPortalPages.code(defaults, "id", "ana@test.com", "")
+        assertTrue(code.contains("data-busy=\"Conectando...\""))
+        assertTrue(code.contains("button.disabled = true"))
+    }
+
+    @Test
     fun portalEscapesUserContent() {
         val html = HotspotPortalPages.form(
             defaults.copy(portalTitle = "<script>alert(1)</script>"),

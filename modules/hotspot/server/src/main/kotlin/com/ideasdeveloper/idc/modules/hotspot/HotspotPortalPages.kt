@@ -38,7 +38,7 @@ object HotspotPortalPages {
                 <span>${esc(settings.consentText)}${legalLinks(settings)}</span>
               </label>
               ${guestFields(guest)}
-              <button type="submit">Enviar codigo</button>
+              <button type="submit" data-busy="Enviando codigo...">Enviar codigo</button>
             </form>
         """.trimIndent(),
     )
@@ -55,22 +55,24 @@ object HotspotPortalPages {
               <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" maxlength="6" required class="code">
               <input type="hidden" name="pending" value="${esc(pendingId)}">
               <input type="hidden" name="url" value="${esc(continueUrl)}">
-              <button type="submit">Conectarme al WiFi</button>
+              <button type="submit" data-busy="Conectando...">Conectarme al WiFi</button>
             </form>
             <p class="small"><a href="$BasePath/">Volver a empezar</a></p>
         """.trimIndent(),
     )
 
+    // [continueUrl] opens automatically after a few seconds; the button lets the guest go right away.
     fun success(settings: HotspotSettings, name: String, continueUrl: String?): String = page(
         settings,
         header = "<h1>${esc(settings.portalTitle)}</h1>",
+        head = continueUrl?.let { "<meta http-equiv=\"refresh\" content=\"$RedirectSeconds;url=${esc(it)}\">" }.orEmpty(),
         body = """
             <div class="center">
               <div class="check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
               <h2>Estas conectado</h2>
               <p>Bienvenido, ${esc(name)}. Ya puedes navegar.</p>
               <p class="note">Tu sesion de WiFi dura <strong>${settings.accessMinutes} minutos</strong>.</p>
-              ${continueUrl?.let { "<a class=\"button\" href=\"${esc(it)}\">Continuar</a>" }.orEmpty()}
+              ${continueUrl?.let { "<p class=\"small\">Te llevaremos a la pagina en unos segundos.</p><a class=\"button\" href=\"${esc(it)}\">Continuar</a>" }.orEmpty()}
             </div>
         """.trimIndent(),
     )
@@ -108,7 +110,7 @@ object HotspotPortalPages {
         return if (links.isEmpty()) "" else " " + links.joinToString(" · ")
     }
 
-    private fun page(settings: HotspotSettings?, header: String, body: String): String {
+    private fun page(settings: HotspotSettings?, header: String, body: String, head: String = ""): String {
         val primary = settings?.primaryColor ?: "#E4002B"
         val onPrimary = settings?.textColor ?: "#FFFFFF"
         val logo = settings?.logoUrl?.let { "<img class=\"logo\" src=\"${esc(it)}\" alt=\"\">" }.orEmpty()
@@ -121,6 +123,7 @@ object HotspotPortalPages {
             <meta name="viewport" content="width=device-width, initial-scale=1">
             <meta name="robots" content="noindex">
             <title>${esc(settings?.portalTitle ?: "WiFi")}</title>
+            $head
             <style>
             :root { --primary: $primary; --on-primary: $onPrimary; --ink: #1a1815; --muted: #6d6965; --line: #e5e2df; --panel: #f4f2f0; }
             * { box-sizing: border-box; }
@@ -151,6 +154,10 @@ object HotspotPortalPages {
             button, .button { display: flex; align-items: center; justify-content: center; width: 100%; height: 56px; margin-top: 20px;
                               border: 0; border-radius: 999px; background: var(--primary); color: var(--on-primary); font-size: 17px;
                               font-weight: 800; text-transform: uppercase; cursor: pointer; text-decoration: none; }
+            button:disabled { opacity: .75; cursor: progress; }
+            .spinner { width: 20px; height: 20px; margin-right: 10px; border: 3px solid currentColor; border-right-color: transparent;
+                       border-radius: 50%; animation: spin .8s linear infinite; }
+            @keyframes spin { to { transform: rotate(360deg); } }
             .error { background: #fdecec; color: #8a1020; border-radius: 10px; padding: 12px 14px; font-size: 14px; margin-bottom: 6px; }
             .center { text-align: center; }
             .check { width: 74px; height: 74px; margin: 0 auto 16px; background: var(--primary); border-radius: 50%;
@@ -167,6 +174,7 @@ object HotspotPortalPages {
             <main>$body</main>
             $footer
             </div>
+            <script>$SubmitOnceScript</script>
             </body>
             </html>
         """.trimIndent()
@@ -203,6 +211,31 @@ object HotspotPortalPages {
             }
         }
     }
+
+    private const val RedirectSeconds = 3
+
+    // Disables the submit button after the first click and shows a spinner, so a slow UniFi
+    // answer cannot send the same code twice. A page restored from the back cache is re-enabled.
+    private const val SubmitOnceScript = """
+document.querySelectorAll('form').forEach(function (form) {
+  form.addEventListener('submit', function (event) {
+    var button = form.querySelector('button[type=submit]');
+    if (!button) return;
+    if (button.disabled) { event.preventDefault(); return; }
+    button.dataset.label = button.textContent;
+    button.disabled = true;
+    button.innerHTML = '<span class="spinner"></span>';
+    button.appendChild(document.createTextNode(button.dataset.busy || 'Enviando...'));
+  });
+});
+window.addEventListener('pageshow', function (event) {
+  if (!event.persisted) return;
+  document.querySelectorAll('button[data-label]').forEach(function (button) {
+    button.disabled = false;
+    button.textContent = button.dataset.label;
+  });
+});
+"""
 
     private const val WifiIcon = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><circle cx="12" cy="20" r="1" fill="currentColor"></circle></svg>"""
 }

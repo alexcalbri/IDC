@@ -255,7 +255,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
             }
             return HotspotPortalPages.code(settings, codeId.toString(), pending.email, continueUrl, "No pudimos activar tu acceso en este momento. Intenta de nuevo en unos segundos.")
         }
-        return HotspotPortalPages.success(settings, pending.name, settings.successUrl ?: continueUrl.takeIf { it.isNotBlank() })
+        // One of the configured pages at random; without any, the page the guest was opening.
+        return HotspotPortalPages.success(settings, pending.name, settings.successUrls.randomOrNull() ?: continueUrl.takeIf { it.isNotBlank() })
     }
 
     private fun minutesUntilReconnect(connection: Connection, email: String, reconnectMinutes: Int): Long? {

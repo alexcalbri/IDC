@@ -40,6 +40,10 @@ data class HotspotSettings(
     val smtpSecurity: String,
     val emailSubject: String,
 ) {
+    // Pages opened after connecting; the setting holds them separated by commas.
+    val successUrls: List<String>
+        get() = successUrl.orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
+
     val unifiConfigured: Boolean
         get() = !unifiConsoleId.isNullOrBlank() && !unifiSiteId.isNullOrBlank() && !unifiApiKey.isNullOrBlank()
 
@@ -105,7 +109,7 @@ object HotspotSettingsRepository {
             termsUrl = optional("termsUrl", current.termsUrl),
             privacyUrl = optional("privacyUrl", current.privacyUrl),
             footerText = if (values.containsKey("footerText")) text("footerText").orEmpty() else current.footerText,
-            successUrl = optional("successUrl", current.successUrl),
+            successUrl = optional("successUrl", current.successUrl)?.let(::normalizeUrlList),
             unifiConsoleId = optional("unifiConsoleId", current.unifiConsoleId),
             unifiSiteId = optional("unifiSiteId", current.unifiSiteId),
             unifiApiKey = secret("unifiApiKey", current.unifiApiKey),
@@ -128,6 +132,9 @@ object HotspotSettingsRepository {
         return merged
     }
 
+    private fun normalizeUrlList(value: String): String? =
+        value.split(',').map { it.trim() }.filter { it.isNotEmpty() }.joinToString(", ").ifEmpty { null }
+
     private fun validate(settings: HotspotSettings) {
         settings.domain?.let {
             if (it.length > 253 || !domainPattern.matches(it)) throw HotspotValidationException("El dominio no es valido. Ejemplo: wifi.miempresa.com")
@@ -135,11 +142,12 @@ object HotspotSettingsRepository {
         if (!colorPattern.matches(settings.primaryColor) || !colorPattern.matches(settings.textColor)) {
             throw HotspotValidationException("Los colores deben tener formato #RRGGBB.")
         }
-        listOf(settings.logoUrl, settings.termsUrl, settings.privacyUrl, settings.successUrl).forEach { url ->
-            if (url != null && !url.startsWith("https://") && !url.startsWith("http://")) {
-                throw HotspotValidationException("Las direcciones web deben iniciar con https:// o http://.")
+        (listOfNotNull(settings.logoUrl, settings.termsUrl, settings.privacyUrl) + settings.successUrls).forEach { url ->
+            if (!url.startsWith("https://") && !url.startsWith("http://") || url.any { it.isWhitespace() }) {
+                throw HotspotValidationException("Las direcciones web deben iniciar con https:// o http:// y no llevar espacios.")
             }
         }
+        if (settings.successUrl.orEmpty().length > 4000) throw HotspotValidationException("La lista de direcciones al conectarse es demasiado larga.")
         listOf(settings.unifiConsoleId, settings.unifiSiteId).forEach { id ->
             if (id != null && !unifiIdPattern.matches(id)) throw HotspotValidationException("El identificador de consola o sitio de UniFi no es valido.")
         }

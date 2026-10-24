@@ -353,7 +353,8 @@ object HotspotScreens {
         UiField("termsUrl", "URL de terminos", "url", section = "Textos legales"),
         UiField("privacyUrl", "URL de privacidad", "url", section = "Textos legales"),
         UiField("footerText", "Pie de pagina", section = "Textos legales"),
-        UiField("successUrl", "Abrir al conectarse (URL)", "url", section = "Textos legales"),
+        UiField("successUrl", "Abrir al conectarse (URLs)", section = "Textos legales", placeholder = "https://miempresa.com, https://promo.miempresa.com",
+            help = "Una o varias direcciones separadas por coma. Al conectarse se abre una de ellas al azar."),
     )
 
     private val connectionFields = listOf(
