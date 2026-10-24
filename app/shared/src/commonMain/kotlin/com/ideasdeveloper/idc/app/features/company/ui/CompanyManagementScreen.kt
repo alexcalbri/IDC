@@ -41,10 +41,7 @@ import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyBackupResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
-import com.ideasdeveloper.idc.app.features.company.data.CompanyPermissionResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyProfileResponse
-import com.ideasdeveloper.idc.app.features.company.data.CompanyUserResponse
-import com.ideasdeveloper.idc.app.features.company.data.CreateCompanyUserRequest
 import com.ideasdeveloper.idc.app.features.company.data.UpdateCompanyProfileRequest
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
@@ -78,11 +75,6 @@ fun CompanyManagementScreen(
     var savedSecondaryColor by remember { mutableStateOf(companyIdentity.secondaryColor) }
     var savedAccentColor by remember { mutableStateOf(companyIdentity.accentColor) }
     var backups by remember { mutableStateOf<List<CompanyBackupResponse>>(emptyList()) }
-    var users by remember { mutableStateOf<List<CompanyUserResponse>>(emptyList()) }
-    var permissions by remember { mutableStateOf<List<CompanyPermissionResponse>>(emptyList()) }
-    var newUsername by remember { mutableStateOf("") }
-    var newPassword by remember { mutableStateOf("") }
-    var selectedPermissions by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -152,9 +144,6 @@ fun CompanyManagementScreen(
             CompanyApi(activeServerUrl).use { api ->
                 applyProfile(api.companyProfile(activeSession.accessToken, companyCode))
                 backups = api.listBackups(activeSession.accessToken, companyCode)
-                val userData = api.companyUsers(activeSession.accessToken, companyCode)
-                users = userData.users
-                permissions = userData.permissions
             }
             error = null
         } catch (exception: CompanyException) {
@@ -355,105 +344,13 @@ fun CompanyManagementScreen(
                         )
                     }
 
-                    Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = primaryCompose)
-                    Text(
-                        "El business owner puede crear usuarios solo dentro de esta empresa. Los permisos disponibles vienen de los modulos activos.",
-                        color = Color(0xFF666666),
+                    CompanyUsersSection(
+                        serverUrl = serverUrl,
+                        accessToken = session?.accessToken,
+                        companyCode = session?.companyCode,
+                        primaryColor = primaryCompose,
+                        description = "El business owner puede crear usuarios solo dentro de esta empresa. Los permisos disponibles vienen de los modulos activos.",
                     )
-                    OutlinedTextField(
-                        value = newUsername,
-                        onValueChange = { newUsername = it },
-                        label = { Text("Usuario") },
-                        singleLine = true,
-                        enabled = !isLoading,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    OutlinedTextField(
-                        value = newPassword,
-                        onValueChange = { newPassword = it },
-                        label = { Text("Contrasena inicial") },
-                        singleLine = true,
-                        enabled = !isLoading,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    permissions.forEach { permission ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Checkbox(
-                                checked = selectedPermissions.contains(permission.permissionId),
-                                onCheckedChange = { checked ->
-                                    selectedPermissions = if (checked) {
-                                        selectedPermissions + permission.permissionId
-                                    } else {
-                                        selectedPermissions - permission.permissionId
-                                    }
-                                },
-                                enabled = !isLoading,
-                            )
-                            Column {
-                                Text(permission.title, fontWeight = FontWeight.SemiBold, color = primaryCompose)
-                                Text("${permission.moduleId}: ${permission.description}", color = Color(0xFF666666))
-                            }
-                        }
-                    }
-                    Button(
-                        enabled = !isLoading && serverUrl != null && session?.companyCode != null && newUsername.isNotBlank() && newPassword.isNotBlank(),
-                        onClick = {
-                            val activeServerUrl = serverUrl ?: return@Button
-                            val activeSession = session ?: return@Button
-                            val companyCode = activeSession.companyCode ?: return@Button
-                            isLoading = true
-                            error = null
-                            message = null
-                            scope.launch {
-                                try {
-                                    CompanyApi(activeServerUrl).use { api ->
-                                        api.createCompanyUser(
-                                            activeSession.accessToken,
-                                            companyCode,
-                                            CreateCompanyUserRequest(
-                                                username = newUsername,
-                                                password = newPassword,
-                                                permissions = selectedPermissions.toList(),
-                                            ),
-                                        )
-                                        val userData = api.companyUsers(activeSession.accessToken, companyCode)
-                                        users = userData.users
-                                        permissions = userData.permissions
-                                    }
-                                    newUsername = ""
-                                    newPassword = ""
-                                    selectedPermissions = emptySet()
-                                    message = "Usuario creado."
-                                } catch (exception: CompanyException) {
-                                    error = exception.message
-                                } finally {
-                                    isLoading = false
-                                }
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
-                    ) {
-                        Text("Crear usuario")
-                    }
-                    users.forEach { user ->
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .background(Color(0xFFF6F6FA), MaterialTheme.shapes.small)
-                                .padding(12.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(user.username, fontWeight = FontWeight.SemiBold, color = primaryCompose)
-                            Text(if (user.isActive) "Activo" else "Inactivo", color = Color(0xFF666666))
-                            Text(
-                                "Permisos: ${user.permissions.ifEmpty { listOf("sin permisos") }.joinToString()}",
-                                color = Color(0xFF333333),
-                            )
-                        }
-                    }
 
                     Spacer(modifier = Modifier.height(2.dp))
                 }

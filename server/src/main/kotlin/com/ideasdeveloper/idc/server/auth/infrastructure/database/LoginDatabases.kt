@@ -116,12 +116,37 @@ class LoginDatabases(
             }
             if (server && !owner) return@LoginScope null
             val session = sessions.createSession(user)
+            val workspace = if (server) serverWorkspace() else null
             LoginSuccessResponse(session.userId, session.username, session.accessToken, session.expiresInSeconds,
                 scope = if (server) "server" else "company",
                 companyCode = if (server) null else credentials.companyCode,
                 role = if (server) "server_owner" else if (owner) "business_owner" else "user",
-                enabledModules = if (server) emptyList() else visibleModules(source, java.util.UUID.fromString(user.id.toString()), owner))
+                enabledModules = if (server) workspace?.second.orEmpty() else visibleModules(source, java.util.UUID.fromString(user.id.toString()), owner),
+                workspaceCompanyCode = workspace?.first)
         }
+    }
+
+    // Code and enabled modules of the server workspace, or null when it has not been created.
+    private fun serverWorkspace(): Pair<String, List<String>>? = try {
+        val (code, databaseName) = central.connection.use { connection ->
+            connection.prepareStatement("SELECT code, database_name FROM companies WHERE is_server_workspace AND is_active").use { query ->
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+            }
+        } ?: return null
+        val tenant = tenantConfig(databaseName) ?: return null
+        val modules = org.postgresql.ds.PGSimpleDataSource().apply {
+            setURL(tenant.jdbcUrl)
+            user = tenant.user
+            password = tenant.password
+        }.connection.use { connection ->
+            connection.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled' ORDER BY module_id").use { query ->
+                query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+            }
+        }
+        code to modules
+    } catch (_: java.sql.SQLException) {
+        // Before control migration V006, or if the workspace database is unavailable, sign-in still works.
+        null
     }
 
     private fun visibleModules(source: DataSource, userId: java.util.UUID, owner: Boolean): List<String> {

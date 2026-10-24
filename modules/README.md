@@ -164,6 +164,23 @@ every build compiles them to catch errors early.
   `scripts/ubuntu/migrations.sh` reject an applied migration whose content changed.
 - Base modules (Clientes, Empresa) are updated with the server (`update.sh`).
 
+## Server workspace
+
+Server owners can use modules without creating a company. Ticking *Usar en el
+servidor* on an installed module in *Modulos del servidor* enables it in the
+**server workspace**: a company-like tenant database (`idc_servidor`, company
+code `servidor`) created on first use and hidden from company administration
+(it cannot be listed, edited, deactivated or deleted as a company). Base modules
+are always enabled there.
+
+- Server owners use the workspace with their normal session and every permission;
+  their dashboard shows the modules enabled in it.
+- *Personal del servidor* creates workspace users with per-module permissions,
+  like a business owner does for a company. Staff sign in with their username,
+  password and the company code `servidor`.
+- Modules need no changes: the workspace is a regular tenant for them, so their
+  routes, migrations and permissions work as in any company.
+
 ## Module user interface
 
 Modules are independent of the app: the app never contains module-specific

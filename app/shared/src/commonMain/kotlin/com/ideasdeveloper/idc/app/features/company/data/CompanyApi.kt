@@ -466,6 +466,33 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    // Activa o desactiva un modulo en el espacio del servidor (se crea al activar el primero).
+    suspend fun setServerModuleUsage(accessToken: String, moduleId: String, enabled: Boolean): ServerModuleResponse {
+        try {
+            val response = client.put("$baseUrl/server/modules/$moduleId/server-usage") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(UpdateCompanyModuleRequest(enabled))
+            }
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                throw CompanyException(response.body<CompanyErrorResponse>().message)
+            }
+            throw CompanyException("El servidor no pudo cambiar el uso del modulo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
 
     // Actualiza los datos administrables de una empresa desde el dueno del servidor.
     suspend fun updateCompany(

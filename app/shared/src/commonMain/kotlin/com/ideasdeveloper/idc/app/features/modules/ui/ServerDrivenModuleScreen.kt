@@ -93,7 +93,8 @@ fun ServerDrivenModuleScreen(
 
     val definition = metadata
     val ui = definition?.ui
-    val companyCode = session?.companyCode
+    // El server_owner usa los modulos en el espacio del servidor.
+    val companyCode = session?.companyCode ?: session?.workspaceCompanyCode
     val callContext = remember(serverUrl, session?.accessToken, companyCode) {
         if (serverUrl != null && session != null && companyCode != null) ModuleCallContext(serverUrl, session.accessToken, companyCode) else null
     }
@@ -223,7 +224,7 @@ private fun CustomerServerDrivenContent(
     fun activeContext(): Triple<String, String, String>? {
         val activeServerUrl = serverUrl ?: return null
         val activeSession = session ?: return null
-        val companyCode = activeSession.companyCode ?: return null
+        val companyCode = activeSession.companyCode ?: activeSession.workspaceCompanyCode ?: return null
         return Triple(activeServerUrl, activeSession.accessToken, companyCode)
     }
 

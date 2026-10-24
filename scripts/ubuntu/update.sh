@@ -219,6 +219,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V004__create_server_settings_and_module_packages.sql.'
     [[ -f database/control/migrations/V005__create_public_domains.sql ]] ||
         die 'No se encontro database/control/migrations/V005__create_public_domains.sql.'
+    [[ -f database/control/migrations/V006__add_server_workspace.sql ]] ||
+        die 'No se encontro database/control/migrations/V006__add_server_workspace.sql.'
 
     source scripts/ubuntu/migrations.sh
     apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
@@ -226,6 +228,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V003__create_server_modules.sql
     apply_migration "$db_name" control database/control/migrations/V004__create_server_settings_and_module_packages.sql
     apply_migration "$db_name" control database/control/migrations/V005__create_public_domains.sql
+    apply_migration "$db_name" control database/control/migrations/V006__add_server_workspace.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";

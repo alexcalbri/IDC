@@ -421,6 +421,47 @@ fun Route.companyRoutes(
         call.respond(HttpStatusCode.OK, response)
     }
 
+    // Uses a module in the server workspace (created on first use), without a company.
+    put("/server/modules/{moduleId}/server-usage") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+        if (serverOwnerRole == null) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                CompanyErrorResponse(
+                    code = "SERVER_OWNER_REQUIRED",
+                    message = "Debes iniciar sesion como server_owner para usar modulos en el servidor.",
+                ),
+            )
+            return@put
+        }
+        val service = provisioning
+        if (service == null) {
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                CompanyErrorResponse(
+                    code = "PROVISIONING_NOT_CONFIGURED",
+                    message = "El servidor no tiene configuracion de provisioning disponible.",
+                ),
+            )
+            return@put
+        }
+        val request = call.receive<UpdateCompanyModuleRequest>()
+        val moduleId = call.parameters["moduleId"].orEmpty()
+        val response = try {
+            withContext(Dispatchers.IO) {
+                service.setServerModuleUsage(moduleId, request.enabled, serverOwnerRole)
+            }
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(
+                HttpStatusCode.Conflict,
+                CompanyErrorResponse("SERVER_MODULE_USAGE", exception.message ?: "No se pudo cambiar el uso del modulo en el servidor."),
+            )
+            return@put
+        }
+        call.respond(HttpStatusCode.OK, response)
+    }
+
     post("/companies") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
 

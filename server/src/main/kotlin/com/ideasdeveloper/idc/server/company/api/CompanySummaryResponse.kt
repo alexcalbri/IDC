@@ -42,6 +42,8 @@ data class ServerModuleResponse(
     // The catalog offers a newer version, or the installed one is newer than the catalog's.
     val updateAvailable: Boolean = false,
     val newerThanCatalog: Boolean = false,
+    // Enabled in the server workspace, where server owners and staff use modules without a company.
+    val usedByServer: Boolean = false,
 )
 
 @Serializable

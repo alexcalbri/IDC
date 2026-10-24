@@ -45,6 +45,8 @@ data class ServerModuleResponse(
     // El servidor compara versiones: hay una mas nueva en el catalogo, o la instalada es mas nueva.
     val updateAvailable: Boolean = false,
     val newerThanCatalog: Boolean = false,
+    // Activo en el espacio del servidor (uso del server_owner y su personal sin una empresa).
+    val usedByServer: Boolean = false,
 )
 
 @Serializable

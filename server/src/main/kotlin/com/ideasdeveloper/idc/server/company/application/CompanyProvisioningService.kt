@@ -66,6 +66,9 @@ class CompanyProvisioningService(
         val databaseName = "idc_$code"
         val companyId = UUID.randomUUID()
 
+        if (code == ServerWorkspace.Code) {
+            throw CompanyProvisioningException("El codigo ${ServerWorkspace.Code} esta reservado para el espacio del servidor.")
+        }
         validate(code, companyName, ownerUsername, ownerPassword, request)
 
         central.connection.use { connection ->
@@ -139,7 +142,7 @@ class CompanyProvisioningService(
     fun listCompanies(): List<CompanySummaryResponse> {
         val companies = central.connection.use { connection ->
             connection.prepareStatement(
-                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies ORDER BY code"
+                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE NOT is_server_workspace ORDER BY code"
             ).use { query ->
                 query.executeQuery().use { rows ->
                     buildList {
@@ -180,6 +183,7 @@ class CompanyProvisioningService(
 
     fun updateCompany(companyCode: String, request: UpdateCompanyRequest, provisioningRole: String): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
+        rejectServerWorkspace(normalizedCompanyCode)
         val companyName = request.name.trim()
         val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (companyName.isBlank()) {
@@ -250,6 +254,7 @@ class CompanyProvisioningService(
 
     fun setCompanyActive(companyCode: String, active: Boolean, provisioningRole: String): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
+        rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
             findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException("Empresa no encontrada.")
@@ -301,6 +306,7 @@ class CompanyProvisioningService(
 
     fun deleteInactiveCompany(companyCode: String, provisioningRole: String) {
         val normalizedCompanyCode = companyCode.trim()
+        rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
             findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException("Empresa no encontrada.")
@@ -460,10 +466,15 @@ class CompanyProvisioningService(
         val remotePackages = syncRemoteAvailableModules()
         val shown = moduleRegistry.availableDefinitions
             .filter { moduleRegistry.hasCode(it.id) || moduleRegistry.isInstalled(it.id) || it.id in remotePackages || installStates.containsKey(it.id) }
-        return shown.map { definition -> moduleResponse(definition, remotePackages[definition.id]) }
+        val serverUsage = serverWorkspaceModules()
+        return shown.map { definition -> moduleResponse(definition, remotePackages[definition.id], serverUsage) }
     }
 
-    private fun moduleResponse(definition: ModuleDefinition, remotePackage: RemoteModulePackage?): ServerModuleResponse {
+    private fun moduleResponse(
+        definition: ModuleDefinition,
+        remotePackage: RemoteModulePackage?,
+        serverUsage: Set<String>? = serverWorkspaceModules(),
+    ): ServerModuleResponse {
         val installedPackage = installedPackage(definition.id)
         val state = installStates[definition.id]
         val installedVersion = installedPackage?.version ?: definition.version
@@ -487,6 +498,7 @@ class CompanyProvisioningService(
             statusMessage = state?.message,
             updateAvailable = comparable && ModuleVersion.isNewer(catalogVersion!!, installedVersion),
             newerThanCatalog = comparable && ModuleVersion.isNewer(installedVersion, catalogVersion!!),
+            usedByServer = installed && serverUsage != null && (definition.locked || definition.id in serverUsage),
         )
     }
 
@@ -563,6 +575,122 @@ class CompanyProvisioningService(
             } finally {
                 connection.autoCommit = true
             }
+        }
+    }
+
+    /**
+     * Turns a module on or off in the server workspace. Turning on the first module creates the
+     * workspace with its own tenant database. Base modules are always on once it exists.
+     */
+    fun setServerModuleUsage(moduleId: String, enabled: Boolean, provisioningRole: String): ServerModuleResponse {
+        val definition = modules.singleOrNull { it.id == moduleId.trim() }
+            ?: throw CompanyProvisioningException("Modulo no reconocido o no instalado en el servidor.")
+        if (enabled) {
+            setModuleEnabled(ensureServerWorkspace(provisioningRole), definition.id, true, provisioningRole)
+        } else {
+            if (definition.locked) {
+                throw CompanyProvisioningException("${definition.displayName} es un modulo base y siempre esta activo en el espacio del servidor.")
+            }
+            serverWorkspaceRow()?.let { setModuleEnabled(it.code, definition.id, false, provisioningRole) }
+        }
+        return moduleResponse(definition, null)
+    }
+
+    // Code of the server workspace, creating it with its own tenant database on first use.
+    @Synchronized
+    fun ensureServerWorkspace(provisioningRole: String): String {
+        serverWorkspaceRow()?.let { return it.code }
+        val code = ServerWorkspace.Code
+        val databaseName = ServerWorkspace.DatabaseName
+        central.connection.use { connection ->
+            if (connection.exists("companies", "code", code)) {
+                throw CompanyProvisioningException("Ya existe una empresa con el codigo $code; cambia su codigo para crear el espacio del servidor.")
+            }
+        }
+        adminConnection(provisioningRole).use { admin ->
+            admin.autoCommit = true
+            // A database left by an interrupted attempt is reused; its migrations are idempotent.
+            if (!admin.existsDatabase(databaseName)) {
+                admin.createStatement().use { statement ->
+                    statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
+                    statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
+                }
+            }
+        }
+        val tenantConfig = tenantConfig(databaseName)
+        tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+            applyTenantCoreMigrations(tenant)
+            applyBaseModuleMigrations(tenant)
+            grantTenantPermissions(tenant, ownerUsername = null)
+        }
+        central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement(
+                    """
+                    INSERT INTO companies (
+                        id, code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active, is_server_workspace
+                    ) VALUES (?, ?, ?, NULL, '#667EEA', '#764BA2', '#FFFFFF', ?, TRUE, TRUE)
+                    """.trimIndent()
+                ).use { insert ->
+                    insert.setObject(1, UUID.randomUUID())
+                    insert.setString(2, code)
+                    insert.setString(3, ServerWorkspace.Name)
+                    insert.setString(4, databaseName)
+                    insert.executeUpdate()
+                }
+                insertAudit(connection, provisioningRole, "server_workspace.created", code, null, """{"databaseName":"$databaseName"}""")
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+        }
+        loginDatabases.registerTenant(tenantConfig)
+        log.info("Server workspace created in database {}", databaseName)
+        return code
+    }
+
+    private fun serverWorkspaceRow(): CompanyRow? = try {
+        central.connection.use { connection ->
+            connection.prepareStatement(
+                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE is_server_workspace"
+            ).use { query ->
+                query.executeQuery().use { rows ->
+                    if (!rows.next()) null else CompanyRow(
+                        code = rows.getString("code"),
+                        name = rows.getString("name"),
+                        logoUrl = rows.getString("logo_url"),
+                        primaryColor = rows.getString("primary_color"),
+                        secondaryColor = rows.getString("secondary_color"),
+                        accentColor = rows.getString("accent_color"),
+                        databaseName = rows.getString("database_name"),
+                        isActive = rows.getBoolean("is_active"),
+                    )
+                }
+            }
+        }
+    } catch (_: java.sql.SQLException) {
+        // Before control migration V006 there is no workspace column.
+        null
+    }
+
+    // Modules enabled in the server workspace, or null when it does not exist yet.
+    private fun serverWorkspaceModules(): Set<String>? {
+        val workspace = serverWorkspaceRow() ?: return null
+        val tenant = loginDatabases.tenantConfig(workspace.databaseName) ?: return emptySet()
+        return tenantRuntimeConnection(tenant).use { connection ->
+            connection.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
+                query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+            }
+        }
+    }
+
+    private fun rejectServerWorkspace(companyCode: String) {
+        if (companyCode == ServerWorkspace.Code && serverWorkspaceRow()?.code == companyCode) {
+            throw CompanyProvisioningException("El espacio del servidor no se administra como una empresa.")
         }
     }
 
@@ -658,7 +786,7 @@ class CompanyProvisioningService(
         }
         val activeCompanyCount = countCompaniesWithModuleEnabled(definition.id)
         if (activeCompanyCount > 0) {
-            throw CompanyProvisioningException("No se puede eliminar ${definition.displayName}; esta activo en $activeCompanyCount empresa(s).")
+            throw CompanyProvisioningException("No se puede eliminar ${definition.displayName}; esta activo en $activeCompanyCount empresa(s) o en el espacio del servidor.")
         }
 
         central.connection.use { connection ->
@@ -963,19 +1091,22 @@ class CompanyProvisioningService(
         }
     }
 
-    private fun grantTenantPermissions(connection: Connection, ownerUsername: String) {
+    // The server workspace has no business owner (ownerUsername = null).
+    private fun grantTenantPermissions(connection: Connection, ownerUsername: String?) {
         connection.createStatement().use { statement ->
             statement.executeUpdate("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
             statement.executeUpdate("GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(config.runtimeUser)}")
-            statement.executeUpdate("GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(ownerUsername)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE ON application_users TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT ON business_owner, tenant_modules TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON customers, customer_field_definitions TO ${quoteIdentifier(config.runtimeUser)}")
-            statement.executeUpdate("GRANT SELECT ON application_users, business_owner, tenant_modules, application_permissions, application_user_permissions TO ${quoteIdentifier(ownerUsername)}")
-            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(ownerUsername)}")
+            if (ownerUsername != null) {
+                statement.executeUpdate("GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(ownerUsername)}")
+                statement.executeUpdate("GRANT SELECT ON application_users, business_owner, tenant_modules, application_permissions, application_user_permissions TO ${quoteIdentifier(ownerUsername)}")
+                statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(ownerUsername)}")
+            }
         }
     }
 

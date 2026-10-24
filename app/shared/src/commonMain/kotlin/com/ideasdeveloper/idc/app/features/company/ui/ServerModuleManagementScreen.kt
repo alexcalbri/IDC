@@ -14,6 +14,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -31,6 +32,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
@@ -258,6 +260,35 @@ fun ServerModuleManagementScreen(
                             },
                             onRequestDelete = { pendingDeletion = module.moduleId },
                             onCancelDelete = { pendingDeletion = null },
+                            onToggleServerUsage = { enabled ->
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isLoading = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            val latest = CompanyApi(activeServerUrl).use { api ->
+                                                api.setServerModuleUsage(activeSession.accessToken, module.moduleId, enabled)
+                                                api.listServerModules(activeSession.accessToken)
+                                            }
+                                            modules = latest
+                                            // El panel del server_owner muestra al momento los modulos del espacio del servidor.
+                                            SessionStore.update { current -> current.withServerWorkspace(latest) }
+                                            message = if (enabled) {
+                                                "${module.displayName} activo en el espacio del servidor."
+                                            } else {
+                                                "${module.displayName} desactivado en el espacio del servidor."
+                                            }
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isLoading = false
+                                        }
+                                    }
+                                }
+                            },
                             onConfirmDelete = {
                                 val activeServerUrl = serverUrl
                                 val activeSession = session
@@ -307,6 +338,7 @@ private fun ServerModuleRow(
     onInstall: () -> Unit,
     onRequestDelete: () -> Unit,
     onCancelDelete: () -> Unit,
+    onToggleServerUsage: (Boolean) -> Unit,
     onConfirmDelete: () -> Unit,
 ) {
     val inProgress = module.status == "installing" || module.status == "restarting"
@@ -348,6 +380,22 @@ private fun ServerModuleRow(
             style = MaterialTheme.typography.bodySmall,
             color = if (module.activeCompanyCount > 0 || module.locked) Color(0xFF8A5A00) else Color(0xFF176B3A),
         )
+        if (module.installed && !inProgress) {
+            // Los modulos base quedan siempre activos una vez creado el espacio del servidor.
+            val fixed = module.locked && module.usedByServer
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = module.usedByServer,
+                    onCheckedChange = { onToggleServerUsage(it) },
+                    enabled = enabled && !fixed,
+                )
+                Text(
+                    text = if (fixed) "Usar en el servidor (modulo base, siempre activo)" else "Usar en el servidor",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF333333),
+                )
+            }
+        }
         module.statusMessage?.takeIf { module.status != null }?.let { status ->
             Text(
                 text = when (module.status) {
@@ -410,4 +458,23 @@ private suspend inline fun <T> CompanyApi.use(block: suspend (CompanyApi) -> T):
     } finally {
         close()
     }
+}
+
+// Codigo del espacio del servidor (igual que ServerWorkspace.Code en el servidor).
+private const val ServerWorkspaceCode = "servidor"
+
+// Sesion con los modulos activos en el espacio del servidor segun la lista recibida.
+private fun LoginResponse.withServerWorkspace(modules: List<ServerModuleResponse>): LoginResponse {
+    val serverModules = modules.filter { it.usedByServer }.map { it.moduleId }
+    return LoginResponse(
+        userId = userId,
+        username = username,
+        accessToken = accessToken,
+        expiresInSeconds = expiresInSeconds,
+        scope = scope,
+        companyCode = companyCode,
+        role = role,
+        enabledModules = serverModules,
+        workspaceCompanyCode = if (serverModules.isEmpty()) workspaceCompanyCode else ServerWorkspaceCode,
+    )
 }

@@ -136,11 +136,19 @@ fun DashboardScreen(
                     onClick = { onNavigateTo(NavRoute.Module("server-modules")) }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+                DashboardActionCard(
+                    title = "Personal del servidor",
+                    description = "Usuarios que usan los modulos del servidor sin pertenecer a una empresa",
+                    iconText = "P",
+                    primaryColor = primaryColor,
+                    onClick = { onNavigateTo(NavRoute.Module("server-staff")) }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
             }
 
             // Renderiza los modulos activos recibidos desde el servidor.
             enabledModules
-                .filter { it != "empresa" && it != "server-modules" }
+                .filter { it != "empresa" && it != "server-modules" && it != "server-staff" }
                 .forEach { moduleId ->
                     val module = moduleId.toDashboardModule()
                     DashboardActionCard(

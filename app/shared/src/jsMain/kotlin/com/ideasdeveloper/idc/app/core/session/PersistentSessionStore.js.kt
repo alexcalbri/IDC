@@ -10,6 +10,7 @@ actual object PersistentSessionStore {
     private const val ExpiresAtEpochSecondsKey = "idc.session.expiresAtEpochSeconds"
     private const val ScopeKey = "idc.session.scope"
     private const val CompanyCodeKey = "idc.session.companyCode"
+    private const val WorkspaceCompanyCodeKey = "idc.session.workspaceCompanyCode"
     private const val RoleKey = "idc.session.role"
     private const val EnabledModulesKey = "idc.session.enabledModules"
 
@@ -27,6 +28,7 @@ actual object PersistentSessionStore {
             expiresInSeconds = expiresAt - nowEpochSeconds(),
             scope = localStorage.getItem(ScopeKey)?.takeIf { it.isNotBlank() } ?: return null,
             companyCode = localStorage.getItem(CompanyCodeKey)?.takeIf { it.isNotBlank() },
+            workspaceCompanyCode = localStorage.getItem(WorkspaceCompanyCodeKey)?.takeIf { it.isNotBlank() },
             role = localStorage.getItem(RoleKey)?.takeIf { it.isNotBlank() } ?: return null,
             enabledModules = localStorage.getItem(EnabledModulesKey)
                 ?.split(",")
@@ -44,6 +46,9 @@ actual object PersistentSessionStore {
         response.companyCode?.let {
             localStorage.setItem(CompanyCodeKey, it)
         } ?: localStorage.removeItem(CompanyCodeKey)
+        response.workspaceCompanyCode?.let {
+            localStorage.setItem(WorkspaceCompanyCodeKey, it)
+        } ?: localStorage.removeItem(WorkspaceCompanyCodeKey)
         localStorage.setItem(RoleKey, response.role)
         localStorage.setItem(EnabledModulesKey, response.enabledModules.joinToString(","))
     }
@@ -55,6 +60,7 @@ actual object PersistentSessionStore {
         localStorage.removeItem(ExpiresAtEpochSecondsKey)
         localStorage.removeItem(ScopeKey)
         localStorage.removeItem(CompanyCodeKey)
+        localStorage.removeItem(WorkspaceCompanyCodeKey)
         localStorage.removeItem(RoleKey)
         localStorage.removeItem(EnabledModulesKey)
     }

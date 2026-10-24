@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.server.modules
 
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
+import com.ideasdeveloper.idc.server.company.application.ServerWorkspace
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -96,6 +97,18 @@ class ModuleAccessService(
         val tenantConfig = loginDatabases.tenantConfig(databaseName)
             ?: return ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_not_configured", "La base de datos de la empresa no esta configurada."))
 
+        // Server owners sign in centrally and hold every permission in the server workspace; its
+        // staff use the tenant sessions and permissions below, like a company's users.
+        if (companyCode == ServerWorkspace.Code && isServerWorkspace(companyCode) && isServerOwnerSession(token)) {
+            return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password).use { connection ->
+                if (!moduleEnabled(connection, moduleId)) {
+                    ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_disabled", "El modulo no esta activo en el espacio del servidor."))
+                } else {
+                    ModulePermissionLookup.Granted(ModulePermissions(companyCode, token, businessOwner = true, granted = emptySet()))
+                }
+            }
+        }
+
         return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password).use { connection ->
             val user = connection.prepareStatement(
                 """
@@ -146,6 +159,35 @@ class ModuleAccessService(
     companion object {
         const val TokenCookie = "idc_module_token"
         const val CompanyCookie = "idc_module_company"
+    }
+
+    private fun isServerWorkspace(companyCode: String): Boolean = try {
+        central.connection.use { connection ->
+            connection.prepareStatement("SELECT is_server_workspace FROM companies WHERE code = ?").use { query ->
+                query.setString(1, companyCode)
+                query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+            }
+        }
+    } catch (_: SQLException) {
+        false
+    }
+
+    private fun isServerOwnerSession(token: String): Boolean = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT 1
+            FROM application_sessions sessions
+            JOIN server_owners owners ON owners.user_id = sessions.user_id
+            JOIN application_users users ON users.id = sessions.user_id
+            WHERE sessions.token_hash = ?
+              AND sessions.revoked_at IS NULL
+              AND sessions.expires_at > CURRENT_TIMESTAMP
+              AND users.is_active = TRUE
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, tokenGenerator.hash(token))
+            query.executeQuery().use { rows -> rows.next() }
+        }
     }
 
     private fun findActiveDatabase(companyCode: String): String? = central.connection.use { connection ->
