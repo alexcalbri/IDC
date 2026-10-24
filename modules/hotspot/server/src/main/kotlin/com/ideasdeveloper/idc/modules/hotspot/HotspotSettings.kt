@@ -89,7 +89,9 @@ object HotspotSettingsRepository {
             if (value !in range) throw HotspotValidationException("$label debe estar entre ${range.first} y ${range.last}.")
             return value
         }
-        fun secret(key: String, fallback: String?): String? = text(key)?.takeIf { it.isNotBlank() } ?: fallback
+        // Empty or the unchanged mask keeps the saved secret.
+        fun secret(key: String, fallback: String?): String? =
+            text(key)?.takeIf { it.isNotBlank() && it != SecretMask } ?: fallback
 
         val merged = HotspotSettings(
             domain = optional("domain", current.domain)?.lowercase()?.removeSuffix("."),
@@ -174,7 +176,12 @@ object HotspotSettingsRepository {
         }
     }
 
-    // Values for the generic form. Secrets are never sent back; only whether they are set.
+    // Placeholder shown instead of a saved secret; sending it back unchanged keeps the secret.
+    private const val SecretMask = "********"
+
+    private fun masked(secret: String?): String = if (secret.isNullOrBlank()) "" else SecretMask
+
+    // Values for the generic form. Secrets are never sent back; a saved one shows as [SecretMask].
     fun toFormValues(
         settings: HotspotSettings,
         domainStatus: String,
@@ -187,8 +194,7 @@ object HotspotSettingsRepository {
             "domainStatus" to domainStatus,
             "unifiConsoleId" to settings.unifiConsoleId.orEmpty(),
             "unifiSiteId" to settings.unifiSiteId.orEmpty(),
-            "unifiApiKey" to "",
-            "unifiApiKeyConfigured" to yesNo(!settings.unifiApiKey.isNullOrBlank()),
+            "unifiApiKey" to masked(settings.unifiApiKey),
             "accessMinutes" to settings.accessMinutes.toString(),
             "dataLimitMb" to settings.dataLimitMb.toString(),
             "rxKbps" to settings.rxKbps.toString(),
@@ -200,8 +206,7 @@ object HotspotSettingsRepository {
             "smtpHost" to settings.smtpHost.orEmpty(),
             "smtpPort" to settings.smtpPort.toString(),
             "smtpUsername" to settings.smtpUsername.orEmpty(),
-            "smtpPassword" to "",
-            "smtpPasswordConfigured" to yesNo(!settings.smtpPassword.isNullOrBlank()),
+            "smtpPassword" to masked(settings.smtpPassword),
             "smtpFrom" to settings.smtpFrom.orEmpty(),
             "smtpSecurity" to settings.smtpSecurity,
             "emailSubject" to settings.emailSubject,

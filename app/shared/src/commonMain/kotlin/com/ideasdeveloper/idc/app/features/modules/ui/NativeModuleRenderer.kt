@@ -429,7 +429,7 @@ private fun ModuleField(field: UiField, value: String, enabled: Boolean, colors:
                     enabled = enabled,
                     singleLine = field.type != "textarea",
                     minLines = if (field.type == "textarea") 3 else 1,
-                    visualTransformation = if (field.type == "password") PasswordVisualTransformation() else VisualTransformation.None,
+                    visualTransformation = if (field.type == "password") PasswordVisualTransformation('*') else VisualTransformation.None,
                     keyboardOptions = KeyboardOptions(
                         keyboardType = when (field.type) {
                             "number" -> KeyboardType.Number
