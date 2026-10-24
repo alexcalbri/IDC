@@ -30,6 +30,14 @@ class HotspotSettingsTest {
     }
 
     @Test
+    fun unchangedMaskKeepsStoredValuesAndNewSecretReplacesThem() {
+        val kept = HotspotSettingsRepository.merge(defaults, values("unifiApiKey" to "********", "smtpPassword" to "********"))
+        assertEquals("secret", kept.unifiApiKey)
+        assertEquals("smtp-secret", kept.smtpPassword)
+        assertEquals("nueva", HotspotSettingsRepository.merge(defaults, values("unifiApiKey" to "nueva")).unifiApiKey)
+    }
+
+    @Test
     fun domainIsNormalizedAndBlankRemovesIt() {
         assertEquals("wifi.example.com", HotspotSettingsRepository.merge(defaults, values("domain" to "WiFi.Example.com.")).domain)
         val withDomain = defaults.copy(domain = "wifi.example.com")
@@ -50,9 +58,10 @@ class HotspotSettingsTest {
     @Test
     fun formValuesNeverExposeSecrets() {
         val form = HotspotSettingsRepository.toFormValues(defaults, "Activo", serverMailAvailable = false)
-        assertEquals("", form["unifiApiKey"])
-        assertEquals("", form["smtpPassword"])
-        assertEquals("Si", form["unifiApiKeyConfigured"])
+        assertEquals("********", form["unifiApiKey"])
+        assertEquals("********", form["smtpPassword"])
+        val empty = HotspotSettingsRepository.toFormValues(defaults.copy(unifiApiKey = null), "Activo", serverMailAvailable = false)
+        assertEquals("", empty["unifiApiKey"])
     }
 
     @Test
