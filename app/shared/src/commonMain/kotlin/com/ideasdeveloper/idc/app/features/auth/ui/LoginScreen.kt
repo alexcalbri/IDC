@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
@@ -15,9 +16,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Alignment.Companion.CenterHorizontally
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -66,6 +73,36 @@ fun LoginScreen(
     val needsServerConfiguration = savedConfiguration == null
 
     val isLoading = state.isLoading
+    val canSubmit = serverUrl.isNotBlank() &&
+        username.isNotBlank() &&
+        password.isNotEmpty() &&
+        (serverAdministration || companyCode.isNotBlank()) &&
+        !isLoading
+
+    // Lo usan el boton y la tecla Enter de cualquier campo cuando los datos estan completos.
+    fun submit() {
+        if (!canSubmit) return
+        loginViewModel.login(
+            serverUrl = serverUrl,
+            username = username,
+            password = password,
+            companyCode = if (serverAdministration) null else companyCode,
+            keepSignedIn = keepSignedIn,
+        )
+    }
+
+    // Enter de teclados fisicos (escritorio, web y tabletas con teclado).
+    val submitOnEnter = Modifier.onPreviewKeyEvent { event ->
+        val enter = event.key == Key.Enter || event.key == Key.NumPadEnter
+        if (enter && event.type == KeyEventType.KeyDown && canSubmit) {
+            submit()
+            true
+        } else {
+            false
+        }
+    }
+    // Boton de accion del teclado en pantalla (Android e iOS).
+    val submitKeyboardActions = KeyboardActions(onGo = { submit() })
 
     // Cuando el ViewModel confirma el login, limpia la contrasena y avanza al dashboard.
     LaunchedEffect(state.succeeded) {
@@ -138,7 +175,9 @@ fun LoginScreen(
                         label = { Text("URL del servidor") },
                         placeholder = { Text("https://sub.domain.tld o http://sub.domain.tld") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                        keyboardActions = submitKeyboardActions,
+                        modifier = Modifier.fillMaxWidth().then(submitOnEnter),
                         shape = MaterialTheme.shapes.medium,
                         textStyle = LocalTextStyle.current.copy(color = AppTheme.colors.onScreen),
                         enabled = !isLoading,
@@ -165,7 +204,9 @@ fun LoginScreen(
                             onValueChange = { companyCode = it },
                             label = { Text("Código de empresa") },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
+                            keyboardActions = submitKeyboardActions,
+                            modifier = Modifier.fillMaxWidth().then(submitOnEnter),
                             shape = MaterialTheme.shapes.medium,
                             textStyle = LocalTextStyle.current.copy(color = AppTheme.colors.onScreen),
                             enabled = !isLoading,
@@ -191,8 +232,9 @@ fun LoginScreen(
                     onValueChange = { username = it },
                     label = { Text("Usuario", color = AppTheme.colors.onScreen) },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Go),
+                    keyboardActions = submitKeyboardActions,
+                    modifier = Modifier.fillMaxWidth().then(submitOnEnter),
                     shape = MaterialTheme.shapes.medium,
                     textStyle = LocalTextStyle.current.copy(color = AppTheme.colors.onScreen),
                     enabled = !isLoading,
@@ -219,7 +261,8 @@ fun LoginScreen(
                     label = { Text("Contraseña", color = AppTheme.colors.onScreen) },
                     singleLine = true,
                     visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
+                    keyboardActions = submitKeyboardActions,
                     enabled = !isLoading,
                     trailingIcon = {
                         val iconText = if (showPassword) "👁️" else "👁️‍🗨️"
@@ -227,7 +270,7 @@ fun LoginScreen(
                             Text(iconText, color = AppTheme.colors.onScreen)
                         }
                     },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().then(submitOnEnter),
                     shape = MaterialTheme.shapes.medium,
 
                     textStyle = LocalTextStyle.current.copy(color = AppTheme.colors.onScreen),
@@ -278,20 +321,8 @@ fun LoginScreen(
 
             // Envia credenciales, URL y codigo de empresa al ViewModel.
             Button(
-                onClick = {
-                    loginViewModel.login(
-                        serverUrl = serverUrl,
-                        username = username,
-                        password = password,
-                        companyCode = if (serverAdministration) null else companyCode,
-                        keepSignedIn = keepSignedIn,
-                    )
-                },
-                enabled = serverUrl.isNotBlank() &&
-                        username.isNotBlank() &&
-                        password.isNotEmpty() &&
-                        (serverAdministration || companyCode.isNotBlank()) &&
-                        !isLoading,
+                onClick = { submit() },
+                enabled = canSubmit,
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(50.dp),
