@@ -55,6 +55,14 @@ data class AppColors(
 
     val onScreenMuted: Color
         get() = onScreen.copy(alpha = 0.76f)
+
+    // Campos pintados sobre el fondo de pantalla (login): translucidos sobre el degradado,
+    // superficies del tema sobre un fondo solido.
+    val fieldOnScreen: Color
+        get() = if (brandBackground) onAccent.copy(alpha = 0.3f) else surface
+
+    val fieldOnScreenFocused: Color
+        get() = if (brandBackground) onAccent.copy(alpha = 0.5f) else surfaceAlt
 }
 
 // Parametros que recibe la primera pagina de un modulo web para pintarse con el tema de la app.
