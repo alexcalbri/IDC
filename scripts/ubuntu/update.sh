@@ -36,8 +36,10 @@ readonly SERVICE_NAME=ideascore.service
 readonly NGINX_SITE=/etc/nginx/sites-available/ideascore
 readonly BACKUP_ROOT=$APP_DIR/backups
 readonly UPDATE_SWAP_FILE=$APP_DIR/update.swap
-readonly UPDATE_SWAP_SIZE_MB=2048
+# Same limits as install.sh: the production webpack build needs extra memory for Node.
+readonly UPDATE_SWAP_SIZE_MB=4096
 readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
+readonly NODE_OPTIONS_VALUE="--max-old-space-size=2048"
 readonly APP_PORT=8080
 UPDATE_SWAP_CREATED=false
 
@@ -77,6 +79,7 @@ ensure_update_swap() {
 run_gradle() {
     runuser -u ideascore -- env \
         JAVA_HOME="$UPDATE_JAVA_HOME" \
+        NODE_OPTIONS="$NODE_OPTIONS_VALUE" \
         bash ./gradlew \
         --no-daemon \
         --no-configuration-cache \
