@@ -46,7 +46,8 @@ fun AuthenticatedTopBar(
     // Controla el menu de acciones y anima el icono cuando se abre.
     var menuExpanded by remember { mutableStateOf(false) }
     val menuRotation by animateFloatAsState(
-        targetValue = if (menuExpanded) 90f else 0f,
+        // Cerrado parte de 270 grados y al abrirse gira 90 grados mas.
+        targetValue = if (menuExpanded) 360f else 270f,
         label = "authenticated-menu-rotation",
     )
 
@@ -98,7 +99,7 @@ fun AuthenticatedTopBar(
                     .background(colors.onScreen.copy(alpha = 0.18f), CircleShape)
                     .rotate(menuRotation),
             ) {
-                // Siempre "|||" (gira al abrirse) para no confundirse con la X de cerrar de la izquierda.
+                // Siempre "|||" girado (gira al abrirse) para no confundirse con la X de cerrar.
                 Text(
                     text = "|||",
                     color = colors.onScreen,
