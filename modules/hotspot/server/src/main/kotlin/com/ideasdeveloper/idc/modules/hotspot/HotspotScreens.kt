@@ -68,6 +68,7 @@ object HotspotScreens {
         serverMailAvailable: Boolean,
         notice: UiNotice? = null,
         submittedValues: Map<String, String>? = null,
+        unifiPicker: List<UiNode> = emptyList(),
     ): UiScreen {
         val settings = HotspotSettingsRepository.load(tenant)
         val title = sections.first { it.id == screen }.label
@@ -80,7 +81,7 @@ object HotspotScreens {
             "visitors" -> visitors(tenant, params)
             "reports" -> reports(tenant, permissions, params)
             "portal" -> portal(permissions, values, domainStatus, domainActive)
-            else -> settingsForm(permissions, values)
+            else -> settingsForm(permissions, values, unifiPicker)
         }
         return frame(settings, permissions, screen, title, notice, body)
     }
@@ -240,8 +241,77 @@ object HotspotScreens {
         )
     }
 
-    private fun settingsForm(permissions: ModulePermissions, values: Map<String, String>): List<UiNode> =
-        listOf(UiCard(listOf(settingsFormNode("settings", connectionFields, permissions, values))))
+    private fun settingsForm(permissions: ModulePermissions, values: Map<String, String>, unifiPicker: List<UiNode>): List<UiNode> {
+        val finder = if (!permissions.has(SettingsManage)) null else UiCard(
+            title = "Conexion con UniFi",
+            actions = listOf(UiButton("Buscar consolas", unifiStep("consoles"))),
+            children = listOf(
+                UiText(
+                    "Escribe la API key en el formulario y pulsa Buscar consolas para elegir la consola y el sitio por su nombre.",
+                    UiTextStyle.Caption,
+                ),
+            ),
+        )
+        return listOfNotNull(finder) + unifiPicker + UiCard(listOf(settingsFormNode("settings", connectionFields, permissions, values)))
+    }
+
+    // UniFi picker steps post the settings form so typed values survive the round trip.
+    fun unifiStep(step: String, id: String? = null) = UiRequest(
+        route = "$UiRoute/settings",
+        params = buildMap {
+            put("unifi", step)
+            if (id != null) put("id", id)
+        },
+        formId = "settings",
+    )
+
+    fun consolePicker(consoles: List<UnifiConsole>, selectedId: String?): UiNode = UiCard(
+        title = "Selecciona la consola",
+        children = if (consoles.isEmpty()) {
+            listOf(UiText("La API key no tiene acceso a ninguna consola.", UiTextStyle.Caption))
+        } else {
+            listOf(
+                UiGrid(
+                    minItemWidth = 260,
+                    children = consoles.map { console ->
+                        UiCard(
+                            title = console.name,
+                            children = listOfNotNull(
+                                UiText(listOf(console.model, console.state).filter { it.isNotBlank() }.joinToString(" - ").ifBlank { "Consola UniFi" }, UiTextStyle.Caption),
+                                UiText(console.id, UiTextStyle.Caption),
+                                if (console.id == selectedId) UiStatus("Seleccionada", UiTone.Success) else null,
+                                UiButton("Usar esta consola", unifiStep("console", console.id)),
+                            ),
+                        )
+                    },
+                ),
+            )
+        },
+    )
+
+    fun sitePicker(sites: List<UnifiSite>, selectedId: String?): UiNode = UiCard(
+        title = "Selecciona el sitio",
+        children = if (sites.isEmpty()) {
+            listOf(UiText("Esta consola no tiene sitios disponibles en la API de UniFi.", UiTextStyle.Caption))
+        } else {
+            listOf(
+                UiGrid(
+                    minItemWidth = 260,
+                    children = sites.map { site ->
+                        UiCard(
+                            title = site.name,
+                            children = listOfNotNull(
+                                site.reference.takeIf { it.isNotBlank() }?.let { UiText("Referencia: $it", UiTextStyle.Caption) },
+                                UiText(site.id, UiTextStyle.Caption),
+                                if (site.id == selectedId) UiStatus("Seleccionado", UiTone.Success) else null,
+                                UiButton("Usar este sitio", unifiStep("site", site.id)),
+                            ),
+                        )
+                    },
+                ),
+            )
+        },
+    )
 
     private fun settingsFormNode(id: String, fields: List<UiField>, permissions: ModulePermissions, values: Map<String, String>): UiForm {
         val canManage = permissions.has(SettingsManage)
@@ -287,8 +357,8 @@ object HotspotScreens {
     )
 
     private val connectionFields = listOf(
-        UiField("unifiConsoleId", "ID de consola", section = "UniFi", help = "Aparece en la URL de unifi.ui.com/consoles/<ID>/..."),
-        UiField("unifiSiteId", "ID de sitio", section = "UniFi", help = "UUID del sitio que devuelve la API de UniFi en .../integration/v1/sites (no es \"default\")."),
+        UiField("unifiConsoleId", "ID de consola", section = "UniFi", help = "Usa Buscar consolas para elegirla por su nombre."),
+        UiField("unifiSiteId", "ID de sitio", section = "UniFi", help = "Se llena al elegir el sitio despues de la consola."),
         UiField("unifiApiKey", "API key de UniFi", "password", section = "UniFi", help = "Si ya hay una clave guardada se muestra oculta; dejala asi para conservarla."),
         UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", required = true, section = "Acceso"),
         UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", required = true, section = "Acceso",

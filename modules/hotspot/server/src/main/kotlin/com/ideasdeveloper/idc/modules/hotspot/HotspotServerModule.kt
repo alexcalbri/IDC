@@ -10,6 +10,7 @@ import com.ideasdeveloper.idc.server.modules.requireModuleAccess
 import com.ideasdeveloper.idc.server.modules.requireModulePermission
 import com.ideasdeveloper.idc.ui.ModuleUiEntry
 import com.ideasdeveloper.idc.ui.UiJson
+import com.ideasdeveloper.idc.ui.UiNode
 import com.ideasdeveloper.idc.ui.UiNotice
 import com.ideasdeveloper.idc.ui.UiScreen
 import com.ideasdeveloper.idc.ui.UiTone
@@ -30,6 +31,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -53,7 +55,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con registro de visitantes, codigo por correo y autorizacion en UniFi.",
-        version = "0.2.1",
+        version = "0.2.2",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsManage, "Configurar hotspot", "Permite cambiar dominio, UniFi, correo, tiempos y apariencia del portal."),
@@ -84,6 +86,11 @@ object HotspotServerModule : ServerModule {
                 }
                 val values = runCatching { UiJson.parseToJsonElement(call.receiveText()).jsonObject }.getOrNull()
                     ?: return@post call.respond(HttpStatusCode.BadRequest, HotspotErrorResponse("INVALID_BODY", "Datos invalidos."))
+                val unifiStep = call.request.queryParameters["unifi"]
+                if (screen == "settings" && unifiStep != null) {
+                    val id = call.request.queryParameters["id"]
+                    return@post call.respondScreen(access) { tenant -> unifiPicker(access, tenant, permissions, unifiStep, id, values) }
+                }
                 call.respondScreen(access) { tenant -> save(access, tenant, permissions, screen, values) }
             }
         }
@@ -137,6 +144,66 @@ object HotspotServerModule : ServerModule {
         }
         HotspotSettingsRepository.save(tenant, updated)
         return render(access, tenant, permissions, screen, emptyMap(), UiNotice("Cambios guardados.", UiTone.Success))
+    }
+
+    /**
+     * Picks the UniFi console and site by name: "consoles" saves a typed API key and lists its
+     * consoles, "console" saves one and lists its sites (a single site is chosen right away) and
+     * "site" saves the site. Other typed values stay in the form without being saved.
+     */
+    private fun unifiPicker(
+        access: ModuleAccessService,
+        tenant: Connection,
+        permissions: ModulePermissions,
+        step: String,
+        id: String?,
+        values: JsonObject,
+    ): UiScreen {
+        var settings = HotspotSettingsRepository.load(tenant)
+        val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } - "unifiApiKey"
+        fun screen(notice: UiNotice, picker: UiNode? = null): UiScreen {
+            val (status, active) = domainState(access, permissions.companyCode, settings.domain)
+            val saved = HotspotSettingsRepository.toFormValues(settings, status, access.serverMail != null)
+            // The ids just chosen win over what the form had; the API key always shows the saved mask.
+            val shown = saved + submitted + mapOf("unifiConsoleId" to saved.getValue("unifiConsoleId"), "unifiSiteId" to saved.getValue("unifiSiteId"))
+            return HotspotScreens.build("settings", tenant, permissions, emptyMap(), status, active, access.serverMail != null, notice, shown, listOfNotNull(picker))
+        }
+        fun store(vararg changes: Pair<String, String>) {
+            settings = HotspotSettingsRepository.merge(settings, JsonObject(changes.associate { it.first to JsonPrimitive(it.second) }))
+            HotspotSettingsRepository.save(tenant, settings)
+        }
+        return try {
+            when (step) {
+                "consoles" -> {
+                    values["unifiApiKey"]?.jsonPrimitive?.contentOrNull?.let { store("unifiApiKey" to it) }
+                    val apiKey = settings.unifiApiKey ?: return screen(UiNotice("Escribe la API key de UniFi y vuelve a buscar.", UiTone.Warning))
+                    val consoles = UnifiClient.consoles(apiKey)
+                    screen(UiNotice("${consoles.size} consola(s) encontradas. Elige la del hotspot.", UiTone.Success), HotspotScreens.consolePicker(consoles, settings.unifiConsoleId))
+                }
+                "console" -> {
+                    val consoleId = id?.takeIf { it.isNotBlank() } ?: return screen(UiNotice("Elige una consola de la lista.", UiTone.Warning))
+                    if (consoleId != settings.unifiConsoleId) store("unifiConsoleId" to consoleId, "unifiSiteId" to "") else store("unifiConsoleId" to consoleId)
+                    val apiKey = settings.unifiApiKey ?: return screen(UiNotice("Escribe la API key de UniFi y vuelve a buscar.", UiTone.Warning))
+                    val sites = UnifiClient.sites(apiKey, consoleId)
+                    if (sites.size == 1) {
+                        store("unifiSiteId" to sites.single().id)
+                        screen(UiNotice("Consola guardada y sitio \"${sites.single().name}\" seleccionado.", UiTone.Success))
+                    } else {
+                        screen(UiNotice("Consola guardada. Ahora elige el sitio.", UiTone.Success), HotspotScreens.sitePicker(sites, settings.unifiSiteId))
+                    }
+                }
+                "site" -> {
+                    val siteId = id?.takeIf { it.isNotBlank() } ?: return screen(UiNotice("Elige un sitio de la lista.", UiTone.Warning))
+                    store("unifiSiteId" to siteId)
+                    screen(UiNotice("Sitio guardado. UniFi quedo configurado.", UiTone.Success))
+                }
+                else -> screen(UiNotice("Paso de UniFi desconocido.", UiTone.Danger))
+            }
+        } catch (failure: HotspotValidationException) {
+            screen(UiNotice(failure.message.orEmpty(), UiTone.Danger))
+        } catch (failure: UnifiException) {
+            screen(UiNotice(failure.message.orEmpty(), UiTone.Danger))
+        }
     }
 
     /**
