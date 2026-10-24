@@ -289,7 +289,7 @@ object HotspotScreens {
     private val connectionFields = listOf(
         UiField("unifiConsoleId", "ID de consola", section = "UniFi", help = "Aparece en la URL de unifi.ui.com/consoles/<ID>/..."),
         UiField("unifiSiteId", "ID de sitio", section = "UniFi", help = "UUID del sitio que devuelve la API de UniFi en .../integration/v1/sites (no es \"default\")."),
-        UiField("unifiApiKey", "API key de UniFi", "password", section = "UniFi", help = "Los asteriscos indican una clave guardada; dejalos para conservarla."),
+        UiField("unifiApiKey", "API key de UniFi", "password", section = "UniFi", help = "Si ya hay una clave guardada se muestra oculta; dejala asi para conservarla."),
         UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", required = true, section = "Acceso"),
         UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", required = true, section = "Acceso",
             help = "Un correo no puede volver a conectarse hasta que pase este tiempo desde su ultimo acceso. 0 = sin espera."),
@@ -304,7 +304,7 @@ object HotspotScreens {
         UiField("smtpPort", "Puerto SMTP", "number", section = "Correo"),
         UiField("smtpSecurity", "Seguridad SMTP", "select", options = listOf("starttls", "ssl", "none"), section = "Correo"),
         UiField("smtpUsername", "Usuario SMTP", section = "Correo"),
-        UiField("smtpPassword", "Contrasena SMTP", "password", section = "Correo", help = "Los asteriscos indican una contrasena guardada; dejalos para conservarla."),
+        UiField("smtpPassword", "Contrasena SMTP", "password", section = "Correo", help = "Si ya hay una contrasena guardada se muestra oculta; dejala asi para conservarla."),
         UiField("smtpFrom", "Remitente", "email", section = "Correo"),
         UiField("emailSubject", "Asunto del correo", required = true, section = "Correo"),
     )
