@@ -1,0 +1,23 @@
+# Sends the resolved Gradle dependencies to GitHub so Dependabot alerts cover the
+# Java/Kotlin libraries too; GitHub does not read libs.versions.toml or build.gradle.kts.
+name: Dependency submission
+
+on:
+  push:
+    branches: [develop]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dependency-submission:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # Same JDK as gradle/gradle-daemon-jvm.properties, so Gradle does not download another one.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: liberica
+          java-version: 21
+      - uses: gradle/actions/dependency-submission@v6
