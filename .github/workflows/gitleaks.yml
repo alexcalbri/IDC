@@ -1,0 +1,27 @@
+# Scans commits for hardcoded secrets, including generic passwords and connection strings
+# that GitHub secret scanning only detects for organizations with GitHub Secret Protection.
+name: Gitleaks
+
+on:
+  push:
+    branches: [develop]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  # Lets gitleaks comment on the pull request lines where it finds a secret.
+  pull-requests: write
+
+jobs:
+  gitleaks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Full history, so every commit of the push or pull request is scanned.
+          fetch-depth: 0
+      # No GITLEAKS_LICENSE: it is only required for repositories owned by an organization.
+      - uses: gitleaks/gitleaks-action@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
