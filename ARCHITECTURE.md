@@ -696,9 +696,11 @@ the `server_owner` removes it. The running server exposes `/modules`,
 `server_owner` module-management screen can list installed modules and remote
 available modules, update the catalog URL, install modules into the active
 server module catalog, and remove non-locked modules from that catalog only when
-no company has them active. Executable server loading, build/restart
-orchestration, versioned package inventory and local package deletion remain
-approved architecture that still needs implementation.
+no company has them active. Optional modules are not part of the server
+distribution: installing one downloads it from the configured catalog branch,
+compiles it on the server against the running core with the bundled Kotlin
+compiler, stores the package under `MODULE_PACKAGES_ROOT`, restarts the service
+and loads the package in its own class loader (see `modules/README.md`).
 
 Empresa is the first Core module surfaced in the client dashboard. It is
 always active for `server_owner` and `business_owner` sessions. For

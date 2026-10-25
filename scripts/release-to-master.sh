@@ -80,11 +80,13 @@ if (( ${#test_dirs[@]} > 0 )); then
 fi
 
 # Modules marked with modules/<id>/.development are still in development and stay on develop.
-mapfile -t development_modules < <(git ls-files | { grep -E "$DEVELOPMENT_MARKER_PATTERN" || true; } | sed -E 's#/\.development$##' | sort -u)
+# The markers are read from develop: a module already left out of master has its marker
+# deleted by the merge, and its later changes on develop show up as modify/delete conflicts.
+mapfile -t development_modules < <(git ls-tree -r --name-only "$SOURCE" | { grep -E "$DEVELOPMENT_MARKER_PATTERN" || true; } | sed -E 's#/\.development$##' | sort -u)
 if (( ${#development_modules[@]} > 0 )); then
     printf 'Quitando modulos en desarrollo:\n'
     printf ' - %s\n' "${development_modules[@]}"
-    git rm -r -q --cached -- "${development_modules[@]}"
+    git rm -r -q --cached --ignore-unmatch -- "${development_modules[@]}"
     rm -rf -- "${development_modules[@]}"
 fi
 

@@ -29,6 +29,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 
 @Composable
 // Renderiza la barra superior compartida por pantallas autenticadas.
@@ -41,10 +42,12 @@ fun AuthenticatedTopBar(
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val colors = AppTheme.colors
     // Controla el menu de acciones y anima el icono cuando se abre.
     var menuExpanded by remember { mutableStateOf(false) }
     val menuRotation by animateFloatAsState(
-        targetValue = if (menuExpanded) 90f else 0f,
+        // Cerrado parte de 270 grados y al abrirse gira 90 grados mas.
+        targetValue = if (menuExpanded) 360f else 270f,
         label = "authenticated-menu-rotation",
     )
 
@@ -60,7 +63,7 @@ fun AuthenticatedTopBar(
                 .size(48.dp)
                 .background(
                     brush = Brush.radialGradient(
-                        colors = listOf(Color.White, Color(0xFFE0E0E0)),
+                        colors = listOf(colors.surface, colors.surfaceAlt),
                         center = Offset(24f, 24f),
                         radius = 30f,
                     ),
@@ -74,14 +77,14 @@ fun AuthenticatedTopBar(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                color = Color.White,
+                color = colors.onScreen,
                 fontSize = 18.sp,
                 fontWeight = FontWeight.Bold,
             )
             subtitle?.takeIf { it.isNotBlank() }?.let {
                 Text(
                     text = it,
-                    color = Color.White.copy(alpha = 0.76f),
+                    color = colors.onScreenMuted,
                     fontSize = 13.sp,
                 )
             }
@@ -93,13 +96,14 @@ fun AuthenticatedTopBar(
                 onClick = { menuExpanded = !menuExpanded },
                 modifier = Modifier
                     .size(48.dp)
-                    .background(Color.White.copy(alpha = 0.18f), CircleShape)
+                    .background(colors.onScreen.copy(alpha = 0.18f), CircleShape)
                     .rotate(menuRotation),
             ) {
+                // Siempre "|||" girado (gira al abrirse) para no confundirse con la X de cerrar.
                 Text(
-                    text = if (menuExpanded) "X" else "|||",
-                    color = Color.White,
-                    fontSize = if (menuExpanded) 22.sp else 18.sp,
+                    text = "|||",
+                    color = colors.onScreen,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                 )
             }

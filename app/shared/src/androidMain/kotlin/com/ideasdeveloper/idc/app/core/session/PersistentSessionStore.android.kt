@@ -11,6 +11,7 @@ actual object PersistentSessionStore {
     private const val ExpiresAtEpochSecondsKey = "expiresAtEpochSeconds"
     private const val ScopeKey = "scope"
     private const val CompanyCodeKey = "companyCode"
+    private const val WorkspaceCompanyCodeKey = "workspaceCompanyCode"
     private const val RoleKey = "role"
     private const val EnabledModulesKey = "enabledModules"
 
@@ -37,6 +38,7 @@ actual object PersistentSessionStore {
             expiresInSeconds = expiresAt - nowEpochSeconds(),
             scope = preferences.getString(ScopeKey, null)?.takeIf { it.isNotBlank() } ?: return null,
             companyCode = preferences.getString(CompanyCodeKey, null)?.takeIf { it.isNotBlank() },
+            workspaceCompanyCode = preferences.getString(WorkspaceCompanyCodeKey, null)?.takeIf { it.isNotBlank() },
             role = preferences.getString(RoleKey, null)?.takeIf { it.isNotBlank() } ?: return null,
             enabledModules = preferences.getString(EnabledModulesKey, null)
                 ?.split(",")
@@ -59,6 +61,9 @@ actual object PersistentSessionStore {
                 response.companyCode?.let {
                     putString(CompanyCodeKey, it)
                 } ?: remove(CompanyCodeKey)
+                response.workspaceCompanyCode?.let {
+                    putString(WorkspaceCompanyCodeKey, it)
+                } ?: remove(WorkspaceCompanyCodeKey)
             }
             .putString(RoleKey, response.role)
             .putString(EnabledModulesKey, response.enabledModules.joinToString(","))

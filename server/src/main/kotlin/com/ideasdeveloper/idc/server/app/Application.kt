@@ -15,6 +15,8 @@ import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
+import com.ideasdeveloper.idc.server.modules.ModulePackageLoader
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.idc.server.modules.ServerModule
@@ -31,11 +33,14 @@ import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
 import kotlinx.serialization.json.Json
+import org.slf4j.LoggerFactory
 import java.net.URI
+import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.SQLException
 import java.util.ServiceLoader
 import javax.sql.DataSource
+import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.seconds
 
 private val VersionCatalogJson = Json { ignoreUnknownKeys = true }
@@ -81,11 +86,18 @@ fun Application.module() {
         }
     }
     DatabaseFactory.init(environment.config)
-    val serverModules = loadServerModules()
+    val modulePackagesRoot = Path.of(
+        environment.config.propertyOrNull("modules.packagesRoot")?.getString()
+            ?: "build/server-modules"
+    )
+    val classpathModules = loadServerModules()
+    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet())
+    val serverModules = (classpathModules + packagedModules).sortedBy { it.definition.id }
     val installedServerModules = loadInstalledServerModuleDefinitions(DatabaseFactory.getDataSource(), serverModules)
     val moduleRegistry = ModuleRegistry(
         modules = serverModules,
         installedModuleIds = installedServerModules.map { it.id }.toSet(),
+        packagedModuleIds = packagedModules.map { it.definition.id }.toSet(),
     ).also { registry ->
         installedServerModules.forEach { definition ->
             registry.registerInstalled(definition)
@@ -117,11 +129,13 @@ fun Application.module() {
         moduleRegistry = moduleRegistry,
         remoteModuleCatalog = remoteModuleCatalog,
         defaultCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
-        modulePackagesRoot = Path.of(
-            environment.config.propertyOrNull("modules.packagesRoot")?.getString()
-                ?: "build/server-modules"
-        ),
+        modulePackagesRoot = modulePackagesRoot,
+        modulePackageBuilder = ModulePackageBuilder.forRunningServer(modulePackagesRoot),
+        requestRestart = ::restartToLoadModules,
     )
+    // Applies migrations of newly loaded module versions to the companies that use them, without
+    // delaying startup.
+    Thread({ companyProvisioning.applyPendingModuleMigrations() }, "module-migrations").apply { isDaemon = true }.start()
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
     val moduleAccessService = ModuleAccessService(DatabaseFactory.getDataSource(), loginDatabases, serverMailSettings(), moduleRegistry::isInstalled)
     val companySelfService = CompanySelfService(
@@ -265,6 +279,55 @@ private fun loadServerModules() =
         .map { it.create() }
         .sortedBy { it.definition.id }
 
+/**
+ * Loads the packages built on this server for installed optional modules. A package that fails to
+ * load (for example after a core update that broke it) is skipped so the server still starts.
+ */
+private fun loadPackagedModules(central: DataSource, classpathModuleIds: Set<String>): List<ServerModule> {
+    val log = LoggerFactory.getLogger("ModulePackages")
+    val packages = try {
+        central.connection.use { connection ->
+            connection.prepareStatement(
+                "SELECT module_id, installed_package_path FROM server_modules WHERE installed_package_path LIKE '%.jar'"
+            ).use { query ->
+                query.executeQuery().use { rows ->
+                    buildList { while (rows.next()) add(rows.getString("module_id") to rows.getString("installed_package_path")) }
+                }
+            }
+        }
+    } catch (_: SQLException) {
+        emptyList()
+    }
+    return packages.flatMap { (moduleId, path) ->
+        val jar = Path.of(path)
+        when {
+            // A module compiled into this server (base module or :server:run) wins over a package.
+            moduleId in classpathModuleIds -> emptyList()
+            !Files.isRegularFile(jar) -> {
+                log.error("Package of module {} not found at {}; reinstall the module.", moduleId, jar)
+                emptyList()
+            }
+            else -> try {
+                ModulePackageLoader.load(jar).filter { it.definition.id == moduleId }
+            } catch (failure: Throwable) {
+                log.error("Package of module {} could not be loaded; reinstall it for this server version.", moduleId, failure)
+                emptyList()
+            }
+        }
+    }
+}
+
+// systemd (Restart=on-failure) starts the server again within seconds and the new package loads.
+private fun restartToLoadModules() {
+    Thread({
+        Thread.sleep(2_000)
+        LoggerFactory.getLogger("ModulePackages").info("Restarting to load the installed module package.")
+        exitProcess(RestartExitCode)
+    }, "module-restart").start()
+}
+
+private const val RestartExitCode = 3
+
 private fun loadInstalledServerModuleDefinitions(central: DataSource, modules: List<ServerModule>): List<ModuleDefinition> {
     val lockedDefinitions = modules.filter { it.definition.locked }.map { it.definition }
     return try {
@@ -274,17 +337,10 @@ private fun loadInstalledServerModuleDefinitions(central: DataSource, modules: L
                     buildList {
                         addAll(lockedDefinitions)
                         while (rows.next()) {
+                            // Only modules whose code is loaded count as installed. Rows left by older
+                            // servers or by a package that no longer loads show as available to install.
                             val moduleId = rows.getString("module_id")
-                            val localDefinition = modules.firstOrNull { it.definition.id == moduleId }?.definition
-                            add(
-                                localDefinition ?: ModuleDefinition(
-                                    id = moduleId,
-                                    displayName = rows.getString("display_name"),
-                                    description = rows.getString("description"),
-                                    version = rows.getString("version"),
-                                    locked = rows.getBoolean("locked"),
-                                )
-                            )
+                            modules.firstOrNull { it.definition.id == moduleId }?.definition?.let(::add)
                         }
                     }.distinctBy { it.id }
                 }

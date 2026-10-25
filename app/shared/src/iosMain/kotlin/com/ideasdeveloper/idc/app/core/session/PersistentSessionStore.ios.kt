@@ -11,6 +11,7 @@ actual object PersistentSessionStore {
     private const val ExpiresAtEpochSecondsKey = "idc.session.expiresAtEpochSeconds"
     private const val ScopeKey = "idc.session.scope"
     private const val CompanyCodeKey = "idc.session.companyCode"
+    private const val WorkspaceCompanyCodeKey = "idc.session.workspaceCompanyCode"
     private const val RoleKey = "idc.session.role"
     private const val EnabledModulesKey = "idc.session.enabledModules"
 
@@ -30,6 +31,7 @@ actual object PersistentSessionStore {
             expiresInSeconds = expiresAt - nowEpochSeconds(),
             scope = defaults.stringForKey(ScopeKey)?.takeIf { it.isNotBlank() } ?: return null,
             companyCode = defaults.stringForKey(CompanyCodeKey)?.takeIf { it.isNotBlank() },
+            workspaceCompanyCode = defaults.stringForKey(WorkspaceCompanyCodeKey)?.takeIf { it.isNotBlank() },
             role = defaults.stringForKey(RoleKey)?.takeIf { it.isNotBlank() } ?: return null,
             enabledModules = defaults.stringForKey(EnabledModulesKey)
                 ?.split(",")
@@ -47,6 +49,9 @@ actual object PersistentSessionStore {
         response.companyCode?.let {
             defaults.setObject(it, CompanyCodeKey)
         } ?: defaults.removeObjectForKey(CompanyCodeKey)
+        response.workspaceCompanyCode?.let {
+            defaults.setObject(it, WorkspaceCompanyCodeKey)
+        } ?: defaults.removeObjectForKey(WorkspaceCompanyCodeKey)
         defaults.setObject(response.role, RoleKey)
         defaults.setObject(response.enabledModules.joinToString(","), EnabledModulesKey)
     }
@@ -58,6 +63,7 @@ actual object PersistentSessionStore {
         defaults.removeObjectForKey(ExpiresAtEpochSecondsKey)
         defaults.removeObjectForKey(ScopeKey)
         defaults.removeObjectForKey(CompanyCodeKey)
+        defaults.removeObjectForKey(WorkspaceCompanyCodeKey)
         defaults.removeObjectForKey(RoleKey)
         defaults.removeObjectForKey(EnabledModulesKey)
     }

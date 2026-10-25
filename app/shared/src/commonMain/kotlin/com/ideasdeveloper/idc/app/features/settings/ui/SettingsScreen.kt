@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.settings.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,7 +39,17 @@ import com.ideasdeveloper.idc.app.core.version.ClientVersion
 import com.ideasdeveloper.idc.app.core.version.VersionApi
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
+import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.material3.RadioButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.semantics.Role
+import com.ideasdeveloper.idc.app.core.theme.BuiltInThemes
+import com.ideasdeveloper.idc.app.core.theme.ThemeStore
 import kotlinx.coroutines.launch
 
 @Composable
@@ -52,20 +63,20 @@ fun SettingsScreen(
     modifier: Modifier = Modifier,
 ) {
     val companyIdentity = remember { CompanyIdentityStore.current() }
-    val primaryColor = remember(companyIdentity.primaryColor) {
-        companyIdentity.primaryColor.toComposeColor(Color(0xFF667EEA))
-    }
-    val secondaryColor = remember(companyIdentity.secondaryColor) {
-        companyIdentity.secondaryColor.toComposeColor(Color(0xFF764BA2))
-    }
+    val colors = AppTheme.colors
+    val primaryColor = colors.accent
     val scope = rememberCoroutineScope()
     var versionStatus by remember { mutableStateOf<String?>(null) }
     var checkingVersion by remember { mutableStateOf(false) }
+    val selectedTheme by ThemeStore.selection.collectAsState()
+    val moduleThemes by ThemeStore.moduleThemes.collectAsState()
+    // Al abrir Ajustes vuelve a pedir los temas por si se instalo o quito un modulo.
+    LaunchedEffect(configuration?.serverUrl) { ThemeStore.refresh(configuration?.serverUrl) }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .background(Brush.horizontalGradient(listOf(primaryColor, secondaryColor))),
+            .background(colors.screenBrush),
     ) {
         AuthenticatedTopBar(
             title = "Ajustes",
@@ -77,73 +88,97 @@ fun SettingsScreen(
             modifier = Modifier.align(Alignment.TopCenter),
         )
 
-        Column(
+        // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
+        ClosableView(
+            onClose = onReturnToDashboard,
             modifier = Modifier
-                .fillMaxWidth(0.9f)
                 .align(Alignment.Center)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .fillMaxWidth(0.9f),
         ) {
-            SettingsCard(primaryColor = primaryColor) {
-                Text("Conexion", fontWeight = FontWeight.Bold, color = primaryColor)
-                Spacer(Modifier.height(10.dp))
-                SettingRow("Servidor", configuration?.serverUrl ?: "Sin configurar")
-                SettingRow("Empresa", configuration?.companyCode ?: "Administracion del servidor")
-            }
-
-            SettingsCard(primaryColor = primaryColor) {
-                Text("Sesion", fontWeight = FontWeight.Bold, color = primaryColor)
-                Spacer(Modifier.height(10.dp))
-                SettingRow("Usuario", session?.username ?: "Sin sesion")
-                SettingRow("Rol", session?.role ?: "Sin rol")
-                SettingRow("Empresa activa", session?.companyCode ?: "Servidor")
-            }
-
-            SettingsCard(primaryColor = primaryColor) {
-                Text("Version", fontWeight = FontWeight.Bold, color = primaryColor)
-                Spacer(Modifier.height(10.dp))
-                SettingRow("Cliente", ClientVersion)
-                versionStatus?.let {
-                    Spacer(Modifier.height(8.dp))
-                    Text(it, color = Color(0xFF444444))
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Apariencia", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        "El tema se guarda en este dispositivo. Los modulos instalados en el servidor pueden agregar temas.",
+                        color = AppTheme.colors.muted,
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    ThemeOption("Automatico (segun el sistema)", BuiltInThemes.System, selectedTheme)
+                    ThemeOption(BuiltInThemes.light.name, BuiltInThemes.Light, selectedTheme)
+                    ThemeOption(BuiltInThemes.dark.name, BuiltInThemes.Dark, selectedTheme)
+                    moduleThemes.forEach { theme ->
+                        ThemeOption("${theme.name} (modulo ${theme.id.substringBefore('.')})", theme.id, selectedTheme)
+                    }
                 }
-                Spacer(Modifier.height(12.dp))
-                Button(
-                    onClick = {
-                        val serverUrl = configuration?.serverUrl.orEmpty()
-                        if (serverUrl.isBlank()) {
-                            versionStatus = "No hay servidor configurado para revisar actualizaciones."
-                            return@Button
-                        }
-                        checkingVersion = true
-                        scope.launch {
-                            val version = VersionApi(serverUrl).use { it.version() }
-                            versionStatus = when {
-                                version == null -> "No se pudo consultar la version del servidor."
-                                !version.latestAppVersion.isNullOrBlank() && version.latestAppVersion != ClientVersion ->
-                                    "Nueva version del cliente disponible: ${version.latestAppVersion}."
-                                else -> "El cliente esta actualizado."
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Conexion", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Servidor", configuration?.serverUrl ?: "Sin configurar")
+                    SettingRow("Empresa", configuration?.companyCode ?: "Administracion del servidor")
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Sesion", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Usuario", session?.username ?: "Sin sesion")
+                    SettingRow("Rol", session?.role ?: "Sin rol")
+                    SettingRow("Empresa activa", session?.companyCode ?: "Servidor")
+                }
+
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Version", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    SettingRow("Cliente", ClientVersion)
+                    versionStatus?.let {
+                        Spacer(Modifier.height(8.dp))
+                        Text(it, color = AppTheme.colors.muted)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        onClick = {
+                            val serverUrl = configuration?.serverUrl.orEmpty()
+                            if (serverUrl.isBlank()) {
+                                versionStatus = "No hay servidor configurado para revisar actualizaciones."
+                                return@Button
                             }
-                            checkingVersion = false
-                        }
-                    },
-                    enabled = !checkingVersion,
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-                ) {
-                    Text(if (checkingVersion) "Revisando..." else "Revisar actualizaciones")
+                            checkingVersion = true
+                            scope.launch {
+                                val version = VersionApi(serverUrl).use { it.version() }
+                                versionStatus = when {
+                                    version == null -> "No se pudo consultar la version del servidor."
+                                    !version.latestAppVersion.isNullOrBlank() && version.latestAppVersion != ClientVersion ->
+                                        "Nueva version del cliente disponible: ${version.latestAppVersion}."
+                                    else -> "El cliente esta actualizado."
+                                }
+                                checkingVersion = false
+                            }
+                        },
+                        enabled = !checkingVersion,
+                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                    ) {
+                        Text(if (checkingVersion) "Revisando..." else "Revisar actualizaciones")
+                    }
                 }
-            }
 
-            SettingsCard(primaryColor = primaryColor) {
-                Text("Datos locales", fontWeight = FontWeight.Bold, color = primaryColor)
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    text = "Limpia la URL, empresa guardada y sesion local. No modifica datos del servidor.",
-                    color = Color(0xFF555555),
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(onClick = onClearLocalConfiguration) {
-                    Text("Limpiar configuracion local")
+                SettingsCard(primaryColor = primaryColor) {
+                    Text("Datos locales", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Spacer(Modifier.height(10.dp))
+                    Text(
+                        text = "Limpia la URL, empresa guardada y sesion local. No modifica datos del servidor.",
+                        color = AppTheme.colors.muted,
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    OutlinedButton(onClick = onClearLocalConfiguration) {
+                        Text("Limpiar configuracion local")
+                    }
                 }
             }
         }
@@ -157,10 +192,24 @@ private fun SettingsCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = Color.White, contentColor = primaryColor),
+        colors = CardDefaults.cardColors(containerColor = AppTheme.colors.surface, contentColor = primaryColor),
         shape = MaterialTheme.shapes.medium,
     ) {
         Column(modifier = Modifier.padding(16.dp), content = content)
+    }
+}
+
+@Composable
+private fun ThemeOption(label: String, themeId: String, selectedTheme: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = themeId == selectedTheme, role = Role.RadioButton, onClick = { ThemeStore.select(themeId) }),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = themeId == selectedTheme, onClick = null)
+        Spacer(Modifier.width(8.dp))
+        Text(label, color = AppTheme.colors.text)
     }
 }
 
@@ -171,8 +220,8 @@ private fun SettingRow(label: String, value: String) {
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, color = Color(0xFF666666))
-        Text(value, color = Color(0xFF222222), fontWeight = FontWeight.SemiBold)
+        Text(label, color = AppTheme.colors.muted)
+        Text(value, color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
     }
 }
 

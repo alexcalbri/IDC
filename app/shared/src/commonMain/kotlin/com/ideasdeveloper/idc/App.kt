@@ -1,7 +1,7 @@
 package com.ideasdeveloper.idc
 
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -14,10 +14,13 @@ import androidx.savedstate.read
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
 import com.ideasdeveloper.idc.app.core.session.SessionStore
+import com.ideasdeveloper.idc.app.core.theme.IdeasCoreTheme
+import com.ideasdeveloper.idc.app.core.theme.ThemeStore
 import com.ideasdeveloper.idc.app.features.auth.ui.LoginScreen
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyManagementScreen
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyProvisioningScreen
 import com.ideasdeveloper.idc.app.features.company.ui.ServerModuleManagementScreen
+import com.ideasdeveloper.idc.app.features.company.ui.ServerStaffScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
 import com.ideasdeveloper.idc.app.features.settings.ui.SettingsScreen
@@ -27,7 +30,7 @@ import com.ideasdeveloper.idc.navigation.NavRoute.Companion.routeName
 @Composable
 // Orquesta la navegacion principal segun exista o no una sesion restaurada.
 fun App(initialServerUrl: String = "") {
-    MaterialTheme {
+    IdeasCoreTheme {
         // Restaura la sesion, identidad visual y configuracion local antes de construir rutas.
         val navController = rememberNavController()
         val restoredSession = remember { SessionStore.restore() }
@@ -35,6 +38,8 @@ fun App(initialServerUrl: String = "") {
         val currentSession = session ?: restoredSession
         remember { CompanyIdentityStore.restore() }
         var clientConfiguration by remember { mutableStateOf(ClientConfigurationStore.load()) }
+        // Trae los temas de los modulos instalados en el servidor configurado.
+        LaunchedEffect(clientConfiguration?.serverUrl) { ThemeStore.refresh(clientConfiguration?.serverUrl) }
 
         // Regresa al dashboard limpiando pantallas duplicadas de la pila.
         fun openDashboard() {
@@ -100,6 +105,14 @@ fun App(initialServerUrl: String = "") {
                         onLogout = ::logout,
                         onReturnToDashboard = ::openDashboard,
                     )
+                } else if (moduleId == "server-staff" && currentSession?.role == "server_owner") {
+                    ServerStaffScreen(
+                        serverUrl = clientConfiguration?.serverUrl,
+                        session = currentSession,
+                        onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                        onLogout = ::logout,
+                        onReturnToDashboard = ::openDashboard,
+                    )
                 } else if (moduleId == "empresa") {
                     if (currentSession?.role == "server_owner") {
                         CompanyProvisioningScreen(
@@ -153,6 +166,7 @@ fun App(initialServerUrl: String = "") {
 private fun String.toModuleTitle(): String = when (this) {
     "empresa" -> "Empresa"
     "server-modules" -> "Modulos del servidor"
+    "server-staff" -> "Personal del servidor"
     "clientes" -> "Clientes"
     else -> replace("-", " ")
         .replace("_", " ")

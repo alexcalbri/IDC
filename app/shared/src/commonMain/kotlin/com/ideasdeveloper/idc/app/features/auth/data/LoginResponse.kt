@@ -13,4 +13,6 @@ class LoginResponse(
     val companyCode: String? = null,
     val role: String,
     val enabledModules: List<String> = emptyList(),
+    // server_owner: codigo del espacio del servidor donde usa modulos sin una empresa.
+    val workspaceCompanyCode: String? = null,
 )
