@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppColors
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -68,7 +69,6 @@ import com.ideasdeveloper.idc.ui.UiStatus
 import com.ideasdeveloper.idc.ui.UiTable
 import com.ideasdeveloper.idc.ui.UiText
 import com.ideasdeveloper.idc.ui.UiTextStyle
-import com.ideasdeveloper.idc.ui.UiTheme
 import com.ideasdeveloper.idc.ui.UiTone
 import com.ideasdeveloper.idc.ui.UiUnknownAction
 
@@ -95,21 +95,20 @@ data class ModuleColors(
     }
 
     companion object {
-        fun from(theme: UiTheme?, companyAccent: Color) = ModuleColors(
-            background = theme?.background.toColor(Color(0xFFF4F5FA)),
-            surface = theme?.surface.toColor(Color.White),
-            surfaceAlt = theme?.surfaceAlt.toColor(Color(0xFFF0F1F6)),
-            border = theme?.border.toColor(Color(0xFFE1E3EA)),
-            text = theme?.text.toColor(Color(0xFF1A1A1A)),
-            muted = theme?.muted.toColor(Color(0xFF666666)),
-            accent = theme?.accent.toColor(companyAccent),
-            onAccent = theme?.onAccent.toColor(Color.White),
-            success = theme?.success.toColor(Color(0xFF176B3A)),
-            warning = theme?.warning.toColor(Color(0xFFB26A00)),
-            danger = theme?.danger.toColor(Color(0xFFB00020)),
+        // Las piezas de los modulos siempre usan el tema de la app; UiScreen.theme se ignora.
+        fun from(app: AppColors) = ModuleColors(
+            background = app.background,
+            surface = app.surface,
+            surfaceAlt = app.surfaceAlt,
+            border = app.border,
+            text = app.text,
+            muted = app.muted,
+            accent = app.accent,
+            onAccent = app.onAccent,
+            success = app.success,
+            warning = app.warning,
+            danger = app.danger,
         )
-
-        private fun String?.toColor(fallback: Color) = this?.toComposeColor(fallback) ?: fallback
     }
 }
 

@@ -43,6 +43,8 @@ data class ModuleUiEntry(
 @Serializable
 data class UiScreen(
     val title: String,
+    // Ignored by the app: modules are drawn with the app theme the user chose. Kept so packages
+    // built against older versions still load; to add colors, declare a UiAppTheme instead.
     val theme: UiTheme? = null,
     val navigation: UiNavigation? = null,
     val notice: UiNotice? = null,
@@ -50,6 +52,7 @@ data class UiScreen(
 )
 
 // Colors as #RRGGBB. Missing values fall back to the client's defaults.
+// In a UiAppTheme, accent and onAccent are ignored: the company brand colors are the accent.
 @Serializable
 data class UiTheme(
     val background: String? = null,
@@ -64,6 +67,30 @@ data class UiTheme(
     val warning: String? = null,
     val danger: String? = null,
 )
+
+/**
+ * A theme a module adds to the app. Users pick it in Ajustes next to Claro and Oscuro, and the
+ * whole app (core screens and every module) is drawn with it. [id] is unique within the module;
+ * the server publishes it as "<moduleId>.<id>". [brandBackground] paints the screen background
+ * with the company brand gradient, as the Claro theme does, instead of [UiTheme.background].
+ */
+@Serializable
+data class UiAppTheme(
+    val id: String,
+    val name: String,
+    val dark: Boolean,
+    val colors: UiTheme,
+    val brandBackground: Boolean = false,
+)
+
+@Serializable
+data class UiAppThemes(val themes: List<UiAppTheme>)
+
+private val UiColorPattern = Regex("^#[0-9A-Fa-f]{6}$")
+
+// Whether every color set in the theme is #RRGGBB.
+fun UiTheme.isValid(): Boolean = listOfNotNull(background, surface, surfaceAlt, border, text, muted, accent, onAccent, success, warning, danger)
+    .all { UiColorPattern.matches(it) }
 
 // Module sections. Wide screens show a sidebar; narrow screens a horizontal bar.
 @Serializable

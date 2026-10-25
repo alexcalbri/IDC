@@ -30,7 +30,7 @@ rules fails the build with a list of the problems.
 modules/<id>/
 ├── README.md                     required: purpose, data, routes, permissions, setup
 ├── .development                  optional: module still in development (not released)
-├── module.json                   optional: only for the remote module catalog
+├── module.json                   required: catalog entry (id, displayName, description, version, bundled)
 ├── migrations/                   optional: tenant database migrations
 │   ├── README.md                 optional
 │   └── VNNN__description.sql     e.g. V001__create_orders.sql
@@ -61,7 +61,7 @@ Rules:
   in PascalCase (`ventas_online` -> `VentasOnlineServerModuleProvider`). The build
   registers it automatically; without it the server never loads the module.
 - Resources live under `resources/modules/<id>/` so two modules cannot overwrite
-  each other's files. Web-UI modules call `route.moduleWebResources("<id>")` in
+  each other's files. Web-UI modules call `route.moduleWebResources("<id>", javaClass.classLoader)` in
   `routes` to serve `resources/modules/<id>/web/` at `/modules/<id>/web/`.
 - Migrations are named `VNNN__description.sql`, wrap all statements in one
   `BEGIN;` ... `COMMIT;`, are listed in the module's `migrationPaths` and are never
@@ -85,8 +85,11 @@ check.
 
 ## Installable module manifest
 
-`module.json` is optional. Add it only when the module is distributed through
-the remote catalog; modules compiled into the server do not need it.
+Every module has `module.json`. Base modules (`"bundled": true`, today Clientes
+and Empresa) are compiled into the server and never offered by the catalog; every
+other module is optional and is listed only by the catalog URL configured on the
+server. The `version` must equal the `ModuleDefinition` version (the build checks
+it).
 
 ```json
 {
@@ -109,6 +112,74 @@ Validation rules:
 - `packageUrl`, when present, must start with `http://` or `https://`.
 - `packageSha256`, when present, must be a 64-character SHA-256 hex digest.
 - `locked` is ignored for remote modules; base locked modules belong to Core.
+
+## How optional modules reach a server
+
+The server distribution contains the core and the base modules only. Optional
+modules come from the **catalog URL** configured in *Modulos del servidor*
+(default `.../tree/master/modules`; use `.../tree/develop/modules` to try modules
+still in development). The installed branch does not matter.
+
+When the server owner installs an optional module, the server:
+
+1. downloads that branch from GitHub and extracts `modules/<id>/`;
+2. checks the module layout;
+3. compiles the module with the Kotlin compiler shipped in the distribution
+   (`compiler/`) against the core it is running. If the module does not fit this
+   core version, the installation fails with the compiler error and nothing changes;
+4. stores the package in `MODULE_PACKAGES_ROOT/<id>/<id>-<version>.jar` (code,
+   migrations, resources and `module.json`) and records it in `server_modules`;
+5. restarts itself (systemd brings it back in a few seconds) and loads the
+   package in its own class loader.
+
+The module list shows the progress (`installing`, `restarting`, `failed`). When
+the catalog offers a newer version of an installed module, *Actualizar* rebuilds
+it. Removing a module deletes its package; its routes reject requests at once.
+A package that cannot be loaded after a core update is skipped at startup (the
+server still starts) and must be installed again.
+
+Locally, `./gradlew :server:run` loads optional modules from the source tree, and
+every build compiles them to catch errors early.
+
+## Versions and updates
+
+- Publishing a new version means raising `version` in `module.json` and in the
+  `ModuleDefinition` (the build requires both to match) on the catalog branch.
+  Changing the code without raising the version is invisible to servers.
+- When the server owner opens *Modulos del servidor*, the server compares the
+  installed version with the catalog's. Versions compare numerically
+  (`0.10.0` > `0.9.0`; `1.0.0-beta` < `1.0.0`). *Actualizar* appears only when the
+  catalog version is newer; an older catalog version (for example after switching
+  from `develop` to `master`) is reported but never installed, so a module is never
+  downgraded.
+- Updating rebuilds the module from the catalog branch. If the new version does not
+  compile against the installed core, the update fails and the current version keeps
+  running.
+- New migrations of a module version are applied to every company that already uses
+  the module when the server starts with that version; companies that enable the
+  module later receive them on activation. Applied migrations are recorded and never
+  run twice. A failing migration is logged and shown on the module as needing
+  attention; other companies continue.
+- Never edit a released migration; add `V00N__...sql`. The server and
+  `scripts/ubuntu/migrations.sh` reject an applied migration whose content changed.
+- Base modules (Clientes, Empresa) are updated with the server (`update.sh`).
+
+## Server workspace
+
+Server owners can use modules without creating a company. Ticking *Usar en el
+servidor* on an installed module in *Modulos del servidor* enables it in the
+**server workspace**: a company-like tenant database (`idc_servidor`, company
+code `servidor`) created on first use and hidden from company administration
+(it cannot be listed, edited, deactivated or deleted as a company). Base modules
+are always enabled there.
+
+- Server owners use the workspace with their normal session and every permission;
+  their dashboard shows the modules enabled in it.
+- *Personal del servidor* creates workspace users with per-module permissions,
+  like a business owner does for a company. Staff sign in with their username,
+  password and the company code `servidor`.
+- Modules need no changes: the workspace is a regular tenant for them, so their
+  routes, migrations and permissions work as in any company.
 
 ## Module user interface
 
@@ -145,7 +216,7 @@ is the next `UiScreen`; optional confirmation), `UiDownload` (text file such as
 CSV; saved to Downloads on Android and desktop, to Files > On my iPhone > IDC on
 iOS, downloaded by the browser on web), `UiOpenUrl`. Any action with `formId` carries that form's values.
 `UiScreen.navigation` adds module sections (sidebar on wide screens, top bar on
-phones) and `UiScreen.theme` sets the module colors.
+phones). Screens carry no colors: see [Colors and themes](#colors-and-themes).
 
 Compatibility: clients skip pieces and actions they do not know, so a newer
 server never breaks an older app. New piece types are added to the shared
@@ -169,3 +240,60 @@ start, the app offers to open the module in the system browser. `/modules/{modul
 cookies limited to `/modules/{moduleId}/`, so the module's pages and API calls
 pass the same `requireModulePermission` / `requireModuleAccess` checks without
 handling tokens. The session token never appears in a URL.
+
+The first page also receives the app theme as query parameters, so it can
+draw itself with the same colors: `idc-theme=light|dark` and
+`idc-background`, `idc-surface`, `idc-surfaceAlt`, `idc-border`, `idc-text`,
+`idc-muted`, `idc-accent`, `idc-onAccent`, `idc-success`, `idc-warning`,
+`idc-danger` as `#RRGGBB`. Keep them (for example in CSS variables) for the
+rest of the session.
+
+## Colors and themes
+
+The app has two built-in themes that every user picks in **Ajustes >
+Apariencia** (saved on the device; **Automatico** follows the system):
+
+- **Claro**: the core palette, white cards over the company brand gradient.
+- **Oscuro**: the hotspot panel palette (`#05060B` background, `#11121B` cards).
+
+The company brand colors (Empresa > primary and secondary) are always the
+accent: buttons, highlights and the gradient.
+
+Modules must respect the app colors. Native pieces are drawn with the active
+theme, so a module never sets colors on its screens (`UiScreen.theme` is
+ignored and only kept so older packages still load). Use tones (`success`,
+`warning`, `danger`, `info`) to give meaning to texts, metrics and statuses.
+Web modules read the theme from the query parameters above.
+
+A module can add themes to the app. They appear in Ajustes next to Claro and
+Oscuro while the module is installed on the server (`GET /modules/themes`,
+public), and they paint the whole app, not only the module:
+
+```kotlin
+object ExampleServerModule : ServerModule {
+    override val themes = listOf(
+        UiAppTheme(
+            id = "ocean",
+            name = "Oceano",
+            dark = true,
+            colors = UiTheme(
+                background = "#04131F",
+                surface = "#0B2233",
+                surfaceAlt = "#12304A",
+                border = "#1E4560",
+                text = "#EAF6FF",
+                muted = "#8FB3C9",
+                success = "#3DD6A0",
+                warning = "#FFB454",
+                danger = "#FF6B6B",
+            ),
+        ),
+    )
+}
+```
+
+Colors are `#RRGGBB`; a missing one comes from the built-in theme of the same
+mode (`dark`). `accent` and `onAccent` are ignored because the accent is the
+company brand. `brandBackground = true` paints the screen background with the
+brand gradient, as Claro does. The server publishes the theme as
+`<moduleId>.<id>` and skips themes with invalid colors.

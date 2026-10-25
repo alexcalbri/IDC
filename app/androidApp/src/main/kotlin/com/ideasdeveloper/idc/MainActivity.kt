@@ -10,6 +10,7 @@ import com.ideasdeveloper.idc.app.core.company.PersistentCompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
 import com.ideasdeveloper.idc.app.core.platform.AndroidFileExport
 import com.ideasdeveloper.idc.app.core.session.PersistentSessionStore
+import com.ideasdeveloper.idc.app.core.theme.PersistentPreferences
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -18,6 +19,7 @@ class MainActivity : ComponentActivity() {
         ClientConfigurationStore.initialize(this)
         PersistentCompanyIdentityStore.initialize(this)
         PersistentSessionStore.initialize(this)
+        PersistentPreferences.initialize(this)
         AndroidFileExport.initialize(this)
 
         setContent {

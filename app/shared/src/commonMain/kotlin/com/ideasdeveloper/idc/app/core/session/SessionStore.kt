@@ -27,6 +27,14 @@ object SessionStore {
         }
     }
 
+    // Actualiza la sesion activa (p. ej. modulos del espacio del servidor) sin cambiar si estaba guardada.
+    fun update(transform: (LoginResponse) -> LoginResponse) {
+        val current = _session.value ?: return
+        val updated = transform(current)
+        _session.value = updated
+        if (PersistentSessionStore.load() != null) PersistentSessionStore.save(updated)
+    }
+
     // Elimina cualquier sesion local antes de volver al login.
     fun clear() {
         _session.value = null

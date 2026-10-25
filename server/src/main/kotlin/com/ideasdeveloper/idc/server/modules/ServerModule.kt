@@ -1,6 +1,8 @@
 package com.ideasdeveloper.idc.server.modules
 
 import com.ideasdeveloper.idc.ui.ModuleUiEntry
+import com.ideasdeveloper.idc.ui.UiAppTheme
+import com.ideasdeveloper.idc.ui.isValid
 import java.util.concurrent.ConcurrentHashMap
 import io.ktor.server.routing.Route
 import kotlinx.serialization.Serializable
@@ -13,6 +15,9 @@ interface ServerModule {
         get() = emptyList()
     // Tenant tables created by this module's migrations that the runtime role must read and write.
     val runtimeTables: List<String>
+        get() = emptyList()
+    // Themes this module adds to the app while it is installed (see UiAppTheme).
+    val themes: List<UiAppTheme>
         get() = emptyList()
 
     fun routes(route: Route, access: ModuleAccessService) {
@@ -83,6 +88,8 @@ data class ModuleActionDefinition(
 class ModuleRegistry(
     modules: List<ServerModule>,
     installedModuleIds: Set<String> = modules.filter { it.definition.locked }.map { it.definition.id }.toSet(),
+    // Modules loaded from packages built on this server (not compiled into the distribution).
+    private val packagedModuleIds: Set<String> = emptySet(),
 ) {
     private val modulesById = modules.associateBy { it.definition.id }.toMutableMap()
     private val externalDefinitionsById = ConcurrentHashMap<String, ModuleDefinition>()
@@ -129,6 +136,13 @@ class ModuleRegistry(
 
     fun isInstalled(moduleId: String): Boolean = installedIds.contains(moduleId)
 
+    // Whether the module's code is loaded in this process (compiled in or from a package).
+    fun hasCode(moduleId: String): Boolean = modulesById.containsKey(moduleId)
+
+    fun isPackaged(moduleId: String): Boolean = moduleId in packagedModuleIds
+
+    fun loadedVersion(moduleId: String): String? = modulesById[moduleId]?.definition?.version
+
     fun installedModuleIds(): Set<String> = installedIds.toSet()
 
     /**
@@ -143,6 +157,13 @@ class ModuleRegistry(
     }
 
     internal fun routedModules(): Collection<ServerModule> = modulesById.values
+
+    // Valid themes of installed modules, with ids prefixed by the module id.
+    fun themes(): List<UiAppTheme> = installedIds.sorted().flatMap { moduleId ->
+        modulesById[moduleId]?.themes.orEmpty()
+            .filter { it.id.isNotBlank() && it.name.isNotBlank() && it.colors.isValid() }
+            .map { it.copy(id = "$moduleId.${it.id}") }
+    }
 
     private fun definitionOrExternal(moduleId: String): ModuleDefinition? =
         modulesById[moduleId]?.definition ?: externalDefinitionsById[moduleId]

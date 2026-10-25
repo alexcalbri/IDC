@@ -39,6 +39,14 @@ data class ServerModuleResponse(
     val packageUrl: String? = null,
     val packageSha256: String? = null,
     val installedPackagePath: String? = null,
+    // Instalacion en segundo plano de un modulo opcional: installing, restarting o failed.
+    val status: String? = null,
+    val statusMessage: String? = null,
+    // El servidor compara versiones: hay una mas nueva en el catalogo, o la instalada es mas nueva.
+    val updateAvailable: Boolean = false,
+    val newerThanCatalog: Boolean = false,
+    // Activo en el espacio del servidor (uso del server_owner y su personal sin una empresa).
+    val usedByServer: Boolean = false,
 )
 
 @Serializable

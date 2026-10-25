@@ -13,6 +13,14 @@ import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.idc.server.modules.RemoteModulePackage
+import com.ideasdeveloper.idc.ModuleVersion
+import com.ideasdeveloper.idc.server.modules.GitHubLocation
+import com.ideasdeveloper.idc.server.modules.ModuleBuildException
+import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
+import com.ideasdeveloper.idc.server.modules.ServerModule
+import org.slf4j.LoggerFactory
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import org.postgresql.ds.PGSimpleDataSource
 import java.net.URI
 import java.nio.file.Files
@@ -34,7 +42,15 @@ class CompanyProvisioningService(
     private val remoteModuleCatalog: RemoteModuleCatalog,
     private val defaultCatalogUrl: String,
     private val modulePackagesRoot: Path,
+    // Null outside an installed distribution (e.g. :server:run), where modules cannot be built.
+    private val modulePackageBuilder: ModulePackageBuilder?,
+    private val requestRestart: () -> Unit,
 ) {
+    private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
+    // Progress of optional modules being built for installation, shown in the module list.
+    private val installStates = ConcurrentHashMap<String, ModuleInstallState>()
+    // One build at a time: compiling uses about 1 GB of memory.
+    private val buildExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "module-build").apply { isDaemon = true } }
     private val companyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val postgresRolePattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val colorPattern = Regex("#[0-9A-Fa-f]{6}")
@@ -50,6 +66,9 @@ class CompanyProvisioningService(
         val databaseName = "idc_$code"
         val companyId = UUID.randomUUID()
 
+        if (code == ServerWorkspace.Code) {
+            throw CompanyProvisioningException("El codigo ${ServerWorkspace.Code} esta reservado para el espacio del servidor.")
+        }
         validate(code, companyName, ownerUsername, ownerPassword, request)
 
         central.connection.use { connection ->
@@ -123,7 +142,7 @@ class CompanyProvisioningService(
     fun listCompanies(): List<CompanySummaryResponse> {
         val companies = central.connection.use { connection ->
             connection.prepareStatement(
-                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies ORDER BY code"
+                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE NOT is_server_workspace ORDER BY code"
             ).use { query ->
                 query.executeQuery().use { rows ->
                     buildList {
@@ -164,6 +183,7 @@ class CompanyProvisioningService(
 
     fun updateCompany(companyCode: String, request: UpdateCompanyRequest, provisioningRole: String): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
+        rejectServerWorkspace(normalizedCompanyCode)
         val companyName = request.name.trim()
         val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (companyName.isBlank()) {
@@ -234,6 +254,7 @@ class CompanyProvisioningService(
 
     fun setCompanyActive(companyCode: String, active: Boolean, provisioningRole: String): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
+        rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
             findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException("Empresa no encontrada.")
@@ -285,6 +306,7 @@ class CompanyProvisioningService(
 
     fun deleteInactiveCompany(companyCode: String, provisioningRole: String) {
         val normalizedCompanyCode = companyCode.trim()
+        rejectServerWorkspace(normalizedCompanyCode)
         val company = central.connection.use { connection ->
             findCompanyAnyState(connection, normalizedCompanyCode)
                 ?: throw CompanyProvisioningException("Empresa no encontrada.")
@@ -435,26 +457,49 @@ class CompanyProvisioningService(
         )
     }
 
+    /**
+     * Base modules, installed modules and the modules offered by the catalog URL configured now.
+     * Modules of a previously configured catalog that were never installed are not shown.
+     */
     fun listServerModules(): List<ServerModuleResponse> {
         ensureLockedServerModulesPersisted()
         val remotePackages = syncRemoteAvailableModules()
-        return moduleRegistry.availableDefinitions.map { definition ->
-            val remotePackage = remotePackages[definition.id]
-            val installedPackage = installedPackage(definition.id)
-            ServerModuleResponse(
-                moduleId = definition.id,
-                displayName = definition.displayName,
-                description = definition.description,
-                version = installedPackage?.version ?: definition.version,
-                latestVersion = remotePackage?.definition?.version,
-                locked = definition.locked,
-                installed = moduleRegistry.isInstalled(definition.id),
-                activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
-                packageUrl = remotePackage?.packageUrl ?: installedPackage?.packageUrl,
-                packageSha256 = remotePackage?.packageSha256 ?: installedPackage?.packageSha256,
-                installedPackagePath = installedPackage?.installedPackagePath,
-            )
-        }
+        val shown = moduleRegistry.availableDefinitions
+            .filter { moduleRegistry.hasCode(it.id) || moduleRegistry.isInstalled(it.id) || it.id in remotePackages || installStates.containsKey(it.id) }
+        val serverUsage = serverWorkspaceModules()
+        return shown.map { definition -> moduleResponse(definition, remotePackages[definition.id], serverUsage) }
+    }
+
+    private fun moduleResponse(
+        definition: ModuleDefinition,
+        remotePackage: RemoteModulePackage?,
+        serverUsage: Set<String>? = serverWorkspaceModules(),
+    ): ServerModuleResponse {
+        val installedPackage = installedPackage(definition.id)
+        val state = installStates[definition.id]
+        val installedVersion = installedPackage?.version ?: definition.version
+        val catalogVersion = remotePackage?.definition?.version
+        val installed = moduleRegistry.isInstalled(definition.id)
+        // Base modules are updated with the server, never from the catalog.
+        val comparable = installed && !definition.locked && catalogVersion != null
+        return ServerModuleResponse(
+            moduleId = definition.id,
+            displayName = definition.displayName,
+            description = definition.description,
+            version = installedVersion,
+            latestVersion = remotePackage?.definition?.version,
+            locked = definition.locked,
+            installed = moduleRegistry.isInstalled(definition.id),
+            activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
+            packageUrl = installedPackage?.packageUrl,
+            packageSha256 = installedPackage?.packageSha256,
+            installedPackagePath = installedPackage?.installedPackagePath,
+            status = state?.status,
+            statusMessage = state?.message,
+            updateAvailable = comparable && ModuleVersion.isNewer(catalogVersion!!, installedVersion),
+            newerThanCatalog = comparable && ModuleVersion.isNewer(installedVersion, catalogVersion!!),
+            usedByServer = installed && serverUsage != null && (definition.locked || definition.id in serverUsage),
+        )
     }
 
     fun serverModuleCatalog(): ServerModuleCatalogResponse =
@@ -482,24 +527,44 @@ class CompanyProvisioningService(
         return ServerModuleCatalogResponse(catalogUrl = normalized)
     }
 
+    /**
+     * Installs a module. Modules whose code is already loaded are activated at once. Optional
+     * modules are downloaded from the configured catalog branch and built in the background; when
+     * the package is ready the server restarts to load it. The response reports the progress.
+     */
     fun installServerModule(moduleId: String): ServerModuleResponse {
         val normalizedModuleId = moduleId.trim()
         val remotePackages = syncRemoteAvailableModules()
         val definition = moduleRegistry.availableDefinition(normalizedModuleId)
-            ?: throw CompanyProvisioningException("Modulo no encontrado en el repositorio del servidor.")
+            ?: throw CompanyProvisioningException("Modulo no encontrado en el catalogo configurado.")
         val remotePackage = remotePackages[definition.id]
-        val installedPackagePath = remotePackage?.let { downloadModulePackage(it) }
+        if (installStates[definition.id]?.status in setOf(InstallStatus.Installing, InstallStatus.Restarting)) {
+            return moduleResponse(definition, remotePackage)
+        }
 
+        // Only a newer catalog version replaces a loaded package; an older one never downgrades it.
+        val loadedVersion = moduleRegistry.loadedVersion(definition.id)
+        val update = moduleRegistry.isPackaged(definition.id) && remotePackage != null && loadedVersion != null &&
+            ModuleVersion.isNewer(remotePackage.definition.version, loadedVersion)
+        if (moduleRegistry.hasCode(definition.id) && !update) {
+            activateLoadedModule(definition)
+            return moduleResponse(definition, remotePackage)
+        }
+
+        val builder = modulePackageBuilder
+            ?: throw CompanyProvisioningException("Este servidor no puede compilar modulos: falta la carpeta compiler/ de la instalacion. Actualiza el servidor con update.sh.")
+        val source = remotePackage?.source
+            ?: throw CompanyProvisioningException("${definition.displayName} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.")
+        installStates[definition.id] = ModuleInstallState(InstallStatus.Installing, "En cola para compilar")
+        buildExecutor.execute { buildAndInstall(definition, builder, source) }
+        return moduleResponse(definition, remotePackage)
+    }
+
+    private fun activateLoadedModule(definition: ModuleDefinition) {
         central.connection.use { connection ->
             connection.autoCommit = false
             try {
-                upsertServerModule(
-                    connection = connection,
-                    definition = definition,
-                    packageUrl = remotePackage?.packageUrl,
-                    packageSha256 = remotePackage?.packageSha256,
-                    installedPackagePath = installedPackagePath?.toString(),
-                )
+                upsertServerModule(connection, definition)
                 if (!moduleRegistry.isInstalled(definition.id)) {
                     moduleRegistry.install(definition.id)
                 }
@@ -511,20 +576,205 @@ class CompanyProvisioningService(
                 connection.autoCommit = true
             }
         }
+    }
 
-        return ServerModuleResponse(
-            moduleId = definition.id,
-            displayName = definition.displayName,
-            description = definition.description,
-            version = definition.version,
-            latestVersion = remotePackage?.definition?.version,
-            locked = definition.locked,
-            installed = true,
-            activeCompanyCount = countCompaniesWithModuleEnabled(definition.id),
-            packageUrl = remotePackage?.packageUrl,
-            packageSha256 = remotePackage?.packageSha256,
-            installedPackagePath = installedPackagePath?.toString() ?: installedPackage(definition.id)?.installedPackagePath,
-        )
+    /**
+     * Turns a module on or off in the server workspace. Turning on the first module creates the
+     * workspace with its own tenant database. Base modules are always on once it exists.
+     */
+    fun setServerModuleUsage(moduleId: String, enabled: Boolean, provisioningRole: String): ServerModuleResponse {
+        val definition = modules.singleOrNull { it.id == moduleId.trim() }
+            ?: throw CompanyProvisioningException("Modulo no reconocido o no instalado en el servidor.")
+        if (enabled) {
+            setModuleEnabled(ensureServerWorkspace(provisioningRole), definition.id, true, provisioningRole)
+        } else {
+            if (definition.locked) {
+                throw CompanyProvisioningException("${definition.displayName} es un modulo base y siempre esta activo en el espacio del servidor.")
+            }
+            serverWorkspaceRow()?.let { setModuleEnabled(it.code, definition.id, false, provisioningRole) }
+        }
+        return moduleResponse(definition, null)
+    }
+
+    // Code of the server workspace, creating it with its own tenant database on first use.
+    @Synchronized
+    fun ensureServerWorkspace(provisioningRole: String): String {
+        serverWorkspaceRow()?.let { return it.code }
+        val code = ServerWorkspace.Code
+        val databaseName = ServerWorkspace.DatabaseName
+        central.connection.use { connection ->
+            if (connection.exists("companies", "code", code)) {
+                throw CompanyProvisioningException("Ya existe una empresa con el codigo $code; cambia su codigo para crear el espacio del servidor.")
+            }
+        }
+        adminConnection(provisioningRole).use { admin ->
+            admin.autoCommit = true
+            // A database left by an interrupted attempt is reused; its migrations are idempotent.
+            if (!admin.existsDatabase(databaseName)) {
+                admin.createStatement().use { statement ->
+                    statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
+                    statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
+                }
+            }
+        }
+        val tenantConfig = tenantConfig(databaseName)
+        tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+            applyTenantCoreMigrations(tenant)
+            applyBaseModuleMigrations(tenant)
+            grantTenantPermissions(tenant, ownerUsername = null)
+        }
+        central.connection.use { connection ->
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement(
+                    """
+                    INSERT INTO companies (
+                        id, code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active, is_server_workspace
+                    ) VALUES (?, ?, ?, NULL, '#667EEA', '#764BA2', '#FFFFFF', ?, TRUE, TRUE)
+                    """.trimIndent()
+                ).use { insert ->
+                    insert.setObject(1, UUID.randomUUID())
+                    insert.setString(2, code)
+                    insert.setString(3, ServerWorkspace.Name)
+                    insert.setString(4, databaseName)
+                    insert.executeUpdate()
+                }
+                insertAudit(connection, provisioningRole, "server_workspace.created", code, null, """{"databaseName":"$databaseName"}""")
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+        }
+        loginDatabases.registerTenant(tenantConfig)
+        log.info("Server workspace created in database {}", databaseName)
+        return code
+    }
+
+    private fun serverWorkspaceRow(): CompanyRow? = try {
+        central.connection.use { connection ->
+            connection.prepareStatement(
+                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE is_server_workspace"
+            ).use { query ->
+                query.executeQuery().use { rows ->
+                    if (!rows.next()) null else CompanyRow(
+                        code = rows.getString("code"),
+                        name = rows.getString("name"),
+                        logoUrl = rows.getString("logo_url"),
+                        primaryColor = rows.getString("primary_color"),
+                        secondaryColor = rows.getString("secondary_color"),
+                        accentColor = rows.getString("accent_color"),
+                        databaseName = rows.getString("database_name"),
+                        isActive = rows.getBoolean("is_active"),
+                    )
+                }
+            }
+        }
+    } catch (_: java.sql.SQLException) {
+        // Before control migration V006 there is no workspace column.
+        null
+    }
+
+    // Modules enabled in the server workspace, or null when it does not exist yet.
+    private fun serverWorkspaceModules(): Set<String>? {
+        val workspace = serverWorkspaceRow() ?: return null
+        val tenant = loginDatabases.tenantConfig(workspace.databaseName) ?: return emptySet()
+        return tenantRuntimeConnection(tenant).use { connection ->
+            connection.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
+                query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+            }
+        }
+    }
+
+    private fun rejectServerWorkspace(companyCode: String) {
+        if (companyCode == ServerWorkspace.Code && serverWorkspaceRow()?.code == companyCode) {
+            throw CompanyProvisioningException("El espacio del servidor no se administra como una empresa.")
+        }
+    }
+
+    /**
+     * Brings every company up to date with the migrations of the modules it uses: base modules for
+     * all companies and optional modules where they are enabled. Runs at startup, so a module
+     * version loaded after an installation or update applies its new migrations to the companies
+     * that already had the module. Applied migrations are skipped (schema_migrations).
+     */
+    fun applyPendingModuleMigrations() {
+        val provisioningRole = firstServerOwnerRole() ?: run {
+            log.warn("No server owner found; pending module migrations were not applied.")
+            return
+        }
+        val companies = central.connection.use { connection ->
+            connection.prepareStatement("SELECT code, database_name FROM companies ORDER BY code").use { query ->
+                query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
+            }
+        }
+        companies.forEach { (companyCode, databaseName) ->
+            val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return@forEach
+            try {
+                tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+                    val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
+                        query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+                    }
+                    moduleRegistry.definitions
+                        .filter { (it.locked || it.id in enabled) && moduleRegistry.module(it.id) != null }
+                        .forEach { definition ->
+                            try {
+                                applyModuleMigrations(tenant, definition)
+                            } catch (failure: Exception) {
+                                log.error("Migrations of module {} failed for company {}", definition.id, companyCode, failure)
+                                installStates[definition.id] = ModuleInstallState(
+                                    InstallStatus.Attention,
+                                    "Una migracion fallo en la empresa $companyCode: ${failure.message}",
+                                )
+                            }
+                        }
+                }
+            } catch (failure: Exception) {
+                log.error("Pending module migrations could not run for company {}", companyCode, failure)
+            }
+        }
+    }
+
+    private fun firstServerOwnerRole(): String? = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT users.postgres_role
+            FROM server_owners owners
+            JOIN application_users users ON users.id = owners.user_id
+            WHERE users.is_active
+            ORDER BY users.postgres_role
+            LIMIT 1
+            """.trimIndent()
+        ).use { query -> query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null } }
+    }
+
+    private fun buildAndInstall(definition: ModuleDefinition, builder: ModulePackageBuilder, source: GitHubLocation) {
+        val moduleId = definition.id
+        try {
+            val built = builder.build(moduleId, source) { step ->
+                installStates[moduleId] = ModuleInstallState(InstallStatus.Installing, step)
+            }
+            central.connection.use { connection ->
+                upsertServerModule(
+                    connection = connection,
+                    definition = definition.copy(version = built.version),
+                    packageUrl = source.archiveUrl,
+                    packageSha256 = built.sha256,
+                    installedPackagePath = built.jar.toString(),
+                )
+            }
+            log.info("Module {} {} built from {}@{}; restarting to load it.", moduleId, built.version, source.repo, source.ref)
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Restarting, "Reiniciando el servidor para cargar ${definition.displayName}")
+            requestRestart()
+        } catch (failure: ModuleBuildException) {
+            log.warn("Module {} could not be built: {}", moduleId, failure.message)
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, failure.message.orEmpty())
+        } catch (failure: Exception) {
+            log.error("Module {} installation failed", moduleId, failure)
+            installStates[moduleId] = ModuleInstallState(InstallStatus.Failed, "Error inesperado: ${failure.message}")
+        }
     }
 
     fun deleteServerModule(moduleId: String) {
@@ -536,7 +786,7 @@ class CompanyProvisioningService(
         }
         val activeCompanyCount = countCompaniesWithModuleEnabled(definition.id)
         if (activeCompanyCount > 0) {
-            throw CompanyProvisioningException("No se puede eliminar ${definition.displayName}; esta activo en $activeCompanyCount empresa(s).")
+            throw CompanyProvisioningException("No se puede eliminar ${definition.displayName}; esta activo en $activeCompanyCount empresa(s) o en el espacio del servidor.")
         }
 
         central.connection.use { connection ->
@@ -556,6 +806,11 @@ class CompanyProvisioningService(
             } finally {
                 connection.autoCommit = true
             }
+        }
+        installStates.remove(definition.id)
+        // The loaded classes stay in memory until the next restart, but the routes reject the module.
+        if (moduleRegistry.isPackaged(definition.id)) {
+            modulePackagesRoot.resolve(definition.id).toFile().deleteRecursively()
         }
     }
 
@@ -601,24 +856,6 @@ class CompanyProvisioningService(
         } catch (_: Exception) {
             defaultCatalogUrl
         }.trim()
-    }
-
-    private fun downloadModulePackage(remotePackage: RemoteModulePackage): Path? {
-        val packageUrl = remotePackage.packageUrl ?: return null
-        val moduleId = remotePackage.definition.id
-        val moduleDirectory = modulePackagesRoot.resolve(moduleId).normalize()
-        Files.createDirectories(moduleDirectory)
-        val target = moduleDirectory.resolve("$moduleId.zip").normalize()
-        val bytes = URI.create(packageUrl).toURL().openStream().use { stream ->
-            stream.readBytes()
-        }
-        val actualSha256 = sha256(bytes)
-        val expectedSha256 = remotePackage.packageSha256
-        if (!expectedSha256.isNullOrBlank() && actualSha256 != expectedSha256) {
-            throw CompanyProvisioningException("El paquete de ${remotePackage.definition.displayName} no coincide con el checksum publicado.")
-        }
-        Files.write(target, bytes)
-        return target
     }
 
     private fun installedPackage(moduleId: String): InstalledModulePackage? = central.connection.use { connection ->
@@ -742,7 +979,7 @@ class CompanyProvisioningService(
             "database/tenant/migrations/V004__create_application_permissions.sql" to "tenant",
             "database/tenant/migrations/V005__create_application_user_credentials.sql" to "tenant",
         ).forEach { (relativePath, module) ->
-            applyMigration(connection, module, Path.of(config.migrationsRoot).resolve(relativePath))
+            applyMigration(connection, module, relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
         }
     }
 
@@ -759,7 +996,7 @@ class CompanyProvisioningService(
             applyBaseModuleMigrations(connection)
         }
         module.migrationPaths.forEach { relativePath ->
-            applyMigration(connection, module.migrationModule, Path.of(config.migrationsRoot).resolve(relativePath))
+            applyMigration(connection, module.migrationModule, relativePath, migrationSql(module, relativePath))
         }
         if (module.runtimeTables.isNotEmpty()) {
             val tables = module.runtimeTables.joinToString(", ") { quoteIdentifier(it) }
@@ -769,13 +1006,22 @@ class CompanyProvisioningService(
         }
     }
 
-    private fun applyMigration(connection: Connection, module: String, path: Path) {
-        val sql = Files.readString(path).trim()
+    // Packaged modules carry their migrations; modules compiled into the server read the source tree.
+    private fun migrationSql(module: ServerModule, relativePath: String): String =
+        module.javaClass.classLoader.getResourceAsStream(relativePath)?.use { String(it.readAllBytes(), Charsets.UTF_8) }
+            ?: Path.of(config.migrationsRoot).resolve(relativePath).takeIf { Files.isRegularFile(it) }?.let(Files::readString)
+            ?: throw CompanyProvisioningException("No se encontro la migracion $relativePath del modulo ${module.definition.id}.")
+
+    private fun applyMigration(connection: Connection, module: String, relativePath: String, content: String) {
+        val sql = content.trim()
         require(sql.startsWith("BEGIN;") && sql.endsWith("COMMIT;")) {
-            "Migration $path must have outer BEGIN/COMMIT"
+            "Migration $relativePath must have outer BEGIN/COMMIT"
         }
-        val version = path.name.removeSuffix(".sql")
-        val checksum = sha256(sql)
+        val version = relativePath.substringAfterLast('/').removeSuffix(".sql")
+        // scripts/ubuntu/migrations.sh hashes the whole file; earlier servers hashed the trimmed text.
+        // Either one identifies an unchanged migration, so both installers can share tenants.
+        val checksum = sha256(content)
+        val acceptedChecksums = setOf(checksum, sha256(sql))
         connection.autoCommit = false
         try {
             connection.createStatement().use { statement ->
@@ -796,7 +1042,7 @@ class CompanyProvisioningService(
                 query.setString(2, version)
                 query.executeQuery().use { rows ->
                     if (rows.next()) {
-                        if (rows.getString(1) != checksum) {
+                        if (rows.getString(1) !in acceptedChecksums) {
                             throw CompanyProvisioningException("La migracion $version ya fue aplicada con otro checksum.")
                         }
                         connection.commit()
@@ -845,19 +1091,22 @@ class CompanyProvisioningService(
         }
     }
 
-    private fun grantTenantPermissions(connection: Connection, ownerUsername: String) {
+    // The server workspace has no business owner (ownerUsername = null).
+    private fun grantTenantPermissions(connection: Connection, ownerUsername: String?) {
         connection.createStatement().use { statement ->
             statement.executeUpdate("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
             statement.executeUpdate("GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(config.runtimeUser)}")
-            statement.executeUpdate("GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(ownerUsername)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE ON application_users TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT ON business_owner, tenant_modules TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO ${quoteIdentifier(config.runtimeUser)}")
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON customers, customer_field_definitions TO ${quoteIdentifier(config.runtimeUser)}")
-            statement.executeUpdate("GRANT SELECT ON application_users, business_owner, tenant_modules, application_permissions, application_user_permissions TO ${quoteIdentifier(ownerUsername)}")
-            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(ownerUsername)}")
+            if (ownerUsername != null) {
+                statement.executeUpdate("GRANT USAGE ON SCHEMA public TO ${quoteIdentifier(ownerUsername)}")
+                statement.executeUpdate("GRANT SELECT ON application_users, business_owner, tenant_modules, application_permissions, application_user_permissions TO ${quoteIdentifier(ownerUsername)}")
+                statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO ${quoteIdentifier(ownerUsername)}")
+            }
         }
     }
 
@@ -1075,3 +1324,13 @@ class CompanyProvisioningService(
             locked = locked,
         )
 }
+
+private object InstallStatus {
+    const val Installing = "installing"
+    const val Restarting = "restarting"
+    const val Failed = "failed"
+    // Installed and loaded, but something needs the server owner's attention (e.g. a migration).
+    const val Attention = "attention"
+}
+
+private data class ModuleInstallState(val status: String, val message: String)

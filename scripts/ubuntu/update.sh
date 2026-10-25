@@ -36,8 +36,10 @@ readonly SERVICE_NAME=ideascore.service
 readonly NGINX_SITE=/etc/nginx/sites-available/ideascore
 readonly BACKUP_ROOT=$APP_DIR/backups
 readonly UPDATE_SWAP_FILE=$APP_DIR/update.swap
-readonly UPDATE_SWAP_SIZE_MB=2048
+# Same limits as install.sh: the production webpack build needs extra memory for Node.
+readonly UPDATE_SWAP_SIZE_MB=4096
 readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
+readonly NODE_OPTIONS_VALUE="--max-old-space-size=2048"
 readonly APP_PORT=8080
 UPDATE_SWAP_CREATED=false
 
@@ -77,6 +79,7 @@ ensure_update_swap() {
 run_gradle() {
     runuser -u ideascore -- env \
         JAVA_HOME="$UPDATE_JAVA_HOME" \
+        NODE_OPTIONS="$NODE_OPTIONS_VALUE" \
         bash ./gradlew \
         --no-daemon \
         --no-configuration-cache \
@@ -216,6 +219,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V004__create_server_settings_and_module_packages.sql.'
     [[ -f database/control/migrations/V005__create_public_domains.sql ]] ||
         die 'No se encontro database/control/migrations/V005__create_public_domains.sql.'
+    [[ -f database/control/migrations/V006__add_server_workspace.sql ]] ||
+        die 'No se encontro database/control/migrations/V006__add_server_workspace.sql.'
 
     source scripts/ubuntu/migrations.sh
     apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
@@ -223,6 +228,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V003__create_server_modules.sql
     apply_migration "$db_name" control database/control/migrations/V004__create_server_settings_and_module_packages.sql
     apply_migration "$db_name" control database/control/migrations/V005__create_public_domains.sql
+    apply_migration "$db_name" control database/control/migrations/V006__add_server_workspace.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";

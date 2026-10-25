@@ -181,7 +181,7 @@ class CompanySelfService(
     }
 
     fun users(companyCode: String, accessToken: String): CompanyUsersResponse {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val context = authorizeUserAdministrator(companyCode, accessToken)
         tenantConnection(context.tenant).use { connection ->
             syncPermissionCatalog(connection)
             return CompanyUsersResponse(
@@ -192,7 +192,7 @@ class CompanySelfService(
     }
 
     fun createUser(companyCode: String, accessToken: String, request: CreateCompanyUserRequest): CompanyUserResponse {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val context = authorizeUserAdministrator(companyCode, accessToken)
         val username = request.username.trim()
         if (!postgresRolePattern.matches(username)) {
             throw CompanySelfException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
@@ -246,7 +246,7 @@ class CompanySelfService(
         userId: String,
         request: UpdateCompanyUserPermissionsRequest,
     ): CompanyUserResponse {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val context = authorizeUserAdministrator(companyCode, accessToken)
         val targetUserId = try {
             UUID.fromString(userId)
         } catch (_: IllegalArgumentException) {
@@ -272,6 +272,70 @@ class CompanySelfService(
                 connection.autoCommit = true
             }
             return loadUser(connection, targetUserId) ?: throw CompanySelfException("Usuario no encontrado.")
+        }
+    }
+
+    /**
+     * Users and permissions are managed by the company's business_owner, or, in the server
+     * workspace (which has no business owner), by any server_owner with a central session.
+     */
+    private fun authorizeUserAdministrator(companyCode: String, accessToken: String): BusinessOwnerContext {
+        val code = companyCode.trim()
+        if (code == ServerWorkspace.Code && isServerOwnerSession(accessToken)) {
+            val workspace = central.connection.use { connection ->
+                connection.prepareStatement(
+                    """
+                    SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name
+                    FROM companies
+                    WHERE code = ? AND is_server_workspace AND is_active = TRUE
+                    """.trimIndent()
+                ).use { query ->
+                    query.setString(1, code)
+                    query.executeQuery().use { rows ->
+                        if (!rows.next()) {
+                            throw CompanySelfException("El espacio del servidor aun no existe; activa un modulo para el servidor.")
+                        }
+                        rows.getString("database_name") to CompanyProfileResponse(
+                            code = rows.getString("code"),
+                            name = rows.getString("name"),
+                            logoUrl = rows.getString("logo_url"),
+                            primaryColor = rows.getString("primary_color"),
+                            secondaryColor = rows.getString("secondary_color"),
+                            accentColor = rows.getString("accent_color"),
+                        )
+                    }
+                }
+            }
+            val tenant = loginDatabases.tenantConfig(workspace.first)
+                ?: throw CompanySelfException("El espacio del servidor no tiene conexion configurada.")
+            return BusinessOwnerContext(
+                companyCode = code,
+                databaseName = workspace.first,
+                tenant = tenant,
+                profile = workspace.second,
+                businessOwnerUserId = null,
+                businessOwnerRole = null,
+            )
+        }
+        return authorizeBusinessOwner(code, accessToken)
+    }
+
+    // Central session of an active server_owner (server owners do not sign in to tenant databases).
+    private fun isServerOwnerSession(accessToken: String): Boolean = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT 1
+            FROM application_sessions sessions
+            JOIN server_owners owners ON owners.user_id = sessions.user_id
+            JOIN application_users users ON users.id = sessions.user_id
+            WHERE sessions.token_hash = ?
+              AND sessions.revoked_at IS NULL
+              AND sessions.expires_at > CURRENT_TIMESTAMP
+              AND users.is_active = TRUE
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, tokenGenerator.hash(accessToken))
+            query.executeQuery().use { rows -> rows.next() }
         }
     }
 
@@ -498,8 +562,9 @@ class CompanySelfService(
         val databaseName: String,
         val tenant: com.ideasdeveloper.idc.server.auth.infrastructure.database.TenantDatabaseConfig,
         val profile: CompanyProfileResponse,
-        val businessOwnerUserId: UUID,
-        val businessOwnerRole: String,
+        // Null in the server workspace, which has no business owner.
+        val businessOwnerUserId: UUID?,
+        val businessOwnerRole: String?,
     )
 
 }

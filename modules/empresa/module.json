@@ -1,0 +1,7 @@
+{
+  "id": "empresa",
+  "displayName": "Empresa",
+  "description": "Administracion de empresas, identidad y configuracion de cada empresa.",
+  "version": "0.1.0",
+  "bundled": true
+}

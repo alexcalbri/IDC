@@ -12,4 +12,6 @@ class LoginSuccessResponse(
     val companyCode: String? = null,
     val role: String = "user",
     val enabledModules: List<String> = emptyList(),
+    // Server owners: company code of the server workspace where they use modules without a company.
+    val workspaceCompanyCode: String? = null,
 )

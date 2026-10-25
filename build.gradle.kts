@@ -9,3 +9,8 @@ plugins {
     alias(libs.plugins.kotlinMultiplatform) apply false
     alias(libs.plugins.ktor) apply false
 }
+
+// Ktor's JS client pins ws 8.20.1, affected by GHSA-96hv-2xvq-fx4p (fixed in 8.21.0).
+plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
+    the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootExtension>().resolution("ws", "8.21.3")
+}

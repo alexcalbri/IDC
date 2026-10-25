@@ -1,5 +1,7 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
+import com.ideasdeveloper.idc.app.core.theme.AppTheme
+import com.ideasdeveloper.idc.app.core.theme.webThemeQuery
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -125,7 +127,7 @@ fun NativeModuleHost(ui: ModuleUiEntry, context: ModuleCallContext, companyAccen
 
     LaunchedEffect(ui.entry, context) { execute(UiNavigate(ui.home)) }
 
-    val colors = ModuleColors.from(screen?.theme, companyAccent)
+    val colors = ModuleColors.from(AppTheme.colors)
     val renderContext = ModuleRenderContext(
         colors = colors,
         busy = busy,
@@ -274,6 +276,7 @@ fun WebModuleHost(moduleId: String, context: ModuleCallContext, companyAccent: C
     var error by remember(moduleId) { mutableStateOf<String?>(null) }
     var openedOutside by remember(moduleId) { mutableStateOf(false) }
     var progress by remember(moduleId) { mutableStateOf<String?>(null) }
+    val themeQuery = AppTheme.colors.webThemeQuery()
 
     fun open() {
         error = null
@@ -288,10 +291,12 @@ fun WebModuleHost(moduleId: String, context: ModuleCallContext, companyAccent: C
                 } finally {
                     api.close()
                 }
+                // La sesion ya trae ?ticket=; el servidor reenvia el tema a la primera pagina del modulo.
+                val themedUrl = sessionUrl + themeQuery
                 if (embedded) {
-                    url = sessionUrl
+                    url = themedUrl
                 } else {
-                    uriHandler.openUri(sessionUrl)
+                    uriHandler.openUri(themedUrl)
                     openedOutside = true
                 }
             } catch (exception: ModuleException) {
@@ -312,11 +317,11 @@ fun WebModuleHost(moduleId: String, context: ModuleCallContext, companyAccent: C
     Box(modifier = modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(24.dp)) {
             when {
-                error != null -> Text(error.orEmpty(), color = Color(0xFFB00020))
-                openedOutside -> Text("El modulo se abrio en tu navegador.", color = Color.White)
+                error != null -> Text(error.orEmpty(), color = AppTheme.colors.danger)
+                openedOutside -> Text("El modulo se abrio en tu navegador.", color = AppTheme.colors.onScreen)
                 else -> {
-                    CircularProgressIndicator(color = Color.White)
-                    progress?.let { Text(it, color = Color.White) }
+                    CircularProgressIndicator(color = AppTheme.colors.onScreen)
+                    progress?.let { Text(it, color = AppTheme.colors.onScreen) }
                 }
             }
             if (error != null || openedOutside) {
