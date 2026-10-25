@@ -21,3 +21,7 @@ jobs:
           distribution: liberica
           java-version: 21
       - uses: gradle/actions/dependency-submission@v6
+        with:
+          # Only what ships: runtime classpaths (not tests or hot reload) and the Kotlin compiler
+          # bundled with the server. Build tooling (Gradle plugins, lint) would only add noise.
+          dependency-graph-include-configurations: '^((?!.*([Tt]est|[Dd]ev|HotReload)).*[Rr]untimeClasspath|moduleCompiler)$'
