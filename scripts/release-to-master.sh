@@ -11,6 +11,10 @@
 #
 # Merge the pull request with "Create a merge commit" (not squash or rebase) so the next
 # release keeps a common history with develop.
+#
+# Never merge master back into develop (for example with a master -> develop pull request):
+# the release commits on master delete the tests and modules in development, so the merge
+# deletes them from develop too. Changes only flow from develop to master through this script.
 set -Eeuo pipefail
 
 readonly SOURCE=develop
