@@ -15,11 +15,7 @@ object HotspotPortalPages {
 
     fun form(settings: HotspotSettings, guest: GuestContext, values: FormValues = FormValues(), error: String? = null): String = page(
         settings,
-        header = """
-            <h1>${esc(settings.portalTitle)}</h1>
-            ${settings.portalSubtitle.takeIf { it.isNotBlank() }?.let { "<p class=\"lead\">${esc(it)}</p>" }.orEmpty()}
-            <div class="network">${WifiIcon} Red: ${esc(settings.networkName)}</div>
-        """.trimIndent(),
+        header = networkHeader(settings, guest),
         body = """
             <form action="$BasePath/register" method="POST">
               <h2>Conectate ahora</h2>
@@ -42,6 +38,27 @@ object HotspotPortalPages {
             </form>
         """.trimIndent(),
     )
+
+    // Networks configured for access by code ask for the customer code (Clientes) or the user code
+    // (Usuarios integration) instead of the form.
+    fun accessCode(settings: HotspotSettings, guest: GuestContext, byUser: Boolean = false, error: String? = null): String {
+        val label = if (byUser) "Codigo de usuario" else "Codigo de cliente"
+        return page(
+            settings,
+            header = networkHeader(settings, guest),
+            body = """
+                <form action="$BasePath/code" method="POST">
+                  <h2>Ingresa tu codigo</h2>
+                  <p class="muted">Escribe tu ${label.lowercase()} para conectarte a esta red.</p>
+                  ${error?.let { "<div class=\"error\">${esc(it)}</div>" }.orEmpty()}
+                  <label for="access_code">$label</label>
+                  <input id="access_code" name="code" type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" maxlength="12" required class="code">
+                  ${guestFields(guest)}
+                  <button type="submit" data-busy="Conectando...">Conectarme al WiFi</button>
+                </form>
+            """.trimIndent(),
+        )
+    }
 
     fun code(settings: HotspotSettings, pendingId: String, email: String, continueUrl: String, error: String? = null): String = page(
         settings,
@@ -77,10 +94,10 @@ object HotspotPortalPages {
         """.trimIndent(),
     )
 
-    fun wait(settings: HotspotSettings, minutesRemaining: Long): String = message(
+    fun wait(settings: HotspotSettings, minutesRemaining: Long, byCode: Boolean = false): String = message(
         settings,
         title = "Ya usaste tu acceso",
-        text = "Este correo ya se conecto recientemente. Podras volver a conectarte en ${formatMinutes(minutesRemaining)}.",
+        text = "${if (byCode) "Este codigo" else "Este correo"} ya se conecto recientemente. Podras volver a conectarte en ${formatMinutes(minutesRemaining)}.",
     )
 
     fun message(settings: HotspotSettings?, title: String, text: String, retry: Boolean = true): String = page(
@@ -94,6 +111,13 @@ object HotspotPortalPages {
             </div>
         """.trimIndent(),
     )
+
+    // The network shown is the SSID the guest joined, or the configured name when UniFi did not send it.
+    private fun networkHeader(settings: HotspotSettings, guest: GuestContext) = """
+        <h1>${esc(settings.portalTitle)}</h1>
+        ${settings.portalSubtitle.takeIf { it.isNotBlank() }?.let { "<p class=\"lead\">${esc(it)}</p>" }.orEmpty()}
+        <div class="network">${WifiIcon} Red: ${esc(guest.ssid.ifBlank { settings.networkName })}</div>
+    """.trimIndent()
 
     private fun guestFields(guest: GuestContext) = listOf(
         "id" to guest.mac,

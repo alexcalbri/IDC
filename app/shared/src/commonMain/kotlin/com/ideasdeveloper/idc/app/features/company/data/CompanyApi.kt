@@ -466,6 +466,32 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    // Crea la empresa del servidor si aun no existe y devuelve su codigo.
+    suspend fun createServerWorkspace(accessToken: String): ServerWorkspaceResponse {
+        try {
+            val response = client.post("$baseUrl/server/workspace") {
+                bearerAuth(accessToken)
+            }
+            if (response.status == HttpStatusCode.OK) {
+                return response.body()
+            }
+            if (
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                throw CompanyException(response.body<CompanyErrorResponse>().message)
+            }
+            throw CompanyException("El servidor no pudo crear la empresa del servidor.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
     // Activa o desactiva un modulo en el espacio del servidor (se crea al activar el primero).
     suspend fun setServerModuleUsage(accessToken: String, moduleId: String, enabled: Boolean): ServerModuleResponse {
         try {

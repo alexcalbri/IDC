@@ -15,8 +15,6 @@ import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
 
-data class UnifiResult(val authorized: Boolean, val message: String)
-
 data class UnifiConsole(val id: String, val name: String, val model: String, val state: String)
 
 data class UnifiSite(val id: String, val name: String, val reference: String)
@@ -35,14 +33,14 @@ object UnifiClient {
         .followRedirects(HttpClient.Redirect.NEVER)
         .build()
 
-    fun authorizeGuest(settings: HotspotSettings, mac: String): UnifiResult {
-        if (!settings.unifiConfigured) return UnifiResult(false, "UniFi no esta configurado.")
+    fun authorizeGuest(settings: HotspotSettings, mac: String): GuestAuthorization {
+        if (!settings.unifiConfigured) return GuestAuthorization(false, "UniFi no esta configurado.")
         // Both ids were validated against [A-Za-z0-9:._-]; the console id keeps its ':' as UniFi shows it.
         val base = "$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}" +
             "/proxy/network/integration/v1/sites/${settings.unifiSiteId}"
         return try {
             val clientId = findClientId(base, settings.unifiApiKey!!, mac)
-                ?: return UnifiResult(false, "El dispositivo $mac no aparece conectado en UniFi.")
+                ?: return GuestAuthorization(false, "El dispositivo $mac no aparece conectado en UniFi.")
             val payload = buildMap<String, JsonPrimitive> {
                 put("action", JsonPrimitive("AUTHORIZE_GUEST_ACCESS"))
                 put("timeLimitMinutes", JsonPrimitive(settings.accessMinutes))
@@ -59,12 +57,12 @@ object UnifiClient {
                     .POST(HttpRequest.BodyPublishers.ofString(JsonObject(payload).toString())),
             )
             if (response.statusCode() in 200..299) {
-                UnifiResult(true, "Autorizado")
+                GuestAuthorization(true, "Autorizado")
             } else {
-                UnifiResult(false, "UniFi respondio HTTP ${response.statusCode()}: ${response.body().take(300)}")
+                GuestAuthorization(false, "UniFi respondio HTTP ${response.statusCode()}: ${response.body().take(300)}")
             }
         } catch (failure: Exception) {
-            UnifiResult(false, "No se pudo contactar UniFi: ${failure.message}")
+            GuestAuthorization(false, "No se pudo contactar UniFi: ${failure.message}")
         }
     }
 
@@ -83,6 +81,30 @@ object UnifiClient {
     // Sites of a console (Network Integration API); the console id was validated by the caller.
     fun sites(apiKey: String, consoleId: String): List<UnifiSite> =
         parseSites(getJson("$CloudApi/v1/connector/consoles/$consoleId/proxy/network/integration/v1/sites?offset=0&limit=$PageSize", apiKey))
+
+    /**
+     * SSIDs of the site (Network Integration API "WiFi broadcasts", UniFi Network 10 or newer). The
+     * API does not tell which SSID a client is connected to, so the portal keeps using the SSID that
+     * UniFi puts in the redirect.
+     */
+    fun wifiNetworks(apiKey: String, consoleId: String, siteId: String): List<String> {
+        val base = "$CloudApi/v1/connector/consoles/$consoleId/proxy/network/integration/v1/sites/$siteId/wifi/broadcasts"
+        val names = mutableListOf<String>()
+        var offset = 0
+        repeat(MaxPages) {
+            val page = getJson("$base?offset=$offset&limit=$PageSize", apiKey)
+            val data = page["data"]?.jsonArray.orEmpty()
+            names += parseWifiNetworks(page)
+            val total = page["totalCount"]?.jsonPrimitive?.intOrNull ?: return names.distinct()
+            offset += data.size
+            if (data.isEmpty() || offset >= total) return names.distinct()
+        }
+        return names.distinct()
+    }
+
+    fun parseWifiNetworks(page: JsonObject): List<String> = page["data"]?.jsonArray.orEmpty().mapNotNull { element ->
+        (element as? JsonObject)?.string("name")?.takeIf { it.isNotBlank() }
+    }
 
     fun parseConsoles(page: JsonObject): List<UnifiConsole> = page["data"]?.jsonArray.orEmpty().mapNotNull { element ->
         val host = element as? JsonObject ?: return@mapNotNull null
@@ -112,7 +134,7 @@ object UnifiClient {
         when (response.statusCode()) {
             200 -> Unit
             401, 403 -> throw UnifiException("UniFi rechazo la API key (HTTP ${response.statusCode()}). Revisa que sea valida y tenga acceso a la consola.")
-            404 -> throw UnifiException("UniFi no encontro la consola (HTTP 404).")
+            404 -> throw UnifiException("UniFi no encontro la consola o la funcion pedida (HTTP 404). Las redes WiFi requieren UniFi Network 10 o superior.")
             else -> throw UnifiException("UniFi respondio HTTP ${response.statusCode()}: ${response.body().take(300)}")
         }
         return runCatching { Json.parseToJsonElement(response.body()).jsonObject }

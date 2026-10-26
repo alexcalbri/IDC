@@ -18,6 +18,7 @@ object HotspotReports {
         UiTableColumn("email", "Correo"),
         UiTableColumn("phone", "Celular"),
         UiTableColumn("mac", "Dispositivo"),
+        UiTableColumn("access", "Acceso"),
         UiTableColumn("connected", "Conectado"),
     )
 
@@ -94,8 +95,9 @@ object HotspotReports {
     private fun registrations(connection: Connection, filter: String, arguments: List<Any>, limit: Int, offset: Int): List<Map<String, String>> =
         connection.prepareStatement(
             """
-            SELECT registrations.created_at, registrations.name, registrations.email, registrations.phone,
-                   registrations.birthday, registrations.mac,
+            SELECT registrations.created_at, registrations.name,
+                   coalesce(registrations.email, '') AS email, coalesce(registrations.phone, '') AS phone,
+                   registrations.birthday, registrations.mac, registrations.access_mode,
                    EXISTS (
                        SELECT 1 FROM hotspot_accesses accesses
                        WHERE accesses.registration_id = registrations.id AND accesses.authorized
@@ -120,6 +122,7 @@ object HotspotReports {
                                 "phone" to rows.getString("phone"),
                                 "birthday" to (rows.getDate("birthday")?.toLocalDate()?.toString() ?: ""),
                                 "mac" to rows.getString("mac"),
+                                "access" to HotspotNetworks.modeLabel(rows.getString("access_mode")),
                                 "connected" to if (rows.getBoolean("connected")) "Si" else "No",
                             )
                         )

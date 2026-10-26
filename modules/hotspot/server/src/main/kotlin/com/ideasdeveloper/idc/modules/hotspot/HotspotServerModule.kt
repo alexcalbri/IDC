@@ -38,10 +38,13 @@ import kotlinx.serialization.json.jsonPrimitive
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.LocalDate
+import java.util.UUID
 
 object HotspotServerModule : ServerModule {
     override val migrationPaths = listOf(
         "modules/hotspot/migrations/V001__create_hotspot.sql",
+        "modules/hotspot/migrations/V002__add_networks.sql",
+        "modules/hotspot/migrations/V003__add_integrations_and_user_codes.sql",
     )
 
     override val runtimeTables = listOf(
@@ -49,14 +52,20 @@ object HotspotServerModule : ServerModule {
         "hotspot_registrations",
         "hotspot_codes",
         "hotspot_accesses",
+        "hotspot_networks",
+        "hotspot_code_attempts",
+        "hotspot_integrations",
+        "hotspot_user_codes",
+        "hotspot_user_network_grants",
     )
 
     override val definition = ModuleDefinition(
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
-        description = "Portal cautivo WiFi con registro de visitantes, codigo por correo y autorizacion en UniFi.",
-        version = "0.2.4",
+        description = "Portal cautivo WiFi con acceso por formulario o codigo de cliente segun la red, y autorizacion en UniFi.",
+        version = "0.4.0",
         permissions = listOf(
+            ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsManage, "Configurar hotspot", "Permite cambiar dominio, UniFi, correo, tiempos y apariencia del portal."),
             ModulePermissionDefinition(HotspotScreens.ReportsView, "Ver reportes del hotspot", "Permite consultar el dashboard, visitantes y reportes del portal WiFi."),
@@ -67,24 +76,62 @@ object HotspotServerModule : ServerModule {
 
     override fun routes(route: Route, access: ModuleAccessService) {
         HotspotPortal(access).install(route)
+        val userAccess = HotspotAccess(access)
 
         route.route(HotspotScreens.UiRoute) {
             get("/{screen}") {
                 val permissions = call.requireModuleAccess(access, HotspotModule.id) ?: return@get
                 val screen = call.screenId(permissions) ?: return@get
                 val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
-                call.respondScreen(access) { tenant -> render(access, tenant, permissions, screen, params) }
+                call.respondScreen(access) { tenant -> render(access, tenant, permissions, screen, params, customBody = customBody(userAccess, tenant, permissions, screen)) }
             }
 
             // Saves the "portal" and "settings" forms and answers with the same screen and a notice.
             post("/{screen}") {
                 val permissions = call.requireModuleAccess(access, HotspotModule.id) ?: return@post
-                val screen = call.screenId(permissions)?.takeIf { it == "portal" || it == "settings" }
+                val screen = call.screenId(permissions)?.takeIf { it in setOf("portal", "settings", "access", "integrations") }
                     ?: return@post call.respond(HttpStatusCode.NotFound, HotspotErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada."))
+                if (screen == "integrations") {
+                    if (!permissions.businessOwner) {
+                        return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "Solo el dueno de la empresa o del servidor cambia las integraciones."))
+                    }
+                    val id = call.request.queryParameters["integration"].orEmpty()
+                    val enabled = call.request.queryParameters["enabled"] == "true"
+                    return@post call.respondScreen(access) { tenant ->
+                        val notice = try {
+                            HotspotIntegrations.setEnabled(tenant, id, enabled)
+                            UiNotice(if (enabled) "Integracion activada." else "Integracion desactivada.", UiTone.Success)
+                        } catch (failure: HotspotValidationException) {
+                            UiNotice(failure.message.orEmpty(), UiTone.Danger)
+                        }
+                        render(access, tenant, permissions, screen, emptyMap(), notice, customBody = userAccess.integrationsBody(tenant))
+                    }
+                }
+                if (screen == "access") {
+                    if (!userAccess.isServerCompanyOwner(permissions)) {
+                        return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "Solo los duenos del servidor dan acceso a redes de otras empresas."))
+                    }
+                    val values = runCatching { UiJson.parseToJsonElement(call.receiveText()).jsonObject }.getOrNull()
+                        ?.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }.orEmpty()
+                    val step = call.request.queryParameters["grant"].orEmpty()
+                    val id = call.request.queryParameters["id"]
+                    return@post call.respondScreen(access) { tenant ->
+                        val (message, tone) = userAccess.grantAction(tenant, step, id, values)
+                        render(access, tenant, permissions, screen, emptyMap(), UiNotice(message, tone), customBody = userAccess.accessBody(tenant, permissions))
+                    }
+                }
                 if (!permissions.has(HotspotScreens.SettingsManage)) {
                     return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "No tienes permiso para cambiar la configuracion."))
                 }
-                val values = runCatching { UiJson.parseToJsonElement(call.receiveText()).jsonObject }.getOrNull()
+                val body = call.receiveText()
+                // Network actions: deleting sends no form, so it has no body.
+                val networkStep = call.request.queryParameters["network"]
+                if (screen == "settings" && networkStep != null) {
+                    val values = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: JsonObject(emptyMap())
+                    val id = call.request.queryParameters["id"]
+                    return@post call.respondScreen(access) { tenant -> networkAction(access, tenant, permissions, networkStep, id, values) }
+                }
+                val values = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull()
                     ?: return@post call.respond(HttpStatusCode.BadRequest, HotspotErrorResponse("INVALID_BODY", "Datos invalidos."))
                 val unifiStep = call.request.queryParameters["unifi"]
                 if (screen == "settings" && unifiStep != null) {
@@ -119,10 +166,78 @@ object HotspotServerModule : ServerModule {
         params: Map<String, String>,
         notice: UiNotice? = null,
         submittedValues: Map<String, String>? = null,
+        networkValues: Map<String, String>? = null,
+        customBody: List<UiNode>? = null,
+        extraNodes: List<UiNode> = emptyList(),
     ): UiScreen {
         val settings = HotspotSettingsRepository.load(tenant)
         val (status, active) = domainState(access, permissions.companyCode, settings.domain)
-        return HotspotScreens.build(screen, tenant, permissions, params, status, active, access.serverMail != null, notice, submittedValues)
+        return HotspotScreens.build(
+            screen, tenant, permissions, params, status, active, access.serverMail != null, notice, submittedValues,
+            unifiPicker = extraNodes, networkValues = networkValues, customBody = customBody,
+        )
+    }
+
+    // Sections whose body needs the central database or other companies.
+    private fun customBody(userAccess: HotspotAccess, tenant: Connection, permissions: ModulePermissions, screen: String): List<UiNode>? =
+        when {
+            !permissions.has(HotspotScreens.permissionFor(screen)!!) -> null
+            screen == "access" -> userAccess.accessBody(tenant, permissions)
+            screen == "integrations" -> userAccess.integrationsBody(tenant)
+            else -> null
+        }
+
+    /** Saves ("save", from the network form) or deletes ("delete") a WiFi network and shows the settings again. */
+    private fun networkAction(
+        access: ModuleAccessService,
+        tenant: Connection,
+        permissions: ModulePermissions,
+        step: String,
+        id: String?,
+        values: JsonObject,
+    ): UiScreen {
+        val networkId = id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+        fun screen(notice: UiNotice, params: Map<String, String> = emptyMap(), submitted: Map<String, String>? = null, extra: List<UiNode> = emptyList()) =
+            render(access, tenant, permissions, "settings", params, notice, networkValues = submitted, extraNodes = extra)
+        if (id != null && networkId == null) return screen(UiNotice("Red invalida.", UiTone.Danger))
+        return when (step) {
+            "load" -> {
+                val settings = HotspotSettingsRepository.load(tenant)
+                val controller = HotspotIntegrations.controller(tenant)
+                    ?: return screen(UiNotice("Elige el controlador de red en Integraciones.", UiTone.Warning))
+                try {
+                    val ssids = controller.wifiNetworks(settings)
+                    val configured = HotspotNetworks.list(tenant).map { it.ssid }.toSet()
+                    screen(
+                        UiNotice("${ssids.size} red(es) en ${controller.name}. Elige cual configurar.", UiTone.Success),
+                        extra = listOf(HotspotScreens.consoleNetworksPicker(ssids, configured)),
+                    )
+                } catch (failure: NetworkControllerException) {
+                    screen(UiNotice(failure.message.orEmpty(), UiTone.Danger))
+                }
+            }
+            "save" -> {
+                if (networkId != null && HotspotNetworks.find(tenant, networkId) == null) {
+                    return screen(UiNotice("Esa red ya no existe.", UiTone.Warning))
+                }
+                val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
+                try {
+                    val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
+                    val network = HotspotNetworks.parse(networkId ?: UUID.randomUUID(), submitted, usersEnabled)
+                    HotspotNetworks.save(tenant, network)
+                    screen(UiNotice("Red ${network.ssid} guardada.", UiTone.Success))
+                } catch (failure: HotspotValidationException) {
+                    // Keep the network open in the form with what the user typed.
+                    screen(UiNotice(failure.message.orEmpty(), UiTone.Danger), networkId?.let { mapOf("networkId" to it.toString()) }.orEmpty(), submitted)
+                }
+            }
+            "delete" -> if (networkId != null && HotspotNetworks.delete(tenant, networkId)) {
+                screen(UiNotice("Red eliminada; vuelve a usar el formulario de registro.", UiTone.Success))
+            } else {
+                screen(UiNotice("Esa red ya no existe.", UiTone.Warning))
+            }
+            else -> screen(UiNotice("Accion de red desconocida.", UiTone.Danger))
+        }
     }
 
     private fun save(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, screen: String, values: JsonObject): UiScreen {

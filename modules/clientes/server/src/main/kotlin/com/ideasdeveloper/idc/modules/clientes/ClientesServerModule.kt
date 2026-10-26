@@ -30,13 +30,14 @@ object ClientesServerModule : ServerModule {
         "modules/clientes/migrations/V001__create_customers.sql",
         "modules/clientes/migrations/V002__require_customer_contact_fields.sql",
         "modules/clientes/migrations/V003__add_customer_type.sql",
+        "modules/clientes/migrations/V004__add_customer_code.sql",
     )
 
     override val definition = ModuleDefinition(
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.3.0",
+        version = "0.4.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -56,6 +57,7 @@ object ClientesServerModule : ServerModule {
                     ModuleFieldDefinition("primaryEmail", "Correo", "email", required = true),
                     ModuleFieldDefinition("primaryPhone", "Telefono", "phone", required = true),
                     ModuleFieldDefinition("customerType", "Tipo", "text", readOnly = true),
+                    ModuleFieldDefinition("customerCode", "Codigo de cliente", "text", readOnly = true, help = "Se genera automaticamente y no se repite."),
                 ),
                 actions = listOf(
                     ModuleActionDefinition("list", "Listar clientes", "/modules/clientes/customers", "GET", "clientes.view"),
@@ -114,7 +116,7 @@ object ClientesServerModule : ServerModule {
                 connection.use { tenant ->
                     tenant.prepareStatement(
                         """
-                        SELECT id, display_name, primary_email, primary_phone, status, customer_type, flexible_attributes::text AS flexible_attributes
+                        SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code, flexible_attributes::text AS flexible_attributes
                         FROM customers
                         WHERE status <> 'archived'
                         ORDER BY lower(display_name), created_at DESC
@@ -142,7 +144,7 @@ object ClientesServerModule : ServerModule {
                     }
                     val customerId = UUID.randomUUID()
                     upsertCustomer(tenant, customerId, request, insert = true)
-                    call.respond(HttpStatusCode.Created, request.toResponse(customerId, "active"))
+                    call.respond(HttpStatusCode.Created, request.toResponse(customerId, "active", customerCode(tenant, customerId)))
                 }
             }
 
@@ -159,7 +161,7 @@ object ClientesServerModule : ServerModule {
                     }
                     val updated = upsertCustomer(tenant, customerId, request, insert = false)
                     if (!updated) return@put call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
-                    call.respond(HttpStatusCode.OK, request.toResponse(customerId, "active"))
+                    call.respond(HttpStatusCode.OK, request.toResponse(customerId, "active", customerCode(tenant, customerId)))
                 }
             }
 
@@ -232,6 +234,14 @@ object ClientesServerModule : ServerModule {
         }
     }
 
+    // The database generates the code on insert (customers_generate_code) and it never changes.
+    private fun customerCode(connection: Connection, id: UUID): String = connection.prepareStatement(
+        "SELECT customer_code FROM customers WHERE id = ?"
+    ).use { query ->
+        query.setObject(1, id)
+        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else "" }
+    }
+
     private fun rowCustomer(rows: java.sql.ResultSet): CustomerResponse = CustomerResponse(
         id = rows.getObject("id", UUID::class.java).toString(),
         displayName = rows.getString("display_name"),
@@ -239,10 +249,12 @@ object ClientesServerModule : ServerModule {
         primaryPhone = rows.getString("primary_phone"),
         status = rows.getString("status"),
         customerType = rows.getString("customer_type"),
+        customerCode = rows.getString("customer_code"),
         dynamicFields = Json.parseToJsonElement(rows.getString("flexible_attributes")).jsonObject,
     )
 
-    private fun CreateCustomerRequest.toResponse(id: UUID, status: String): CustomerResponse = CustomerResponse(id.toString(), displayName.trim(), primaryEmail.trim(), primaryPhone.trim(), status, dynamicFields)
+    private fun CreateCustomerRequest.toResponse(id: UUID, status: String, customerCode: String): CustomerResponse =
+        CustomerResponse(id.toString(), displayName.trim(), primaryEmail.trim(), primaryPhone.trim(), status, dynamicFields, customerCode = customerCode)
 }
 
 @Serializable
@@ -258,7 +270,7 @@ data class CustomerFieldResponse(val id: String, val fieldKey: String, val label
 data class CustomerFieldsResponse(val fields: List<CustomerFieldResponse>)
 
 @Serializable
-data class CustomerResponse(val id: String, val displayName: String, val primaryEmail: String, val primaryPhone: String, val status: String, val dynamicFields: JsonObject = JsonObject(emptyMap()), val customerType: String = "general")
+data class CustomerResponse(val id: String, val displayName: String, val primaryEmail: String, val primaryPhone: String, val status: String, val dynamicFields: JsonObject = JsonObject(emptyMap()), val customerType: String = "general", val customerCode: String = "")
 
 @Serializable
 data class CustomersResponse(val customers: List<CustomerResponse>)

@@ -421,6 +421,38 @@ fun Route.companyRoutes(
         call.respond(HttpStatusCode.OK, response)
     }
 
+    // Creates the server company (server workspace) when it does not exist yet and returns its code.
+    // Single-company installs use it as their company: the server owner is its business owner.
+    post("/server/workspace") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+        if (serverOwnerRole == null) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para crear la empresa del servidor."),
+            )
+            return@post
+        }
+        val service = provisioning
+        if (service == null) {
+            call.respond(
+                HttpStatusCode.ServiceUnavailable,
+                CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."),
+            )
+            return@post
+        }
+        val code = try {
+            withContext(Dispatchers.IO) { service.ensureServerWorkspace(serverOwnerRole) }
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(
+                HttpStatusCode.Conflict,
+                CompanyErrorResponse("SERVER_WORKSPACE_NOT_CREATED", exception.message ?: "No se pudo crear la empresa del servidor."),
+            )
+            return@post
+        }
+        call.respond(HttpStatusCode.OK, ServerWorkspaceResponse(code))
+    }
+
     // Uses a module in the server workspace (created on first use), without a company.
     put("/server/modules/{moduleId}/server-usage") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")

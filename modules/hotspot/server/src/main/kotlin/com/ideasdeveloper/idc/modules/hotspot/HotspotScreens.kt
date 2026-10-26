@@ -40,6 +40,10 @@ object HotspotScreens {
     const val ReportsExport = "hotspot.reports.export"
     const val SettingsView = "hotspot.settings.view"
     const val SettingsManage = "hotspot.settings.manage"
+    // Opens the module and shows the user's own WiFi code.
+    const val View = "hotspot.view"
+    // Never granted: only the business owner (and server owners in the server company) hold it.
+    const val OwnerOnly = "hotspot.owner"
 
     private data class Section(val id: String, val label: String, val permission: String)
 
@@ -47,8 +51,10 @@ object HotspotScreens {
         Section("dashboard", "Dashboard", ReportsView),
         Section("visitors", "Visitantes", ReportsView),
         Section("reports", "Reportes", ReportsView),
+        Section("access", "Accesos WiFi", View),
         Section("portal", "Portal cautivo", SettingsView),
         Section("settings", "Configuracion", SettingsView),
+        Section("integrations", "Integraciones", OwnerOnly),
     )
 
     fun isScreen(id: String) = sections.any { it.id == id }
@@ -69,6 +75,10 @@ object HotspotScreens {
         notice: UiNotice? = null,
         submittedValues: Map<String, String>? = null,
         unifiPicker: List<UiNode> = emptyList(),
+        // Network form as the user typed it, shown again when saving it failed.
+        networkValues: Map<String, String>? = null,
+        // Body of sections built outside (Accesos WiFi, Integraciones).
+        customBody: List<UiNode>? = null,
     ): UiScreen {
         val settings = HotspotSettingsRepository.load(tenant)
         val title = sections.first { it.id == screen }.label
@@ -76,12 +86,12 @@ object HotspotScreens {
             return frame(settings, permissions, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
         }
         val values = submittedValues ?: HotspotSettingsRepository.toFormValues(settings, domainStatus, serverMailAvailable)
-        val body = when (screen) {
+        val body = customBody ?: when (screen) {
             "dashboard" -> dashboard(tenant, settings, permissions, domainActive)
             "visitors" -> visitors(tenant, params)
             "reports" -> reports(tenant, permissions, params)
             "portal" -> portal(permissions, values, domainStatus, domainActive)
-            else -> settingsForm(permissions, values, unifiPicker)
+            else -> settingsForm(tenant, permissions, values, unifiPicker, params, networkValues)
         }
         return frame(settings, permissions, screen, title, notice, body)
     }
@@ -110,8 +120,10 @@ object HotspotScreens {
         val yesterdayCount = HotspotReports.summary(tenant, today.minusDays(1), today.minusDays(1)).registrations
         val (trend, trendTone) = trend(todayCount, yesterdayCount)
         val newThisMonth = HotspotReports.newEmailsSince(tenant, today.withDayOfMonth(1))
+        val controller = HotspotIntegrations.controller(tenant)
         val health = when {
-            !settings.unifiConfigured -> UiStatus("Falta configurar UniFi", UiTone.Warning)
+            controller == null -> UiStatus("Falta elegir el controlador de red en Integraciones", UiTone.Warning)
+            !controller.isConfigured(settings) -> UiStatus("Falta configurar ${controller.name}", UiTone.Warning)
             settings.domain == null -> UiStatus("Falta configurar el dominio del portal", UiTone.Warning)
             !domainActive -> UiStatus("El dominio del portal aun no esta activo", UiTone.Warning)
             else -> UiStatus("Todo funcionando correctamente", UiTone.Success)
@@ -228,7 +240,25 @@ object HotspotScreens {
         )
     }
 
-    private fun settingsForm(permissions: ModulePermissions, values: Map<String, String>, unifiPicker: List<UiNode>): List<UiNode> {
+    private fun settingsForm(
+        tenant: Connection,
+        permissions: ModulePermissions,
+        values: Map<String, String>,
+        unifiPicker: List<UiNode>,
+        params: Map<String, String>,
+        networkValues: Map<String, String>?,
+    ): List<UiNode> {
+        val controller = HotspotIntegrations.controller(tenant)
+        val networkCards = networks(tenant, permissions, params, networkValues)
+        // The connection fields belong to UniFi; other controllers will bring their own.
+        if (controller != UnifiController) {
+            val notice = UiCard(
+                title = "Controlador de red",
+                children = listOf(UiStatus("Elige el controlador de red en Integraciones.", UiTone.Warning)),
+            )
+            return listOf(notice) + unifiPicker + networkCards +
+                UiCard(listOf(settingsFormNode("settings", connectionFields.filter { it.section != "UniFi" }, permissions, values)))
+        }
         val finder = if (!permissions.has(SettingsManage)) null else UiCard(
             title = "Conexion con UniFi",
             actions = listOf(UiButton("Buscar consolas", unifiStep("consoles"))),
@@ -239,8 +269,128 @@ object HotspotScreens {
                 ),
             ),
         )
-        return listOfNotNull(finder) + unifiPicker + UiCard(listOf(settingsFormNode("settings", connectionFields, permissions, values)))
+        return listOfNotNull(finder) + unifiPicker + networkCards +
+            UiCard(listOf(settingsFormNode("settings", connectionFields, permissions, values)))
     }
+
+    /**
+     * WiFi networks and their access type. ?networkId=<id> opens a network in the form; saving and
+     * deleting post to the settings route with ?network=save|delete&id=<id>.
+     */
+    private fun networks(tenant: Connection, permissions: ModulePermissions, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> {
+        val canManage = permissions.has(SettingsManage)
+        val networks = HotspotNetworks.list(tenant)
+        val list = UiCard(
+            title = "Redes WiFi",
+            actions = if (!canManage) emptyList() else listOf(UiButton("Cargar redes de la consola", networkAction("load", null), style = "secondary")),
+            children = listOf(
+                UiText(
+                    "Segun la red a la que se conecta el visitante, el portal muestra el formulario de registro o pide su codigo de cliente o de usuario. " +
+                        "Las redes que no esten en la lista usan el formulario.",
+                    UiTextStyle.Caption,
+                ),
+                if (networks.isEmpty()) {
+                    UiText("Aun no hay redes configuradas.", UiTextStyle.Caption)
+                } else {
+                    UiGrid(minItemWidth = 260, children = networks.map { networkCard(it, canManage) })
+                },
+            ),
+        )
+        if (!canManage) return listOf(list)
+        val editing = params["networkId"]?.let { id -> networks.firstOrNull { it.id.toString() == id } }
+        val types = HotspotNetworks.existingCustomerTypes(tenant)
+        val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
+        // A network picked from the console list opens the form with its name.
+        val picked = params["networkSsid"]?.take(32)?.takeIf { editing == null && it.isNotBlank() }
+        val form = UiCard(
+            title = editing?.let { "Editar red ${it.ssid}" } ?: "Agregar red",
+            actions = if (editing == null) emptyList() else listOf(UiButton("Cancelar", UiNavigate("settings"), style = "secondary")),
+            children = listOf(
+                UiForm(
+                    id = "network",
+                    fields = networkFields(types, usersEnabled),
+                    values = submitted ?: (HotspotNetworks.toFormValues(editing) + (picked?.let { mapOf("ssid" to it) } ?: emptyMap())),
+                    submit = UiButton("Guardar red", networkAction("save", editing?.id?.toString(), withForm = true)),
+                ),
+            ),
+        )
+        return listOf(list, form)
+    }
+
+    private fun networkCard(network: HotspotNetwork, canManage: Boolean): UiNode {
+        fun minutes(value: Int?) = value?.let { "$it minutos" } ?: "el de la configuracion general"
+        return UiCard(
+            title = network.ssid,
+            children = listOfNotNull(
+                UiText("Acceso: ${HotspotNetworks.modeLabel(network.accessMode)}", UiTextStyle.Caption),
+                if (!network.byCustomerCode) null else UiText(
+                    "Tipos de cliente: " + network.customerTypes.joinToString(", ").ifEmpty { "todos" },
+                    UiTextStyle.Caption,
+                ),
+                UiText("Tiempo de acceso: ${minutes(network.accessMinutes)}", UiTextStyle.Caption),
+                UiText("Tiempo para reconectar: ${minutes(network.reconnectMinutes)}", UiTextStyle.Caption),
+                if (!canManage) null else UiRow(
+                    listOf(
+                        UiButton("Editar", UiNavigate("settings", mapOf("networkId" to network.id.toString())), style = "secondary"),
+                        UiButton(
+                            "Eliminar",
+                            networkAction("delete", network.id.toString(), confirm = "Eliminar la red ${network.ssid}? Volvera a usar el formulario de registro."),
+                            style = "danger",
+                        ),
+                    )
+                ),
+            ),
+        )
+    }
+
+    private fun networkAction(step: String, id: String?, withForm: Boolean = false, confirm: String? = null) = UiRequest(
+        route = "$UiRoute/settings",
+        params = buildMap {
+            put("network", step)
+            if (id != null) put("id", id)
+        },
+        confirm = confirm,
+        formId = if (withForm) "network" else null,
+    )
+
+    /** Card listing the SSIDs read from the network controller; each one opens the network form. */
+    fun consoleNetworksPicker(ssids: List<String>, configured: Set<String>): UiNode = UiCard(
+        title = "Redes de la consola",
+        children = if (ssids.isEmpty()) {
+            listOf(UiText("La consola no tiene redes WiFi.", UiTextStyle.Caption))
+        } else {
+            listOf(
+                UiGrid(
+                    minItemWidth = 220,
+                    children = ssids.map { ssid ->
+                        UiCard(
+                            title = ssid,
+                            children = listOf(
+                                if (ssid in configured) {
+                                    UiStatus("Ya configurada", UiTone.Success)
+                                } else {
+                                    UiButton("Configurar", UiNavigate("settings", mapOf("networkSsid" to ssid)), style = "secondary")
+                                },
+                            ),
+                        )
+                    },
+                ),
+            )
+        },
+    )
+
+    private fun networkFields(existingTypes: List<String>, usersEnabled: Boolean) = listOf(
+        UiField("ssid", "Nombre de la red (SSID)", required = true, placeholder = "MiEmpresa_WiFi",
+            help = "Exactamente como aparece en UniFi; distingue mayusculas y minusculas."),
+        UiField("accessMode", "Tipo de acceso", "select", required = true, options = HotspotNetworks.modeOptions(usersEnabled),
+            help = "Formulario: registro y codigo por correo. Codigo de cliente: el codigo de su ficha en Clientes." +
+                if (usersEnabled) " Codigo de usuario: el codigo de Accesos WiFi de cada usuario." else " Activa la integracion Usuarios para el acceso por codigo de usuario."),
+        UiField("customerTypes", "Tipos de cliente permitidos", placeholder = "miembro, huesped",
+            help = "Solo para acceso por codigo. Separados por coma; vacio = cualquier tipo." +
+                if (existingTypes.isEmpty()) "" else " Tipos actuales en Clientes: ${existingTypes.joinToString(", ")}."),
+        UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", help = "Vacio usa el de la configuracion general."),
+        UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", help = "Vacio usa el de la configuracion general. 0 = sin espera."),
+    )
 
     // UniFi picker steps post the settings form so typed values survive the round trip.
     fun unifiStep(step: String, id: String? = null) = UiRequest(
@@ -330,7 +480,8 @@ object HotspotScreens {
         UiField("domain", "Dominio del portal", section = "Dominio", placeholder = "wifi.miempresa.com",
             help = "Crea un registro DNS A/AAAA que apunte a este servidor. HTTPS se configura solo en unos minutos."),
         UiField("portalUrl", "Direccion para UniFi (portal externo)", readOnly = true, section = "Dominio"),
-        UiField("networkName", "Nombre de la red WiFi", required = true, section = "Apariencia"),
+        UiField("networkName", "Nombre de la red WiFi", required = true, section = "Apariencia",
+            help = "Se muestra cuando UniFi no envia el nombre de la red. El acceso por red se configura en Configuracion > Redes WiFi."),
         UiField("portalTitle", "Titulo", required = true, section = "Apariencia"),
         UiField("portalSubtitle", "Subtitulo", section = "Apariencia"),
         UiField("logoUrl", "URL del logo", "url", section = "Apariencia"),

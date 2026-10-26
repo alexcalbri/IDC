@@ -345,6 +345,9 @@ private fun CustomerServerDrivenContent(
         customers.forEach { customer ->
             Column(modifier = Modifier.fillMaxWidth().background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small).padding(10.dp)) {
                 Text("${customer.displayName} - ${customer.primaryEmail} - ${customer.primaryPhone}" + if (customer.customerType != "general") " (${customer.customerType})" else "", color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
+                if (customer.customerCode.isNotBlank()) {
+                    Text("Codigo de cliente: ${customer.customerCode}", color = AppTheme.colors.muted)
+                }
                 androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
                         editingId = customer.id

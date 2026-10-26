@@ -166,7 +166,7 @@ fun App(initialServerUrl: String = "") {
 private fun String.toModuleTitle(): String = when (this) {
     "empresa" -> "Empresa"
     "server-modules" -> "Modulos del servidor"
-    "server-staff" -> "Personal del servidor"
+    "server-staff" -> "Empresa del servidor"
     "clientes" -> "Clientes"
     else -> replace("-", " ")
         .replace("_", " ")

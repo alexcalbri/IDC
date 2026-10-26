@@ -71,3 +71,9 @@ data class CreateCompanyUserRequest(
 data class UpdateCompanyUserPermissionsRequest(
     val permissions: List<String>,
 )
+
+// Empresa del servidor que administra el server_owner sin crear una empresa.
+@Serializable
+data class ServerWorkspaceResponse(
+    val code: String,
+)

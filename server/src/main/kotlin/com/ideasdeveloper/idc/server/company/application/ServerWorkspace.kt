@@ -7,6 +7,6 @@ package com.ideasdeveloper.idc.server.company.application
  */
 object ServerWorkspace {
     const val Code = "servidor"
-    const val Name = "Espacio del servidor"
+    const val Name = "Empresa del servidor"
     const val DatabaseName = "idc_servidor"
 }

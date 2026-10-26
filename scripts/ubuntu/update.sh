@@ -244,10 +244,13 @@ SQL
         die 'No se encontro modules/clientes/migrations/V002__require_customer_contact_fields.sql.'
     [[ -f modules/clientes/migrations/V003__add_customer_type.sql ]] ||
         die 'No se encontro modules/clientes/migrations/V003__add_customer_type.sql.'
+    [[ -f modules/clientes/migrations/V004__add_customer_code.sql ]] ||
+        die 'No se encontro modules/clientes/migrations/V004__add_customer_code.sql.'
     while IFS= read -r tenant_db; do
         [[ -n $tenant_db ]] || continue
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V002__require_customer_contact_fields.sql
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V003__add_customer_type.sql
+        apply_migration "$tenant_db" clientes modules/clientes/migrations/V004__add_customer_code.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V004__create_application_permissions.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V005__create_application_user_credentials.sql
         runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'

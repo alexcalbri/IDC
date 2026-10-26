@@ -99,12 +99,15 @@ class ModuleAccessService(
 
         // Server owners sign in centrally and hold every permission in the server workspace; its
         // staff use the tenant sessions and permissions below, like a company's users.
-        if (companyCode == ServerWorkspace.Code && isServerWorkspace(companyCode) && isServerOwnerSession(token)) {
+        val serverOwnerId = if (companyCode == ServerWorkspace.Code && isServerWorkspace(companyCode)) serverOwnerSessionUser(token) else null
+        if (serverOwnerId != null) {
             return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password).use { connection ->
                 if (!moduleEnabled(connection, moduleId)) {
                     ModulePermissionLookup.Denied(ModuleAccessDecision.Forbidden("module_disabled", "El modulo no esta activo en el espacio del servidor."))
                 } else {
-                    ModulePermissionLookup.Granted(ModulePermissions(companyCode, token, businessOwner = true, granted = emptySet()))
+                    ModulePermissionLookup.Granted(
+                        ModulePermissions(companyCode, token, businessOwner = true, granted = emptySet(), userId = serverOwnerId, serverOwner = true)
+                    )
                 }
             }
         }
@@ -145,7 +148,7 @@ class ModuleAccessService(
                 query.setObject(1, user.id)
                 query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
             }
-            ModulePermissionLookup.Granted(ModulePermissions(companyCode, token, user.businessOwner, granted))
+            ModulePermissionLookup.Granted(ModulePermissions(companyCode, token, user.businessOwner, granted, userId = user.id))
         }
     }
 
@@ -172,10 +175,11 @@ class ModuleAccessService(
         false
     }
 
-    private fun isServerOwnerSession(token: String): Boolean = central.connection.use { connection ->
+    // Central user id of an active server_owner session, or null.
+    private fun serverOwnerSessionUser(token: String): UUID? = central.connection.use { connection ->
         connection.prepareStatement(
             """
-            SELECT 1
+            SELECT sessions.user_id
             FROM application_sessions sessions
             JOIN server_owners owners ON owners.user_id = sessions.user_id
             JOIN application_users users ON users.id = sessions.user_id
@@ -186,7 +190,7 @@ class ModuleAccessService(
             """.trimIndent()
         ).use { query ->
             query.setString(1, tokenGenerator.hash(token))
-            query.executeQuery().use { rows -> rows.next() }
+            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
         }
     }
 
@@ -217,6 +221,10 @@ class ModulePermissions(
     internal val accessToken: String,
     val businessOwner: Boolean,
     private val granted: Set<String>,
+    // Signed-in user: a tenant user, or for server owners their central user id.
+    val userId: UUID? = null,
+    // True only for a server_owner using the server workspace.
+    val serverOwner: Boolean = false,
 ) {
     fun has(permissionId: String): Boolean = businessOwner || permissionId in granted
 }

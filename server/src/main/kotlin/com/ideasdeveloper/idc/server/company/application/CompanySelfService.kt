@@ -58,15 +58,16 @@ class CompanySelfService(
         ignoreUnknownKeys = true
     }
 
-    // Carga el perfil editable de la empresa de la sesion business_owner.
+    // Carga el perfil editable de la empresa de la sesion business_owner. El server_owner tambien
+    // administra asi la empresa del servidor, sin crear una empresa.
     fun profile(companyCode: String, accessToken: String): CompanyProfileResponse {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val context = authorizeUserAdministrator(companyCode, accessToken)
         return context.profile
     }
 
     // Actualiza nombre, logo y colores sin tocar datos tenant.
     fun updateProfile(companyCode: String, accessToken: String, request: UpdateCompanyProfileRequest): CompanyProfileResponse {
-        val context = authorizeBusinessOwner(companyCode, accessToken)
+        val context = authorizeUserAdministrator(companyCode, accessToken)
         val name = request.name.trim()
         val logoUrl = request.logoUrl?.trim()?.takeIf { it.isNotBlank() }
         if (name.isBlank()) {

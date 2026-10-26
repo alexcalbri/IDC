@@ -130,9 +130,9 @@ fun DashboardScreen(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 DashboardActionCard(
-                    title = "Personal del servidor",
-                    description = "Usuarios que usan los modulos del servidor sin pertenecer a una empresa",
-                    iconText = "P",
+                    title = "Empresa del servidor",
+                    description = "Configura la empresa del servidor y su personal sin crear una empresa",
+                    iconText = "S",
                     primaryColor = primaryColor,
                     onClick = { onNavigateTo(NavRoute.Module("server-staff")) }
                 )
