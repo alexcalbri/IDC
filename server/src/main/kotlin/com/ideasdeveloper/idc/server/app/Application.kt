@@ -53,6 +53,7 @@ fun Application.module() {
     install(ContentNegotiation) {
         json(kotlinx.serialization.json.Json { encodeDefaults = true })
     }
+    val sessionKeyHasher = SessionTokenGenerator()
     install(RateLimit) {
         register(RateLimitName("login")) {
             rateLimiter(
@@ -78,9 +79,11 @@ fun Application.module() {
                 refillPeriod = 60.seconds,
             )
 
+            // A hash of the session, never the token itself: the rate limiter logs its keys.
             requestKey { call ->
                 call.request.headers["Authorization"]
                     ?.takeIf { it.isNotBlank() }
+                    ?.let { "session:" + sessionKeyHasher.hash(it) }
                     ?: call.request.local.remoteAddress
             }
         }
