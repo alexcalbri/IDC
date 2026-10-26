@@ -320,6 +320,9 @@ if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     [[ -x server/build/install/server/bin/server ]] || die 'No se genero la distribucion del servidor.'
 fi
 if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
+    # build/js keeps the yarn.lock of the previous build; when kotlin-js-store/yarn.lock changed,
+    # kotlinStoreYarnLock fails with "Lock file was changed". It is only a build cache.
+    rm -rf -- "$SOURCE_DIR/build/js"
     run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution 2>&1 | tee "$WEB_BUILD_LOG"
     WEB_DIST="$SOURCE_DIR/app/webApp/build/dist/js/productionExecutable"
     [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se genero la distribucion web completa.'
