@@ -20,3 +20,6 @@ node_modules/
 
 # Local reference implementation with real credentials; never commit.
 /reference/
+
+# Local tool configuration (Serena MCP)
+.serena/
