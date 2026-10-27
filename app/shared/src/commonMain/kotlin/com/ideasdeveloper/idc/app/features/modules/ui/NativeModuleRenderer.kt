@@ -358,7 +358,10 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
         // Agrupa campos consecutivos de la misma seccion bajo un titulo.
         val groups = mutableListOf<Pair<String, MutableList<UiField>>>()
-        node.fields.forEach { field ->
+        val visible = node.fields.filter { field ->
+            field.visibleWhen?.let { condition -> context.formValue(node.id, condition.key) in condition.values } ?: true
+        }
+        visible.forEach { field ->
             if (groups.isEmpty() || groups.last().first != field.section) groups += field.section to mutableListOf()
             groups.last().second += field
         }
@@ -374,7 +377,7 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
             }
         }
         node.submit?.let { submit ->
-            val missing = node.fields.firstOrNull { field ->
+            val missing = visible.firstOrNull { field ->
                 field.required && !field.readOnly && field.type != "password" && context.formValue(node.id, field.key).isBlank()
             }
             ModuleButton(submit.copy(enabled = submit.enabled && missing == null), context)

@@ -135,7 +135,12 @@ data class UiField(
     val placeholder: String = "",
     // Consecutive fields with the same section are grouped under one heading.
     val section: String = "",
+    // Shown only while another field of the form has one of the given values; hidden fields are not required.
+    val visibleWhen: UiFieldCondition? = null,
 )
+
+@Serializable
+data class UiFieldCondition(val key: String, val values: List<String>)
 
 @Serializable
 data class UiTableColumn(val key: String, val label: String)
