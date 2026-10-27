@@ -2,5 +2,5 @@
   "id": "hotspot",
   "displayName": "Hotspot",
   "description": "Portal cautivo WiFi con acceso por formulario o codigo de cliente segun la red, y autorizacion en UniFi.",
-  "version": "0.4.0"
+  "version": "0.4.1"
 }
