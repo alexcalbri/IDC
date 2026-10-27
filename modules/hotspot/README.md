@@ -43,8 +43,13 @@ networks managed through the UniFi Site Manager cloud API (`api.ui.com`).
   server company, server owners grant users access to "Codigo de usuario"
   networks of other companies. Codes live in `hotspot_user_codes`; the core
   users table is only read.
-- *Redes WiFi* → **Cargar redes de la consola** lists the SSIDs of the UniFi site
-  (`/wifi/broadcasts`, UniFi Network 10+) to configure them.
+- *Configuracion* only shows the settings of the enabled network controller:
+  with UniFi, the connection card (**Buscar consolas** appears only while no
+  console is saved; clearing the console id and saving brings it back). Access
+  times and email are separate cards that work with any controller.
+- *Redes WiFi*: the SSID is a dropdown with the networks of the controller's
+  console (`/wifi/broadcasts`, UniFi Network 10+, cached for a minute), leaving
+  out the ones already configured. Without a configured controller it is typed.
 - Administration uses **native UI pieces** (`ui.type = "native"`): Dashboard,
   Visitantes, Reportes, Portal cautivo and Configuracion, modeled on the
   Conectiva panel and responsive (sidebar on wide screens, top bar on phones).
@@ -81,7 +86,7 @@ tenant database and never returned to the client.
 | `POST /guest/s/default/verify` | Public. Checks code and authorizes in UniFi. |
 | `POST /guest/s/default/code` | Public. Customer- or user-code access on networks configured for it. |
 | `GET /modules/hotspot/ui/{screen}` | Native screens: `dashboard`, `visitors`, `reports` (`hotspot.reports.view`), `portal`, `settings` (`hotspot.settings.view`). Sections without permission are hidden. |
-| `POST /modules/hotspot/ui/portal`, `/ui/settings` | `hotspot.settings.manage`; returns the screen with a notice. `/ui/settings?network=save\|delete\|load&id=` saves, deletes or loads WiFi networks. |
+| `POST /modules/hotspot/ui/portal`, `/ui/settings` | `hotspot.settings.manage`; returns the screen with a notice. `/ui/settings?network=save\|delete&id=` saves or deletes WiFi networks; `?unifi=consoles\|console\|site&id=` picks the UniFi console and site (only while UniFi is enabled). |
 | `POST /modules/hotspot/ui/integrations?integration=&enabled=` | Business owner / server owner. |
 | `POST /modules/hotspot/ui/access?grant=add\|delete&id=` | Server owners in the server company. |
 | `GET /modules/hotspot/report/export?from=&to=` | `hotspot.reports.export` (CSV) |
@@ -117,16 +122,17 @@ configuration again retries a domain in `error`.
    development → install **Hotspot** (the server builds it and restarts) →
    *Empresa* → enable it for the company.
 3. Create a DNS A/AAAA record for the portal domain pointing to the server.
-4. Company: *Hotspot → Configuracion* → domain, UniFi console id, site id and
-   API key, times, email and appearance. Wait for domain status **Activo**.
+4. Company: *Hotspot → Integraciones* → enable UniFi; *Configuracion* → UniFi
+   API key → Buscar consolas (console and site), times and email; *Portal
+   cautivo* → domain and appearance. Wait for domain status **Activo**.
 5. UniFi Network → Hotspot / guest portal:
    - authentication: **External portal server**, address
      `https://<domain>/guest/s/default/`;
    - add the portal domain (and the server IP) to the **pre-authorization
      allowance** so unauthorized guests can reach the portal and the email
      provider if needed.
-6. Optional: *Configuracion → Redes WiFi* → add each SSID that should ask for the
-   customer code instead of the form.
+6. Optional: *Configuracion → Redes WiFi* → pick each SSID that should ask for
+   the customer or user code instead of the form.
 7. Test with a phone: connect to the guest SSID, register, enter the code.
 
 ## Not implemented yet

@@ -111,8 +111,8 @@ class HotspotAccess(private val access: ModuleAccessService) {
                     UiForm(
                         id = "grant",
                         fields = listOf(
-                            UiField("network", "Red", "select", required = true, options = networks),
-                            UiField("user", "Usuario", "select", required = true, options = users.filter { it.active }.map(::userLabel)),
+                            UiField("network", "Red", "dropdown", required = true, options = networks),
+                            UiField("user", "Usuario", "dropdown", required = true, options = users.filter { it.active }.map(::userLabel)),
                         ),
                         submit = UiButton("Dar acceso", UiRequest("${HotspotScreens.UiRoute}/access", params = mapOf("grant" to "add"), formId = "grant")),
                     )

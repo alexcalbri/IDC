@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.hotspot
 
 import java.sql.Connection
+import java.util.concurrent.ConcurrentHashMap
 
 /** Result of asking the network controller to let a device in. */
 data class GuestAuthorization(val authorized: Boolean, val message: String)
@@ -34,10 +35,20 @@ object UnifiController : NetworkController {
 
     override fun authorizeGuest(settings: HotspotSettings, mac: String) = UnifiClient.authorizeGuest(settings, mac)
 
+    // The settings screen lists the SSIDs on every render; a short cache spares a cloud call each time.
+    private const val SsidCacheMillis = 60_000L
+    private val ssidCache = ConcurrentHashMap<List<String>, Pair<Long, List<String>>>()
+
     override fun wifiNetworks(settings: HotspotSettings): List<String> {
         if (!settings.unifiConfigured) throw NetworkControllerException("Configura la consola y el sitio de UniFi primero.")
+        val key = listOf(settings.unifiApiKey!!, settings.unifiConsoleId!!, settings.unifiSiteId!!)
+        val now = System.currentTimeMillis()
+        ssidCache[key]?.let { (readAt, ssids) -> if (now - readAt < SsidCacheMillis) return ssids }
         return try {
-            UnifiClient.wifiNetworks(settings.unifiApiKey!!, settings.unifiConsoleId!!, settings.unifiSiteId!!)
+            UnifiClient.wifiNetworks(key[0], key[1], key[2]).also { ssids ->
+                ssidCache.entries.removeIf { now - it.value.first >= SsidCacheMillis }
+                ssidCache[key] = now to ssids
+            }
         } catch (failure: UnifiException) {
             throw NetworkControllerException(failure.message.orEmpty())
         }

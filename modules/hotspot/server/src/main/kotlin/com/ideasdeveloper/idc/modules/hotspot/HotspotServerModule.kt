@@ -63,7 +63,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario o codigo de cliente segun la red, y autorizacion en UniFi.",
-        version = "0.4.0",
+        version = "0.4.1",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -174,7 +174,7 @@ object HotspotServerModule : ServerModule {
         val (status, active) = domainState(access, permissions.companyCode, settings.domain)
         return HotspotScreens.build(
             screen, tenant, permissions, params, status, active, access.serverMail != null, notice, submittedValues,
-            unifiPicker = extraNodes, networkValues = networkValues, customBody = customBody,
+            pickers = extraNodes, networkValues = networkValues, customBody = customBody,
         )
     }
 
@@ -197,25 +197,10 @@ object HotspotServerModule : ServerModule {
         values: JsonObject,
     ): UiScreen {
         val networkId = id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-        fun screen(notice: UiNotice, params: Map<String, String> = emptyMap(), submitted: Map<String, String>? = null, extra: List<UiNode> = emptyList()) =
-            render(access, tenant, permissions, "settings", params, notice, networkValues = submitted, extraNodes = extra)
+        fun screen(notice: UiNotice, params: Map<String, String> = emptyMap(), submitted: Map<String, String>? = null) =
+            render(access, tenant, permissions, "settings", params, notice, networkValues = submitted)
         if (id != null && networkId == null) return screen(UiNotice("Red invalida.", UiTone.Danger))
         return when (step) {
-            "load" -> {
-                val settings = HotspotSettingsRepository.load(tenant)
-                val controller = HotspotIntegrations.controller(tenant)
-                    ?: return screen(UiNotice("Elige el controlador de red en Integraciones.", UiTone.Warning))
-                try {
-                    val ssids = controller.wifiNetworks(settings)
-                    val configured = HotspotNetworks.list(tenant).map { it.ssid }.toSet()
-                    screen(
-                        UiNotice("${ssids.size} red(es) en ${controller.name}. Elige cual configurar.", UiTone.Success),
-                        extra = listOf(HotspotScreens.consoleNetworksPicker(ssids, configured)),
-                    )
-                } catch (failure: NetworkControllerException) {
-                    screen(UiNotice(failure.message.orEmpty(), UiTone.Danger))
-                }
-            }
             "save" -> {
                 if (networkId != null && HotspotNetworks.find(tenant, networkId) == null) {
                     return screen(UiNotice("Esa red ya no existe.", UiTone.Warning))
@@ -240,8 +225,11 @@ object HotspotServerModule : ServerModule {
         }
     }
 
-    private fun save(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, screen: String, values: JsonObject): UiScreen {
+    private fun save(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, screen: String, posted: JsonObject): UiScreen {
         val current = HotspotSettingsRepository.load(tenant)
+        // The UniFi settings are only editable while UniFi is the enabled network controller.
+        val unifiKeys = HotspotScreens.unifiFields.map { it.key }.toSet()
+        val values = if (HotspotIntegrations.controller(tenant) == UnifiController) posted else JsonObject(posted.filterKeys { it !in unifiKeys })
         val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
         fun failed(message: String): UiScreen {
             // Keep what the user typed so the error can be corrected without retyping.
@@ -275,6 +263,9 @@ object HotspotServerModule : ServerModule {
         values: JsonObject,
     ): UiScreen {
         var settings = HotspotSettingsRepository.load(tenant)
+        if (HotspotIntegrations.controller(tenant) != UnifiController) {
+            return render(access, tenant, permissions, "settings", emptyMap(), UiNotice("Activa la integracion UniFi en Integraciones.", UiTone.Warning))
+        }
         val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } - "unifiApiKey"
         fun screen(notice: UiNotice, picker: UiNode? = null): UiScreen {
             val (status, active) = domainState(access, permissions.companyCode, settings.domain)

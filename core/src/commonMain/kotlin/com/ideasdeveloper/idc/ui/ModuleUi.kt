@@ -125,7 +125,8 @@ object UiTextStyle {
 data class UiField(
     val key: String,
     val label: String,
-    // text, email, phone, url, number, password, select, textarea, color, date, boolean.
+    // text, email, phone, url, number, password, select (radio buttons), dropdown (a menu, for longer
+    // lists), textarea, color, date, boolean.
     val type: String = "text",
     val required: Boolean = false,
     val readOnly: Boolean = false,
