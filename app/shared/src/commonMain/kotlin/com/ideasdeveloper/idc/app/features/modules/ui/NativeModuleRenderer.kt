@@ -27,6 +27,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -36,7 +38,10 @@ import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -411,6 +416,37 @@ private fun ModuleField(field: UiField, value: String, enabled: Boolean, colors:
                             colors = RadioButtonDefaults.colors(selectedColor = colors.accent, unselectedColor = colors.muted),
                         )
                         Text(option, color = colors.text)
+                    }
+                }
+            }
+            field.type == "dropdown" -> {
+                var expanded by remember { mutableStateOf(false) }
+                Text(label, color = colors.muted, fontSize = 12.sp)
+                Box {
+                    OutlinedButton(
+                        onClick = { expanded = true },
+                        enabled = enabled && field.options.isNotEmpty(),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, colors.border),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            value.ifBlank { field.placeholder.ifBlank { "Selecciona una opcion" } },
+                            color = if (value.isBlank()) colors.muted else colors.text,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text("v", color = colors.muted)
+                    }
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        field.options.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option) },
+                                onClick = {
+                                    expanded = false
+                                    onChange(option)
+                                },
+                            )
+                        }
                     }
                 }
             }

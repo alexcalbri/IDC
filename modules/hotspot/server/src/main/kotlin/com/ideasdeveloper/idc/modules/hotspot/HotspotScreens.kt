@@ -74,7 +74,8 @@ object HotspotScreens {
         serverMailAvailable: Boolean,
         notice: UiNotice? = null,
         submittedValues: Map<String, String>? = null,
-        unifiPicker: List<UiNode> = emptyList(),
+        // Console and site pickers of the UniFi connection.
+        pickers: List<UiNode> = emptyList(),
         // Network form as the user typed it, shown again when saving it failed.
         networkValues: Map<String, String>? = null,
         // Body of sections built outside (Accesos WiFi, Integraciones).
@@ -91,7 +92,7 @@ object HotspotScreens {
             "visitors" -> visitors(tenant, params)
             "reports" -> reports(tenant, permissions, params)
             "portal" -> portal(permissions, values, domainStatus, domainActive)
-            else -> settingsForm(tenant, permissions, values, unifiPicker, params, networkValues)
+            else -> settingsForm(tenant, permissions, values, pickers, params, networkValues)
         }
         return frame(settings, permissions, screen, title, notice, body)
     }
@@ -210,8 +211,8 @@ object HotspotScreens {
                 children = listOf(
                     UiCard(listOf(UiMetric("Registros", summary.registrations.toString()))),
                     UiCard(listOf(UiMetric("Visitantes unicos", summary.visitors.toString(), "Correos distintos"))),
-                    UiCard(listOf(UiMetric("Conexiones", summary.connections.toString(), "Autorizadas en UniFi"))),
-                    UiCard(listOf(UiMetric("Fallas de UniFi", summary.failures.toString(), captionTone = if (summary.failures > 0) UiTone.Danger else UiTone.Neutral))),
+                    UiCard(listOf(UiMetric("Conexiones", summary.connections.toString(), "Autorizadas en la red"))),
+                    UiCard(listOf(UiMetric("Fallas al autorizar", summary.failures.toString(), captionTone = if (summary.failures > 0) UiTone.Danger else UiTone.Neutral))),
                 ),
             ),
             UiCard(
@@ -236,7 +237,7 @@ object HotspotScreens {
         return listOfNotNull(
             UiCard(title = "Estado del portal", children = listOf(UiStatus(domainStatus, tone))),
             logo?.let { UiCard(title = "Logo actual", children = listOf(UiImage(it, height = 80, description = "Logo del portal"))) },
-            UiCard(listOf(settingsFormNode("portal", portalFields, permissions, values))),
+            UiCard(listOf(settingsFormNode("portal", "portal", portalFields, permissions, values))),
         )
     }
 
@@ -244,45 +245,69 @@ object HotspotScreens {
         tenant: Connection,
         permissions: ModulePermissions,
         values: Map<String, String>,
-        unifiPicker: List<UiNode>,
+        pickers: List<UiNode>,
         params: Map<String, String>,
         networkValues: Map<String, String>?,
     ): List<UiNode> {
+        val settings = HotspotSettingsRepository.load(tenant)
         val controller = HotspotIntegrations.controller(tenant)
-        val networkCards = networks(tenant, permissions, params, networkValues)
-        // The connection fields belong to UniFi; other controllers will bring their own.
-        if (controller != UnifiController) {
-            val notice = UiCard(
-                title = "Controlador de red",
-                children = listOf(UiStatus("Elige el controlador de red en Integraciones.", UiTone.Warning)),
+        // Only the enabled ecosystem's settings are shown; access times and mail work with any of them.
+        val controllerCards = when (controller) {
+            null -> listOf(
+                UiCard(
+                    title = "Controlador de red",
+                    children = listOf(UiStatus("Elige el controlador de red (UniFi u otro) en Integraciones.", UiTone.Warning)),
+                )
             )
-            return listOf(notice) + unifiPicker + networkCards +
-                UiCard(listOf(settingsFormNode("settings", connectionFields.filter { it.section != "UniFi" }, permissions, values)))
+            UnifiController -> listOf(unifiCard(settings, permissions, values)) + pickers
+            else -> emptyList()
         }
-        val finder = if (!permissions.has(SettingsManage)) null else UiCard(
+        return controllerCards + networks(tenant, settings, controller, permissions, params, networkValues) +
+            UiCard(title = "Acceso", children = listOf(settingsFormNode("settings", "times", accessFields, permissions, values))) +
+            UiCard(title = "Correo", children = listOf(settingsFormNode("settings", "mail", mailFields, permissions, values)))
+    }
+
+    /**
+     * UniFi connection. Buscar consolas shows only while no console is saved; with a console but no
+     * site it offers to pick the site. Clearing the console ID and saving brings the search back.
+     */
+    private fun unifiCard(settings: HotspotSettings, permissions: ModulePermissions, values: Map<String, String>): UiNode {
+        val canManage = permissions.has(SettingsManage)
+        val consoleId = settings.unifiConsoleId?.takeIf { it.isNotBlank() }
+        val (hint, action) = when {
+            !canManage -> null to null
+            consoleId == null -> "Escribe la API key y pulsa Buscar consolas para elegir la consola y el sitio por su nombre." to
+                UiButton("Buscar consolas", unifiStep("consoles"))
+            settings.unifiSiteId.isNullOrBlank() -> "Falta elegir el sitio de la consola." to UiButton("Elegir sitio", unifiStep("console", consoleId))
+            else -> null to null
+        }
+        return UiCard(
             title = "Conexion con UniFi",
-            actions = listOf(UiButton("Buscar consolas", unifiStep("consoles"))),
-            children = listOf(
-                UiText(
-                    "Escribe la API key en el formulario y pulsa Buscar consolas para elegir la consola y el sitio por su nombre.",
-                    UiTextStyle.Caption,
-                ),
+            actions = listOfNotNull(action),
+            children = listOfNotNull(
+                hint?.let { UiText(it, UiTextStyle.Caption) },
+                settingsFormNode("settings", "unifi", unifiFields, permissions, values),
             ),
         )
-        return listOfNotNull(finder) + unifiPicker + networkCards +
-            UiCard(listOf(settingsFormNode("settings", connectionFields, permissions, values)))
     }
 
     /**
      * WiFi networks and their access type. ?networkId=<id> opens a network in the form; saving and
-     * deleting post to the settings route with ?network=save|delete&id=<id>.
+     * deleting post to the settings route with ?network=save|delete&id=<id>. The SSID is picked from
+     * the networks of the enabled controller; without one it is typed.
      */
-    private fun networks(tenant: Connection, permissions: ModulePermissions, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> {
+    private fun networks(
+        tenant: Connection,
+        settings: HotspotSettings,
+        controller: NetworkController?,
+        permissions: ModulePermissions,
+        params: Map<String, String>,
+        submitted: Map<String, String>?,
+    ): List<UiNode> {
         val canManage = permissions.has(SettingsManage)
         val networks = HotspotNetworks.list(tenant)
         val list = UiCard(
             title = "Redes WiFi",
-            actions = if (!canManage) emptyList() else listOf(UiButton("Cargar redes de la consola", networkAction("load", null), style = "secondary")),
             children = listOf(
                 UiText(
                     "Segun la red a la que se conecta el visitante, el portal muestra el formulario de registro o pide su codigo de cliente o de usuario. " +
@@ -298,23 +323,53 @@ object HotspotScreens {
         )
         if (!canManage) return listOf(list)
         val editing = params["networkId"]?.let { id -> networks.firstOrNull { it.id.toString() == id } }
+        val console = consoleSsids(settings, controller)
+        // Networks already configured are left out, except the one being edited.
+        val available = console.ssids?.let { ssids ->
+            val taken = networks.map { it.ssid }.toSet() - setOfNotNull(editing?.ssid)
+            (ssids + listOfNotNull(editing?.ssid)).distinct().filter { it !in taken }
+        }
+        val title = editing?.let { "Editar red ${it.ssid}" } ?: "Agregar red"
+        if (editing == null && available != null && available.isEmpty()) {
+            return listOf(list, UiCard(title = title, children = listOf(UiText("Todas las redes de la consola ya estan configuradas.", UiTextStyle.Caption))))
+        }
         val types = HotspotNetworks.existingCustomerTypes(tenant)
         val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
-        // A network picked from the console list opens the form with its name.
-        val picked = params["networkSsid"]?.take(32)?.takeIf { editing == null && it.isNotBlank() }
         val form = UiCard(
-            title = editing?.let { "Editar red ${it.ssid}" } ?: "Agregar red",
+            title = title,
             actions = if (editing == null) emptyList() else listOf(UiButton("Cancelar", UiNavigate("settings"), style = "secondary")),
-            children = listOf(
+            children = listOfNotNull(
+                console.problem?.let { UiStatus(it, UiTone.Warning) },
                 UiForm(
                     id = "network",
-                    fields = networkFields(types, usersEnabled),
-                    values = submitted ?: (HotspotNetworks.toFormValues(editing) + (picked?.let { mapOf("ssid" to it) } ?: emptyMap())),
+                    fields = listOf(ssidField(available, controller)) + networkFields(types, usersEnabled),
+                    values = submitted ?: HotspotNetworks.toFormValues(editing),
                     submit = UiButton("Guardar red", networkAction("save", editing?.id?.toString(), withForm = true)),
                 ),
             ),
         )
         return listOf(list, form)
+    }
+
+    // SSIDs read from the controller (null when they cannot be read) and why they could not be read.
+    private data class ConsoleSsids(val ssids: List<String>?, val problem: String?)
+
+    private fun consoleSsids(settings: HotspotSettings, controller: NetworkController?): ConsoleSsids = when {
+        controller == null -> ConsoleSsids(null, null)
+        !controller.isConfigured(settings) -> ConsoleSsids(null, "Configura ${controller.name} para elegir la red de la lista de la consola.")
+        else -> try {
+            ConsoleSsids(controller.wifiNetworks(settings), null)
+        } catch (failure: NetworkControllerException) {
+            ConsoleSsids(null, "No se pudieron leer las redes de ${controller.name}: ${failure.message.orEmpty()} Escribe el nombre de la red.")
+        }
+    }
+
+    private fun ssidField(options: List<String>?, controller: NetworkController?): UiField = if (options != null) {
+        UiField("ssid", "Red WiFi (SSID)", "dropdown", required = true, options = options,
+            help = "Redes WiFi de la consola de ${controller?.name.orEmpty()}.")
+    } else {
+        UiField("ssid", "Nombre de la red (SSID)", required = true, placeholder = "MiEmpresa_WiFi",
+            help = "Exactamente como aparece en el controlador de red; distingue mayusculas y minusculas.")
     }
 
     private fun networkCard(network: HotspotNetwork, canManage: Boolean): UiNode {
@@ -353,35 +408,7 @@ object HotspotScreens {
         formId = if (withForm) "network" else null,
     )
 
-    /** Card listing the SSIDs read from the network controller; each one opens the network form. */
-    fun consoleNetworksPicker(ssids: List<String>, configured: Set<String>): UiNode = UiCard(
-        title = "Redes de la consola",
-        children = if (ssids.isEmpty()) {
-            listOf(UiText("La consola no tiene redes WiFi.", UiTextStyle.Caption))
-        } else {
-            listOf(
-                UiGrid(
-                    minItemWidth = 220,
-                    children = ssids.map { ssid ->
-                        UiCard(
-                            title = ssid,
-                            children = listOf(
-                                if (ssid in configured) {
-                                    UiStatus("Ya configurada", UiTone.Success)
-                                } else {
-                                    UiButton("Configurar", UiNavigate("settings", mapOf("networkSsid" to ssid)), style = "secondary")
-                                },
-                            ),
-                        )
-                    },
-                ),
-            )
-        },
-    )
-
     private fun networkFields(existingTypes: List<String>, usersEnabled: Boolean) = listOf(
-        UiField("ssid", "Nombre de la red (SSID)", required = true, placeholder = "MiEmpresa_WiFi",
-            help = "Exactamente como aparece en UniFi; distingue mayusculas y minusculas."),
         UiField("accessMode", "Tipo de acceso", "select", required = true, options = HotspotNetworks.modeOptions(usersEnabled),
             help = "Formulario: registro y codigo por correo. Codigo de cliente: el codigo de su ficha en Clientes." +
                 if (usersEnabled) " Codigo de usuario: el codigo de Accesos WiFi de cada usuario." else " Activa la integracion Usuarios para el acceso por codigo de usuario."),
@@ -392,14 +419,14 @@ object HotspotScreens {
         UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", help = "Vacio usa el de la configuracion general. 0 = sin espera."),
     )
 
-    // UniFi picker steps post the settings form so typed values survive the round trip.
+    // UniFi picker steps post the UniFi form so a typed API key survives the round trip.
     fun unifiStep(step: String, id: String? = null) = UiRequest(
         route = "$UiRoute/settings",
         params = buildMap {
             put("unifi", step)
             if (id != null) put("id", id)
         },
-        formId = "settings",
+        formId = "unifi",
     )
 
     fun consolePicker(consoles: List<UnifiConsole>, selectedId: String?): UiNode = UiCard(
@@ -450,13 +477,15 @@ object HotspotScreens {
         },
     )
 
-    private fun settingsFormNode(id: String, fields: List<UiField>, permissions: ModulePermissions, values: Map<String, String>): UiForm {
+    // A form of [screen] saved on its own; it only carries the values of its fields.
+    private fun settingsFormNode(screen: String, id: String, fields: List<UiField>, permissions: ModulePermissions, values: Map<String, String>): UiForm {
         val canManage = permissions.has(SettingsManage)
+        val keys = fields.map { it.key }.toSet()
         return UiForm(
             id = id,
             fields = if (canManage) fields else fields.map { it.copy(readOnly = true) },
-            values = values,
-            submit = if (canManage) UiButton("Guardar cambios", UiRequest("$UiRoute/$id", formId = id)) else null,
+            values = values.filterKeys { it in keys },
+            submit = if (canManage) UiButton("Guardar cambios", UiRequest("$UiRoute/$screen", formId = id)) else null,
         )
     }
 
@@ -479,9 +508,9 @@ object HotspotScreens {
     private val portalFields = listOf(
         UiField("domain", "Dominio del portal", section = "Dominio", placeholder = "wifi.miempresa.com",
             help = "Crea un registro DNS A/AAAA que apunte a este servidor. HTTPS se configura solo en unos minutos."),
-        UiField("portalUrl", "Direccion para UniFi (portal externo)", readOnly = true, section = "Dominio"),
+        UiField("portalUrl", "Direccion del portal externo (para el controlador de red)", readOnly = true, section = "Dominio"),
         UiField("networkName", "Nombre de la red WiFi", required = true, section = "Apariencia",
-            help = "Se muestra cuando UniFi no envia el nombre de la red. El acceso por red se configura en Configuracion > Redes WiFi."),
+            help = "Se muestra cuando el controlador de red no envia el nombre de la red. El acceso por red se configura en Configuracion > Redes WiFi."),
         UiField("portalTitle", "Titulo", required = true, section = "Apariencia"),
         UiField("portalSubtitle", "Subtitulo", section = "Apariencia"),
         UiField("logoUrl", "URL del logo", "url", section = "Apariencia"),
@@ -495,26 +524,34 @@ object HotspotScreens {
             help = "Una o varias direcciones separadas por coma. Al conectarse se abre una de ellas al azar."),
     )
 
-    private val connectionFields = listOf(
-        UiField("unifiConsoleId", "ID de consola", section = "UniFi", help = "Usa Buscar consolas para elegirla por su nombre."),
-        UiField("unifiSiteId", "ID de sitio", section = "UniFi", help = "Se llena al elegir el sitio despues de la consola."),
-        UiField("unifiApiKey", "API key de UniFi", "password", section = "UniFi", help = "Si ya hay una clave guardada se muestra oculta; dejala asi para conservarla."),
-        UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", required = true, section = "Acceso"),
-        UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", required = true, section = "Acceso",
+    // Only shown while UniFi is the enabled network controller.
+    val unifiFields = listOf(
+        UiField("unifiConsoleId", "ID de consola", help = "Para cambiar de consola borralo y guarda; volvera a aparecer Buscar consolas."),
+        UiField("unifiSiteId", "ID de sitio", help = "Se llena al elegir el sitio despues de la consola."),
+        UiField("unifiApiKey", "API key de UniFi", "password", help = "Si ya hay una clave guardada se muestra oculta; dejala asi para conservarla."),
+    )
+
+    private val accessFields = listOf(
+        UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", required = true),
+        UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", required = true,
             help = "Un correo no puede volver a conectarse hasta que pase este tiempo desde su ultimo acceso. 0 = sin espera."),
-        UiField("codeTtlMinutes", "Vigencia del codigo (minutos)", "number", required = true, section = "Acceso"),
-        UiField("dataLimitMb", "Limite de datos (MB, 0 = sin limite)", "number", section = "Acceso"),
-        UiField("rxKbps", "Descarga (kbps, 0 = sin limite)", "number", section = "Acceso"),
-        UiField("txKbps", "Subida (kbps, 0 = sin limite)", "number", section = "Acceso"),
-        UiField("smtpMode", "Enviar correos con", "select", required = true, options = listOf("servidor", "empresa"), section = "Correo",
+        UiField("codeTtlMinutes", "Vigencia del codigo (minutos)", "number", required = true),
+        UiField("dataLimitMb", "Limite de datos (MB, 0 = sin limite)", "number"),
+        UiField("rxKbps", "Descarga (kbps, 0 = sin limite)", "number"),
+        UiField("txKbps", "Subida (kbps, 0 = sin limite)", "number"),
+    )
+
+    // Codes are emailed the same way whatever network controller is enabled.
+    private val mailFields = listOf(
+        UiField("smtpMode", "Enviar correos con", "select", required = true, options = listOf("servidor", "empresa"),
             help = "servidor: SMTP configurado por el administrador del servidor. empresa: los datos de abajo."),
-        UiField("serverMailAvailable", "SMTP del servidor disponible", readOnly = true, section = "Correo"),
-        UiField("smtpHost", "Servidor SMTP", section = "Correo"),
-        UiField("smtpPort", "Puerto SMTP", "number", section = "Correo"),
-        UiField("smtpSecurity", "Seguridad SMTP", "select", options = listOf("starttls", "ssl", "none"), section = "Correo"),
-        UiField("smtpUsername", "Usuario SMTP", section = "Correo"),
-        UiField("smtpPassword", "Contrasena SMTP", "password", section = "Correo", help = "Si ya hay una contrasena guardada se muestra oculta; dejala asi para conservarla."),
-        UiField("smtpFrom", "Remitente", "email", section = "Correo"),
-        UiField("emailSubject", "Asunto del correo", required = true, section = "Correo"),
+        UiField("serverMailAvailable", "SMTP del servidor disponible", readOnly = true),
+        UiField("smtpHost", "Servidor SMTP"),
+        UiField("smtpPort", "Puerto SMTP", "number"),
+        UiField("smtpSecurity", "Seguridad SMTP", "select", options = listOf("starttls", "ssl", "none")),
+        UiField("smtpUsername", "Usuario SMTP"),
+        UiField("smtpPassword", "Contrasena SMTP", "password", help = "Si ya hay una contrasena guardada se muestra oculta; dejala asi para conservarla."),
+        UiField("smtpFrom", "Remitente", "email"),
+        UiField("emailSubject", "Asunto del correo", required = true),
     )
 }
