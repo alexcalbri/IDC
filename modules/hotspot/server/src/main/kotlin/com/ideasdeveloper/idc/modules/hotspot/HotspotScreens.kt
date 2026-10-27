@@ -6,6 +6,7 @@ import com.ideasdeveloper.idc.ui.UiButton
 import com.ideasdeveloper.idc.ui.UiCard
 import com.ideasdeveloper.idc.ui.UiDownload
 import com.ideasdeveloper.idc.ui.UiField
+import com.ideasdeveloper.idc.ui.UiFieldCondition
 import com.ideasdeveloper.idc.ui.UiForm
 import com.ideasdeveloper.idc.ui.UiGrid
 import com.ideasdeveloper.idc.ui.UiImage
@@ -306,6 +307,7 @@ object HotspotScreens {
     ): List<UiNode> {
         val canManage = permissions.has(SettingsManage)
         val networks = HotspotNetworks.list(tenant)
+        val sourceNames = (listOf(HotspotPasses.hotspotCustomers) + HotspotPasses.sources(tenant)).associate { it.id to it.name }
         val list = UiCard(
             title = "Redes WiFi",
             children = listOf(
@@ -317,7 +319,7 @@ object HotspotScreens {
                 if (networks.isEmpty()) {
                     UiText("Aun no hay redes configuradas.", UiTextStyle.Caption)
                 } else {
-                    UiGrid(minItemWidth = 260, children = networks.map { networkCard(it, canManage) })
+                    UiGrid(minItemWidth = 260, children = networks.map { networkCard(it, sourceNames, canManage) })
                 },
             ),
         )
@@ -333,7 +335,7 @@ object HotspotScreens {
         if (editing == null && available != null && available.isEmpty()) {
             return listOf(list, UiCard(title = title, children = listOf(UiText("Todas las redes de la consola ya estan configuradas.", UiTextStyle.Caption))))
         }
-        val types = HotspotNetworks.existingCustomerTypes(tenant)
+        val sources = HotspotPasses.choosable(tenant)
         val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
         val form = UiCard(
             title = title,
@@ -342,7 +344,7 @@ object HotspotScreens {
                 console.problem?.let { UiStatus(it, UiTone.Warning) },
                 UiForm(
                     id = "network",
-                    fields = listOf(ssidField(available, controller)) + networkFields(types, usersEnabled),
+                    fields = listOf(ssidField(available, controller)) + networkFields(sources, usersEnabled),
                     values = submitted ?: HotspotNetworks.toFormValues(editing),
                     submit = UiButton("Guardar red", networkAction("save", editing?.id?.toString(), withForm = true)),
                 ),
@@ -372,14 +374,14 @@ object HotspotScreens {
             help = "Exactamente como aparece en el controlador de red; distingue mayusculas y minusculas.")
     }
 
-    private fun networkCard(network: HotspotNetwork, canManage: Boolean): UiNode {
+    private fun networkCard(network: HotspotNetwork, sourceNames: Map<String, String>, canManage: Boolean): UiNode {
         fun minutes(value: Int?) = value?.let { "$it minutos" } ?: "el de la configuracion general"
         return UiCard(
             title = network.ssid,
             children = listOfNotNull(
                 UiText("Acceso: ${HotspotNetworks.modeLabel(network.accessMode)}", UiTextStyle.Caption),
                 if (!network.byCustomerCode) null else UiText(
-                    "Tipos de cliente: " + network.customerTypes.joinToString(", ").ifEmpty { "todos" },
+                    "Pueden entrar: " + network.accessSources.joinToString(", ") { sourceNames[it] ?: it },
                     UiTextStyle.Caption,
                 ),
                 UiText("Tiempo de acceso: ${minutes(network.accessMinutes)}", UiTextStyle.Caption),
@@ -408,16 +410,24 @@ object HotspotScreens {
         formId = if (withForm) "network" else null,
     )
 
-    private fun networkFields(existingTypes: List<String>, usersEnabled: Boolean) = listOf(
-        UiField("accessMode", "Tipo de acceso", "select", required = true, options = HotspotNetworks.modeOptions(usersEnabled),
-            help = "Formulario: registro y codigo por correo. Codigo de cliente: el codigo de su ficha en Clientes." +
-                if (usersEnabled) " Codigo de usuario: el codigo de Accesos WiFi de cada usuario." else " Activa la integracion Usuarios para el acceso por codigo de usuario."),
-        UiField("customerTypes", "Tipos de cliente permitidos", placeholder = "miembro, huesped",
-            help = "Solo para acceso por codigo. Separados por coma; vacio = cualquier tipo." +
-                if (existingTypes.isEmpty()) "" else " Tipos actuales en Clientes: ${existingTypes.joinToString(", ")}."),
-        UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", help = "Vacio usa el de la configuracion general."),
-        UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", help = "Vacio usa el de la configuracion general. 0 = sin espera."),
-    )
+    // The access sources only matter on customer-code networks; the form registers customers as type hotspot.
+    private fun networkFields(sources: List<PassSource>, usersEnabled: Boolean): List<UiField> {
+        val byCustomerCode = UiFieldCondition("accessMode", listOf(HotspotNetworks.modeLabel(HotspotNetworks.CustomerCode)))
+        return listOf(
+            UiField("accessMode", "Tipo de acceso", "select", required = true, options = HotspotNetworks.modeOptions(usersEnabled),
+                help = "Formulario: registro y codigo por correo; el visitante queda como cliente tipo hotspot. " +
+                    "Codigo de cliente: el codigo de su ficha en Clientes." +
+                    if (usersEnabled) " Codigo de usuario: el codigo de Accesos WiFi de cada usuario." else " Activa la integracion Usuarios para el acceso por codigo de usuario."),
+        ) + sources.map { source ->
+            UiField(HotspotNetworks.sourceKey(source.id), source.name, "boolean", help = source.description,
+                section = "Quien puede conectarse con codigo de cliente", visibleWhen = byCustomerCode)
+        } + listOf(
+            UiField("accessMinutes", "Tiempo de acceso (minutos)", "number", section = "Tiempos",
+                help = "Vacio usa el de la configuracion general. Con un pase de otro modulo la sesion no pasa del fin del pase ni de su saldo."),
+            UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", section = "Tiempos",
+                help = "Vacio usa el de la configuracion general. 0 = sin espera. No aplica a los pases de otros modulos."),
+        )
+    }
 
     // UniFi picker steps post the UniFi form so a typed API key survives the round trip.
     fun unifiStep(step: String, id: String? = null) = UiRequest(

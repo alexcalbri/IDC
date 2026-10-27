@@ -45,6 +45,7 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V001__create_hotspot.sql",
         "modules/hotspot/migrations/V002__add_networks.sql",
         "modules/hotspot/migrations/V003__add_integrations_and_user_codes.sql",
+        "modules/hotspot/migrations/V004__add_access_passes.sql",
     )
 
     override val runtimeTables = listOf(
@@ -57,13 +58,15 @@ object HotspotServerModule : ServerModule {
         "hotspot_integrations",
         "hotspot_user_codes",
         "hotspot_user_network_grants",
+        "hotspot_pass_sources",
+        "hotspot_access_passes",
     )
 
     override val definition = ModuleDefinition(
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
-        description = "Portal cautivo WiFi con acceso por formulario o codigo de cliente segun la red, y autorizacion en UniFi.",
-        version = "0.4.1",
+        description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente o de usuario segun la red; otros modulos dan acceso con pases.",
+        version = "0.5.0",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -208,7 +211,8 @@ object HotspotServerModule : ServerModule {
                 val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
                 try {
                     val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
-                    val network = HotspotNetworks.parse(networkId ?: UUID.randomUUID(), submitted, usersEnabled)
+                    val sources = HotspotPasses.choosable(tenant).map { it.id }.toSet()
+                    val network = HotspotNetworks.parse(networkId ?: UUID.randomUUID(), submitted, usersEnabled, sources)
                     HotspotNetworks.save(tenant, network)
                     screen(UiNotice("Red ${network.ssid} guardada.", UiTone.Success))
                 } catch (failure: HotspotValidationException) {

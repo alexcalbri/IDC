@@ -171,6 +171,7 @@ class HotspotAccess(private val access: ModuleAccessService) {
 
     fun integrationsBody(tenant: Connection): List<UiNode> {
         val enabled = HotspotIntegrations.enabled(tenant)
+        val catalog = HotspotIntegrations.catalog(tenant)
         fun card(integration: HotspotIntegration): UiNode {
             val on = integration.id in enabled
             return UiCard(
@@ -195,14 +196,18 @@ class HotspotAccess(private val access: ModuleAccessService) {
                 title = "Controlador de red",
                 children = listOf(
                     UiText("Ecosistema de red donde el portal autoriza a los visitantes. Solo uno puede estar activo.", UiTextStyle.Caption),
-                    UiGrid(minItemWidth = 260, children = HotspotIntegrations.catalog.filter { it.kind == HotspotIntegrations.Network }.map(::card)),
+                    UiGrid(minItemWidth = 260, children = catalog.filter { it.kind == HotspotIntegrations.Network }.map(::card)),
                 ),
             ),
             UiCard(
                 title = "Modulos",
                 children = listOf(
-                    UiText("Conecta el hotspot con otros modulos. Solo el dueno de la empresa o del servidor las cambia.", UiTextStyle.Caption),
-                    UiGrid(minItemWidth = 260, children = HotspotIntegrations.catalog.filter { it.kind == HotspotIntegrations.Module }.map(::card)),
+                    UiText(
+                        "Conecta el hotspot con otros modulos. Los modulos que dan acceso a sus clientes (hotel, membresia...) " +
+                            "aparecen aqui al instalarse. Solo el dueno de la empresa o del servidor las cambia.",
+                        UiTextStyle.Caption,
+                    ),
+                    UiGrid(minItemWidth = 260, children = catalog.filter { it.kind == HotspotIntegrations.Module }.map(::card)),
                 ),
             ),
         )

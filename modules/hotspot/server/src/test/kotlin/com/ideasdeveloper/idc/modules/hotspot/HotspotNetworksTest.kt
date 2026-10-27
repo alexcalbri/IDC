@@ -20,30 +20,35 @@ class HotspotNetworksTest {
     )
 
     @Test
-    fun parsesCodeNetworkWithNormalizedTypesAndOverrides() {
+    fun parsesCodeNetworkWithChosenSourcesAndOverrides() {
         val network = HotspotNetworks.parse(
             id,
             mapOf(
                 "ssid" to " Miembros VIP ",
                 "accessMode" to "Codigo de cliente",
-                "customerTypes" to "Miembro, huesped,, miembro",
+                "source_hotspot" to "false",
+                "source_membresia" to "true",
+                "source_hotel" to "true",
+                // Not offered (disabled or unknown), so ignored.
+                "source_cowork" to "true",
                 "accessMinutes" to "120",
                 "reconnectMinutes" to "0",
             ),
+            sources = setOf("hotspot", "membresia", "hotel"),
         )
         assertEquals("Miembros VIP", network.ssid)
         assertTrue(network.byCustomerCode)
-        assertEquals(listOf("miembro", "huesped"), network.customerTypes)
+        assertEquals(listOf("hotel", "membresia"), network.accessSources)
         val applied = network.applyTo(settings)
         assertEquals(120, applied.accessMinutes)
         assertEquals(0, applied.reconnectMinutes)
     }
 
     @Test
-    fun formNetworkIgnoresTypesAndBlankTimesInheritTheGeneralOnes() {
-        val network = HotspotNetworks.parse(id, mapOf("ssid" to "Publica", "accessMode" to "Formulario", "customerTypes" to "miembro"))
+    fun formNetworkIgnoresSourcesAndBlankTimesInheritTheGeneralOnes() {
+        val network = HotspotNetworks.parse(id, mapOf("ssid" to "Publica", "accessMode" to "Formulario", "source_hotspot" to "true"))
         assertFalse(network.byCustomerCode)
-        assertEquals(emptyList(), network.customerTypes)
+        assertEquals(emptyList(), network.accessSources)
         assertNull(network.accessMinutes)
         assertEquals(settings, network.applyTo(settings))
     }
@@ -55,16 +60,21 @@ class HotspotNetworksTest {
         assertFailsWith<HotspotValidationException> { parse("ssid" to "x".repeat(33)) }
         assertFailsWith<HotspotValidationException> { parse("ssid" to "ñ".repeat(17)) } // 34 bytes
         assertFailsWith<HotspotValidationException> { parse("accessMode" to "Voucher") }
-        assertFailsWith<HotspotValidationException> { parse("accessMode" to "Codigo de cliente", "customerTypes" to "Miembro VIP") }
+        // A customer-code network must let someone in.
+        assertFailsWith<HotspotValidationException> { parse("accessMode" to "Codigo de cliente") }
+        assertFailsWith<HotspotValidationException> { parse("accessMode" to "Codigo de cliente", "source_hotspot" to "false") }
         assertFailsWith<HotspotValidationException> { parse("accessMinutes" to "0") }
         assertFailsWith<HotspotValidationException> { parse("reconnectMinutes" to "-1") }
     }
 
     @Test
     fun formValuesRoundTrip() {
-        val network = HotspotNetwork(id, "Hotel", HotspotNetworks.CustomerCode, listOf("huesped"), 90, null)
-        assertEquals(network, HotspotNetworks.parse(id, HotspotNetworks.toFormValues(network)))
-        assertEquals("Formulario", HotspotNetworks.toFormValues(null)["accessMode"])
+        val network = HotspotNetwork(id, "Hotel", HotspotNetworks.CustomerCode, listOf("hotel", "hotspot"), 90, null)
+        assertEquals(network, HotspotNetworks.parse(id, HotspotNetworks.toFormValues(network), sources = setOf("hotspot", "hotel")))
+        val blank = HotspotNetworks.toFormValues(null)
+        assertEquals("Formulario", blank["accessMode"])
+        // New networks start with customers of type hotspot checked.
+        assertEquals("true", blank["source_hotspot"])
     }
 
     @Test

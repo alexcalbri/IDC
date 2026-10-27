@@ -59,8 +59,10 @@ object UnifiController : NetworkController {
 data class HotspotIntegration(val id: String, val kind: String, val title: String, val description: String)
 
 /**
- * Integrations defined by the hotspot module itself; their state lives in hotspot_integrations.
- * Only the business owner or a server owner changes them.
+ * Integrations of the hotspot; their state lives in hotspot_integrations. Network controllers and
+ * Usuarios are defined by the hotspot itself; other modules join as access pass sources
+ * ([HotspotPasses]) by registering in hotspot_pass_sources. Only the business owner or a server
+ * owner changes them.
  */
 object HotspotIntegrations {
     const val Network = "network"
@@ -70,11 +72,21 @@ object HotspotIntegrations {
 
     val controllers: List<NetworkController> = listOf(UnifiController)
 
-    val catalog: List<HotspotIntegration> = controllers.map { HotspotIntegration(it.id, Network, it.name, it.description) } +
+    // Integrations defined by the hotspot itself.
+    val builtIn: List<HotspotIntegration> = controllers.map { HotspotIntegration(it.id, Network, it.name, it.description) } +
         HotspotIntegration(
             Users, Module, "Usuarios",
             "Los usuarios de la empresa se conectan con su codigo de usuario a las redes con acceso \"Codigo de usuario\".",
         )
+
+    // Built-in integrations plus the access pass sources registered by other modules.
+    fun catalog(connection: Connection): List<HotspotIntegration> = builtIn +
+        HotspotPasses.sources(connection).map { source ->
+            HotspotIntegration(
+                source.id, Module, source.name,
+                source.description.ifBlank { "Sus clientes se conectan con su codigo de cliente mientras tengan un pase vigente." },
+            )
+        }
 
     fun enabled(connection: Connection): Set<String> = connection.prepareStatement(
         "SELECT id FROM hotspot_integrations WHERE enabled"
@@ -92,7 +104,7 @@ object HotspotIntegrations {
 
     /** Turns an integration on or off; enabling a network controller disables the other ones. */
     fun setEnabled(connection: Connection, id: String, enabled: Boolean) {
-        val integration = catalog.firstOrNull { it.id == id } ?: throw HotspotValidationException("Integracion desconocida.")
+        val integration = catalog(connection).firstOrNull { it.id == id } ?: throw HotspotValidationException("Integracion desconocida.")
         val autoCommit = connection.autoCommit
         connection.autoCommit = false
         try {

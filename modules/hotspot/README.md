@@ -17,12 +17,20 @@ networks managed through the UniFi Site Manager cloud API (`api.ui.com`).
     counted per user.
   - **Codigo de cliente**: the guest types the `customer_code` shown in Clientes.
     The customer must belong to the database where the portal runs (the company,
-    or the server workspace when the hotspot is enabled there), must not be
-    `inactive`/`archived`, and its `customer_type` must be one of the network's
-    allowed types (empty = any type). Each network can override the access and
-    reconnection times. Wrong codes are limited to 5 per device every 15 minutes
-    and 30 per company per minute; unknown codes and disallowed types get the
-    same answer.
+    or the server workspace when the hotspot is enabled there) and must not be
+    `inactive`/`archived`. The network lists who gets in:
+    - *Clientes tipo hotspot*: customers with `customer_type = 'hotspot'` (the
+      ones the form registered), with the network's access and reconnection times;
+    - any enabled **access pass source** (see [Access passes](#access-passes)):
+      customers with a usable pass of that source, under the pass rules.
+
+    Ordinary customers never get in. Wrong codes are limited to 5 per device
+    every 15 minutes and 30 per company per minute; unknown codes and customers
+    the network does not let in get the same answer. A customer whose passes are
+    expired or used up is told the access is not current.
+  - The network form only shows the access sources for *Codigo de cliente*
+    (`UiField.visibleWhen`); every access type can override the access and
+    reconnection times.
 - Registers each guest (name, email, phone, optional birthday) and creates the
   guest in **Clientes** with `customer_type = 'hotspot'`. An existing customer
   with the same email is linked without changing their data or type.
@@ -67,7 +75,9 @@ Tenant migrations `migrations/V001__create_hotspot.sql`, `V002__add_networks.sql
 | `hotspot_registrations` | One row per form submission or code access (`access_mode`), linked to `customers`. |
 | `hotspot_codes` | One-time codes (SHA-256 only), expiry, attempts, use. |
 | `hotspot_accesses` | Every UniFi authorization attempt; successful rows drive reconnection. |
-| `hotspot_networks` | SSIDs with their access type, allowed customer types and optional times (V002). |
+| `hotspot_networks` | SSIDs with their access type, access sources (`access_sources`, V004) and optional times (V002). |
+| `hotspot_pass_sources` | Modules that give access passes (V004); written by those modules. |
+| `hotspot_access_passes` | Access passes of customers (V004); written by the source modules, `minutes_balance` spent by the portal. |
 | `hotspot_code_attempts` | Wrong customer/user codes, for the guessing limits; kept one day (V002). |
 | `hotspot_integrations` | Integrations of the module and whether they are enabled (V003). |
 | `hotspot_user_codes` | WiFi code of each user (and of server owners in the server company) (V003). |
@@ -76,6 +86,61 @@ Tenant migrations `migrations/V001__create_hotspot.sql`, `V002__add_networks.sql
 Central table `public_domains` (control migration V005) maps each portal domain
 to its company. The UniFi API key and company SMTP password are stored in the
 tenant database and never returned to the client.
+
+## Access passes
+
+The contract through which any other module (plugin) gives WiFi access to its
+customers: a hotel stay, a membership, hours bought in a cowork... The hotspot
+defines the rules; each module decides how it fills them (for example, a hotel
+writes the stay from 00:00 of the check-in day to 23:59 of the check-out day).
+Tables live in the company database (migration `V004__add_access_passes.sql`);
+the source module writes them with plain SQL and never needs hotspot code.
+
+1. **Register once** (on install, or when its own integration is turned on).
+   Check first that the hotspot is in that database:
+
+   ```sql
+   SELECT to_regclass('public.hotspot_pass_sources') IS NOT NULL;
+
+   INSERT INTO hotspot_pass_sources (id, name, description)
+   VALUES ('hotel', 'Hotel', 'Los huespedes se conectan durante su estancia.')
+   ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, description = EXCLUDED.description,
+       updated_at = CURRENT_TIMESTAMP;
+   ```
+
+   `id`: lowercase, digits and `_`, up to 32 characters; `hotspot`, `usuarios`,
+   `unifi` and `mikrotik` are reserved. The source then shows in *Hotspot →
+   Integraciones*, where the business owner or a server owner enables it, and
+   in the *Codigo de cliente* networks, which choose whether it lets customers in.
+
+2. **Keep the passes up to date**, one per own reference (reservation,
+   membership...), upserting on `(source_id, source_ref)`:
+
+   ```sql
+   INSERT INTO hotspot_access_passes (source_id, source_ref, customer_id, rule, valid_from, valid_until)
+   VALUES ('hotel', 'reservation-123', :customer_id, 'periodo', :check_in, :check_out)
+   ON CONFLICT (source_id, source_ref) DO UPDATE SET valid_from = EXCLUDED.valid_from,
+       valid_until = EXCLUDED.valid_until, updated_at = CURRENT_TIMESTAMP;
+   ```
+
+   To end a pass early, set `valid_until` to now or delete the row. Deleting the
+   source deletes its passes.
+
+3. **Rules** (`rule`), enforced by the portal:
+
+   | Rule | Columns | Behavior |
+   |------|---------|----------|
+   | `periodo` | `valid_from`, `valid_until` (both required) | Connects while now is in `[valid_from, valid_until)`; **no reconnection wait**. Each session lasts the network's access time but never goes past `valid_until`. Extending the dates extends the access right away. |
+   | `saldo` | `minutes_balance` (required); `valid_from`/`valid_until` optional | Each session spends its authorized minutes (the network's access time, at most the balance and the time left until `valid_until`); **no reconnection wait**; balance 0 = no access. The minutes are spent when the controller authorizes the device (they are given back if it refuses), not by actual use. |
+
+   With several usable passes, a `periodo` ending last wins over balances; among
+   balances, the one expiring first is used. Each access stores the pass in
+   `hotspot_accesses.pass_id`.
+
+4. Passes only count while the source is **enabled in Integraciones** and the
+   network lists it. The customer must also be active (not `inactive` or
+   `archived`). New rules are added here, in `HotspotPasses`, and in the
+   `hotspot_access_passes_rule` constraint.
 
 ## Endpoints
 

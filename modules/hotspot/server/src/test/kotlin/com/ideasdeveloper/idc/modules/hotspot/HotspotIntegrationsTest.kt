@@ -11,8 +11,8 @@ import kotlin.test.assertTrue
 class HotspotIntegrationsTest {
     @Test
     fun catalogOffersUnifiAsControllerAndUsersAsModule() {
-        val network = HotspotIntegrations.catalog.filter { it.kind == HotspotIntegrations.Network }.map { it.id }
-        val modules = HotspotIntegrations.catalog.filter { it.kind == HotspotIntegrations.Module }.map { it.id }
+        val network = HotspotIntegrations.builtIn.filter { it.kind == HotspotIntegrations.Network }.map { it.id }
+        val modules = HotspotIntegrations.builtIn.filter { it.kind == HotspotIntegrations.Module }.map { it.id }
         assertEquals(listOf("unifi"), network)
         assertEquals(listOf(HotspotIntegrations.Users), modules)
     }
@@ -25,7 +25,7 @@ class HotspotIntegrationsTest {
         assertFailsWith<HotspotValidationException> { HotspotNetworks.parse(UUID.randomUUID(), values, usersIntegration = false) }
         val network = HotspotNetworks.parse(UUID.randomUUID(), values, usersIntegration = true)
         assertTrue(network.byUserCode && network.byCode)
-        assertEquals(emptyList(), network.customerTypes)
+        assertEquals(emptyList(), network.accessSources)
     }
 
     @Test

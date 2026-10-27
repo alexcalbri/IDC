@@ -9,8 +9,8 @@ data class HotspotNetwork(
     val id: UUID,
     val ssid: String,
     val accessMode: String,
-    // Customer types allowed to connect by code; empty = any type.
-    val customerTypes: List<String>,
+    // Who connects on customer-code networks: [HotspotPasses.HotspotCustomers] and/or pass source ids.
+    val accessSources: List<String>,
     // Null uses the access and reconnection times of the general configuration.
     val accessMinutes: Int?,
     val reconnectMinutes: Int?,
@@ -33,9 +33,11 @@ data class HotspotNetwork(
 }
 
 /**
- * Networks configured for the portal. UniFi sends the SSID the guest joined in the redirect; the
- * portal shows the registration form or asks for the customer or user code accordingly. SSIDs that
- * are not configured keep using the form. "Codigo de usuario" needs the Usuarios integration.
+ * Networks configured for the portal. The network controller sends the SSID the guest joined in the
+ * redirect; the portal shows the registration form or asks for the customer or user code
+ * accordingly. SSIDs that are not configured keep using the form. "Codigo de usuario" needs the
+ * Usuarios integration. "Codigo de cliente" lets in customers of type hotspot and/or customers with
+ * an access pass of the sources the network lists (see [HotspotPasses]).
  */
 object HotspotNetworks {
     const val Form = "formulario"
@@ -44,7 +46,8 @@ object HotspotNetworks {
 
     // Labels shown by the configuration select, by stored mode.
     private val modeLabels = linkedMapOf(Form to "Formulario", CustomerCode to "Codigo de cliente", UserCode to "Codigo de usuario")
-    private val customerTypePattern = Regex("^[a-z][a-z0-9_]{0,31}$")
+    // Form key of the checkbox of each access source.
+    fun sourceKey(sourceId: String) = "source_$sourceId"
     // Same alphabet as customers_generate_code() in the Clientes migration V004.
     private const val CodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
     private const val CodeLength = 8
@@ -60,8 +63,16 @@ object HotspotNetworks {
 
     fun isCustomerCode(code: String): Boolean = code.length == CodeLength && code.all { it in CodeAlphabet }
 
-    /** Validates the network form ([values] by field key) into a network with [id]. */
-    fun parse(id: UUID, values: Map<String, String>, usersIntegration: Boolean = true): HotspotNetwork {
+    /**
+     * Validates the network form ([values] by field key) into a network with [id]. [sources] are the
+     * access sources that may be chosen: customers of type hotspot and the enabled pass sources.
+     */
+    fun parse(
+        id: UUID,
+        values: Map<String, String>,
+        usersIntegration: Boolean = true,
+        sources: Set<String> = setOf(HotspotPasses.HotspotCustomers),
+    ): HotspotNetwork {
         val ssid = values["ssid"].orEmpty().trim()
         if (ssid.isEmpty()) throw HotspotValidationException("El nombre de la red (SSID) es obligatorio.")
         if (ssid.toByteArray(Charsets.UTF_8).size > 32 || ssid.any { it.isISOControl() }) {
@@ -73,13 +84,9 @@ object HotspotNetworks {
         if (mode == UserCode && !usersIntegration) {
             throw HotspotValidationException("Activa la integracion Usuarios para usar el acceso por codigo de usuario.")
         }
-        val types = if (mode == CustomerCode) {
-            values["customerTypes"].orEmpty().split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()
-        } else {
-            emptyList()
-        }
-        types.firstOrNull { !customerTypePattern.matches(it) }?.let {
-            throw HotspotValidationException("El tipo de cliente \"$it\" no es valido: usa minusculas, numeros y guion bajo.")
+        val chosen = if (mode == CustomerCode) sources.filter { values[sourceKey(it)] == "true" }.sorted() else emptyList()
+        if (mode == CustomerCode && chosen.isEmpty()) {
+            throw HotspotValidationException("Elige quien puede conectarse con codigo de cliente en esta red.")
         }
         // Blank inherits the general configuration.
         fun minutes(key: String, range: IntRange, label: String): Int? {
@@ -92,19 +99,19 @@ object HotspotNetworks {
             id = id,
             ssid = ssid,
             accessMode = mode,
-            customerTypes = types,
+            accessSources = chosen,
             accessMinutes = minutes("accessMinutes", 1..10080, "El tiempo de acceso de la red"),
             reconnectMinutes = minutes("reconnectMinutes", 0..525600, "El tiempo para reconectar de la red"),
         )
     }
 
+    // A new network offers customers of type hotspot already checked.
     fun toFormValues(network: HotspotNetwork?): Map<String, String> = mapOf(
         "ssid" to network?.ssid.orEmpty(),
         "accessMode" to modeLabel(network?.accessMode ?: Form),
-        "customerTypes" to network?.customerTypes.orEmpty().joinToString(", "),
         "accessMinutes" to network?.accessMinutes?.toString().orEmpty(),
         "reconnectMinutes" to network?.reconnectMinutes?.toString().orEmpty(),
-    )
+    ) + (network?.accessSources ?: listOf(HotspotPasses.HotspotCustomers)).associate { sourceKey(it) to "true" }
 
     fun list(connection: Connection): List<HotspotNetwork> = connection.prepareStatement(
         "SELECT * FROM hotspot_networks ORDER BY lower(ssid)"
@@ -137,12 +144,12 @@ object HotspotNetworks {
         if (taken) throw HotspotValidationException("La red ${network.ssid} ya esta configurada.")
         connection.prepareStatement(
             """
-            INSERT INTO hotspot_networks (id, ssid, access_mode, customer_types, access_minutes, reconnect_minutes)
+            INSERT INTO hotspot_networks (id, ssid, access_mode, access_sources, access_minutes, reconnect_minutes)
             VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 ssid = EXCLUDED.ssid,
                 access_mode = EXCLUDED.access_mode,
-                customer_types = EXCLUDED.customer_types,
+                access_sources = EXCLUDED.access_sources,
                 access_minutes = EXCLUDED.access_minutes,
                 reconnect_minutes = EXCLUDED.reconnect_minutes,
                 updated_at = CURRENT_TIMESTAMP
@@ -151,7 +158,7 @@ object HotspotNetworks {
             upsert.setObject(1, network.id)
             upsert.setString(2, network.ssid)
             upsert.setString(3, network.accessMode)
-            upsert.setArray(4, connection.createArrayOf("text", network.customerTypes.toTypedArray()))
+            upsert.setArray(4, connection.createArrayOf("text", network.accessSources.toTypedArray()))
             upsert.setObject(5, network.accessMinutes)
             upsert.setObject(6, network.reconnectMinutes)
             upsert.executeUpdate()
@@ -165,21 +172,14 @@ object HotspotNetworks {
         delete.executeUpdate() == 1
     }
 
-    // Types present in Clientes, shown as a hint next to the customer types field.
-    fun existingCustomerTypes(connection: Connection): List<String> = connection.prepareStatement(
-        "SELECT DISTINCT customer_type FROM customers WHERE status <> 'archived' ORDER BY customer_type"
-    ).use { query ->
-        query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
-    }
-
     private fun ResultSet.toNetwork(): HotspotNetwork {
         @Suppress("UNCHECKED_CAST")
-        val types = (getArray("customer_types")?.array as? Array<String>).orEmpty().toList()
+        val sources = (getArray("access_sources")?.array as? Array<String>).orEmpty().toList()
         return HotspotNetwork(
             id = getObject("id", UUID::class.java),
             ssid = getString("ssid"),
             accessMode = getString("access_mode"),
-            customerTypes = types,
+            accessSources = sources,
             accessMinutes = getObject("access_minutes") as Int?,
             reconnectMinutes = getObject("reconnect_minutes") as Int?,
         )

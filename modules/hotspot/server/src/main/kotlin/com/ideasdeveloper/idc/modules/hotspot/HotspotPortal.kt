@@ -265,8 +265,10 @@ class HotspotPortal(private val access: ModuleAccessService) {
     /**
      * Access by customer code on networks configured for it: the code must belong to a customer of
      * this company (or of the server workspace, when the portal runs there) that is not inactive or
-     * archived and whose type the network allows. Every access is kept as a registration with the
-     * customer's contact data, so reports and the reconnection interval work as with the form.
+     * archived, and the customer must be either of type hotspot (when the network lets them in; the
+     * hotspot times and reconnection apply) or hold a usable access pass of a source the network lists
+     * and Integraciones has enabled (the rules of [HotspotPasses] apply). Ordinary customers never get
+     * in. Every access is kept as a registration with the customer's contact data.
      */
     private fun accessByCode(target: PortalTarget, guest: GuestContext, code: String): String {
         val connection = target.connection
@@ -282,20 +284,30 @@ class HotspotPortal(private val access: ModuleAccessService) {
         if (network.byUserCode) return userCode(target, guest, network, settings, code, ::retry)
 
         val customer = if (HotspotNetworks.isCustomerCode(code)) findCustomerByCode(connection, code) else null
-        if (customer == null || (network.customerTypes.isNotEmpty() && customer.type !in network.customerTypes)) {
-            // The same answer for unknown codes and for types the network does not allow.
+        val values = customer?.let { FormValues(name = it.name, email = it.email, phone = it.phone) }
+        if (customer != null && values != null && HotspotPasses.HotspotCustomers in network.accessSources && customer.type == HotspotPasses.HotspotCustomers) {
+            minutesUntilReconnect(connection, customer.email, settings.reconnectMinutes)?.let { remaining ->
+                return HotspotPortalPages.wait(settings, remaining, byCode = true)
+            }
+            return authorizeByCode(target, guest, settings, Owner.Customer(customer.id), values, HotspotNetworks.CustomerCode, ::retry)
+        }
+
+        val sources = (network.accessSources.toSet() - HotspotPasses.HotspotCustomers) intersect HotspotIntegrations.enabled(connection)
+        val passes = if (customer == null) emptyList() else HotspotPasses.passes(connection, customer.id, sources)
+        if (customer == null || values == null || passes.isEmpty()) {
+            // The same answer for unknown codes and for customers the network does not let in.
             recordCodeFailure(connection, guest.mac)
             return retry("El codigo no es valido para esta red. Revisalo e intenta de nuevo.")
         }
-
-        minutesUntilReconnect(connection, customer.email, settings.reconnectMinutes)?.let { remaining ->
-            return HotspotPortalPages.wait(settings, remaining, byCode = true)
-        }
-
+        val notCurrent = "Tu acceso a esta red no esta vigente. Consulta al personal del local."
+        val (pass, minutes) = HotspotPasses.usable(passes, settings.accessMinutes, Instant.now()) ?: return retry(notCurrent)
+        // A balance is spent before authorizing so two devices cannot use the same minutes.
+        val spent = pass.rule == HotspotPasses.Balance
+        if (spent && !HotspotPasses.spend(connection, pass.id, minutes)) return retry(notCurrent)
         return authorizeByCode(
-            target, guest, settings, Owner.Customer(customer.id),
-            FormValues(name = customer.name, email = customer.email, phone = customer.phone),
-            HotspotNetworks.CustomerCode, ::retry,
+            target, guest, settings.copy(accessMinutes = minutes), Owner.Customer(customer.id), values, HotspotNetworks.CustomerCode, ::retry,
+            passId = pass.id,
+            onRejected = { if (spent) HotspotPasses.refund(connection, pass.id, minutes) },
         )
     }
 
@@ -359,13 +371,16 @@ class HotspotPortal(private val access: ModuleAccessService) {
         values: FormValues,
         accessMode: String,
         retry: (String) -> String,
+        passId: UUID? = null,
+        onRejected: () -> Unit = {},
     ): String {
         val connection = target.connection
         val registrationId = UUID.randomUUID()
         insertRegistration(connection, registrationId, owner, values, birthday = null, guest = guest, accessMode = accessMode)
         val result = target.controller.authorizeGuest(settings, guest.mac)
-        recordAccess(connection, registrationId, owner, values.email.ifBlank { null }, guest.mac, result, settings.accessMinutes)
+        recordAccess(connection, registrationId, owner, values.email.ifBlank { null }, guest.mac, result, settings.accessMinutes, passId)
         if (!result.authorized) {
+            onRejected()
             log.warn("Hotspot {}: {} rechazo {}: {}", target.companyCode, target.controller.name, guest.mac, result.message)
             return retry("No pudimos activar tu acceso en este momento. Intenta de nuevo en unos segundos.")
         }
@@ -484,11 +499,12 @@ class HotspotPortal(private val access: ModuleAccessService) {
         mac: String,
         result: GuestAuthorization,
         minutes: Int,
+        passId: UUID? = null,
     ) {
         connection.prepareStatement(
             """
-            INSERT INTO hotspot_accesses (id, registration_id, email, mac, authorized, minutes, unifi_message, user_id, user_company)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO hotspot_accesses (id, registration_id, email, mac, authorized, minutes, unifi_message, user_id, user_company, pass_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, UUID.randomUUID())
@@ -500,6 +516,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
             insert.setString(7, result.message.take(1000))
             insert.setObject(8, (owner as? Owner.User)?.id)
             insert.setString(9, (owner as? Owner.User)?.company)
+            insert.setObject(10, passId)
             insert.executeUpdate()
         }
     }
