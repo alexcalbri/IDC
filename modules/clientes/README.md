@@ -19,7 +19,7 @@ Implemented baseline:
   `clientes.view`.
 - `POST /modules/clientes/customers` creates customers for users with
   `clientes.create`.
-- Creating a customer from Clientes requires Nombre, Correo and Telefono.
+- Creating a customer requires only Nombre; Correo and Telefono are optional.
   Since migration V005 the database accepts an empty email or phone (stored as
   `''`, never NULL), so modules such as CRM can register a person known only
   by name and one contact channel.
