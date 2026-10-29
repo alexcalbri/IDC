@@ -133,7 +133,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.7.0",
+        version = "0.8.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -627,19 +627,34 @@ object CrmServerModule : ServerModule {
                     }
                     show("integrations", notice, emptyMap())
                 }
+                "import:mondayToken" -> {
+                    val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && it != CrmMail.SecretMask }
+                    if (typed == null && CrmImport.mondayToken(tenant) == null) return show("import", UiNotice("Escribe el token de la API de monday.", UiTone.Danger), emptyMap())
+                    typed?.let { CrmImport.saveMondayToken(tenant, it) }
+                    show("import", UiNotice("Token de monday guardado.", UiTone.Success), mapOf("monday" to "boards"))
+                }
+                "import:mondayForget" -> {
+                    CrmImport.saveMondayToken(tenant, null)
+                    show("import", UiNotice("Token de monday borrado.", UiTone.Success), emptyMap())
+                }
                 "import:text", "import:url", "import:monday", "import:leadspro" -> {
                     val (source, name, table) = try {
                         when (params["op"]) {
                             "text" -> Triple("file", values["name"].orEmpty().trim().ifEmpty { "CSV pegado ${context.today}" }, CrmImportParse.csv(values["csv"].orEmpty()))
                             "url" -> values["url"].orEmpty().trim().let { url -> Triple("file", url.substringAfterLast('/').take(80).ifEmpty { "Archivo" }, CrmImport.fromUrl(url)) }
                             "monday" -> {
-                                val boards = values["boards"].orEmpty().split(',', ' ', '\n').map { it.trim() }.filter { it.isNotEmpty() }
-                                Triple("monday", "monday ${boards.joinToString()}", CrmImport.fromMonday(values["token"].orEmpty(), boards))
+                                val token = CrmImport.mondayToken(tenant) ?: throw CrmImportException("Guarda primero el token de la API de monday.")
+                                val boards = values.filter { it.key.startsWith("board:") && it.value == "true" }.keys.map { it.removePrefix("board:") }
+                                if (boards.isEmpty()) throw CrmImportException("Marca al menos un tablero.")
+                                val table = CrmImport.fromMonday(token, boards)
+                                val names = table.rows.mapNotNull { it[CrmImport.BoardColumn]?.takeIf(String::isNotEmpty) }.distinct()
+                                Triple("monday", "monday ${names.ifEmpty { boards }.joinToString()}".take(200), table)
                             }
                             else -> Triple("leadspro", "CT Leads Pro ${context.today}", CrmImport.fromLeadsPro(tenant))
                         }
                     } catch (failure: CrmImportException) {
-                        return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
+                        // A failed monday read keeps the board list open so the selection can be changed.
+                        return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), if (params["op"] == "monday") mapOf("monday" to "boards") else emptyMap())
                     }
                     val job = CrmImport.create(tenant, source, name, table, actor.userId)
                     show("importjob", UiNotice("${table.rows.size} filas leidas. Revisa el mapeo.", UiTone.Success), mapOf("job" to job.toString()))

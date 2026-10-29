@@ -156,7 +156,7 @@ object CrmScreens {
             "spam" -> CrmAdminScreens.spam(context, submitted)
             "team" -> CrmAdminScreens.team(context)
             "integrations" -> CrmIntegrationScreens.integrations(context, params, submitted)
-            "import" -> CrmImportScreens.imports(context)
+            "import" -> CrmImportScreens.imports(context, params)
             "importjob" -> CrmImportScreens.job(context, params)
             "bulk" -> CrmImportScreens.bulk(context, params)
             else -> settings(context, params, submitted)

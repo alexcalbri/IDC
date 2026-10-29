@@ -51,6 +51,8 @@ data class CrmImportJob(
 
 data class CrmImportNote(val date: LocalDate?, val author: String, val text: String)
 
+data class CrmMondayBoard(val id: String, val name: String, val workspace: String, val items: Int?)
+
 /** Imports of leads from files, monday and CT Leads Pro, applied in batches by a job. */
 object CrmImport {
     private const val MaxBytes = 20 * 1024 * 1024
@@ -141,6 +143,41 @@ object CrmImport {
         }
         return CrmTable(columns.toList() + listOf(CrmImportParse.GroupColumn, BoardColumn), rows)
     }
+
+    fun mondayToken(tenant: Connection): String? =
+        tenant.prepareStatement("SELECT monday_token FROM crm_settings WHERE id = 1").use { query ->
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1)?.takeIf { it.isNotBlank() } else null }
+        }
+
+    fun saveMondayToken(tenant: Connection, token: String?) {
+        tenant.prepareStatement(
+            "INSERT INTO crm_settings (id, monday_token) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET monday_token = EXCLUDED.monday_token, updated_at = CURRENT_TIMESTAMP"
+        ).use { update ->
+            update.setString(1, token?.trim()?.takeIf { it.isNotEmpty() })
+            update.executeUpdate()
+        }
+    }
+
+    /** Active boards the token can read, by workspace and name (subitem boards and docs left out). */
+    fun mondayBoards(token: String): List<CrmMondayBoard> {
+        if (token.isBlank()) throw CrmImportException("Escribe el token de la API de monday.")
+        val boards = mutableListOf<CrmMondayBoard>()
+        for (page in 1..50) {
+            val data = monday(token, "query { boards(limit: 100, page: $page, state: active) { id name type items_count workspace { name } } }")
+            boards += parseMondayBoards(data)
+            if (data["boards"].arr().size < 100) break
+        }
+        return boards.sortedWith(compareBy<CrmMondayBoard>({ it.workspace != MainWorkspace }, { it.workspace.lowercase() }, { it.name.lowercase() }))
+    }
+
+    const val MainWorkspace = "Espacio principal"
+
+    fun parseMondayBoards(data: JsonObject): List<CrmMondayBoard> = data["boards"].arr().mapNotNull { it.obj() }
+        .filter { it["type"].str().ifEmpty { "board" } == "board" }
+        .mapNotNull { board ->
+            val id = board["id"].str().takeIf { it.matches(Regex("^[0-9]{1,20}$")) } ?: return@mapNotNull null
+            CrmMondayBoard(id, board["name"].str().ifEmpty { id }, board["workspace"].obj()?.get("name").str().ifEmpty { MainWorkspace }, board["items_count"].str().toIntOrNull())
+        }
 
     private fun monday(token: String, query: String): JsonObject {
         val request = HttpRequest.newBuilder(URI.create("https://api.monday.com/v2"))

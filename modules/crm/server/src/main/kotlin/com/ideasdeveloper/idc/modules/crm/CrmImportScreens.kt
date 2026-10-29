@@ -30,7 +30,7 @@ object CrmImportScreens {
 
     // ---- Sources and jobs ----
 
-    fun imports(context: CrmScreens.Context): List<UiNode> {
+    fun imports(context: CrmScreens.Context, params: Map<String, String>): List<UiNode> {
         val jobs = CrmImport.jobs(context.tenant).map { job ->
             UiListItem(
                 title = job.name,
@@ -41,21 +41,30 @@ object CrmImportScreens {
             )
         }
         val wordpress = CrmWordPress.load(context.tenant).ready
-        return listOf(
+        val mondayToken = CrmImport.mondayToken(context.tenant)
+        return listOfNotNull(
             UiText("Cada importacion pasa por mapeo de columnas, vista previa y luego se aplica por lotes. Se busca a cada persona por correo o telefono; si el correo y el telefono son de clientes distintos la fila queda por revisar. Importar de nuevo actualiza los leads ya importados."),
             UiGrid(
                 listOf(
                     UiCard(
-                        listOf(
+                        listOfNotNull(
                             UiForm(
-                                "importMonday",
+                                "mondayToken",
                                 listOf(
-                                    UiField("token", "Token de la API de monday", type = "password", required = true, help = "monday > tu avatar > Developers > Mi token."),
-                                    UiField("boards", "ID de los tableros", required = true, placeholder = "9450033203, 9450923081",
-                                        help = "El numero en la URL del tablero. Cada tablero queda como interes."),
+                                    UiField("token", "Token de la API de monday", type = "password", required = mondayToken == null,
+                                        help = "monday > tu avatar > Developers > Mi token. Se guarda para la empresa."),
                                 ),
-                                submit = UiButton("Leer tableros", UiRequest(UiRoute + "/import", params = mapOf("op" to "monday"), formId = "importMonday")),
+                                mapOf("token" to if (mondayToken == null) "" else CrmMail.SecretMask),
+                                submit = UiButton("Guardar y cargar tableros", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayToken"), formId = "mondayToken")),
                             ),
+                            mondayToken?.let {
+                                UiRow(
+                                    listOf(
+                                        UiButton("Cargar tableros", UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
+                                        UiButton("Quitar token", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayForget"), confirm = "Se borra el token de monday guardado. Continuar?"), style = "secondary"),
+                                    ),
+                                )
+                            },
                         ),
                         title = "monday",
                     ),
@@ -89,7 +98,32 @@ object CrmImportScreens {
                 ),
                 minItemWidth = 300,
             ),
+            mondayToken?.takeIf { params["monday"] == "boards" }?.let { mondayBoards(it) },
             UiCard(listOf(UiList(jobs, emptyText = "Sin importaciones.")), title = "Importaciones"),
+        )
+    }
+
+    /** Boards of the saved token grouped by workspace, each with a checkbox. */
+    private fun mondayBoards(token: String): UiNode {
+        val boards = try {
+            CrmImport.mondayBoards(token)
+        } catch (failure: CrmImportException) {
+            return UiCard(listOf(UiText(failure.message.orEmpty(), tone = UiTone.Danger)), title = "Tableros de monday")
+        }
+        if (boards.isEmpty()) return UiCard(listOf(UiText("El token no tiene acceso a ningun tablero activo.", tone = UiTone.Warning)), title = "Tableros de monday")
+        val fields = boards.map { board ->
+            UiField("board:${board.id}", board.name + board.items?.let { " ($it elementos)" }.orEmpty(), type = "boolean", section = board.workspace)
+        }
+        return UiCard(
+            listOf(
+                UiText("Marca los tableros que quieres importar. Cada tablero queda como interes."),
+                UiForm(
+                    "importMonday", fields,
+                    submit = UiButton("Importar tableros marcados", UiRequest(UiRoute + "/import", params = mapOf("op" to "monday", "monday" to "boards"), formId = "importMonday")),
+                    minFieldWidth = 320,
+                ),
+            ),
+            title = "Tableros de monday",
         )
     }
 

@@ -21,6 +21,24 @@ class CrmImportTest {
     }
 
     @Test
+    fun listsMondayBoardsWithTheirWorkspaceAndSkipsSubitemBoards() {
+        val data = kotlinx.serialization.json.Json.parseToJsonElement(
+            """{"boards": [
+                {"id": "101", "name": "Surf Camps", "type": "board", "items_count": 42, "workspace": {"name": "Magrock"}},
+                {"id": "102", "name": "Subelementos de Surf Camps", "type": "sub_items_board", "workspace": {"name": "Magrock"}},
+                {"id": "103", "name": "Notas", "type": "document", "workspace": null},
+                {"id": "104", "name": "Yoga", "type": "board", "items_count": null, "workspace": null},
+                {"id": "x", "name": "Sin id valido", "type": "board"}
+            ]}""",
+        ) as kotlinx.serialization.json.JsonObject
+        val boards = CrmImport.parseMondayBoards(data)
+        assertEquals(
+            listOf(CrmMondayBoard("101", "Surf Camps", "Magrock", 42), CrmMondayBoard("104", "Yoga", CrmImport.MainWorkspace, null)),
+            boards,
+        )
+    }
+
+    @Test
     fun recognizesTheMondayExportLayout() {
         val records = listOf(
             listOf("Magrock Lead Surf Camps", "", ""),

@@ -250,9 +250,12 @@ hour) and archiving after check-out.
 
 **Configuracion > Importar** reads rows from:
 
-- **monday** (GraphQL API with a personal token and the board IDs): every column
-  as text, the group, the board (mapped to the interest), the creation date,
-  updates and subitems as notes; the item id is the import key.
+- **monday** (GraphQL API with a personal token): the token is saved for the
+  company (`crm_settings.monday_token`, V008) and the active boards it can read
+  are listed by workspace, each with a checkbox (subitem boards and docs are
+  left out). For every marked board: every column as text, the group, the
+  board (mapped to the interest), the creation date, updates and subitems as
+  notes; the item id is the import key.
 - **CT Leads Pro** through the IDC Connector plugin (0.2.0, action `leads`):
   name, email, phone, pipeline stage, assigned agent, source, tags, notes,
   messages and interested listings (linked as properties).
