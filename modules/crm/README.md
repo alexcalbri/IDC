@@ -67,15 +67,70 @@ Routes: `GET /modules/crm/ui/{screen}` and `POST /modules/crm/ui/{screen}?op=...
 | `crm.leads.delete` | Delete leads (the customer stays). |
 | `crm.reception` | See and categorize leads without interest. |
 | `crm.leads.all` | See leads of every interest. |
-| `crm.settings` | Configure stages, interests and user interests. |
+| `crm.assign` | Choose a lead's responsible user; approve or discard suggestions. |
+| `crm.settings` | Configure stages, interests, mail, templates, anti-spam and team notifications. |
 
 Users that can own leads are active users that are business owner or hold any
 `crm.*` permission. Server owners using the server workspace act without a
 company user, so their changes are logged as "Dueno del servidor" and they
-cannot be a lead's responsible user.
+cannot be a lead's responsible user. Only users with `crm.assign` or
+`crm.leads.all` change the responsible user of a lead.
+
+## Inbox and channels (V002)
+
+Every channel (forms, email, and the channel integrations) hands contacts to
+`CrmInbox.receive`:
+
+1. Email typos are fixed (`gmial.com`, `hotmail.con`...) and the phone is
+   normalized to `+<digits>` (8 local digits get +505, 10 digits shaped like
+   USA/Canada get +1, `00` becomes `+`).
+2. The person is found by channel identity (`crm_identities`, e.g. a Messenger
+   PSID), then email, then phone. When email and phone belong to different
+   customers the lead is linked by email and flagged **Por revisar**; people
+   are never merged automatically.
+3. Anti-spam rules (`crm_spam_settings`) run for the channels they are enabled
+   on, except for contacts that already have an open lead (optional). Blocked
+   messages create nothing and are kept in the last-50 log.
+4. The message joins the customer's open lead, or a new lead is created in the
+   first open stage with its origin (`source`, e.g. "WhatsApp") and, when the
+   source suggests one, a responsible user waiting in **Asignaciones**.
+   Nothing is assigned automatically.
+
+The lead detail shows the **Conversacion** (`crm_messages`, deduplicated by the
+channel's message id) and replies through any available channel (`CrmChannels`;
+today email).
+
+## Email
+
+- **Sending** (`crm_mail_settings`): the server SMTP or the company's own
+  account. Replies and queued mail use it.
+- **Templates** (`crm_email_templates`): subject and HTML or plain-text body
+  with placeholders `{nombre}`, `{correo}`, `{telefono}`, `{codigo_cliente}`
+  (the customer code, also the WiFi code of the hotspot), `{responsable}`,
+  `{etapa}`, `{interes}`, `{checkin}`, `{checkout}`, `{valor}`, `{habitaciones}`,
+  `{reserva}`. Values are HTML-escaped.
+- **Reading** (IMAP, optional): job `imap` every 5 minutes reads up to 50 new
+  messages of the configured folder (read-only; the first read starts from the
+  newest message) and passes them to the inbox with the quoted history cut.
+
+## Notifications
+
+Users have no email in the core, so **Equipo** stores one per user
+(`crm_user_settings`) with three options: every new lead (only users that see
+all leads), leads assigned to them, and a daily digest of their follow-ups due
+(at the company's digest hour, once a day). Mail goes through `crm_outbox`,
+sent by job `outbox` every minute with up to 5 attempts.
+
+## Jobs
+
+| Job | Interval | Work |
+| --- | --- | --- |
+| `outbox` | 1 min | Send queued mail. |
+| `digest` | 15 min | Daily digest once the digest hour has passed. |
+| `imap` | 5 min | Read the company mailbox. |
 
 ## Not in this version
 
-Automations (move by rule, emails before the booking date, notifications when a
-follow-up arrives), webhooks, inbound channels (forms, WhatsApp, email) and
-attachments are planned for a later version.
+Automations (move by rule), WhatsApp, Messenger, Instagram, Encuentra24, the
+WordPress / Real Estate 7 integration, Cloudbeds reservations, imports and
+attachments come in the next versions.
