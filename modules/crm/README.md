@@ -128,6 +128,7 @@ sent by job `outbox` every minute with up to 5 attempts.
 | `outbox` | 1 min | Send queued mail. |
 | `digest` | 15 min | Daily digest once the digest hour has passed. |
 | `imap` | 5 min | Read the company mailbox. |
+| `encuentra24` | 5 min | Import Encuentra24 leads. |
 
 ## Meta: WhatsApp, Messenger and Instagram (V003)
 
@@ -162,8 +163,20 @@ approved templates; 190: token expired). Messenger / Instagram split long texts
 (2000 / 1000 characters) and take thread control once when the Business Suite
 inbox controls the conversation.
 
+## Encuentra24 (V004)
+
+**Integraciones > Encuentra24**: API key and company slug. Job `encuentra24`
+every 5 minutes calls the Leads API (`/api.php/v1/crm/index`, `x-api-key`) from
+one day before the last sync (7 days the first time), 200 per page following
+`pagination.nextid`, up to 25 pages, oldest first. Each message, chat or call
+goes to the inbox with channel `encuentra24`, origin "Encuentra24", the listing
+title and id, the chat link and the original date; the Encuentra24 lead id is
+the message id, so nothing is imported twice. Contacts without email and phone
+are skipped. **Importar ahora** imports the history from a chosen date. The API
+cannot reply or change states in Encuentra24.
+
 ## Not in this version
 
-Automations (move by rule), Encuentra24 (Leads API), the
+Automations (move by rule), the
 WordPress / Real Estate 7 integration, Cloudbeds reservations, imports and
 attachments come in the next versions.

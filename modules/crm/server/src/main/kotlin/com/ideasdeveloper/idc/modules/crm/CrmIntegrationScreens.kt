@@ -26,7 +26,49 @@ object CrmIntegrationScreens {
     fun hookUrl(context: CrmScreens.Context, name: String) = "${context.publicBase}/modules/crm/hooks/${context.permissions.companyCode}/$name"
 
     fun integrations(context: CrmScreens.Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> =
-        meta(context, submitted, pickers = params["numbers"])
+        meta(context, submitted, pickers = params["numbers"]) + encuentra24(context)
+
+    // ---- Encuentra24 Leads API ----
+
+    private fun encuentra24(context: CrmScreens.Context): List<UiNode> {
+        val settings = CrmEncuentra24.load(context.tenant)
+        val on = UiFieldCondition("enabled", listOf("true"))
+        val status = when {
+            !settings.ready -> UiStatus("Encuentra24 desactivado", UiTone.Neutral)
+            settings.lastError.isNotEmpty() -> UiStatus("Error: ${settings.lastError}", UiTone.Danger)
+            settings.lastSync != null -> UiStatus("Ultima sincronizacion ${timeFormat.format(settings.lastSync.atZone(ZoneId.systemDefault()))}: ${settings.lastResult}", UiTone.Success)
+            else -> UiStatus("Esperando la primera sincronizacion", UiTone.Warning)
+        }
+        return listOf(
+            UiText("Encuentra24", UiTextStyle.Subtitle),
+            UiCard(
+                listOf(
+                    status,
+                    UiText("Cada 5 minutos se importan los mensajes, chats y llamadas de los anuncios. La API no permite responder desde el CRM: los mensajes de WhatsApp con enlace de un anuncio tambien quedan con origen Encuentra24."),
+                    UiForm(
+                        "e24",
+                        listOf(
+                            UiField("enabled", "Importar los leads de Encuentra24", type = "boolean"),
+                            UiField("apiKey", "API key", type = "password", visibleWhen = on),
+                            UiField("slug", "Slug de la empresa", visibleWhen = on, placeholder = "mi-inmobiliaria"),
+                        ),
+                        CrmEncuentra24.toFormValues(settings),
+                        submit = UiButton("Guardar", UiRequest(UiRoute + "/integrations", params = mapOf("op" to "e24Save"), formId = "e24")),
+                    ),
+                ),
+            ),
+            UiCard(
+                listOf(
+                    UiForm(
+                        "e24history",
+                        listOf(UiField("fromDate", "Desde", type = "date", help = "Vacio: desde la ultima sincronizacion.")),
+                        submit = UiButton("Importar ahora", UiRequest(UiRoute + "/integrations", params = mapOf("op" to "e24Sync"), formId = "e24history"), style = "secondary", enabled = settings.ready),
+                    ),
+                ),
+                title = "Importar historial",
+            ),
+        )
+    }
 
     // ---- Meta: WhatsApp, Messenger, Instagram ----
 

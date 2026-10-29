@@ -43,6 +43,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V001__create_crm.sql",
         "modules/crm/migrations/V002__inbox_and_channels.sql",
         "modules/crm/migrations/V003__meta_channels.sql",
+        "modules/crm/migrations/V004__encuentra24.sql",
     )
 
     override val runtimeTables = listOf(
@@ -62,6 +63,7 @@ object CrmServerModule : ServerModule {
         "crm_user_settings",
         "crm_meta_settings",
         "crm_meta_log",
+        "crm_encuentra24_settings",
     )
 
     override val jobs = listOf(
@@ -72,6 +74,12 @@ object CrmServerModule : ServerModule {
         ModuleJob("digest", Duration.ofMinutes(15)) { context -> CrmNotify.digestIfDue(context.tenant, LocalDateTime.now()) },
         // Replies of customers by email.
         ModuleJob("imap", Duration.ofMinutes(5)) { context -> readMailbox(context.tenant) },
+        // Contacts of the company listings in Encuentra24.
+        ModuleJob("encuentra24", Duration.ofMinutes(5)) { context ->
+            if (CrmEncuentra24.load(context.tenant).ready) {
+                runCatching { CrmEncuentra24.sync(context.tenant) { leadId -> CrmNotify.newLead(context.tenant, leadId) } }
+            }
+        },
     )
 
     /** Reads new mail of the company's mailbox into the conversation of each sender's lead. */
@@ -105,7 +113,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.3.0",
+        version = "0.4.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -371,6 +379,27 @@ object CrmServerModule : ServerModule {
                     } catch (failure: CrmMetaException) {
                         show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
+                }
+                "integrations:e24Save" -> {
+                    try {
+                        CrmEncuentra24.saveForm(tenant, values)
+                    } catch (failure: CrmValidationException) {
+                        return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
+                    }
+                    show("integrations", UiNotice("Encuentra24 guardado.", UiTone.Success), emptyMap())
+                }
+                "integrations:e24Sync" -> {
+                    val from = values["fromDate"].orEmpty().trim().ifEmpty { null }?.let {
+                        runCatching { java.time.LocalDate.parse(it) }.getOrNull()
+                            ?: return show("integrations", UiNotice("La fecha debe tener el formato AAAA-MM-DD.", UiTone.Danger), emptyMap())
+                    }
+                    val notice = try {
+                        val result = CrmEncuentra24.sync(tenant, from) { leadId -> CrmNotify.newLead(tenant, leadId) }
+                        UiNotice("Encuentra24: $result.", UiTone.Success)
+                    } catch (failure: CrmEncuentra24Exception) {
+                        UiNotice(failure.message.orEmpty(), UiTone.Danger)
+                    }
+                    show("integrations", notice, emptyMap())
                 }
                 "integrations:metaNumber" -> {
                     val id = params["id"].orEmpty().takeIf { it.matches(Regex("^[0-9]{1,64}$")) }
