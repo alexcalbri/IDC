@@ -65,6 +65,8 @@ data class CrmLead(
     val suggestedOwnerUserId: UUID? = null,
     // Why the lead needs a person to check it (e.g. its phone belongs to another customer); "" when not.
     val reviewReason: String = "",
+    // Set when the stay ended (Cloudbeds check-out): the lead leaves the pipeline and lists.
+    val archivedAt: Instant? = null,
 )
 
 data class CrmActivity(
@@ -130,6 +132,8 @@ data class CrmLeadFilter(
     val stageId: UUID? = null,
     val search: String = "",
     val openOnly: Boolean = false,
+    // Archived leads (stay finished) are hidden unless asked for.
+    val archived: Boolean = false,
 )
 
 data class CrmLeadInput(

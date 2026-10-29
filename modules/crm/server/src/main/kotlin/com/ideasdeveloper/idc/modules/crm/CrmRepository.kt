@@ -16,7 +16,7 @@ object CrmRepository {
     private const val LeadColumns = """
         l.id, l.customer_id, c.display_name, c.primary_email, c.primary_phone, l.stage_id, l.interest_id,
         l.owner_user_id, l.source, l.language, l.message, l.details, l.target_start, l.target_end,
-        l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason
+        l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason, l.archived_at
     """
     private const val LeadFrom = "FROM crm_leads l JOIN customers c ON c.id = l.customer_id"
 
@@ -175,7 +175,7 @@ object CrmRepository {
 
     private fun where(scope: CrmScope, filter: CrmLeadFilter): Pair<String, List<Any>> {
         val (visible, params) = scope.sqlCondition()
-        val parts = mutableListOf(visible)
+        val parts = mutableListOf(visible, if (filter.archived) "l.archived_at IS NOT NULL" else "l.archived_at IS NULL")
         val values = params.toMutableList()
         if (scope.interestsEnabled) {
             if (filter.withoutInterest) parts += "l.interest_id IS NULL"
@@ -484,6 +484,7 @@ object CrmRepository {
         createdAt = getTimestamp("created_at").toInstant(),
         suggestedOwnerUserId = getObject("suggested_owner_user_id", UUID::class.java),
         reviewReason = getString("review_reason"),
+        archivedAt = getTimestamp("archived_at")?.toInstant(),
     )
 
     // Binds positional parameters; collections become uuid[] (used by "= ANY(?)").

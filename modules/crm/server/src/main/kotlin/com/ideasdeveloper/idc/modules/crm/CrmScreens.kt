@@ -71,7 +71,7 @@ object CrmScreens {
     )
 
     // Screens outside the navigation.
-    private val hidden = mapOf("lead" to View, "properties" to Manage)
+    private val hidden = mapOf("lead" to View, "properties" to Manage, "rooms" to Manage)
 
     fun isScreen(id: String) = sections.any { it.id == id } || id in hidden
 
@@ -123,6 +123,12 @@ object CrmScreens {
         val title = section?.label ?: "Lead"
         if (!context.permissions.has(permission) || section?.needsInterests == true && !context.interestsEnabled) {
             return frame(context, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
+        }
+        if (screen == "rooms") {
+            val lead = params["lead"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
+                ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserId) }
+                ?: return frame(context, "leads", "Habitaciones", UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), emptyList())
+            return frame(context, "leads", "Habitaciones", notice, CrmCloudbedsScreens.rooms(context, lead, params), showTitle = false)
         }
         if (screen == "properties") {
             val lead = params["lead"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
@@ -437,6 +443,7 @@ object CrmScreens {
             listOfNotNull(
                 UiText(lead.name, UiTextStyle.Title),
                 stage?.let { UiStatus(it.name, it.tone.id) },
+                lead.archivedAt?.let { UiStatus("Archivado", UiTone.Neutral) },
                 UiText("Creado ${lead.createdAt.atZone(ZoneId.systemDefault()).toLocalDate()}", UiTextStyle.Caption),
             ),
         )
@@ -490,7 +497,8 @@ object CrmScreens {
         }
         val conversation = CrmAdminScreens.conversation(context, lead, canEdit, submitted)
         val items = CrmWordPressScreens.items(context, lead, canEdit)
-        return listOfNotNull(header, actions, review, suggestion, form, items, conversation, note.takeIf { canEdit }, timeline)
+        val reservation = CrmCloudbedsScreens.reservation(context, lead, canEdit)
+        return listOfNotNull(header, actions, review, suggestion, form, items, reservation, conversation, note.takeIf { canEdit }, timeline)
     }
 
     private fun entry(activity: CrmActivity): UiTimelineEntry {
