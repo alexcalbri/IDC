@@ -19,6 +19,9 @@ interface ServerModule {
     // Themes this module adds to the app while it is installed (see UiAppTheme).
     val themes: List<UiAppTheme>
         get() = emptyList()
+    // Periodic work run for every company that has the module enabled (see ModuleJob).
+    val jobs: List<ModuleJob>
+        get() = emptyList()
 
     fun routes(route: Route, access: ModuleAccessService) {
     }

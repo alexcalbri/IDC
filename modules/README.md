@@ -181,6 +181,48 @@ are always enabled there.
 - Modules need no changes: the workspace is a regular tenant for them, so their
   routes, migrations and permissions work as in any company.
 
+## Background jobs
+
+A module declares periodic work in `ServerModule.jobs` (polling an external
+API, sending scheduled emails, archiving records):
+
+```kotlin
+override val jobs = listOf(
+    ModuleJob("welcome-emails", Duration.ofMinutes(15)) { context ->
+        // context.companyCode, context.tenant (open connection), context.access
+    },
+)
+```
+
+- The server checks once a minute and runs each job for every active company
+  (the server workspace included) that has the installed module enabled, the
+  first time after startup and then every `interval`.
+- Jobs run one after another on a single background thread. Keep every run
+  short and bounded: process a batch and continue on the next run.
+- A failing run is logged and retried at the next interval. Runs are not
+  persisted: after a restart every job runs again once, so jobs must be
+  idempotent (store what was already sent or imported in the tenant).
+
+## Email
+
+`MailSender.sendText` and `MailSender.sendHtml` send through `SmtpSettings`
+(the server SMTP is `access.serverMail`; modules may let a company configure
+its own). `sendHtml` takes the HTML and a plain-text alternative; the module
+builds the HTML and must escape every value that comes from users or
+customers.
+
+## Public webhooks
+
+External services (Meta, a WordPress plugin, a PMS) call
+`/modules/<id>/hooks/<company>/...`. These routes have no session:
+
+- Open the tenant with `access.tenantConnectionForWebhook(company, "<id>")`. It
+  returns null when the company is inactive or does not use the installed
+  module; answer 404 then.
+- Authenticate the request before trusting or storing anything, typically by
+  checking a signature (HMAC) with a secret the company saved in the module.
+- Answer quickly; do slow work in a job.
+
 ## Module user interface
 
 Modules are independent of the app: the app never contains module-specific
