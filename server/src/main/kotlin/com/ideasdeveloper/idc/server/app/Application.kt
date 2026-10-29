@@ -15,6 +15,7 @@ import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.ModuleJobScheduler
 import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
 import com.ideasdeveloper.idc.server.modules.ModulePackageLoader
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
@@ -141,6 +142,8 @@ fun Application.module() {
     Thread({ companyProvisioning.applyPendingModuleMigrations() }, "module-migrations").apply { isDaemon = true }.start()
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
     val moduleAccessService = ModuleAccessService(DatabaseFactory.getDataSource(), loginDatabases, serverMailSettings(), moduleRegistry::isInstalled)
+    // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.
+    val moduleJobs = ModuleJobScheduler(moduleRegistry, moduleAccessService).also { it.start() }
     val companySelfService = CompanySelfService(
         central = DatabaseFactory.getDataSource(),
         loginDatabases = loginDatabases,
@@ -151,6 +154,7 @@ fun Application.module() {
         ),
     )
     monitor.subscribe(ApplicationStopped) {
+        moduleJobs.stop()
         remoteModuleCatalog.close()
         loginDatabases.close()
         DatabaseFactory.close()
