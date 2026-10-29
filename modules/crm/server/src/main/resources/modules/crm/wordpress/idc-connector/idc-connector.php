@@ -2,7 +2,7 @@
 /**
  * Plugin Name: IDC Connector
  * Description: Conecta Real Estate 7 con el CRM de IdeasCore: propiedades, formularios, favoritos, busquedas guardadas y ventas.
- * Version: 0.1.0
+ * Version: 0.2.0
  * Requires PHP: 8.0
  * Author: IdeasCore
  * Text Domain: idc-connector
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-const IDC_CONNECTOR_VERSION = '0.1.0';
+const IDC_CONNECTOR_VERSION = '0.2.0';
 const IDC_CONNECTOR_OPTION  = 'idc_connector_settings';
 const IDC_CONNECTOR_QUEUE   = 'idc_connector_queue';
 const IDC_CONNECTOR_CRON    = 'idc_connector_retry';
@@ -169,6 +169,8 @@ function idc_connector_rpc( WP_REST_Request $request ): WP_REST_Response {
 			return new WP_REST_Response( idc_connector_agents() );
 		case 'sold':
 			return idc_connector_mark_sold( $data );
+		case 'leads':
+			return new WP_REST_Response( idc_connector_leads_pro( $data ) );
 		default:
 			return new WP_REST_Response( [ 'error' => 'Accion desconocida.' ], 400 );
 	}
@@ -622,3 +624,76 @@ add_action( 'wp_footer', static function () {
 	</script>
 	<?php
 }, 100 );
+
+/* ---------------------------------------------------------------------
+ * Exportacion de CT Leads Pro (para la importacion del CRM)
+ * ------------------------------------------------------------------- */
+
+/** Leads de CT Leads Pro por paginas: datos, etapa, agente, origen, etiquetas, notas, mensajes y propiedades. */
+function idc_connector_leads_pro( array $data ): array {
+	global $wpdb;
+	$per_page = min( 200, max( 1, absint( $data['per_page'] ?? 200 ) ) );
+	$page = max( 1, absint( $data['page'] ?? 1 ) );
+	$users = get_users( [
+		'meta_key'   => '_ct_lp_is_lead',
+		'meta_value' => '1',
+		'number'     => $per_page,
+		'paged'      => $page,
+		'orderby'    => 'ID',
+		'order'      => 'ASC',
+	] );
+	if ( ! $users && $page === 1 && ! get_users( [ 'role' => 'lead', 'number' => 1 ] ) ) {
+		return [ 'items' => [], 'error' => get_users( [ 'number' => 1 ] ) ? '' : 'No hay leads de CT Leads Pro en este sitio.' ];
+	}
+	$notes_table = $wpdb->prefix . 'ct_lp_notes';
+	$messages_table = $wpdb->prefix . 'ct_lp_messages';
+	$has_notes = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $notes_table ) ) === $notes_table;
+	$has_messages = $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $messages_table ) ) === $messages_table;
+	$items = [];
+	foreach ( $users as $user ) {
+		$id = (int) $user->ID;
+		$meta = static fn( string $key ) => is_scalar( $value = get_user_meta( $id, $key, true ) ) ? trim( (string) $value ) : '';
+		$tags = get_user_meta( $id, '_ct_lp_tags', true );
+		$agent = absint( $meta( '_ct_lp_assigned_agent' ) );
+		$notes = [];
+		if ( $has_notes ) {
+			foreach ( (array) $wpdb->get_results( $wpdb->prepare( "SELECT author_id, content, created_at FROM {$notes_table} WHERE lead_id = %d ORDER BY id", $id ) ) as $note ) {
+				$author = get_userdata( (int) $note->author_id );
+				$notes[] = [ 'date' => (string) $note->created_at, 'author' => $author ? $author->display_name : '', 'text' => wp_strip_all_tags( (string) $note->content ) ];
+			}
+		}
+		$messages = [];
+		if ( $has_messages ) {
+			foreach ( (array) $wpdb->get_results( $wpdb->prepare( "SELECT from_id, body, channel, created_at FROM {$messages_table} WHERE lead_id = %d ORDER BY id LIMIT 200", $id ) ) as $message ) {
+				$from = (int) $message->from_id;
+				$messages[] = [
+					'date'   => (string) $message->created_at,
+					'author' => $from === $id ? $user->display_name : ( ( $sender = get_userdata( $from ) ) ? $sender->display_name : '' ),
+					'text'   => '[' . (string) $message->channel . '] ' . wp_strip_all_tags( (string) $message->body ),
+				];
+			}
+		}
+		$listings = [];
+		foreach ( array_filter( array_map( 'absint', (array) get_user_meta( $id, '_ct_lp_interested_listing_ids', true ) ) ) as $listing_id ) {
+			$post = get_post( $listing_id );
+			if ( $post && $post->post_type === 'listings' ) {
+				$listings[] = idc_connector_listing( $post );
+			}
+		}
+		$items[] = [
+			'id'       => $id,
+			'name'     => $user->display_name,
+			'email'    => str_ends_with( strtolower( $user->user_email ), '.invalid' ) ? '' : $user->user_email,
+			'phone'    => $meta( '_ct_lp_phone' ),
+			'stage'    => $meta( '_ct_lp_pipeline_stage' ),
+			'agent'    => idc_connector_user( $agent ),
+			'source'   => $meta( '_ct_lp_source' ),
+			'tags'     => is_array( $tags ) ? array_values( array_map( 'strval', $tags ) ) : array_filter( array_map( 'trim', explode( ',', (string) $tags ) ) ),
+			'created'  => (string) $user->user_registered,
+			'notes'    => $notes,
+			'messages' => $messages,
+			'listings' => $listings,
+		];
+	}
+	return [ 'items' => $items, 'page' => $page ];
+}

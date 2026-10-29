@@ -61,6 +61,7 @@ object CrmScreens {
         Section("reception", "Recepcion", Reception, needsInterests = true),
         Section("followups", "Seguimientos", View),
         Section("assignments", "Asignaciones", Assign),
+        Section("bulk", "Acciones en lote", Manage),
         Section("new", "Nuevo lead", Manage),
         Section("settings", "Configuracion", Settings),
         Section("mail", "Correo", Settings),
@@ -68,10 +69,11 @@ object CrmScreens {
         Section("spam", "Anti-spam", Settings),
         Section("team", "Equipo", Settings),
         Section("integrations", "Integraciones", Settings),
+        Section("import", "Importar", Settings),
     )
 
     // Screens outside the navigation.
-    private val hidden = mapOf("lead" to View, "properties" to Manage, "rooms" to Manage)
+    private val hidden = mapOf("lead" to View, "properties" to Manage, "rooms" to Manage, "importjob" to Settings)
 
     fun isScreen(id: String) = sections.any { it.id == id } || id in hidden
 
@@ -120,7 +122,7 @@ object CrmScreens {
     ): UiScreen {
         val permission = permissionFor(screen)!!
         val section = sections.firstOrNull { it.id == screen }
-        val title = section?.label ?: "Lead"
+        val title = section?.label ?: if (screen == "importjob") "Importacion" else "Lead"
         if (!context.permissions.has(permission) || section?.needsInterests == true && !context.interestsEnabled) {
             return frame(context, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
         }
@@ -154,6 +156,9 @@ object CrmScreens {
             "spam" -> CrmAdminScreens.spam(context, submitted)
             "team" -> CrmAdminScreens.team(context)
             "integrations" -> CrmIntegrationScreens.integrations(context, params, submitted)
+            "import" -> CrmImportScreens.imports(context)
+            "importjob" -> CrmImportScreens.job(context, params)
+            "bulk" -> CrmImportScreens.bulk(context, params)
             else -> settings(context, params, submitted)
         }
         return frame(context, screen, title, notice, body)
@@ -189,6 +194,8 @@ object CrmScreens {
     }
 
     private fun filterParams(params: Map<String, String>) = params.filterKeys { it in setOf("fInterest", "fOwner", "fStage", "q") }.filterValues { it.isNotBlank() }
+
+    fun filterCard(context: Context, screen: String, params: Map<String, String>) = filterForm(context, screen, params, withStage = true, withSearch = true)
 
     private fun filterForm(context: Context, screen: String, params: Map<String, String>, withStage: Boolean, withSearch: Boolean): UiNode {
         val fields = buildList {

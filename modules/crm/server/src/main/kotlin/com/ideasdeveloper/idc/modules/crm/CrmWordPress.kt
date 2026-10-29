@@ -75,7 +75,7 @@ class CrmWordPressException(message: String) : Exception(message)
 /** Real Estate 7 websites through the IDC Connector plugin. */
 object CrmWordPress {
     const val Source = "wordpress"
-    const val PluginVersion = "0.1.0"
+    const val PluginVersion = "0.2.0"
     private const val MaxSkewSeconds = 300L
     private val json = Json { ignoreUnknownKeys = true }
     private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
@@ -143,7 +143,7 @@ object CrmWordPress {
 
     // ---- Plugin API (IDC -> website) ----
 
-    private fun rpc(settings: CrmWordPressSettings, action: String, extra: JsonObject = JsonObject(emptyMap())): JsonElement {
+    internal fun rpc(settings: CrmWordPressSettings, action: String, extra: JsonObject = JsonObject(emptyMap())): JsonElement {
         val site = settings.siteUrl ?: throw CrmWordPressException("Escribe la direccion del sitio en Integraciones.")
         val secret = settings.secret ?: throw CrmWordPressException("Genera el secreto y pegalo en el plugin.")
         val body = JsonObject(mapOf("action" to JsonPrimitive(action)) + extra).toString().toByteArray()
