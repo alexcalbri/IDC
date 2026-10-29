@@ -591,7 +591,8 @@ object CrmServerModule : ServerModule {
                     val (first, last) = CrmContacts.splitName(lead.name)
                     val guest = CbGuest(first, last, lead.email, CrmContacts.normalizePhone(lead.phone), country, values["zip"].orEmpty().trim().take(20))
                     val result = try {
-                        CrmCloudbeds.reserve(tenant, lead.id, start, end, guest, requests)
+                        val payment = CrmCloudbeds.paymentLabels.entries.firstOrNull { it.value == values["payment"] }?.key
+                        CrmCloudbeds.reserve(tenant, lead.id, start, end, guest, requests, payment)
                     } catch (failure: CrmCloudbedsException) {
                         return show("lead", UiNotice("La reserva no se creo: ${failure.message}", UiTone.Danger), back, values)
                     } catch (failure: CrmValidationException) {

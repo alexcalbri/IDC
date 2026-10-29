@@ -57,6 +57,8 @@ class CrmCloudbedsTest {
         assertEquals("false", form["sendEmailConfirmation"])
         assertEquals("idc-$lead", form["thirdPartyIdentifier"])
         assertEquals("cash", form["paymentMethod"])
+        val credit = CrmCloudbeds.reservationForm(settings, lead, LocalDate.of(2026, 12, 20), LocalDate.of(2026, 12, 27), CbGuest("A", "B", "a@b.com", "", "", ""), listOf(CbRoomRequest("101", "10", 1, 0)), "credit").toMap()
+        assertEquals("credit", credit["paymentMethod"])
         assertEquals("305", form["rooms[1][roomID]"])
         assertEquals("30", form["adults[1][roomTypeID]"])
         assertEquals("2", form["children[1][quantity]"])
