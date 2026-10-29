@@ -110,7 +110,7 @@ data class CrmScope(
         if (reception) parts += "l.interest_id IS NULL"
         if (interests.isNotEmpty()) {
             parts += "l.interest_id = ANY(?)"
-            params += interests.sortedBy { it.toString() }
+            params.add(interests.sortedBy { it.toString() })
         }
         return (if (parts.isEmpty()) "FALSE" else parts.joinToString(" OR ", "(", ")")) to params
     }
