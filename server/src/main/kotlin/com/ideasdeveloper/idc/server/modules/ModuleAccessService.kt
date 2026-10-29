@@ -69,6 +69,44 @@ class ModuleAccessService(
         return tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password)
     }
 
+    /**
+     * Tenant database of a company for a public webhook route (/modules/{moduleId}/hooks/{company}/...),
+     * or null when the company is not active or does not use the installed module. The company comes
+     * from the URL, so the module must authenticate the request (for example a signature checked
+     * with a secret stored in this tenant) before trusting or storing anything.
+     */
+    fun tenantConnectionForWebhook(companyCode: String, moduleId: String): Connection? {
+        if (!isInstalled(moduleId) || !CompanyCodePattern.matches(companyCode)) return null
+        val connection = tenantConnectionForCompany(companyCode) ?: return null
+        val enabled = try {
+            moduleEnabled(connection, moduleId)
+        } catch (failure: SQLException) {
+            connection.close()
+            throw failure
+        }
+        if (!enabled) {
+            connection.close()
+            return null
+        }
+        return connection
+    }
+
+    // Active companies (the server workspace included) that have [moduleId] enabled; used by module jobs.
+    fun companiesWithModule(moduleId: String): List<String> {
+        if (!isInstalled(moduleId)) return emptyList()
+        val companies = central.connection.use { connection ->
+            connection.prepareStatement("SELECT code, database_name FROM companies WHERE is_active = TRUE ORDER BY code").use { query ->
+                query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1) to rows.getString(2)) } }
+            }
+        }
+        return companies.filter { (_, databaseName) ->
+            val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return@filter false
+            runCatching {
+                tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password).use { moduleEnabled(it, moduleId) }
+            }.getOrDefault(false)
+        }.map { it.first }
+    }
+
     fun authorize(call: ApplicationCall, moduleId: String, permissionId: String): ModuleAccessDecision =
         when (val lookup = permissions(call, moduleId)) {
             is ModulePermissionLookup.Granted -> if (lookup.permissions.has(permissionId)) {
@@ -162,6 +200,8 @@ class ModuleAccessService(
     companion object {
         const val TokenCookie = "idc_module_token"
         const val CompanyCookie = "idc_module_company"
+        // Company codes as created by provisioning; anything else in a webhook URL is rejected early.
+        private val CompanyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     }
 
     private fun isServerWorkspace(companyCode: String): Boolean = try {

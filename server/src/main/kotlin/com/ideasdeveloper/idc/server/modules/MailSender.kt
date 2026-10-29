@@ -6,7 +6,9 @@ import jakarta.mail.PasswordAuthentication
 import jakarta.mail.Session
 import jakarta.mail.Transport
 import jakarta.mail.internet.InternetAddress
+import jakarta.mail.internet.MimeBodyPart
 import jakarta.mail.internet.MimeMessage
+import jakarta.mail.internet.MimeMultipart
 import java.util.Properties
 
 // SMTP connection used by modules that send email (server default or a company override).
@@ -26,8 +28,38 @@ data class SmtpSettings(
 class MailException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 object MailSender {
-    fun sendText(settings: SmtpSettings, to: String, subject: String, body: String) {
+    fun sendText(settings: SmtpSettings, to: String, subject: String, body: String) =
+        send(settings, to, subject) { setText(body, Charsets.UTF_8.name()) }
+
+    /**
+     * Sends an HTML email with a plain-text alternative for clients that do not show HTML. Callers
+     * build [html] themselves and must escape any value that comes from users or customers.
+     */
+    fun sendHtml(settings: SmtpSettings, to: String, subject: String, html: String, text: String) =
+        send(settings, to, subject) { setContent(htmlBody(html, text)) }
+
+    // multipart/alternative with the text first: clients show the last part they understand.
+    internal fun htmlBody(html: String, text: String) = MimeMultipart("alternative").apply {
+        addBodyPart(MimeBodyPart().apply { setText(text, Charsets.UTF_8.name()) })
+        addBodyPart(MimeBodyPart().apply { setContent(html, "text/html; charset=UTF-8") })
+    }
+
+    private fun send(settings: SmtpSettings, to: String, subject: String, body: MimeMessage.() -> Unit) {
         if (!settings.isUsable) throw MailException("El correo SMTP no esta configurado.")
+        try {
+            val message = MimeMessage(session(settings)).apply {
+                setFrom(InternetAddress(settings.from, true))
+                setRecipient(Message.RecipientType.TO, InternetAddress(to, true))
+                setSubject(subject, Charsets.UTF_8.name())
+                body()
+            }
+            Transport.send(message)
+        } catch (failure: Exception) {
+            throw MailException("No se pudo enviar el correo: ${failure.message}", failure)
+        }
+    }
+
+    private fun session(settings: SmtpSettings): Session {
         val properties = Properties().apply {
             put("mail.smtp.host", settings.host)
             put("mail.smtp.port", settings.port.toString())
@@ -53,16 +85,6 @@ object MailSender {
                 override fun getPasswordAuthentication() = PasswordAuthentication(settings.username, settings.password)
             }
         }
-        try {
-            val message = MimeMessage(Session.getInstance(properties, authenticator)).apply {
-                setFrom(InternetAddress(settings.from, true))
-                setRecipient(Message.RecipientType.TO, InternetAddress(to, true))
-                setSubject(subject, Charsets.UTF_8.name())
-                setText(body, Charsets.UTF_8.name())
-            }
-            Transport.send(message)
-        } catch (failure: Exception) {
-            throw MailException("No se pudo enviar el correo: ${failure.message}", failure)
-        }
+        return Session.getInstance(properties, authenticator)
     }
 }
