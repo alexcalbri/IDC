@@ -16,7 +16,7 @@ object CrmRepository {
     private const val LeadColumns = """
         l.id, l.customer_id, c.display_name, c.primary_email, c.primary_phone, l.stage_id, l.interest_id,
         l.owner_user_id, l.source, l.language, l.message, l.details, l.target_start, l.target_end,
-        l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at
+        l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason
     """
     private const val LeadFrom = "FROM crm_leads l JOIN customers c ON c.id = l.customer_id"
 
@@ -401,7 +401,39 @@ object CrmRepository {
         }
     }
 
-    private fun addActivity(
+    // Assigns the suggested responsible user (approve = true) or drops the suggestion.
+    fun resolveSuggestion(tenant: Connection, lead: CrmLead, approve: Boolean, names: CrmNames, actor: CrmActor): UUID? {
+        val suggested = lead.suggestedOwnerUserId ?: return null
+        tenant.prepareStatement(
+            "UPDATE crm_leads SET owner_user_id = CASE WHEN ? THEN suggested_owner_user_id ELSE owner_user_id END, suggested_owner_user_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+        ).use { update ->
+            update.setBoolean(1, approve)
+            update.setObject(2, lead.id)
+            update.executeUpdate()
+        }
+        addActivity(
+            tenant, lead.id, "owner",
+            if (approve) "Responsable: ${names.user(suggested)} (sugerencia aprobada)." else "Sugerencia de ${names.user(suggested)} descartada.",
+            actor,
+        )
+        return if (approve) suggested else null
+    }
+
+    fun clearReview(tenant: Connection, lead: CrmLead, actor: CrmActor) {
+        tenant.prepareStatement("UPDATE crm_leads SET review_reason = '' WHERE id = ?").use { it.setObject(1, lead.id); it.executeUpdate() }
+        addActivity(tenant, lead.id, "updated", "Revisado: ${lead.reviewReason}", actor)
+    }
+
+    // Leads with a responsible suggestion waiting for approval, within the scope.
+    fun pendingSuggestions(tenant: Connection, scope: CrmScope, limit: Int): List<CrmLead> {
+        val (condition, params) = where(scope, CrmLeadFilter())
+        return tenant.prepareStatement("SELECT $LeadColumns $LeadFrom WHERE $condition AND l.suggested_owner_user_id IS NOT NULL ORDER BY l.created_at LIMIT ?").use { query ->
+            query.bind(tenant, params + limit)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.lead()) } }
+        }
+    }
+
+    fun addActivity(
         tenant: Connection,
         leadId: UUID,
         kind: String,
@@ -450,6 +482,8 @@ object CrmRepository {
         stageChangedAt = getTimestamp("stage_changed_at").toInstant(),
         closedAt = getTimestamp("closed_at")?.toInstant(),
         createdAt = getTimestamp("created_at").toInstant(),
+        suggestedOwnerUserId = getObject("suggested_owner_user_id", UUID::class.java),
+        reviewReason = getString("review_reason"),
     )
 
     // Binds positional parameters; collections become uuid[] (used by "= ANY(?)").

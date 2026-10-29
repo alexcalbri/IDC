@@ -61,6 +61,10 @@ data class CrmLead(
     val stageChangedAt: Instant,
     val closedAt: Instant?,
     val createdAt: Instant,
+    // Responsible user proposed by the source (e.g. a listing's agent), waiting for approval.
+    val suggestedOwnerUserId: UUID? = null,
+    // Why the lead needs a person to check it (e.g. its phone belongs to another customer); "" when not.
+    val reviewReason: String = "",
 )
 
 data class CrmActivity(
