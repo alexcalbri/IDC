@@ -170,10 +170,10 @@ object CrmForms {
         }
         val name = text("name", 200, "El nombre")
         if (name.isEmpty()) throw CrmValidationException("Escribe el nombre del lead.")
+        // Email and phone are optional (chats and calls often bring only one); a typed email must be valid.
         val email = text("email", 254, "El correo")
-        if (!email.matches(Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))) throw CrmValidationException("Escribe un correo valido.")
+        if (email.isNotEmpty() && !email.matches(Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"))) throw CrmValidationException("Escribe un correo valido o dejalo vacio.")
         val phone = text("phone", 40, "El telefono")
-        if (phone.isEmpty()) throw CrmValidationException("Escribe el telefono del lead.")
         val stageName = values["stage"].orEmpty()
         val stage = stages.firstOrNull { it.name == stageName } ?: stages.firstOrNull()
             ?: throw CrmValidationException("Crea al menos una etapa en Configuracion.")

@@ -47,10 +47,18 @@ class CrmFormsTest {
     }
 
     @Test
+    fun emailAndPhoneAreOptional() {
+        val onlyName = parse(mapOf("email" to " ", "phone" to ""))
+        assertEquals("", onlyName.email)
+        assertEquals("", onlyName.phone)
+        assertEquals("", parse(mapOf("email" to "")).email)
+        assertEquals("", parse(mapOf("phone" to "")).phone)
+    }
+
+    @Test
     fun rejectsInvalidLeads() {
         assertFailsWith<CrmValidationException> { parse(mapOf("name" to " ")) }
         assertFailsWith<CrmValidationException> { parse(mapOf("email" to "megan")) }
-        assertFailsWith<CrmValidationException> { parse(mapOf("phone" to "")) }
         assertFailsWith<CrmValidationException> { parse(mapOf("interest" to "Yoga")) }
         assertFailsWith<CrmValidationException> { parse(mapOf("owner" to "luis")) }
         assertFailsWith<CrmValidationException> { parse(mapOf("followUpOn" to "02/11/2026")) }

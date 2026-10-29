@@ -249,15 +249,21 @@ object CrmRepository {
         }
 
     /**
-     * Creates a lead. The person is the existing customer with the same email when there is one
-     * (its data is not changed); otherwise a new prospect customer is created in Clientes.
+     * Creates a lead. The person is the existing customer with the same email (or, without email,
+     * the same phone) when there is one, and its data is not changed; otherwise a new prospect
+     * customer is created in Clientes. Without email and phone a new customer is always created.
      */
     fun createLead(tenant: Connection, input: CrmLeadInput, stage: CrmStage, actor: CrmActor): UUID = transaction(tenant) {
-        val customerId = tenant.prepareStatement(
-            "SELECT id FROM customers WHERE lower(primary_email) = lower(?) AND status <> 'archived' ORDER BY created_at LIMIT 1"
-        ).use { query ->
-            query.setString(1, input.email)
-            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+        val match = when {
+            input.email.isNotEmpty() -> "lower(primary_email) = lower(?)" to input.email
+            input.phone.isNotEmpty() -> "primary_phone = ?" to input.phone
+            else -> null
+        }
+        val customerId = match?.let { (condition, value) ->
+            tenant.prepareStatement("SELECT id FROM customers WHERE $condition AND status <> 'archived' ORDER BY created_at LIMIT 1").use { query ->
+                query.setString(1, value)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+            }
         } ?: UUID.randomUUID().also { id ->
             tenant.prepareStatement(
                 "INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type) VALUES (?, ?, ?, ?, 'prospect', 'crm')"

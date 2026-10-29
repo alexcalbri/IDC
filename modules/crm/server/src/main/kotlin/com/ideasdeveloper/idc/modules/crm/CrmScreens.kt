@@ -337,8 +337,8 @@ object CrmScreens {
 
     private fun leadFields(context: Context, readOnly: Boolean, currentInterest: UUID?): List<UiField> = buildList {
         add(UiField("name", "Nombre", required = true, readOnly = readOnly, section = "Contacto"))
-        add(UiField("email", "Correo", type = "email", required = true, readOnly = readOnly, section = "Contacto"))
-        add(UiField("phone", "Telefono", type = "phone", required = true, readOnly = readOnly, section = "Contacto"))
+        add(UiField("email", "Correo", type = "email", readOnly = readOnly, section = "Contacto"))
+        add(UiField("phone", "Telefono", type = "phone", readOnly = readOnly, section = "Contacto"))
         add(UiField("language", "Idioma", readOnly = readOnly, section = "Contacto"))
         add(UiField("stage", "Etapa", type = "dropdown", required = true, readOnly = readOnly, options = context.stages.map { it.name }, section = "Seguimiento"))
         if (context.interestsEnabled) {
@@ -383,7 +383,7 @@ object CrmScreens {
             "owner" to (context.scope.userId?.let { id -> context.users.firstOrNull { it.id == id }?.name } ?: CrmForms.Unassigned),
         )
         return listOf(
-            UiText("Si ya existe un cliente con ese correo, el lead se vincula a el sin cambiar sus datos."),
+            UiText("Correo y telefono son opcionales. Si ya existe un cliente con ese correo (o, sin correo, con ese telefono), el lead se vincula a el sin cambiar sus datos."),
             UiCard(
                 listOf(
                     UiForm(

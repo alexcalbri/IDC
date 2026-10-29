@@ -31,13 +31,14 @@ object ClientesServerModule : ServerModule {
         "modules/clientes/migrations/V002__require_customer_contact_fields.sql",
         "modules/clientes/migrations/V003__add_customer_type.sql",
         "modules/clientes/migrations/V004__add_customer_code.sql",
+        "modules/clientes/migrations/V005__optional_customer_contact_fields.sql",
     )
 
     override val definition = ModuleDefinition(
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.4.0",
+        version = "0.5.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),

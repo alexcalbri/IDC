@@ -50,7 +50,7 @@ The visibility rule lives in `CrmScope` (`canSee` and its SQL twin
 | `leads` | `crm.view` | Searchable, filterable list (`UiList`) with pages of 50. |
 | `reception` | `crm.reception` | Leads without interest (only with interests on). |
 | `followups` | `crm.view` | Open leads with follow-up overdue, today or in the next 7 days. |
-| `new` | `crm.leads.manage` | New lead; an existing customer with the same email is reused unchanged, otherwise a `prospect` customer of type `crm` is created. |
+| `new` | `crm.leads.manage` | New lead. Email and phone are optional (Clientes V005). An existing customer with the same email, or without email the same phone, is reused unchanged; otherwise a `prospect` customer of type `crm` is created. |
 | `lead` | `crm.view` | Detail form, notes and activity timeline (`UiTimeline`). Editing contact data updates the shared customer. |
 | `settings` | `crm.settings` | Interests switch, interest catalog, interests per user, stages and templates. |
 
