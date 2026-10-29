@@ -175,8 +175,46 @@ the message id, so nothing is imported twice. Contacts without email and phone
 are skipped. **Importar ahora** imports the history from a chosen date. The API
 cannot reply or change states in Encuentra24.
 
+## WordPress / Real Estate 7 (V005)
+
+Integration through the **IDC Connector** plugin
+(`server/src/main/resources/modules/crm/wordpress/idc-connector/`), downloaded
+from **Integraciones > WordPress** (`/modules/crm/wordpress/idc-connector.zip`,
+built from the module resources). A plugin is used instead of database access:
+MySQL is rarely reachable from outside the hosting, would give IDC the whole
+WordPress database, and Real Estate 7 data (postmeta `_ct_*`, 11 taxonomies,
+serialized values) and its forms only exist inside WordPress.
+
+- **Security**: the CRM generates a secret (48 characters) that is pasted in the
+  plugin. Both directions send `X-IDC-Timestamp` and
+  `X-IDC-Signature = hex(HMAC-SHA256(secret, timestamp + "." + body))`;
+  more than 5 minutes of difference is rejected.
+- **IDC -> site** (`POST /wp-json/idc/v1/rpc`): `ping`, `search` (text or MLS,
+  taxonomy filters, price range, 20 per page), `listing` (every field of the
+  theme: price, MLS, size, lot, year, parking, taxonomies, agent, co-agent,
+  brokerage, open house, rental fields, video, virtual tour, gallery and all the
+  `_ct_*` meta), `taxonomies`, `agents`, `sold` (status Sold, `_ct_sold_date`,
+  `_idc_sold_price`).
+- **Site -> IDC** (`POST /modules/crm/hooks/<company>/wordpress`): CT Forms
+  submissions (`ct_forms_after_send`, listing detected from the page), listing
+  inquiries (`ajax-submit-listings`) and showing requests
+  (`ajax-submit-book-listing-showing`) create or update leads (channel `form`,
+  origin "Formulario - <property>") with the property linked and its agent as
+  suggested responsible (agents mapped to IDC users in Integraciones).
+  Favorites (`wpfp_favorites`), saved searches with alerts and property views
+  of signed-in users go to the activity of the open lead and never create
+  leads. Failed events are queued in WordPress and retried hourly.
+- **reCAPTCHA v3** (optional, in the plugin): verified on the server before CT
+  Forms handles the submission.
+
+**Lead items** (`crm_lead_items`): properties of the site (`wordpress`), rooms
+of a PMS (next version) or items typed by hand (`manual`), with status
+Interesado, Ofrecida, Elegida, Descartada, Vendida or Reservada. The lead
+detail searches the site (**Buscar propiedades**), links several properties and
+**Cerrar venta** marks the property sold on the site and moves the lead to the
+first won stage.
+
 ## Not in this version
 
-Automations (move by rule), the
-WordPress / Real Estate 7 integration, Cloudbeds reservations, imports and
-attachments come in the next versions.
+Automations (move by rule), Cloudbeds reservations, imports and attachments
+come in the next versions.

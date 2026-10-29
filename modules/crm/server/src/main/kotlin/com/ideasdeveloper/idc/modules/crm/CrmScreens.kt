@@ -71,7 +71,7 @@ object CrmScreens {
     )
 
     // Screens outside the navigation.
-    private val hidden = mapOf("lead" to View)
+    private val hidden = mapOf("lead" to View, "properties" to Manage)
 
     fun isScreen(id: String) = sections.any { it.id == id } || id in hidden
 
@@ -123,6 +123,12 @@ object CrmScreens {
         val title = section?.label ?: "Lead"
         if (!context.permissions.has(permission) || section?.needsInterests == true && !context.interestsEnabled) {
             return frame(context, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
+        }
+        if (screen == "properties") {
+            val lead = params["lead"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
+                ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserId) }
+                ?: return frame(context, "leads", "Propiedades", UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), emptyList())
+            return frame(context, "leads", "Propiedades", notice, CrmWordPressScreens.properties(context, lead, params), showTitle = false)
         }
         if (screen == "lead") {
             val lead = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
@@ -483,7 +489,8 @@ object CrmScreens {
             )
         }
         val conversation = CrmAdminScreens.conversation(context, lead, canEdit, submitted)
-        return listOfNotNull(header, actions, review, suggestion, form, conversation, note.takeIf { canEdit }, timeline)
+        val items = CrmWordPressScreens.items(context, lead, canEdit)
+        return listOfNotNull(header, actions, review, suggestion, form, items, conversation, note.takeIf { canEdit }, timeline)
     }
 
     private fun entry(activity: CrmActivity): UiTimelineEntry {
