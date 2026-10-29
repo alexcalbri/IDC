@@ -49,6 +49,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V003__meta_channels.sql",
         "modules/crm/migrations/V004__encuentra24.sql",
         "modules/crm/migrations/V005__wordpress_and_items.sql",
+        "modules/crm/migrations/V006__cloudbeds.sql",
     )
 
     override val runtimeTables = listOf(
@@ -72,6 +73,8 @@ object CrmServerModule : ServerModule {
         "crm_wordpress_settings",
         "crm_wp_agents",
         "crm_lead_items",
+        "crm_cloudbeds_settings",
+        "crm_reservations",
     )
 
     override val jobs = listOf(
@@ -83,6 +86,9 @@ object CrmServerModule : ServerModule {
         // Replies of customers by email.
         ModuleJob("imap", Duration.ofMinutes(5)) { context -> readMailbox(context.tenant) },
         // Contacts of the company listings in Encuentra24.
+        // Cloudbeds: welcome emails before check-in and reservation statuses (archive after check-out).
+        ModuleJob("cloudbeds-welcome", Duration.ofMinutes(15)) { context -> CrmCloudbeds.sendWelcomes(context.tenant, LocalDateTime.now()) },
+        ModuleJob("cloudbeds-sync", Duration.ofMinutes(30)) { context -> CrmCloudbeds.syncStatuses(context.tenant, java.time.LocalDate.now()) },
         ModuleJob("encuentra24", Duration.ofMinutes(5)) { context ->
             if (CrmEncuentra24.load(context.tenant).ready) {
                 runCatching { CrmEncuentra24.sync(context.tenant) { leadId -> CrmNotify.newLead(context.tenant, leadId) } }
@@ -121,7 +127,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.5.0",
+        version = "0.6.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -251,6 +257,12 @@ object CrmServerModule : ServerModule {
                 "pipeline:move" -> {
                     val lead = visibleLead("card") ?: return show("pipeline", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), params - setOf("op", "card", "column"))
                     val stage = uuid("column")?.let { context.stage(it) } ?: return show("pipeline", UiNotice("Esa etapa ya no existe.", UiTone.Warning), params - setOf("op", "card", "column"))
+                    // With rooms chosen in Cloudbeds the lead is won by confirming the reservation, not by dragging it.
+                    val pendingRooms = CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).any { it.status == "chosen" }
+                    val reserved = CrmCloudbeds.forLead(tenant, lead.id).any { it.status !in setOf("canceled", "no_show") }
+                    if (stage.kind == StageKind.Won && pendingRooms && !reserved) {
+                        return show("pipeline", UiNotice("${lead.name} tiene habitaciones asignadas: confirma la reserva desde su ficha.", UiTone.Warning), params - setOf("op", "card", "column"))
+                    }
                     CrmRepository.moveLead(tenant, lead, stage, context.stages, actor)
                     show("pipeline", UiNotice("${lead.name} paso a ${stage.name}.", UiTone.Success), params - setOf("op", "card", "column"))
                 }
@@ -525,6 +537,89 @@ object CrmServerModule : ServerModule {
                             show("lead", UiNotice("Venta cerrada y propiedad marcada como vendida.", UiTone.Success), back)
                         }
                     }
+                }
+                "rooms:assign" -> {
+                    val lead = visibleLead("lead") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val keep = params - setOf("op", "room", "type", "roomName", "typeName", "total", "max")
+                    val stay = try {
+                        CrmCloudbedsScreens.stay(lead, params, context.today)
+                    } catch (failure: CrmValidationException) {
+                        return show("rooms", UiNotice(failure.message.orEmpty(), UiTone.Danger), keep)
+                    }
+                    val room = params["room"].orEmpty().takeIf { it.isNotBlank() && it.length <= 60 } ?: return show("rooms", UiNotice("Habitacion invalida.", UiTone.Danger), keep)
+                    val chosenDates = CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }.map { it.startsOn to it.endsOn }.toSet()
+                    if (chosenDates.isNotEmpty() && chosenDates != setOf(stay.start to stay.end)) {
+                        return show("rooms", UiNotice("Las habitaciones de una reserva comparten fechas: quita las otras o busca con sus fechas.", UiTone.Warning), keep)
+                    }
+                    val title = "${params["roomName"].orEmpty()} - ${params["typeName"].orEmpty()}".trim(' ', '-').ifEmpty { "Habitacion $room" }
+                    CrmItems.link(
+                        tenant, lead.id, CrmCloudbeds.Source, room, title,
+                        subtitle = params["max"]?.toIntOrNull()?.takeIf { it > 0 }?.let { "Hasta $it personas" }.orEmpty(),
+                        price = params["total"]?.toBigDecimalOrNull(), status = "chosen", startsOn = stay.start, endsOn = stay.end,
+                        data = mapOf("roomTypeId" to params["type"].orEmpty(), "max" to params["max"].orEmpty(), "adults" to stay.adults.toString(), "children" to stay.children.toString()),
+                    )
+                    CrmRepository.addActivity(tenant, lead.id, "item", "Habitacion asignada: $title, del ${stay.start} al ${stay.end}.", actor)
+                    show("rooms", UiNotice("$title asignada a ${lead.name}.", UiTone.Success), keep)
+                }
+                "lead:reserve" -> {
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val back = mapOf("id" to lead.id.toString())
+                    val rooms = CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }
+                    val start = rooms.firstOrNull()?.startsOn
+                    val end = rooms.firstOrNull()?.endsOn
+                    if (rooms.isEmpty() || start == null || end == null) return show("lead", UiNotice("Asigna al menos una habitacion.", UiTone.Warning), back)
+                    if (rooms.any { it.startsOn != start || it.endsOn != end }) return show("lead", UiNotice("Las habitaciones tienen fechas distintas; deja solo las de una estadia.", UiTone.Warning), back)
+                    val requests = try {
+                        rooms.map { room ->
+                            val adults = values["adults_${room.id}"]?.trim()?.toIntOrNull()?.takeIf { it in 1..50 } ?: throw CrmValidationException("Cada habitacion necesita al menos un adulto (${room.title}).")
+                            val children = values["children_${room.id}"]?.trim()?.ifEmpty { "0" }?.toIntOrNull()?.takeIf { it in 0..50 } ?: 0
+                            val max = room.data["max"]?.toIntOrNull() ?: 0
+                            if (max > 0 && adults + children > max) throw CrmValidationException("${room.title} admite hasta $max personas.")
+                            CbRoomRequest(room.externalId, room.data["roomTypeId"].orEmpty().ifEmpty { throw CrmValidationException("Vuelve a asignar ${room.title}.") }, adults, children)
+                        }
+                    } catch (failure: CrmValidationException) {
+                        return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), back, values)
+                    }
+                    val country = values["country"].orEmpty().trim().uppercase()
+                    if (country.isNotEmpty() && !country.matches(Regex("^[A-Z]{2}$"))) return show("lead", UiNotice("El pais es un codigo de 2 letras, por ejemplo NI o US.", UiTone.Danger), back, values)
+                    val (first, last) = CrmContacts.splitName(lead.name)
+                    val guest = CbGuest(first, last, lead.email, CrmContacts.normalizePhone(lead.phone), country, values["zip"].orEmpty().trim().take(20))
+                    val result = try {
+                        val payment = CrmCloudbeds.paymentLabels.entries.firstOrNull { it.value == values["payment"] }?.key
+                        CrmCloudbeds.reserve(tenant, lead.id, start, end, guest, requests, payment)
+                    } catch (failure: CrmCloudbedsException) {
+                        return show("lead", UiNotice("La reserva no se creo: ${failure.message}", UiTone.Danger), back, values)
+                    } catch (failure: CrmValidationException) {
+                        return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), back, values)
+                    }
+                    val roomNames = rooms.joinToString { it.title }
+                    CrmCloudbeds.saveReservation(tenant, lead.id, result, start, end, roomNames, lead.email)
+                    rooms.zip(requests).forEach { (room, request) ->
+                        CrmItems.setStatus(tenant, room, "booked")
+                        CrmItems.setData(tenant, room, room.data + mapOf("adults" to request.adults.toString(), "children" to request.children.toString(), "reservation" to result.reservationId))
+                    }
+                    CrmRepository.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor)
+                    context.stages.firstOrNull { it.kind == StageKind.Won }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
+                    val notice = if (result.unassigned > 0) {
+                        UiNotice("Reserva ${result.reservationId} creada, pero Cloudbeds dejo ${result.unassigned} habitacion(es) sin asignar (puede que se ocupara o que la propiedad no permita elegir habitacion). Revisala en Cloudbeds.", UiTone.Warning)
+                    } else UiNotice("Reserva ${result.reservationId} creada en Cloudbeds.", UiTone.Success)
+                    show("lead", notice, back)
+                }
+                "integrations:cbSave" -> {
+                    try {
+                        CrmCloudbeds.saveForm(tenant, values, CrmMail.templates(tenant))
+                    } catch (failure: CrmValidationException) {
+                        return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
+                    }
+                    show("integrations", UiNotice("Cloudbeds guardado.", UiTone.Success), emptyMap())
+                }
+                "integrations:cbTest" -> {
+                    val notice = try {
+                        UiNotice("Conexion correcta con Cloudbeds: ${CrmCloudbeds.test(tenant)}.", UiTone.Success)
+                    } catch (failure: CrmCloudbedsException) {
+                        UiNotice(failure.message.orEmpty(), UiTone.Danger)
+                    }
+                    show("integrations", notice, emptyMap())
                 }
                 "lead:itemManual" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())

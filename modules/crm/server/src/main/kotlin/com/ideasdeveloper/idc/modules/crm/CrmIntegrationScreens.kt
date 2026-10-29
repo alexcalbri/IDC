@@ -26,7 +26,8 @@ object CrmIntegrationScreens {
     fun hookUrl(context: CrmScreens.Context, name: String) = "${context.publicBase}/modules/crm/hooks/${context.permissions.companyCode}/$name"
 
     fun integrations(context: CrmScreens.Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> =
-        meta(context, submitted, pickers = params["numbers"]) + encuentra24(context) + CrmWordPressScreens.settings(context, params["secret"])
+        meta(context, submitted, pickers = params["numbers"]) + encuentra24(context) + CrmWordPressScreens.settings(context, params["secret"]) +
+            CrmCloudbedsScreens.settings(context)
 
     // ---- Encuentra24 Leads API ----
 

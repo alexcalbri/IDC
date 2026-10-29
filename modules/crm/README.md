@@ -129,6 +129,8 @@ sent by job `outbox` every minute with up to 5 attempts.
 | `digest` | 15 min | Daily digest once the digest hour has passed. |
 | `imap` | 5 min | Read the company mailbox. |
 | `encuentra24` | 5 min | Import Encuentra24 leads. |
+| `cloudbeds-welcome` | 15 min | Welcome emails before check-in. |
+| `cloudbeds-sync` | 30 min | Reservation statuses; archive after check-out. |
 
 ## Meta: WhatsApp, Messenger and Instagram (V003)
 
@@ -214,7 +216,36 @@ detail searches the site (**Buscar propiedades**), links several properties and
 **Cerrar venta** marks the property sold on the site and moves the lead to the
 first won stage.
 
+## Cloudbeds (V006)
+
+**Integraciones > Cloudbeds**: API key of the property (scopes `read:room`,
+`read:rate`, `read:reservation`, `write:reservation`), optional property ID,
+the payment method sent to Cloudbeds (required by `postReservation`; payments
+are handled in Cloudbeds), welcome email (template, days before check-in,
+hour) and archiving after check-out.
+
+- **Buscar habitaciones** (lead detail): free rooms for the lead's dates and
+  guests: `getRooms` with dates (unassigned rooms; blocked and virtual ones
+  dropped) joined with the cheapest available `totalRate` of each type from
+  `getRatePlans`. A user assigns one or several rooms (`crm_lead_items`, source
+  `cloudbeds`, status Elegida); the rooms of one reservation share dates.
+- **Confirmar reserva**: guests per room, optional country (2 letters) and zip;
+  the lead's email is required by Cloudbeds. Availability is checked again,
+  `postReservation` creates one reservation with every room (`roomID` per
+  room, `sendEmailConfirmation=false`, `thirdPartyIdentifier=idc-<lead>`),
+  rooms become Reservada, the reservation is stored (`crm_reservations`) and
+  the lead moves to the first won stage. Rooms left unassigned by Cloudbeds are
+  reported. A lead with assigned rooms cannot be dragged to a won stage.
+- **Welcome email** (job `cloudbeds-welcome`, 15 min): from the configured hour,
+  reservations whose check-in is the configured days away or less get the
+  welcome template (with `{codigo_cliente}` as WiFi password, `{checkin}`,
+  `{checkout}`, `{habitaciones}`, `{reserva}`) once, through the outbox; it is
+  also added to the conversation.
+- **Status** (job `cloudbeds-sync`, 30 min): `getReservation` of open
+  reservations; changes go to the activity and `checked_out` archives the lead
+  (`crm_leads.archived_at`): archived leads leave the pipeline, lists and counts.
+
 ## Not in this version
 
-Automations (move by rule), Cloudbeds reservations, imports and attachments
+Automations (move by rule), imports and attachments
 come in the next versions.
