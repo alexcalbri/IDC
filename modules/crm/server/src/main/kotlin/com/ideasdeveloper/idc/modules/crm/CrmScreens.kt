@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
+import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import com.ideasdeveloper.idc.ui.UiBadge
 import com.ideasdeveloper.idc.ui.UiBoard
 import com.ideasdeveloper.idc.ui.UiBoardCard
@@ -44,6 +45,7 @@ object CrmScreens {
     const val Reception = "crm.reception"
     const val SeeAll = "crm.leads.all"
     const val Settings = "crm.settings"
+    const val Assign = "crm.assign"
 
     private const val BoardPerStage = 30
     private const val PageSize = 50
@@ -58,8 +60,13 @@ object CrmScreens {
         Section("leads", "Leads", View),
         Section("reception", "Recepcion", Reception, needsInterests = true),
         Section("followups", "Seguimientos", View),
+        Section("assignments", "Asignaciones", Assign),
         Section("new", "Nuevo lead", Manage),
         Section("settings", "Configuracion", Settings),
+        Section("mail", "Correo", Settings),
+        Section("templates", "Plantillas", Settings),
+        Section("spam", "Anti-spam", Settings),
+        Section("team", "Equipo", Settings),
     )
 
     // Screens outside the navigation.
@@ -79,6 +86,8 @@ object CrmScreens {
         val stages: List<CrmStage>,
         val interests: List<CrmInterest>,
         val users: List<CrmUser>,
+        // Server SMTP, used when the company sends with it.
+        val serverMail: SmtpSettings? = null,
         val today: LocalDate = LocalDate.now(),
     ) {
         val names = CrmNames(users, interests)
@@ -88,10 +97,13 @@ object CrmScreens {
         // Interests the user may see and assign (all of them with "see all").
         val usableInterests get() = interests.filter { scope.seesAll || it.id in scope.interests }
 
+        // Who may choose a lead's responsible user: assigners and users that see every lead.
+        val canAssign get() = permissions.has(Assign) || scope.seesAll
+
         companion object {
-            fun load(tenant: Connection, permissions: ModulePermissions) = Context(
+            fun load(tenant: Connection, permissions: ModulePermissions, serverMail: SmtpSettings? = null) = Context(
                 tenant, permissions, CrmRepository.scope(tenant, permissions),
-                CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant),
+                CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant), serverMail,
             )
         }
     }
@@ -121,6 +133,11 @@ object CrmScreens {
             "reception" -> reception(context, params)
             "followups" -> followUps(context, params)
             "new" -> newLead(context, submitted)
+            "assignments" -> CrmAdminScreens.assignments(context)
+            "mail" -> CrmAdminScreens.mail(context, submitted)
+            "templates" -> CrmAdminScreens.templates(context, params, submitted)
+            "spam" -> CrmAdminScreens.spam(context, submitted)
+            "team" -> CrmAdminScreens.team(context)
             else -> settings(context, params, submitted)
         }
         return frame(context, screen, title, notice, body)
@@ -242,6 +259,8 @@ object CrmScreens {
             add(if (lead.interestId == null) UiBadge(CrmForms.NoInterest, UiTone.Warning) else UiBadge(context.names.interest(lead.interestId), UiTone.Info))
         }
         if (stage?.kind == StageKind.Open) followUpState(lead.followUpOn, context.today)?.let { (label, tone) -> add(UiBadge(label, tone)) }
+        lead.suggestedOwnerUserId?.let { add(UiBadge("Sugerido: ${context.names.user(it)}", UiTone.Info)) }
+        if (lead.reviewReason.isNotEmpty()) add(UiBadge("Por revisar", UiTone.Danger))
     }
 
     private fun card(context: Context, lead: CrmLead, stage: CrmStage) = UiBoardCard(
@@ -348,7 +367,12 @@ object CrmScreens {
                 (usable + listOfNotNull(current)).distinct()
             add(UiField("interest", "Interes", type = "dropdown", readOnly = readOnly, options = options, section = "Seguimiento"))
         }
-        add(UiField("owner", "Responsable", type = "dropdown", readOnly = readOnly, options = listOf(CrmForms.Unassigned) + context.users.map { it.name }, section = "Seguimiento"))
+        add(
+            UiField(
+                "owner", "Responsable", type = "dropdown", readOnly = readOnly || !context.canAssign,
+                options = listOf(CrmForms.Unassigned) + context.users.map { it.name }, section = "Seguimiento",
+            ),
+        )
         add(UiField("followUpOn", "Proximo seguimiento", type = "date", readOnly = readOnly, section = "Seguimiento"))
         add(UiField("source", "Origen", readOnly = readOnly, placeholder = "Sitio web, WhatsApp, referido...", section = "Seguimiento"))
         add(UiField("targetStart", "Fecha de inicio", type = "date", readOnly = readOnly, help = "Reserva, visita o mudanza.", section = "Lo que busca"))
@@ -437,7 +461,25 @@ object CrmScreens {
             listOf(UiTimeline(CrmRepository.activity(context.tenant, lead.id, 100).map { entry(it) })),
             title = "Actividad",
         )
-        return listOfNotNull(header, actions, form, note.takeIf { canEdit }, timeline)
+        val review = lead.reviewReason.takeIf { it.isNotEmpty() }?.let { reason ->
+            UiCard(
+                listOf(UiText(reason, tone = UiTone.Danger)),
+                title = "Por revisar",
+                actions = listOfNotNull(UiButton("Marcar revisado", UiRequest(UiRoute + "/lead", params = id + ("op" to "reviewed")), style = "secondary").takeIf { canEdit }),
+            )
+        }
+        val suggestion = lead.suggestedOwnerUserId?.let { suggested ->
+            UiCard(
+                listOf(UiText("El origen del lead sugiere como responsable a ${context.names.user(suggested)}.")),
+                title = "Responsable sugerido",
+                actions = if (context.canAssign) listOf(
+                    UiButton("Aprobar", UiRequest(UiRoute + "/lead", params = id + ("op" to "approve"))),
+                    UiButton("Descartar", UiRequest(UiRoute + "/lead", params = id + ("op" to "discard")), style = "secondary"),
+                ) else emptyList(),
+            )
+        }
+        val conversation = CrmAdminScreens.conversation(context, lead, canEdit, submitted)
+        return listOfNotNull(header, actions, review, suggestion, form, conversation, note.takeIf { canEdit }, timeline)
     }
 
     private fun entry(activity: CrmActivity): UiTimelineEntry {

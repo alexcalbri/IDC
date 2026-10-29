@@ -63,7 +63,7 @@ Routes: `GET /modules/crm/ui/{screen}` and `POST /modules/crm/ui/{screen}?op=...
 | Id | Meaning |
 | --- | --- |
 | `crm.view` | Use the CRM within the user's scope. |
-| `crm.leads.manage` | Create and edit leads, move stages, add notes. |
+| `crm.leads.manage` | Create and edit leads, move stages, add notes, send messages. |
 | `crm.leads.delete` | Delete leads (the customer stays). |
 | `crm.reception` | See and categorize leads without interest. |
 | `crm.leads.all` | See leads of every interest. |
