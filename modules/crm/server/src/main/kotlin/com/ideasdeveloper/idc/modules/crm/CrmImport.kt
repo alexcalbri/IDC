@@ -554,7 +554,7 @@ object CrmImport {
             tenant.prepareStatement(
                 """
                 INSERT INTO crm_leads (id, customer_id, stage_id, interest_id, owner_user_id, source, import_key, closed_at, created_at, stage_changed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN ? END, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CAST(? AS timestamptz) END, ?, ?)
                 """.trimIndent()
             ).use { insert ->
                 insert.setObject(1, id)
