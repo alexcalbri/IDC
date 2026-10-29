@@ -51,6 +51,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V005__wordpress_and_items.sql",
         "modules/crm/migrations/V006__cloudbeds.sql",
         "modules/crm/migrations/V007__imports.sql",
+        "modules/crm/migrations/V008__monday_token.sql",
     )
 
     override val runtimeTables = listOf(
@@ -133,7 +134,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.8.0",
+        version = "0.8.1",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),

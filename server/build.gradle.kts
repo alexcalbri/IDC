@@ -213,6 +213,13 @@ val validateModules = tasks.register("validateModules") {
                 if (codeVersion != null && manifestVersion != null && codeVersion != manifestVersion) {
                     problem("module.json version '$manifestVersion' differs from the ModuleDefinition version '$codeVersion'.")
                 }
+                // A migration missing from migrationPaths is never applied to any company.
+                if (serverModuleSource != null) {
+                    module.resolve("migrations").listFiles().orEmpty().filter { migrationPattern.matches(it.name) }.sortedBy { it.name }.forEach { file ->
+                        val path = "modules/$id/migrations/${file.name}"
+                        if (mainKotlin.none { it.contains("\"$path\"") }) problem("migrations/${file.name} is not listed in migrationPaths, so it would never be applied.")
+                    }
+                }
             }
         }
 
