@@ -126,10 +126,12 @@ object CrmCloudbedsScreens {
             } + listOf(
                 UiField("country", "Pais (codigo de 2 letras)", placeholder = "NI", section = "Datos del huesped"),
                 UiField("zip", "Codigo postal", section = "Datos del huesped"),
+                UiField("payment", "Metodo de pago", type = "dropdown", required = true, options = CrmCloudbeds.paymentLabels.values.toList(), section = "Datos del huesped",
+                    help = "Cloudbeds lo exige; el cobro se gestiona en Cloudbeds."),
             )
             val values = rooms.flatMap { room ->
                 listOf("adults_${room.id}" to room.data["adults"].orEmpty().ifEmpty { "2" }, "children_${room.id}" to room.data["children"].orEmpty().ifEmpty { "0" })
-            }.toMap()
+            }.toMap() + ("payment" to (CrmCloudbeds.paymentLabels[settings.paymentMethod] ?: CrmCloudbeds.paymentLabels.getValue("cash")))
             UiForm(
                 "reservation", fields, values,
                 submit = UiButton(
@@ -181,7 +183,7 @@ object CrmCloudbedsScreens {
                             UiField("enabled", "Usar Cloudbeds", type = "boolean"),
                             UiField("apiKey", "API key", type = "password", visibleWhen = on),
                             UiField("propertyId", "ID de la propiedad", visibleWhen = on, help = "Solo si la API key tiene varias propiedades."),
-                            UiField("paymentMethod", "Metodo de pago que se envia", type = "dropdown", options = CrmCloudbeds.paymentLabels.values.toList(), visibleWhen = on),
+                            UiField("paymentMethod", "Metodo de pago por defecto", help = "Se puede cambiar en cada reserva.", type = "dropdown", options = CrmCloudbeds.paymentLabels.values.toList(), visibleWhen = on),
                             UiField("archiveOnCheckout", "Archivar el lead cuando el huesped hace check-out", type = "boolean", visibleWhen = on),
                             UiField("welcomeEnabled", "Enviar correo de bienvenida", type = "boolean", visibleWhen = on, section = "Bienvenida"),
                             UiField("welcomeTemplate", "Plantilla", type = "dropdown", options = templates.map { it.name }, visibleWhen = welcome, section = "Bienvenida",

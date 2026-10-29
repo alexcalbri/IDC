@@ -224,7 +224,16 @@ object CrmCloudbeds {
     // ---- Reservations ----
 
     /** Form fields of postReservation; Cloudbeds expects the arrays as rooms[0][roomTypeID]=... */
-    fun reservationForm(settings: CrmCloudbedsSettings, leadId: UUID, start: LocalDate, end: LocalDate, guest: CbGuest, rooms: List<CbRoomRequest>): List<Pair<String, String>> {
+    fun reservationForm(
+        settings: CrmCloudbedsSettings,
+        leadId: UUID,
+        start: LocalDate,
+        end: LocalDate,
+        guest: CbGuest,
+        rooms: List<CbRoomRequest>,
+        // Chosen on the lead; the default is the one of Integraciones.
+        payment: String = settings.paymentMethod,
+    ): List<Pair<String, String>> {
         val form = mutableListOf(
             "startDate" to start.toString(),
             "endDate" to end.toString(),
@@ -233,7 +242,7 @@ object CrmCloudbeds {
             "guestEmail" to guest.email,
             "guestCountry" to guest.country,
             "guestZip" to guest.zip,
-            "paymentMethod" to settings.paymentMethod,
+            "paymentMethod" to (payment.takeIf { it in paymentLabels } ?: settings.paymentMethod),
             "thirdPartyIdentifier" to "idc-$leadId",
             // The CRM sends its own welcome email.
             "sendEmailConfirmation" to "false",
@@ -259,7 +268,7 @@ object CrmCloudbeds {
         return CbReservationResult(id, body["status"].str().ifEmpty { "confirmed" }, body["grandTotal"].str().toBigDecimalOrNull(), body["unassigned"].arr().size)
     }
 
-    fun reserve(tenant: Connection, leadId: UUID, start: LocalDate, end: LocalDate, guest: CbGuest, rooms: List<CbRoomRequest>): CbReservationResult {
+    fun reserve(tenant: Connection, leadId: UUID, start: LocalDate, end: LocalDate, guest: CbGuest, rooms: List<CbRoomRequest>, payment: String? = null): CbReservationResult {
         if (rooms.isEmpty()) throw CrmValidationException("Elige al menos una habitacion.")
         if (!CrmContacts.isEmail(guest.email)) throw CrmValidationException("Cloudbeds exige el correo del huesped: agregalo al lead.")
         // Check again: a room may have been taken since it was chosen.
@@ -267,7 +276,8 @@ object CrmCloudbeds {
         rooms.filter { it.roomId !in free }.takeIf { it.isNotEmpty() }?.let { taken ->
             throw CrmValidationException("Ya no estan libres: ${taken.joinToString { it.roomId }}. Busca de nuevo las habitaciones.")
         }
-        return parseReservation(post(load(tenant), "postReservation", reservationForm(load(tenant), leadId, start, end, guest, rooms)))
+        val settings = load(tenant)
+        return parseReservation(post(settings, "postReservation", reservationForm(settings, leadId, start, end, guest, rooms, payment ?: settings.paymentMethod)))
     }
 
     fun saveReservation(tenant: Connection, leadId: UUID, result: CbReservationResult, start: LocalDate, end: LocalDate, rooms: String, email: String) {
