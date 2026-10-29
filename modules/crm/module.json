@@ -1,0 +1,6 @@
+{
+  "id": "crm",
+  "displayName": "CRM",
+  "description": "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
+  "version": "0.1.0"
+}

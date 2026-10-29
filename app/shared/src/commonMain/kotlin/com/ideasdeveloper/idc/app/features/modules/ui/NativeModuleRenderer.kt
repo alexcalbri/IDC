@@ -5,6 +5,8 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,15 +40,25 @@ import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -56,7 +68,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import com.ideasdeveloper.idc.ui.UiAction
+import com.ideasdeveloper.idc.ui.UiBadge
 import com.ideasdeveloper.idc.ui.UiBarChart
+import com.ideasdeveloper.idc.ui.UiBoard
 import com.ideasdeveloper.idc.ui.UiButton
 import com.ideasdeveloper.idc.ui.UiCard
 import com.ideasdeveloper.idc.ui.UiColumn
@@ -65,6 +79,7 @@ import com.ideasdeveloper.idc.ui.UiField
 import com.ideasdeveloper.idc.ui.UiForm
 import com.ideasdeveloper.idc.ui.UiGrid
 import com.ideasdeveloper.idc.ui.UiImage
+import com.ideasdeveloper.idc.ui.UiList
 import com.ideasdeveloper.idc.ui.UiMetric
 import com.ideasdeveloper.idc.ui.UiNode
 import com.ideasdeveloper.idc.ui.UiNotice
@@ -74,6 +89,7 @@ import com.ideasdeveloper.idc.ui.UiStatus
 import com.ideasdeveloper.idc.ui.UiTable
 import com.ideasdeveloper.idc.ui.UiText
 import com.ideasdeveloper.idc.ui.UiTextStyle
+import com.ideasdeveloper.idc.ui.UiTimeline
 import com.ideasdeveloper.idc.ui.UiTone
 import com.ideasdeveloper.idc.ui.UiUnknownAction
 
@@ -150,6 +166,9 @@ fun ModuleNode(node: UiNode, context: ModuleRenderContext) {
         is UiImage -> ModuleImage(node, context)
         is UiDivider -> HorizontalDivider(color = context.colors.border)
         is UiSpacer -> Spacer(Modifier.height(node.size.dp))
+        is UiBoard -> ModuleBoard(node, context)
+        is UiList -> ModuleList(node, context)
+        is UiTimeline -> ModuleTimeline(node, context.colors)
         // Piezas de un servidor mas nuevo: se omiten para no romper la pantalla.
         else -> Unit
     }
@@ -503,6 +522,204 @@ private fun ModuleField(field: UiField, value: String, enabled: Boolean, colors:
             }
         }
         if (field.help.isNotBlank()) Text(field.help, color = colors.muted, fontSize = 12.sp)
+    }
+}
+
+@Composable
+private fun ModuleBadge(badge: UiBadge, colors: ModuleColors) {
+    val tone = colors.tone(badge.tone)
+    Text(
+        badge.label,
+        color = colors.text,
+        fontSize = 11.sp,
+        fontWeight = FontWeight.SemiBold,
+        maxLines = 1,
+        modifier = Modifier
+            .background(tone.copy(alpha = 0.18f), RoundedCornerShape(50))
+            .border(1.dp, tone.copy(alpha = 0.5f), RoundedCornerShape(50))
+            .padding(horizontal = 8.dp, vertical = 2.dp),
+    )
+}
+
+@Composable
+private fun ModuleBadges(badges: List<UiBadge>, colors: ModuleColors) {
+    if (badges.isEmpty()) return
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        badges.forEach { ModuleBadge(it, colors) }
+    }
+}
+
+// Tablero kanban: columnas con desplazamiento horizontal. Una tarjeta se mueve manteniendola
+// presionada y arrastrandola a otra columna, o con su menu "Mover a" (util en telefonos).
+@Composable
+private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
+    val colors = context.colors
+    if (node.columns.isEmpty()) {
+        Text(node.emptyText, color = colors.muted, fontSize = 13.sp)
+        return
+    }
+    // Limites de cada columna en coordenadas de la ventana, para saber donde se suelta la tarjeta.
+    val columnBounds = remember(node) { mutableStateMapOf<String, Rect>() }
+    var dragging by remember(node) { mutableStateOf<String?>(null) }
+    var pointer by remember(node) { mutableStateOf(Offset.Zero) }
+    var dragOffset by remember(node) { mutableStateOf(Offset.Zero) }
+    val target = dragging?.let { columnBounds.entries.firstOrNull { (_, bounds) -> bounds.contains(pointer + dragOffset) }?.key }
+
+    fun move(cardId: String, columnId: String) {
+        node.move?.let { move -> context.onAction(move.copy(params = move.params + mapOf("card" to cardId, "column" to columnId))) }
+    }
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 4.dp),
+    ) {
+        node.columns.forEach { column ->
+            val hostsDragged = column.cards.any { it.id == dragging }
+            val highlighted = target == column.id && !hostsDragged
+            Column(
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier
+                    .width(node.columnWidth.dp)
+                    .zIndex(if (hostsDragged) 1f else 0f)
+                    .onGloballyPositioned { columnBounds[column.id] = it.boundsInRoot() }
+                    .background(if (highlighted) colors.accent.copy(alpha = 0.14f) else colors.surfaceAlt, RoundedCornerShape(16.dp))
+                    .border(1.dp, if (highlighted) colors.accent else colors.border, RoundedCornerShape(16.dp))
+                    .padding(10.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(Modifier.size(10.dp).background(colors.tone(column.tone), CircleShape))
+                    Text(column.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    Text(column.cards.size.toString(), color = colors.muted, fontSize = 12.sp)
+                }
+                if (column.caption.isNotBlank()) Text(column.caption, color = colors.muted, fontSize = 12.sp)
+                if (column.cards.isEmpty()) Text("Sin elementos.", color = colors.muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
+                column.cards.forEach { card -> key(card.id) {
+                    var origin by remember(card.id) { mutableStateOf(Offset.Zero) }
+                    var menu by remember(card.id) { mutableStateOf(false) }
+                    val isDragged = dragging == card.id
+                    val canMove = node.move != null && !context.busy
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .onGloballyPositioned { origin = it.positionInRoot() }
+                            .graphicsLayer {
+                                if (isDragged) {
+                                    translationX = dragOffset.x
+                                    translationY = dragOffset.y
+                                    shadowElevation = 12f
+                                }
+                            }
+                            .then(
+                                if (canMove) Modifier.pointerInput(card.id, column.id) {
+                                    detectDragGesturesAfterLongPress(
+                                        onDragStart = { start ->
+                                            dragging = card.id
+                                            pointer = origin + start
+                                            dragOffset = Offset.Zero
+                                        },
+                                        onDrag = { change, amount ->
+                                            change.consume()
+                                            dragOffset += amount
+                                        },
+                                        onDragEnd = {
+                                            val dropped = columnBounds.entries.firstOrNull { (_, bounds) -> bounds.contains(pointer + dragOffset) }?.key
+                                            dragging = null
+                                            dragOffset = Offset.Zero
+                                            if (dropped != null && dropped != column.id) move(card.id, dropped)
+                                        },
+                                        onDragCancel = {
+                                            dragging = null
+                                            dragOffset = Offset.Zero
+                                        },
+                                    )
+                                } else Modifier
+                            )
+                            .background(colors.surface, RoundedCornerShape(12.dp))
+                            .border(1.dp, if (isDragged) colors.accent else colors.border, RoundedCornerShape(12.dp))
+                            .then(card.action?.let { action -> Modifier.clickable(enabled = !context.busy) { context.onAction(action) } } ?: Modifier)
+                            .padding(10.dp),
+                    ) {
+                        Text(card.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                        if (card.subtitle.isNotBlank()) Text(card.subtitle, color = colors.muted, fontSize = 12.sp, maxLines = 2)
+                        card.details.forEach { Text(it, color = colors.muted, fontSize = 12.sp) }
+                        ModuleBadges(card.badges, colors)
+                        if (canMove && node.columns.size > 1) {
+                            Box {
+                                Text(
+                                    "Mover a...",
+                                    color = colors.accent,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    modifier = Modifier.clickable { menu = true }.padding(vertical = 2.dp),
+                                )
+                                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                                    node.columns.filter { it.id != column.id }.forEach { other ->
+                                        DropdownMenuItem(
+                                            text = { Text(other.title) },
+                                            onClick = {
+                                                menu = false
+                                                move(card.id, other.id)
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } }
+                column.footer?.let { ModuleButton(it, context) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModuleList(node: UiList, context: ModuleRenderContext) {
+    val colors = context.colors
+    if (node.items.isEmpty()) {
+        Text(node.emptyText, color = colors.muted, fontSize = 13.sp)
+        return
+    }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        node.items.forEachIndexed { index, item ->
+            if (index > 0) HorizontalDivider(color = colors.border)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .then(item.action?.let { action -> Modifier.clickable(enabled = !context.busy) { context.onAction(action) } } ?: Modifier)
+                    .padding(vertical = 10.dp, horizontal = 4.dp),
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.weight(1f)) {
+                    Text(item.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    if (item.subtitle.isNotBlank()) Text(item.subtitle, color = colors.muted, fontSize = 12.sp, maxLines = 2)
+                    ModuleBadges(item.badges, colors)
+                }
+                if (item.trailing.isNotBlank()) Text(item.trailing, color = colors.muted, fontSize = 12.sp)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModuleTimeline(node: UiTimeline, colors: ModuleColors) {
+    if (node.entries.isEmpty()) {
+        Text(node.emptyText, color = colors.muted, fontSize = 13.sp)
+        return
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+        node.entries.forEach { entry ->
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(Modifier.padding(top = 4.dp).size(10.dp).background(colors.tone(entry.tone), CircleShape))
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
+                    Text(entry.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    if (entry.body.isNotBlank()) Text(entry.body, color = colors.text, fontSize = 13.sp)
+                    if (entry.caption.isNotBlank()) Text(entry.caption, color = colors.muted, fontSize = 11.sp)
+                }
+            }
+        }
     }
 }
 

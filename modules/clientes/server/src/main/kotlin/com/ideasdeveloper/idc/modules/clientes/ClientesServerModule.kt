@@ -31,13 +31,14 @@ object ClientesServerModule : ServerModule {
         "modules/clientes/migrations/V002__require_customer_contact_fields.sql",
         "modules/clientes/migrations/V003__add_customer_type.sql",
         "modules/clientes/migrations/V004__add_customer_code.sql",
+        "modules/clientes/migrations/V005__optional_customer_contact_fields.sql",
     )
 
     override val definition = ModuleDefinition(
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.4.0",
+        version = "0.5.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -54,8 +55,8 @@ object ClientesServerModule : ServerModule {
                 kind = "list_create_edit_delete",
                 fields = listOf(
                     ModuleFieldDefinition("displayName", "Nombre", "text", required = true),
-                    ModuleFieldDefinition("primaryEmail", "Correo", "email", required = true),
-                    ModuleFieldDefinition("primaryPhone", "Telefono", "phone", required = true),
+                    ModuleFieldDefinition("primaryEmail", "Correo", "email"),
+                    ModuleFieldDefinition("primaryPhone", "Telefono", "phone"),
                     ModuleFieldDefinition("customerType", "Tipo", "text", readOnly = true),
                     ModuleFieldDefinition("customerCode", "Codigo de cliente", "text", readOnly = true, help = "Se genera automaticamente y no se repite."),
                 ),
@@ -184,8 +185,9 @@ object ClientesServerModule : ServerModule {
     private val allowedFieldTypes = setOf("text", "textarea", "number", "money", "date", "datetime", "email", "phone", "boolean", "select", "multi_select")
 
     private fun validateCustomerRequest(connection: Connection, request: CreateCustomerRequest): ClientesErrorResponse? {
-        if (request.displayName.isBlank() || request.primaryEmail.isBlank() || request.primaryPhone.isBlank()) {
-            return ClientesErrorResponse("CUSTOMER_REQUIRED_FIELDS", "Nombre, correo y telefono son obligatorios.")
+        // Email and phone are optional since V005; only the name is required.
+        if (request.displayName.isBlank()) {
+            return ClientesErrorResponse("CUSTOMER_REQUIRED_FIELDS", "El nombre es obligatorio.")
         }
         val fields = loadFields(connection).filter { it.required && it.active }
         val missing = fields.firstOrNull { field -> request.dynamicFields[field.fieldKey] == null }
@@ -209,7 +211,8 @@ object ClientesServerModule : ServerModule {
         }
     }
 
-    private fun emailExists(connection: Connection, email: String, excluding: UUID?): Boolean = connection.prepareStatement(
+    // Customers without email never collide with each other.
+    private fun emailExists(connection: Connection, email: String, excluding: UUID?): Boolean = email.isNotBlank() && connection.prepareStatement(
         "SELECT 1 FROM customers WHERE lower(primary_email) = lower(?) AND status <> 'archived' AND (? IS NULL OR id <> ?)"
     ).use { query ->
         query.setString(1, email)

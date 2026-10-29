@@ -290,6 +290,87 @@ data class UiSpacer(
     @EncodeDefault override val type: String = "spacer",
 ) : UiNode
 
+// Small colored label, e.g. an interest or a due date on a board card or a list item.
+@Serializable
+data class UiBadge(val label: String, val tone: String = UiTone.Neutral)
+
+@Serializable
+data class UiBoardCard(
+    val id: String,
+    val title: String,
+    val subtitle: String = "",
+    // Short lines under the subtitle (owner, dates, value...).
+    val details: List<String> = emptyList(),
+    val badges: List<UiBadge> = emptyList(),
+    // Runs when the card is opened, typically a UiNavigate to its detail.
+    val action: UiAction? = null,
+)
+
+@Serializable
+data class UiBoardColumn(
+    val id: String,
+    val title: String,
+    val tone: String = UiTone.Neutral,
+    // Shown under the title, e.g. "12 leads" when the column shows only part of them.
+    val caption: String = "",
+    val cards: List<UiBoardCard> = emptyList(),
+    // Optional button at the bottom of the column, e.g. to see all its cards.
+    val footer: UiButton? = null,
+)
+
+/**
+ * Kanban board: columns side by side (scrolling horizontally) with cards. With [move] set, users
+ * drag a card to another column (long press, then drag) or pick the column from the card menu, and
+ * the app runs [move] adding the params "card" (card id) and "column" (target column id).
+ */
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiBoard(
+    val columns: List<UiBoardColumn>,
+    val move: UiRequest? = null,
+    val columnWidth: Int = 280,
+    val emptyText: String = "Sin elementos.",
+    @EncodeDefault override val type: String = "board",
+) : UiNode
+
+@Serializable
+data class UiListItem(
+    val title: String,
+    val subtitle: String = "",
+    // Short text at the right, e.g. a date.
+    val trailing: String = "",
+    val badges: List<UiBadge> = emptyList(),
+    // Runs when the item is tapped.
+    val action: UiAction? = null,
+)
+
+// Vertical list of tappable rows, for records that open a detail screen.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiList(
+    val items: List<UiListItem>,
+    val emptyText: String = "Sin datos.",
+    @EncodeDefault override val type: String = "list",
+) : UiNode
+
+@Serializable
+data class UiTimelineEntry(
+    val title: String,
+    val body: String = "",
+    // Who and when, e.g. "ana - 2026-10-28 14:05".
+    val caption: String = "",
+    val tone: String = UiTone.Neutral,
+)
+
+// Chronological entries (newest first as sent), e.g. the activity of a record.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiTimeline(
+    val entries: List<UiTimelineEntry>,
+    val emptyText: String = "Sin actividad.",
+    @EncodeDefault override val type: String = "timeline",
+) : UiNode
+
 // Piece sent by a newer server; clients skip it.
 @Serializable
 data class UiUnknownNode(override val type: String = "unknown") : UiNode
@@ -311,6 +392,9 @@ object UiNodeSerializer : JsonContentPolymorphicSerializer<UiNode>(UiNode::class
             "image" -> UiImage.serializer()
             "divider" -> UiDivider.serializer()
             "spacer" -> UiSpacer.serializer()
+            "board" -> UiBoard.serializer()
+            "list" -> UiList.serializer()
+            "timeline" -> UiTimeline.serializer()
             else -> UiUnknownNode.serializer()
         }
 }
