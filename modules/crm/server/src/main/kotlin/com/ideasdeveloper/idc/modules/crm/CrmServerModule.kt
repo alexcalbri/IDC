@@ -52,6 +52,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V006__cloudbeds.sql",
         "modules/crm/migrations/V007__imports.sql",
         "modules/crm/migrations/V008__monday_token.sql",
+        "modules/crm/migrations/V009__monday_background_read.sql",
     )
 
     override val runtimeTables = listOf(
@@ -94,8 +95,11 @@ object CrmServerModule : ServerModule {
         // Cloudbeds: welcome emails before check-in and reservation statuses (archive after check-out).
         ModuleJob("cloudbeds-welcome", Duration.ofMinutes(15)) { context -> CrmCloudbeds.sendWelcomes(context.tenant, LocalDateTime.now()) },
         ModuleJob("cloudbeds-sync", Duration.ofMinutes(30)) { context -> CrmCloudbeds.syncStatuses(context.tenant, java.time.LocalDate.now()) },
-        // Imports in progress: 300 rows a minute.
-        ModuleJob("import", Duration.ofMinutes(1)) { context -> CrmImport.runPending(context.tenant, 300, java.time.LocalDate.now()) },
+        // Imports: queued monday boards are read, then imports in progress apply 300 rows a minute.
+        ModuleJob("import", Duration.ofMinutes(1)) { context ->
+            CrmImport.readQueued(context.tenant)
+            CrmImport.runPending(context.tenant, 300, java.time.LocalDate.now())
+        },
         ModuleJob("encuentra24", Duration.ofMinutes(5)) { context ->
             if (CrmEncuentra24.load(context.tenant).ready) {
                 runCatching { CrmEncuentra24.sync(context.tenant) { leadId -> CrmNotify.newLead(context.tenant, leadId) } }
@@ -134,7 +138,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.8.1",
+        version = "0.8.2",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -638,24 +642,26 @@ object CrmServerModule : ServerModule {
                     CrmImport.saveMondayToken(tenant, null)
                     show("import", UiNotice("Token de monday borrado.", UiTone.Success), emptyMap())
                 }
-                "import:text", "import:url", "import:monday", "import:leadspro" -> {
+                "import:monday" -> {
+                    // Reading a board takes minutes, longer than the app waits: the import job reads it.
+                    if (CrmImport.mondayToken(tenant) == null) return show("import", UiNotice("Guarda primero el token de la API de monday.", UiTone.Danger), emptyMap())
+                    val boards = values.filter { it.key.startsWith("board:") && it.value == "true" }.keys.map { it.removePrefix("board:") }
+                    val job = try {
+                        CrmImport.queueMonday(tenant, boards, actor.userId)
+                    } catch (failure: CrmImportException) {
+                        return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), mapOf("monday" to "boards"))
+                    }
+                    show("importjob", UiNotice("Se estan leyendo los tableros de monday.", UiTone.Success), mapOf("job" to job.toString()))
+                }
+                "import:text", "import:url", "import:leadspro" -> {
                     val (source, name, table) = try {
                         when (params["op"]) {
                             "text" -> Triple("file", values["name"].orEmpty().trim().ifEmpty { "CSV pegado ${context.today}" }, CrmImportParse.csv(values["csv"].orEmpty()))
                             "url" -> values["url"].orEmpty().trim().let { url -> Triple("file", url.substringAfterLast('/').take(80).ifEmpty { "Archivo" }, CrmImport.fromUrl(url)) }
-                            "monday" -> {
-                                val token = CrmImport.mondayToken(tenant) ?: throw CrmImportException("Guarda primero el token de la API de monday.")
-                                val boards = values.filter { it.key.startsWith("board:") && it.value == "true" }.keys.map { it.removePrefix("board:") }
-                                if (boards.isEmpty()) throw CrmImportException("Marca al menos un tablero.")
-                                val table = CrmImport.fromMonday(token, boards)
-                                val names = table.rows.mapNotNull { it[CrmImport.BoardColumn]?.takeIf(String::isNotEmpty) }.distinct()
-                                Triple("monday", "monday ${names.ifEmpty { boards }.joinToString()}".take(200), table)
-                            }
                             else -> Triple("leadspro", "CT Leads Pro ${context.today}", CrmImport.fromLeadsPro(tenant))
                         }
                     } catch (failure: CrmImportException) {
-                        // A failed monday read keeps the board list open so the selection can be changed.
-                        return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), if (params["op"] == "monday") mapOf("monday" to "boards") else emptyMap())
+                        return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
                     val job = CrmImport.create(tenant, source, name, table, actor.userId)
                     show("importjob", UiNotice("${table.rows.size} filas leidas. Revisa el mapeo.", UiTone.Success), mapOf("job" to job.toString()))

@@ -255,7 +255,10 @@ hour) and archiving after check-out.
   are listed by workspace, each with a checkbox (subitem boards and docs are
   left out). For every marked board: every column as text, the group, the
   board (mapped to the interest), the creation date, updates and subitems as
-  notes; the item id is the import key.
+  notes; the item id is the import key. Reading a big board takes minutes,
+  longer than the app waits for a response, so marking boards only queues the
+  import (status `reading`, V009); the `import` job reads them on its next
+  minute and leaves the import ready to map, or `failed` with the reason.
 - **CT Leads Pro** through the IDC Connector plugin (0.2.0, action `leads`):
   name, email, phone, pipeline stage, assigned agent, source, tags, notes,
   messages and interested listings (linked as properties).

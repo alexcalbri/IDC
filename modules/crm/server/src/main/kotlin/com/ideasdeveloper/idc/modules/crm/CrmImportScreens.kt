@@ -25,7 +25,9 @@ object CrmImportScreens {
     private const val UiRoute = CrmScreens.UiRoute
     private const val Default = "Primera etapa abierta"
     private const val Keep = "Sin cambios"
-    private val statusLabels = mapOf("mapping" to "Por mapear", "running" to "Importando", "done" to "Terminada", "canceled" to "Cancelada")
+    private val statusLabels = mapOf(
+        "reading" to "Leyendo monday", "mapping" to "Por mapear", "running" to "Importando", "done" to "Terminada", "canceled" to "Cancelada", "failed" to "Fallo",
+    )
     private val sourceLabels = mapOf("file" to "Archivo", "monday" to "monday", "leadspro" to "CT Leads Pro")
 
     // ---- Sources and jobs ----
@@ -144,6 +146,21 @@ object CrmImportScreens {
                 minItemWidth = 160,
             ),
         )
+        when (job.status) {
+            "reading" -> return header.take(1) + listOf(
+                UiText("Se estan leyendo ${job.boards.size} tablero(s) de monday con sus actualizaciones y subelementos. Un tablero grande tarda unos minutos; vuelve a abrir esta pantalla para seguir con el mapeo."),
+                UiRow(
+                    listOf(
+                        UiButton("Actualizar", UiNavigate("importjob", id), style = "secondary"),
+                        UiButton("Cancelar", UiRequest(UiRoute + "/importjob", params = id + ("op" to "cancel")), style = "danger"),
+                    ),
+                ),
+            )
+            "failed" -> return header.take(1) + listOf(
+                UiText(job.error.ifEmpty { "No se pudieron leer los tableros." }, tone = UiTone.Danger),
+                UiButton("Elegir tableros de nuevo", UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
+            )
+        }
         if (job.status != "mapping") {
             val problems = (CrmImport.rows(context.tenant, job, "conflict") + CrmImport.rows(context.tenant, job, "error")).take(50).map { (rowNo, row, message) ->
                 UiListItem("Fila $rowNo: ${row.values.firstOrNull().orEmpty()}", message)

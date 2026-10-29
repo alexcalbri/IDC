@@ -47,6 +47,9 @@ data class CrmImportJob(
     val conflicts: Int,
     val errors: Int,
     val createdAt: Instant,
+    // monday board ids still to read (status reading) and why a job failed.
+    val boards: List<String> = emptyList(),
+    val error: String = "",
 )
 
 data class CrmImportNote(val date: LocalDate?, val author: String, val text: String)
@@ -268,35 +271,84 @@ object CrmImport {
     /** Stores the rows of a source and guesses the mapping (monday boards become interests). */
     fun create(tenant: Connection, source: String, name: String, table: CrmTable, userId: UUID?): UUID {
         if (table.rows.isEmpty()) throw CrmImportException("No hay filas para importar.")
+        val id = UUID.randomUUID()
+        transaction(tenant) {
+            insertJob(tenant, id, source, name, "mapping", emptyList(), userId)
+            storeRows(tenant, id, name, table)
+        }
+        return id
+    }
+
+    /** Queues monday boards for the import job, which reads them and leaves the job ready to map. */
+    fun queueMonday(tenant: Connection, boardIds: List<String>, userId: UUID?): UUID {
+        if (boardIds.isEmpty() || boardIds.any { !it.matches(Regex("^[0-9]{1,20}$")) }) throw CrmImportException("Marca al menos un tablero.")
+        val id = UUID.randomUUID()
+        insertJob(tenant, id, "monday", "monday ${boardIds.joinToString()}", "reading", boardIds, userId)
+        return id
+    }
+
+    /** Reads the queued monday boards; a job canceled meanwhile stays canceled. */
+    fun readQueued(tenant: Connection) {
+        jobQuery(tenant, "WHERE status = 'reading' ORDER BY created_at").forEach { job ->
+            val table = try {
+                val token = mondayToken(tenant) ?: throw CrmImportException("Se borro el token de monday; guardalo de nuevo.")
+                fromMonday(token, job.boards).also { if (it.rows.isEmpty()) throw CrmImportException("Los tableros marcados no tienen elementos.") }
+            } catch (failure: Exception) {
+                tenant.prepareStatement("UPDATE crm_import_jobs SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'reading'").use { update ->
+                    update.setString(1, (failure as? CrmImportException)?.message ?: "No se pudieron leer los tableros de monday.")
+                    update.setObject(2, job.id)
+                    update.executeUpdate()
+                }
+                return@forEach
+            }
+            val names = table.rows.mapNotNull { it[BoardColumn]?.takeIf(String::isNotEmpty) }.distinct()
+            transaction(tenant) {
+                storeRows(tenant, job.id, "monday ${names.joinToString()}", table, from = "reading")
+            }
+        }
+    }
+
+    private fun insertJob(tenant: Connection, id: UUID, source: String, name: String, status: String, boards: List<String>, userId: UUID?) {
+        tenant.prepareStatement(
+            "INSERT INTO crm_import_jobs (id, source, name, status, boards, created_by) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?)"
+        ).use { insert ->
+            insert.setObject(1, id)
+            insert.setString(2, source)
+            insert.setString(3, name.take(200))
+            insert.setString(4, status)
+            insert.setString(5, JsonArray(boards.map { JsonPrimitive(it) }).toString())
+            insert.setObject(6, userId)
+            insert.executeUpdate()
+        }
+    }
+
+    /** Stores the rows of a job and guesses the mapping (monday boards become interests); the job moves to mapping. */
+    private fun storeRows(tenant: Connection, id: UUID, name: String, table: CrmTable, from: String = "mapping") {
         val columns = table.columns.filter { !it.startsWith("__") }
         var guessed = CrmImportParse.guess(columns)
         if (BoardColumn in columns && "interest" !in guessed.values) guessed = guessed + (BoardColumn to "interest")
-        val id = UUID.randomUUID()
-        transaction(tenant) {
-            tenant.prepareStatement(
-                "INSERT INTO crm_import_jobs (id, source, name, mapping, columns, total, created_by) VALUES (?, ?, ?, CAST(? AS jsonb), CAST(? AS jsonb), ?, ?)"
-            ).use { insert ->
-                insert.setObject(1, id)
-                insert.setString(2, source)
-                insert.setString(3, name.take(200))
-                insert.setString(4, mappingJson(CrmImportMapping(guessed)).toString())
-                insert.setString(5, JsonArray(columns.map { JsonPrimitive(it) }).toString())
-                insert.setInt(6, table.rows.size)
-                insert.setObject(7, userId)
-                insert.executeUpdate()
-            }
-            tenant.prepareStatement("INSERT INTO crm_import_rows (job_id, row_no, data) VALUES (?, ?, CAST(? AS jsonb))").use { insert ->
-                table.rows.forEachIndexed { index, row ->
-                    insert.setObject(1, id)
-                    insert.setInt(2, index + 1)
-                    insert.setString(3, JsonObject(row.mapValues { JsonPrimitive(it.value) }).toString())
-                    insert.addBatch()
-                    if (index % 500 == 499) insert.executeBatch()
-                }
-                insert.executeBatch()
-            }
+        val moved = tenant.prepareStatement(
+            "UPDATE crm_import_jobs SET name = ?, status = 'mapping', mapping = CAST(? AS jsonb), columns = CAST(? AS jsonb), total = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?"
+        ).use { update ->
+            update.setString(1, name.take(200))
+            update.setString(2, mappingJson(CrmImportMapping(guessed)).toString())
+            update.setString(3, JsonArray(columns.map { JsonPrimitive(it) }).toString())
+            update.setInt(4, table.rows.size)
+            update.setObject(5, id)
+            update.setString(6, from)
+            update.executeUpdate()
         }
-        return id
+        if (moved == 0) return
+        tenant.prepareStatement("INSERT INTO crm_import_rows (job_id, row_no, data) VALUES (?, ?, CAST(? AS jsonb))").use { insert ->
+            table.rows.forEachIndexed { index, row ->
+                insert.setObject(1, id)
+                insert.setInt(2, index + 1)
+                insert.setString(3, JsonObject(row.mapValues { JsonPrimitive(it.value) }).toString())
+                insert.addBatch()
+                if (index % 500 == 499) insert.executeBatch()
+            }
+            insert.executeBatch()
+        }
     }
 
     fun jobs(tenant: Connection, limit: Int = 20): List<CrmImportJob> = jobQuery(tenant, "ORDER BY created_at DESC LIMIT $limit")
@@ -304,7 +356,7 @@ object CrmImport {
     fun job(tenant: Connection, id: UUID): CrmImportJob? = jobQuery(tenant, "WHERE id = ?") { it.setObject(1, id) }.firstOrNull()
 
     private fun jobQuery(tenant: Connection, tail: String, bind: (java.sql.PreparedStatement) -> Unit = {}): List<CrmImportJob> = tenant.prepareStatement(
-        "SELECT id, source, name, status, mapping::text, columns::text, total, processed, created, updated, skipped, conflicts, errors, created_at FROM crm_import_jobs $tail"
+        "SELECT id, source, name, status, mapping::text, columns::text, total, processed, created, updated, skipped, conflicts, errors, created_at, boards::text, error FROM crm_import_jobs $tail"
     ).use { query ->
         bind(query)
         query.executeQuery().use { rows ->
@@ -315,6 +367,8 @@ object CrmImport {
                         runCatching { json.parseToJsonElement(rows.getString(6)) }.getOrNull().arr().map { it.str() },
                         rows.getInt(7), rows.getInt(8), rows.getInt(9), rows.getInt(10), rows.getInt(11), rows.getInt(12), rows.getInt(13),
                         rows.getTimestamp(14).toInstant(),
+                        runCatching { json.parseToJsonElement(rows.getString(15)) }.getOrNull().arr().map { it.str() },
+                        rows.getString(16),
                     )
                 )
             }
