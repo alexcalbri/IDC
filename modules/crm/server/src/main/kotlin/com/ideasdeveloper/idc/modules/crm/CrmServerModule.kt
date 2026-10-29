@@ -50,6 +50,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V004__encuentra24.sql",
         "modules/crm/migrations/V005__wordpress_and_items.sql",
         "modules/crm/migrations/V006__cloudbeds.sql",
+        "modules/crm/migrations/V007__imports.sql",
     )
 
     override val runtimeTables = listOf(
@@ -75,6 +76,9 @@ object CrmServerModule : ServerModule {
         "crm_lead_items",
         "crm_cloudbeds_settings",
         "crm_reservations",
+        "crm_import_jobs",
+        "crm_import_rows",
+        "crm_import_presets",
     )
 
     override val jobs = listOf(
@@ -89,6 +93,8 @@ object CrmServerModule : ServerModule {
         // Cloudbeds: welcome emails before check-in and reservation statuses (archive after check-out).
         ModuleJob("cloudbeds-welcome", Duration.ofMinutes(15)) { context -> CrmCloudbeds.sendWelcomes(context.tenant, LocalDateTime.now()) },
         ModuleJob("cloudbeds-sync", Duration.ofMinutes(30)) { context -> CrmCloudbeds.syncStatuses(context.tenant, java.time.LocalDate.now()) },
+        // Imports in progress: 300 rows a minute.
+        ModuleJob("import", Duration.ofMinutes(1)) { context -> CrmImport.runPending(context.tenant, 300, java.time.LocalDate.now()) },
         ModuleJob("encuentra24", Duration.ofMinutes(5)) { context ->
             if (CrmEncuentra24.load(context.tenant).ready) {
                 runCatching { CrmEncuentra24.sync(context.tenant) { leadId -> CrmNotify.newLead(context.tenant, leadId) } }
@@ -127,7 +133,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.6.0",
+        version = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -224,7 +230,7 @@ object CrmServerModule : ServerModule {
                 val body = call.receiveText()
                 val values = runCatching { UiJson.parseToJsonElement(body).jsonObject.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } }.getOrNull().orEmpty()
                 val required = when (screen) {
-                    "settings", "mail", "templates", "spam", "team", "integrations" -> CrmScreens.Settings
+                    "settings", "mail", "templates", "spam", "team", "integrations", "import", "importjob" -> CrmScreens.Settings
                     "lead" -> if (params["op"] == "delete") CrmScreens.Delete else CrmScreens.Manage
                     else -> CrmScreens.Manage
                 }
@@ -619,6 +625,90 @@ object CrmServerModule : ServerModule {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
                     show("integrations", notice, emptyMap())
+                }
+                "import:text", "import:url", "import:monday", "import:leadspro" -> {
+                    val (source, name, table) = try {
+                        when (params["op"]) {
+                            "text" -> Triple("file", values["name"].orEmpty().trim().ifEmpty { "CSV pegado ${context.today}" }, CrmImportParse.csv(values["csv"].orEmpty()))
+                            "url" -> values["url"].orEmpty().trim().let { url -> Triple("file", url.substringAfterLast('/').take(80).ifEmpty { "Archivo" }, CrmImport.fromUrl(url)) }
+                            "monday" -> {
+                                val boards = values["boards"].orEmpty().split(',', ' ', '\n').map { it.trim() }.filter { it.isNotEmpty() }
+                                Triple("monday", "monday ${boards.joinToString()}", CrmImport.fromMonday(values["token"].orEmpty(), boards))
+                            }
+                            else -> Triple("leadspro", "CT Leads Pro ${context.today}", CrmImport.fromLeadsPro(tenant))
+                        }
+                    } catch (failure: CrmImportException) {
+                        return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
+                    }
+                    val job = CrmImport.create(tenant, source, name, table, actor.userId)
+                    show("importjob", UiNotice("${table.rows.size} filas leidas. Revisa el mapeo.", UiTone.Success), mapOf("job" to job.toString()))
+                }
+                "importjob:map", "importjob:preset", "importjob:start", "importjob:cancel" -> {
+                    val job = uuid("job")?.let { CrmImport.job(tenant, it) } ?: return show("import", UiNotice("Esa importacion ya no existe.", UiTone.Warning), emptyMap())
+                    val back = mapOf("job" to job.id.toString())
+                    when (params["op"]) {
+                        "map", "preset" -> {
+                            if (job.status != "mapping") return show("importjob", UiNotice("Esa importacion ya empezo.", UiTone.Warning), back)
+                            val mapping = if (params["op"] == "preset") {
+                                CrmImport.presets(tenant)[values["preset"]] ?: return show("importjob", UiNotice("Ese mapeo ya no existe.", UiTone.Warning), back)
+                            } else CrmImportScreens.mapping(job, values)
+                            CrmImport.saveMapping(tenant, job, mapping)
+                            values["presetName"]?.trim()?.takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(tenant, it, mapping) }
+                            val saved = CrmImport.job(tenant, job.id)!!
+                            val preview = CrmImport.preview(tenant, saved, CrmImport.Context(context.stages, context.interests, context.users, context.today, saved.source))
+                            val missing = if ("name" !in mapping.columns.values && "email" !in mapping.columns.values && "phone" !in mapping.columns.values) " Ninguna columna es nombre, correo o telefono." else ""
+                            show(
+                                "importjob",
+                                UiNotice("Vista previa: ${preview.created} nuevos, ${preview.updated} actualizados, ${preview.conflicts} por revisar, ${preview.skipped} omitidos.$missing", if (missing.isEmpty()) UiTone.Success else UiTone.Warning),
+                                back,
+                            )
+                        }
+                        "start" -> {
+                            if (job.status != "mapping") return show("importjob", UiNotice("Esa importacion ya empezo.", UiTone.Warning), back)
+                            if (job.mapping.columns.values.none { it in setOf("name", "email", "phone") }) return show("importjob", UiNotice("Mapea al menos el nombre, el correo o el telefono.", UiTone.Danger), back)
+                            CrmImport.setStatus(tenant, job, "running")
+                            show("importjob", UiNotice("Importacion en marcha: se aplican 300 filas por minuto.", UiTone.Success), back)
+                        }
+                        else -> {
+                            CrmImport.setStatus(tenant, job, "canceled")
+                            show("import", UiNotice("Importacion ${job.name} cancelada.", UiTone.Success), emptyMap())
+                        }
+                    }
+                }
+                "bulk:apply" -> {
+                    val keep = params - setOf("op")
+                    val selected = if (values["all"] == "true") {
+                        values.keys.filter { it.startsWith("lead:") }
+                    } else {
+                        values.filter { it.key.startsWith("lead:") && it.value == "true" }.keys
+                    }.mapNotNull { runCatching { UUID.fromString(it.removePrefix("lead:")) }.getOrNull() }
+                        .mapNotNull { CrmRepository.lead(tenant, it) }
+                        .filter { context.scope.canSee(it.interestId, it.ownerUserId) }
+                    if (selected.isEmpty()) return show("bulk", UiNotice("Marca al menos un lead.", UiTone.Warning), keep)
+                    val notice = when (values["action"]) {
+                        CrmImportScreens.ActionStage -> {
+                            val stage = context.stages.firstOrNull { it.name == values["stage"] } ?: return show("bulk", UiNotice("Elige la etapa.", UiTone.Danger), keep)
+                            selected.forEach { CrmRepository.moveLead(tenant, it, stage, context.stages, actor) }
+                            "${selected.size} lead(s) movidos a ${stage.name}."
+                        }
+                        CrmImportScreens.ActionOwner -> {
+                            if (!context.canAssign) return show("bulk", UiNotice("No tienes permiso para asignar leads.", UiTone.Danger), keep)
+                            val owner = context.users.firstOrNull { it.name == values["owner"] }?.id
+                            selected.forEach { lead ->
+                                tenant.prepareStatement("UPDATE crm_leads SET owner_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, owner); it.setObject(2, lead.id); it.executeUpdate() }
+                                CrmRepository.addActivity(tenant, lead.id, "owner", "Responsable: ${context.names.user(owner)} (en lote).", actor)
+                                owner?.takeIf { it != lead.ownerUserId && it != context.scope.userId }?.let { CrmNotify.assigned(tenant, lead.id, it) }
+                            }
+                            "${selected.size} lead(s) asignados a ${context.names.user(owner)}."
+                        }
+                        CrmImportScreens.ActionDelete -> {
+                            if (!permissions.has(CrmScreens.Delete)) return show("bulk", UiNotice("No tienes permiso para eliminar leads.", UiTone.Danger), keep)
+                            selected.forEach { CrmRepository.deleteLead(tenant, it.id) }
+                            "${selected.size} lead(s) eliminados (los clientes quedan en Clientes)."
+                        }
+                        else -> return show("bulk", UiNotice("Elige la accion.", UiTone.Danger), keep)
+                    }
+                    show("bulk", UiNotice(notice, UiTone.Success), keep)
                 }
                 "lead:itemManual" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())

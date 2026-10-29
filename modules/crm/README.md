@@ -131,6 +131,7 @@ sent by job `outbox` every minute with up to 5 attempts.
 | `encuentra24` | 5 min | Import Encuentra24 leads. |
 | `cloudbeds-welcome` | 15 min | Welcome emails before check-in. |
 | `cloudbeds-sync` | 30 min | Reservation statuses; archive after check-out. |
+| `import` | 1 min | Apply 300 rows of running imports. |
 
 ## Meta: WhatsApp, Messenger and Instagram (V003)
 
@@ -245,7 +246,42 @@ hour) and archiving after check-out.
   reservations; changes go to the activity and `checked_out` archives the lead
   (`crm_leads.archived_at`): archived leads leave the pipeline, lists and counts.
 
+## Imports and bulk actions (V007)
+
+**Configuracion > Importar** reads rows from:
+
+- **monday** (GraphQL API with a personal token and the board IDs): every column
+  as text, the group, the board (mapped to the interest), the creation date,
+  updates and subitems as notes; the item id is the import key.
+- **CT Leads Pro** through the IDC Connector plugin (0.2.0, action `leads`):
+  name, email, phone, pipeline stage, assigned agent, source, tags, notes,
+  messages and interested listings (linked as properties).
+- **Files**: a CSV pasted as text or a CSV/XLSX from a public https URL (private
+  addresses refused, 20 MB, 20,000 rows; XLSX without DTDs). CSV with comma,
+  semicolon or tab, BOM and multiline cells. The monday Excel export layout
+  (title, one line per group, repeated header) is recognized and the group goes
+  to a "Grupo" column.
+
+Each import (`crm_import_jobs`, rows in `crm_import_rows`) goes through:
+**mapping** of every column to a CRM field (guessed from the header; monday and
+Leads Pro names are known) and of the stage, owner and interest values to the
+CRM ones (saved mappings in `crm_import_presets`); **preview** (new, updated,
+to review, skipped, without writing); and the **import**, 300 rows a minute by
+job `import`, each row committed on its own, cancelable.
+
+Rules (from the CT Leads Extension importer): email typos fixed and phones
+normalized; the person is matched by email or phone; when the email and the
+phone belong to different customers the row stays **por revisar** and nothing
+is merged; rows without name, email and phone are skipped; importing again
+updates the lead with the same import key (`crm_leads.import_key`); historical
+comments become notes with their original date and the same note is never
+added twice; imports send no notifications.
+
+**Acciones en lote**: the filtered leads (50 per page) with a checkbox each,
+"select all visible", and move to a stage, assign a responsible user (with
+`crm.assign`) or delete (with `crm.leads.delete`).
+
 ## Not in this version
 
-Automations (move by rule), imports and attachments
+Automations (move by rule) and attachments
 come in the next versions.
