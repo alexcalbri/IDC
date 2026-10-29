@@ -129,8 +129,41 @@ sent by job `outbox` every minute with up to 5 attempts.
 | `digest` | 15 min | Daily digest once the digest hour has passed. |
 | `imap` | 5 min | Read the company mailbox. |
 
+## Meta: WhatsApp, Messenger and Instagram (V003)
+
+**Configuracion > Integraciones** with one Meta app:
+
+- **App Secret** (validates `X-Hub-Signature-256` of every call), **verify
+  token** and the **system user token** of Meta Business (the only token typed;
+  needs `whatsapp_business_messaging`, `whatsapp_business_management`,
+  `pages_messaging`, `instagram_manage_messages`). Secrets are masked.
+- **Conectar pagina** reads the page token (`GET /me/accounts`, it does not
+  expire) and the linked Instagram account; with several pages type the page ID.
+- **Conectar WhatsApp** subscribes the app to the WhatsApp Business Account
+  (`POST /{waba}/subscribed_apps`) and lists its numbers; one number is saved,
+  several are offered to pick.
+- Callback URL (one for all): `https://<server>/modules/crm/hooks/<company>/meta`.
+  WhatsApp fields `messages` and `smb_message_echoes`; page fields `messages`
+  and `standby`; Instagram `messages`.
+
+Incoming: WhatsApp messages create or update the lead by phone (`+wa_id`,
+profile name); Messenger / Instagram by PSID / IGSID identity with the name read
+from the Graph API. Media, locations and contacts are stored as readable text;
+reactions, page echoes, deleted messages and the company's own Instagram account
+are ignored; repeated deliveries are deduplicated by message id. Coexistence
+echoes (replies from the WhatsApp Business app) are stored as outgoing messages
+of the open lead and never create leads. A message with an encuentra24.com link
+keeps "Encuentra24 (<channel>)" as origin. The answer to Meta is 200 even when
+one message fails (logged); the last 30 events are shown.
+
+Outgoing: WhatsApp, Messenger and Instagram appear as reply channels on the
+lead. WhatsApp errors are explained (131047: outside the 24-hour window, only
+approved templates; 190: token expired). Messenger / Instagram split long texts
+(2000 / 1000 characters) and take thread control once when the Business Suite
+inbox controls the conversation.
+
 ## Not in this version
 
-Automations (move by rule), WhatsApp, Messenger, Instagram, Encuentra24, the
+Automations (move by rule), Encuentra24 (Leads API), the
 WordPress / Real Estate 7 integration, Cloudbeds reservations, imports and
 attachments come in the next versions.
