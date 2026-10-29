@@ -360,7 +360,7 @@ object CrmEmailChannel : CrmChannel {
 
 object CrmChannels {
     // Channels in the order offered to users; channel integrations are added to this list.
-    val all: List<CrmChannel> = listOf(CrmEmailChannel)
+    val all: List<CrmChannel> = listOf(CrmEmailChannel, CrmWhatsAppChannel, CrmPageChannel("messenger", "Messenger"), CrmPageChannel("instagram", "Instagram"))
 
     fun find(id: String) = all.firstOrNull { it.id == id }
 }

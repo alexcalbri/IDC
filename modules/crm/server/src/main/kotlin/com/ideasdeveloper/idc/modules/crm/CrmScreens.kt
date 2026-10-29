@@ -67,6 +67,7 @@ object CrmScreens {
         Section("templates", "Plantillas", Settings),
         Section("spam", "Anti-spam", Settings),
         Section("team", "Equipo", Settings),
+        Section("integrations", "Integraciones", Settings),
     )
 
     // Screens outside the navigation.
@@ -88,6 +89,8 @@ object CrmScreens {
         val users: List<CrmUser>,
         // Server SMTP, used when the company sends with it.
         val serverMail: SmtpSettings? = null,
+        // Public origin of this server (https://host), for the webhook URLs shown in Integraciones.
+        val publicBase: String = "",
         val today: LocalDate = LocalDate.now(),
     ) {
         val names = CrmNames(users, interests)
@@ -101,9 +104,9 @@ object CrmScreens {
         val canAssign get() = permissions.has(Assign) || scope.seesAll
 
         companion object {
-            fun load(tenant: Connection, permissions: ModulePermissions, serverMail: SmtpSettings? = null) = Context(
+            fun load(tenant: Connection, permissions: ModulePermissions, serverMail: SmtpSettings? = null, publicBase: String = "") = Context(
                 tenant, permissions, CrmRepository.scope(tenant, permissions),
-                CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant), serverMail,
+                CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant), serverMail, publicBase = publicBase,
             )
         }
     }
@@ -138,6 +141,7 @@ object CrmScreens {
             "templates" -> CrmAdminScreens.templates(context, params, submitted)
             "spam" -> CrmAdminScreens.spam(context, submitted)
             "team" -> CrmAdminScreens.team(context)
+            "integrations" -> CrmIntegrationScreens.integrations(context, params, submitted)
             else -> settings(context, params, submitted)
         }
         return frame(context, screen, title, notice, body)
