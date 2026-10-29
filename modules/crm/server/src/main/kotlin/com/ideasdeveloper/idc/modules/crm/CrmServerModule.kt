@@ -14,13 +14,17 @@ import com.ideasdeveloper.idc.ui.UiJson
 import com.ideasdeveloper.idc.ui.UiNotice
 import com.ideasdeveloper.idc.ui.UiScreen
 import com.ideasdeveloper.idc.ui.UiTone
+import io.ktor.http.ContentDisposition
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
 import io.ktor.server.plugins.origin
 import io.ktor.server.request.receive
 import io.ktor.server.request.receiveText
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
@@ -44,6 +48,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V002__inbox_and_channels.sql",
         "modules/crm/migrations/V003__meta_channels.sql",
         "modules/crm/migrations/V004__encuentra24.sql",
+        "modules/crm/migrations/V005__wordpress_and_items.sql",
     )
 
     override val runtimeTables = listOf(
@@ -64,6 +69,9 @@ object CrmServerModule : ServerModule {
         "crm_meta_settings",
         "crm_meta_log",
         "crm_encuentra24_settings",
+        "crm_wordpress_settings",
+        "crm_wp_agents",
+        "crm_lead_items",
     )
 
     override val jobs = listOf(
@@ -113,7 +121,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.4.0",
+        version = "0.5.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -128,7 +136,38 @@ object CrmServerModule : ServerModule {
 
     override fun routes(route: Route, access: ModuleAccessService) {
         // Public webhooks: the company comes from the URL and every call is authenticated by the integration.
+        // The IDC Connector plugin for WordPress, built from the module resources (it holds no secrets).
+        route.get(CrmWordPressScreens.PluginPath) {
+            if (!access.isInstalled(CrmModule.id)) return@get call.respond(HttpStatusCode.NotFound)
+            val zip = CrmPlugin.zip(CrmServerModule::class.java.classLoader)
+            call.response.header(HttpHeaders.ContentDisposition, ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, "idc-connector.zip").toString())
+            call.respondBytes(zip, ContentType.Application.Zip)
+        }
+
         route.route("/modules/crm/hooks/{company}") {
+            post("/wordpress") {
+                val company = call.parameters["company"].orEmpty()
+                val body = call.receive<ByteArray>()
+                val timestamp = call.request.headers["X-IDC-Timestamp"]
+                val signature = call.request.headers["X-IDC-Signature"]
+                val answer = call.webhookTenant(access, company) { tenant ->
+                    val settings = CrmWordPress.load(tenant)
+                    if (!settings.enabled || !CrmWordPress.validSignature(settings.secret, timestamp, signature, body)) return@webhookTenant "no"
+                    try {
+                        CrmWordPress.handle(tenant, body.decodeToString()) { leadId -> CrmNotify.newLead(tenant, leadId) }
+                    } catch (failure: Exception) {
+                        CrmWordPress.recordError(tenant, failure.message ?: failure.javaClass.simpleName)
+                        return@webhookTenant "error"
+                    }
+                    "yes"
+                } ?: return@post
+                when (answer) {
+                    "yes" -> call.respond(HttpStatusCode.OK)
+                    "no" -> call.respond(HttpStatusCode.Forbidden)
+                    // The plugin keeps the event and retries it.
+                    else -> call.respond(HttpStatusCode.ServiceUnavailable)
+                }
+            }
             get("/meta") {
                 val company = call.parameters["company"].orEmpty()
                 val query = call.request.queryParameters
@@ -400,6 +439,100 @@ object CrmServerModule : ServerModule {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
                     show("integrations", notice, emptyMap())
+                }
+                "integrations:wpSave" -> {
+                    try {
+                        CrmWordPress.saveForm(tenant, values)
+                    } catch (failure: CrmValidationException) {
+                        return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
+                    }
+                    show("integrations", UiNotice("WordPress guardado.", UiTone.Success), emptyMap())
+                }
+                "integrations:wpSecret" -> {
+                    val secret = CrmWordPress.newSecret(tenant)
+                    show("integrations", UiNotice("Secreto nuevo generado; pegalo en el plugin.", UiTone.Success), mapOf("secret" to secret))
+                }
+                "integrations:wpPing" -> {
+                    val notice = try {
+                        UiNotice("Conexion correcta: ${CrmWordPress.ping(tenant)}.", UiTone.Success)
+                    } catch (failure: CrmWordPressException) {
+                        CrmWordPress.recordError(tenant, failure.message.orEmpty())
+                        UiNotice(failure.message.orEmpty(), UiTone.Danger)
+                    }
+                    show("integrations", notice, emptyMap())
+                }
+                "integrations:wpAgentsSync" -> {
+                    val notice = try {
+                        val emails = CrmNotify.userSettings(tenant).mapValues { it.value.email }
+                        UiNotice("${CrmWordPress.syncAgents(tenant, context.users, emails)} agente(s) del sitio sincronizados.", UiTone.Success)
+                    } catch (failure: CrmWordPressException) {
+                        UiNotice(failure.message.orEmpty(), UiTone.Danger)
+                    }
+                    show("integrations", notice, emptyMap())
+                }
+                "integrations:wpAgentsSave" -> {
+                    CrmWordPress.agents(tenant).forEach { agent ->
+                        val chosen = values["agent_${agent.wpUserId}"] ?: return@forEach
+                        CrmWordPress.mapAgent(tenant, agent.wpUserId, context.users.firstOrNull { it.name == chosen }?.id)
+                    }
+                    show("integrations", UiNotice("Agentes guardados.", UiTone.Success), emptyMap())
+                }
+                "properties:link" -> {
+                    val lead = visibleLead("lead") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val listingId = params["listing"]?.toLongOrNull() ?: return show("properties", UiNotice("Propiedad invalida.", UiTone.Danger), params - setOf("op", "listing"))
+                    val notice = try {
+                        val listing = CrmWordPress.listing(tenant, listingId)
+                        CrmWordPress.linkListing(tenant, lead.id, listing, "Propiedad vinculada por ${actor.name}: ${listing.title}.")
+                        UiNotice("${listing.title} vinculada a ${lead.name}.", UiTone.Success)
+                    } catch (failure: CrmWordPressException) {
+                        UiNotice(failure.message.orEmpty(), UiTone.Danger)
+                    }
+                    show("properties", notice, params - setOf("op", "listing"))
+                }
+                "lead:itemStatus", "lead:itemRemove", "lead:itemSold" -> {
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val item = uuid("item")?.let { CrmItems.find(tenant, lead.id, it) } ?: return show("lead", UiNotice("Ese interes ya no existe.", UiTone.Warning), mapOf("id" to lead.id.toString()))
+                    val back = mapOf("id" to lead.id.toString())
+                    when (params["op"]) {
+                        "itemRemove" -> {
+                            CrmItems.remove(tenant, item)
+                            CrmRepository.addActivity(tenant, lead.id, "item", "Quitado: ${item.title}.", actor)
+                            show("lead", UiNotice("${item.title} quitado.", UiTone.Success), back)
+                        }
+                        "itemStatus" -> {
+                            val status = params["status"].orEmpty().takeIf { it in setOf("offered", "chosen", "discarded", "interested") }
+                                ?: return show("lead", UiNotice("Estado invalido.", UiTone.Danger), back)
+                            CrmItems.setStatus(tenant, item, status)
+                            CrmRepository.addActivity(tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor)
+                            show("lead", UiNotice("${item.title}: ${CrmItems.statusLabels[status]}.", UiTone.Success), back)
+                        }
+                        else -> {
+                            if (item.source != CrmWordPress.Source) return show("lead", UiNotice("Solo las propiedades del sitio se cierran asi.", UiTone.Warning), back)
+                            val price = values["price"].orEmpty().trim().ifEmpty { null }?.let {
+                                it.replace(",", "").toBigDecimalOrNull()?.takeIf { value -> value.signum() >= 0 }
+                                    ?: return show("lead", UiNotice("El precio debe ser un numero positivo.", UiTone.Danger), back)
+                            }
+                            val date = CrmWordPressScreens.saleDate(values["date"], context.today)
+                            try {
+                                CrmWordPress.markSold(tenant, item.externalId.toLong(), price, date)
+                            } catch (failure: CrmWordPressException) {
+                                return show("lead", UiNotice("La venta no se cerro: ${failure.message}", UiTone.Danger), back)
+                            }
+                            CrmItems.setStatus(tenant, item, "sold", price ?: item.price)
+                            CrmRepository.addActivity(tenant, lead.id, "item", "Venta cerrada: ${item.title}${price?.let { " por ${it.toPlainString()}" }.orEmpty()} el $date. Marcada como vendida en el sitio.", actor)
+                            // The lead is won: first won stage of the pipeline.
+                            context.stages.firstOrNull { it.kind == StageKind.Won }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
+                            show("lead", UiNotice("Venta cerrada y propiedad marcada como vendida.", UiTone.Success), back)
+                        }
+                    }
+                }
+                "lead:itemManual" -> {
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val title = values["title"].orEmpty().trim()
+                    if (title.isEmpty() || title.length > 300) return show("lead", UiNotice("Escribe el nombre del interes (hasta 300 caracteres).", UiTone.Danger), mapOf("id" to lead.id.toString()))
+                    CrmItems.link(tenant, lead.id, "manual", UUID.randomUUID().toString(), title, values["subtitle"].orEmpty().trim().take(500))
+                    CrmRepository.addActivity(tenant, lead.id, "item", "Interes agregado: $title.", actor)
+                    show("lead", UiNotice("$title agregado.", UiTone.Success), mapOf("id" to lead.id.toString()))
                 }
                 "integrations:metaNumber" -> {
                     val id = params["id"].orEmpty().takeIf { it.matches(Regex("^[0-9]{1,64}$")) }
