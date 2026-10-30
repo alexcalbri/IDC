@@ -320,7 +320,7 @@ data class UiBoardColumn(
 
 /**
  * Kanban board: columns side by side (scrolling horizontally) with cards. With [move] set, users
- * drag a card to another column (long press, then drag) or pick the column from the card menu, and
+ * drag a card to another column (with a mouse at once; on touch screens after a long press) or pick the column from the card menu, and
  * the app runs [move] adding the params "card" (card id) and "column" (target column id).
  */
 @OptIn(ExperimentalSerializationApi::class)

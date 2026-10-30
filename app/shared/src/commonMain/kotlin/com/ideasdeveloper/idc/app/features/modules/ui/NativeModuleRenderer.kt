@@ -6,7 +6,11 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,7 +57,9 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -549,8 +555,9 @@ private fun ModuleBadges(badges: List<UiBadge>, colors: ModuleColors) {
     }
 }
 
-// Tablero kanban: columnas con desplazamiento horizontal. Una tarjeta se mueve manteniendola
-// presionada y arrastrandola a otra columna, o con su menu "Mover a" (util en telefonos).
+// Tablero kanban: columnas con desplazamiento horizontal. Una tarjeta se arrastra a otra columna
+// (con el raton directamente; en pantallas tactiles tras mantenerla presionada, para no chocar con
+// el desplazamiento) o se mueve con su menu "Mover a".
 @Composable
 private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
     val colors = context.colors
@@ -563,7 +570,10 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
     var dragging by remember(node) { mutableStateOf<String?>(null) }
     var pointer by remember(node) { mutableStateOf(Offset.Zero) }
     var dragOffset by remember(node) { mutableStateOf(Offset.Zero) }
-    val target = dragging?.let { columnBounds.entries.firstOrNull { (_, bounds) -> bounds.contains(pointer + dragOffset) }?.key }
+    // Only the horizontal position counts: a column is as tall as its cards, and dropping below
+    // the last card of a short column must still land in it.
+    fun columnAt(position: Offset) = columnBounds.entries.firstOrNull { (_, bounds) -> position.x >= bounds.left && position.x < bounds.right }?.key
+    val target = dragging?.let { columnAt(pointer + dragOffset) }
 
     fun move(cardId: String, columnId: String) {
         node.move?.let { move -> context.onAction(move.copy(params = move.params + mapOf("card" to cardId, "column" to columnId))) }
@@ -610,34 +620,42 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
                                     shadowElevation = 12f
                                 }
                             }
-                            .then(
-                                if (canMove) Modifier.pointerInput(card.id, column.id) {
-                                    detectDragGesturesAfterLongPress(
-                                        onDragStart = { start ->
-                                            dragging = card.id
-                                            pointer = origin + start
-                                            dragOffset = Offset.Zero
-                                        },
-                                        onDrag = { change, amount ->
-                                            change.consume()
-                                            dragOffset += amount
-                                        },
-                                        onDragEnd = {
-                                            val dropped = columnBounds.entries.firstOrNull { (_, bounds) -> bounds.contains(pointer + dragOffset) }?.key
-                                            dragging = null
-                                            dragOffset = Offset.Zero
-                                            if (dropped != null && dropped != column.id) move(card.id, dropped)
-                                        },
-                                        onDragCancel = {
-                                            dragging = null
-                                            dragOffset = Offset.Zero
-                                        },
-                                    )
-                                } else Modifier
-                            )
                             .background(colors.surface, RoundedCornerShape(12.dp))
                             .border(1.dp, if (isDragged) colors.accent else colors.border, RoundedCornerShape(12.dp))
                             .then(card.action?.let { action -> Modifier.clickable(enabled = !context.busy) { context.onAction(action) } } ?: Modifier)
+                            // After clickable so the drag sees the pointer first and its consumed events
+                            // cancel the click (opening the card) and the board scroll.
+                            .then(
+                                if (canMove) Modifier.pointerInput(card.id, column.id) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        val start = if (down.type == PointerType.Mouse) {
+                                            awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                                        } else {
+                                            awaitLongPressOrCancellation(down.id)
+                                        } ?: return@awaitEachGesture
+                                        dragging = card.id
+                                        pointer = origin + down.position
+                                        dragOffset = start.position - down.position
+                                        var dropped: String? = null
+                                        try {
+                                            val completed = drag(start.id) { change ->
+                                                dragOffset += change.positionChange()
+                                                change.consume()
+                                            }
+                                            if (completed) {
+                                                // The release must not also open the card.
+                                                currentEvent.changes.forEach { it.consume() }
+                                                dropped = columnAt(pointer + dragOffset)
+                                            }
+                                        } finally {
+                                            dragging = null
+                                            dragOffset = Offset.Zero
+                                        }
+                                        dropped?.takeIf { it != column.id }?.let { move(card.id, it) }
+                                    }
+                                } else Modifier
+                            )
                             .padding(10.dp),
                     ) {
                         Text(card.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
