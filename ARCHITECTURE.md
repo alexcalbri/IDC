@@ -53,7 +53,7 @@ Business modules such as sales, operations, memberships or reservations are exam
   `-PwebOnly=true`, using JS-only Core/shared build profiles without mobile
   SDKs. Gradle downloads its Node/Yarn tooling. Nginx serves the production
   files from `/opt/ideascore/web` at `/`, with SPA fallback to `index.html`;
-  `/auth/`, `/companies` and `/modules` are proxied unchanged to Ktor. The web
+  `/auth/`, `/companies`, `/server`, `/modules` and `/.well-known/oauth-` (OAuth discovery for AI agents) are proxied unchanged to Ktor. The web
   login pre-fills the current origin, allowing same-origin API calls without
   additional CORS rules.
   The internal Ktor `/` health response remains separate from the web app.

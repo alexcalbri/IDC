@@ -223,6 +223,25 @@ External services (Meta, a WordPress plugin, a PMS) call
   checking a signature (HMAC) with a secret the company saved in the module.
 - Answer quickly; do slow work in a job.
 
+## AI agent tools (MCP)
+
+With the `agentes` module, each user connects their own AI agent, which is
+limited to that user's permissions. A module offers functions to agents by
+overriding `ServerModule.mcpTools` with `McpTool`s
+(`server/.../modules/McpTools.kt`):
+
+- Every tool declares the `permission` it needs. The endpoint lists and runs
+  it only when the module is enabled for the company and the user holds that
+  permission at the moment of the call.
+- The handler receives `call.tenant`, `call.permissions` and `call.arguments`
+  and must apply the same rules as the module's routes and screens (visibility
+  scopes, ownership, finer permissions). Throw `McpToolException` with a
+  message the agent can act on.
+- Mark tools that only read with `readOnly = true` (read-only tokens use only
+  those) and irreversible ones with `destructive = true`.
+
+See `modules/agentes/README.md` for the endpoint and an example.
+
 ## Module user interface
 
 Modules are independent of the app: the app never contains module-specific

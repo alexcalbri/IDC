@@ -1,5 +1,7 @@
 package com.ideasdeveloper.idc.server.modules
 
+import com.ideasdeveloper.idc.server.auth.domain.LoginCredentials
+import com.ideasdeveloper.idc.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.idc.server.company.application.ServerWorkspace
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
@@ -34,11 +36,70 @@ class ModuleAccessService(
     val serverMail: SmtpSettings? = null,
     // Whether the server owner installed the module; routes of every compiled module exist from startup.
     private val moduleInstalled: (String) -> Boolean = { true },
+    // Agent tools of the installed modules (ModuleRegistry.mcpTools).
+    private val moduleTools: () -> List<RegisteredMcpTool> = { emptyList() },
+    // The app's login (ScopedLoginService.login), for module sign-in pages such as OAuth.
+    private val login: (LoginCredentials) -> LoginSuccessResponse? = { null },
 ) {
     private val tokenGenerator = SessionTokenGenerator()
 
     // Public module endpoints (e.g. a captive portal) must check this before serving anything.
     fun isInstalled(moduleId: String): Boolean = moduleInstalled(moduleId)
+
+    // Agent tools of every installed module; the MCP endpoint filters them per company and user.
+    fun mcpTools(): List<RegisteredMcpTool> = moduleTools()
+
+    /**
+     * Checks a user's password like the app's login and leaves no session behind, for module pages
+     * that sign users in themselves (OAuth authorization of AI agents). Without [companyCode] it
+     * signs in a server owner, who then acts in the server workspace. Null when rejected or when a
+     * server owner has no server workspace. Callers must rate limit attempts.
+     */
+    fun verifyCredentials(companyCode: String?, username: String, password: String): VerifiedUser? {
+        val session = login(LoginCredentials(username, password, companyCode)) ?: return null
+        val serverOwner = session.scope == "server"
+        val tokenHash = tokenGenerator.hash(session.accessToken)
+        val revoke = "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE token_hash = ?"
+        if (serverOwner) {
+            central.connection.use { connection -> connection.prepareStatement(revoke).use { it.setString(1, tokenHash); it.executeUpdate() } }
+        } else {
+            tenantConnectionForCompany(companyCode!!)?.use { connection -> connection.prepareStatement(revoke).use { it.setString(1, tokenHash); it.executeUpdate() } }
+        }
+        val workspace = if (serverOwner) session.workspaceCompanyCode ?: return null else companyCode!!
+        return VerifiedUser(UUID.fromString(session.userId), session.username, workspace, serverOwner)
+    }
+
+    /**
+     * Module access of a user for requests authenticated without a session, such as an AI agent token
+     * stored in the tenant. Same rules as [permissions]: an inactive user (or a server owner that no
+     * longer is one) gets null, and permissions are read now, so revoking one applies to the next call.
+     */
+    fun userAccess(tenant: Connection, companyCode: String, userId: UUID, serverOwner: Boolean): UserModuleAccess? {
+        val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
+            query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+        }
+        if (serverOwner) {
+            if (companyCode != ServerWorkspace.Code || !isServerWorkspace(companyCode) || !isActiveServerOwner(userId)) return null
+            return UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, moduleInstalled)
+        }
+        val businessOwner = tenant.prepareStatement(
+            """
+            SELECT EXISTS (SELECT 1 FROM business_owner owner WHERE owner.user_id = users.id)
+            FROM application_users users
+            WHERE users.id = ? AND users.is_active = TRUE
+            """.trimIndent()
+        ).use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getBoolean(1) else null }
+        } ?: return null
+        val granted = if (businessOwner) emptySet() else tenant.prepareStatement(
+            "SELECT permission_id FROM application_user_permissions WHERE user_id = ?"
+        ).use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+        }
+        return UserModuleAccess(companyCode, userId, businessOwner, serverOwner = false, granted, enabled, moduleInstalled)
+    }
 
     // Central control-plane connection for module-owned central tables such as public_domains.
     fun centralConnection(): Connection = central.connection
@@ -215,6 +276,20 @@ class ModuleAccessService(
         false
     }
 
+    private fun isActiveServerOwner(userId: UUID): Boolean = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT 1
+            FROM server_owners owners
+            JOIN application_users users ON users.id = owners.user_id
+            WHERE owners.user_id = ? AND users.is_active = TRUE
+            """.trimIndent()
+        ).use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+    }
+
     // Central user id of an active server_owner session, or null.
     private fun serverOwnerSessionUser(token: String): UUID? = central.connection.use { connection ->
         connection.prepareStatement(
@@ -267,6 +342,28 @@ class ModulePermissions(
     val serverOwner: Boolean = false,
 ) {
     fun has(permissionId: String): Boolean = businessOwner || permissionId in granted
+}
+
+// A user whose password was checked: a tenant user, or a server owner acting in the server workspace.
+data class VerifiedUser(val userId: UUID, val username: String, val companyCode: String, val serverOwner: Boolean)
+
+/** What a user may do in every module of a company, loaded once per request (see ModuleAccessService.userAccess). */
+class UserModuleAccess internal constructor(
+    val companyCode: String,
+    val userId: UUID,
+    val businessOwner: Boolean,
+    val serverOwner: Boolean,
+    private val granted: Set<String>,
+    private val enabledModules: Set<String>,
+    private val installed: (String) -> Boolean,
+) {
+    // The user's permissions in the module, or null when the module is not installed or not enabled.
+    fun permissions(moduleId: String): ModulePermissions? =
+        if (moduleId in enabledModules && installed(moduleId)) {
+            ModulePermissions(companyCode, accessToken = "", businessOwner, granted, userId, serverOwner)
+        } else {
+            null
+        }
 }
 
 sealed class ModulePermissionLookup {

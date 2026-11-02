@@ -633,7 +633,7 @@ PostgreSQL will block any role deletion that still has dependencies.
 
 The installer asks for the public mode: `https` or `http`. `https` uses Let's
 Encrypt. `http` skips certificate issuance and serves the web app over plain
-HTTP while proxying `/auth/`, `/companies` and `/modules` to Ktor. Choosing
+HTTP while proxying `/auth/`, `/companies`, `/server`, `/modules` and `/.well-known/oauth-` to Ktor. Choosing
 `http` prints a credential/token warning and requires typing `HTTP` to confirm.
 Use HTTP only as a temporary recovery/testing mode; enable HTTPS before
 production use.
@@ -645,7 +645,7 @@ domain. It preserves other Certbot certificates and uses the certificate
 name `ideascore-DOMAIN` under `/etc/letsencrypt/live/`.
 
 Nginx terminates TLS 1.2/1.3 on port 443, serves the browser application,
-and proxies `/auth/`, `/companies` and `/modules` to loopback port 8080.
+and proxies `/auth/`, `/companies`, `/server`, `/modules` and `/.well-known/oauth-` to loopback port 8080.
 Port 80 redirects to HTTPS except for the ACME webroot challenge path,
 which must stay accessible for renewals. The backend is not publicly
 proxied until a certificate is obtained and the database check succeeds.

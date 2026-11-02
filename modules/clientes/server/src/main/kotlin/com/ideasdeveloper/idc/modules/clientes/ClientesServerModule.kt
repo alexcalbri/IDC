@@ -38,7 +38,7 @@ object ClientesServerModule : ServerModule {
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.5.0",
+        version = "0.6.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -70,6 +70,8 @@ object ClientesServerModule : ServerModule {
             )
         ),
     )
+
+    override val mcpTools = ClientesMcpTools.tools
 
     override fun routes(route: Route, access: ModuleAccessService) {
         route.route("/modules/clientes") {
@@ -184,7 +186,7 @@ object ClientesServerModule : ServerModule {
 
     private val allowedFieldTypes = setOf("text", "textarea", "number", "money", "date", "datetime", "email", "phone", "boolean", "select", "multi_select")
 
-    private fun validateCustomerRequest(connection: Connection, request: CreateCustomerRequest): ClientesErrorResponse? {
+    internal fun validateCustomerRequest(connection: Connection, request: CreateCustomerRequest): ClientesErrorResponse? {
         // Email and phone are optional since V005; only the name is required.
         if (request.displayName.isBlank()) {
             return ClientesErrorResponse("CUSTOMER_REQUIRED_FIELDS", "El nombre es obligatorio.")
@@ -194,7 +196,7 @@ object ClientesServerModule : ServerModule {
         return missing?.let { ClientesErrorResponse("CUSTOMER_DYNAMIC_FIELD_REQUIRED", "El campo ${it.label} es obligatorio.") }
     }
 
-    private fun loadFields(connection: Connection): List<CustomerFieldResponse> = connection.prepareStatement(
+    internal fun loadFields(connection: Connection): List<CustomerFieldResponse> = connection.prepareStatement(
         """
         SELECT id, field_key, label, field_type, is_required, is_active, display_order
         FROM customer_field_definitions
@@ -212,7 +214,7 @@ object ClientesServerModule : ServerModule {
     }
 
     // Customers without email never collide with each other.
-    private fun emailExists(connection: Connection, email: String, excluding: UUID?): Boolean = email.isNotBlank() && connection.prepareStatement(
+    internal fun emailExists(connection: Connection, email: String, excluding: UUID?): Boolean = email.isNotBlank() && connection.prepareStatement(
         "SELECT 1 FROM customers WHERE lower(primary_email) = lower(?) AND status <> 'archived' AND (? IS NULL OR id <> ?)"
     ).use { query ->
         query.setString(1, email)
@@ -221,7 +223,7 @@ object ClientesServerModule : ServerModule {
         query.executeQuery().use { it.next() }
     }
 
-    private fun upsertCustomer(connection: Connection, id: UUID, request: CreateCustomerRequest, insert: Boolean): Boolean {
+    internal fun upsertCustomer(connection: Connection, id: UUID, request: CreateCustomerRequest, insert: Boolean): Boolean {
         val sql = if (insert) {
             "INSERT INTO customers (id, display_name, primary_email, primary_phone, status, flexible_attributes) VALUES (?, ?, ?, ?, 'active', CAST(? AS jsonb))"
         } else {
@@ -238,14 +240,14 @@ object ClientesServerModule : ServerModule {
     }
 
     // The database generates the code on insert (customers_generate_code) and it never changes.
-    private fun customerCode(connection: Connection, id: UUID): String = connection.prepareStatement(
+    internal fun customerCode(connection: Connection, id: UUID): String = connection.prepareStatement(
         "SELECT customer_code FROM customers WHERE id = ?"
     ).use { query ->
         query.setObject(1, id)
         query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else "" }
     }
 
-    private fun rowCustomer(rows: java.sql.ResultSet): CustomerResponse = CustomerResponse(
+    internal fun rowCustomer(rows: java.sql.ResultSet): CustomerResponse = CustomerResponse(
         id = rows.getObject("id", UUID::class.java).toString(),
         displayName = rows.getString("display_name"),
         primaryEmail = rows.getString("primary_email"),

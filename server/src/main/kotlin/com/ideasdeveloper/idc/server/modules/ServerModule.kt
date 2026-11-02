@@ -22,6 +22,9 @@ interface ServerModule {
     // Periodic work run for every company that has the module enabled (see ModuleJob).
     val jobs: List<ModuleJob>
         get() = emptyList()
+    // Functions AI agents may use through the MCP endpoint, each behind a permission (see McpTool).
+    val mcpTools: List<McpTool>
+        get() = emptyList()
 
     fun routes(route: Route, access: ModuleAccessService) {
     }
@@ -160,6 +163,17 @@ class ModuleRegistry(
     }
 
     internal fun routedModules(): Collection<ServerModule> = modulesById.values
+
+    // Agent tools of installed modules. A package built for an older server has no mcpTools and offers none.
+    fun mcpTools(): List<RegisteredMcpTool> = installedIds.sorted().flatMap { moduleId ->
+        val module = modulesById[moduleId] ?: return@flatMap emptyList()
+        val tools = try {
+            module.mcpTools
+        } catch (_: LinkageError) {
+            emptyList()
+        }
+        tools.distinctBy { it.name }.map { RegisteredMcpTool(moduleId, module.definition.displayName, it) }
+    }
 
     // Valid themes of installed modules, with ids prefixed by the module id.
     fun themes(): List<UiAppTheme> = installedIds.sorted().flatMap { moduleId ->

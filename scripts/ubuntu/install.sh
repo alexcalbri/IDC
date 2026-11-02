@@ -228,6 +228,14 @@ clean_files_and_services() {
     rm -f /etc/systemd/system/ideascore-domains{,-renew}.{service,timer} /usr/local/sbin/ideascore-domains-sync
     rm -f /etc/nginx/sites-enabled/ideascore "$NGINX_SITE"
     rm -f /etc/nginx/sites-enabled/ideascore-domain-* /etc/nginx/sites-available/ideascore-domain-*
+    # An interrupted install or update can leave its temporary swap active; an active swap file cannot be deleted.
+    local swap_file
+    while IFS= read -r swap_file; do
+        if [[ $swap_file == "$APP_DIR"/* ]]; then
+            printf 'Desactivando swap temporal %s...\n' "$swap_file"
+            swapoff "$swap_file"
+        fi
+    done < <(awk 'NR > 1 { print $1 }' /proc/swaps)
     rm -rf "$APP_DIR" "$CONFIG_DIR" "$ACME_ROOT"
     if getent passwd ideascore >/dev/null; then
         userdel -r ideascore >/dev/null 2>&1 || userdel ideascore >/dev/null 2>&1 || true
@@ -730,6 +738,15 @@ server {
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
+    # OAuth discovery for AI agents (claude.ai custom connectors); the module answers 404 when not installed.
+    location /.well-known/oauth- {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
     location /modules {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
@@ -797,6 +814,15 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
     location /server {
+        proxy_pass http://127.0.0.1:$APP_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$remote_addr;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+    # OAuth discovery for AI agents (claude.ai custom connectors); the module answers 404 when not installed.
+    location /.well-known/oauth- {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;

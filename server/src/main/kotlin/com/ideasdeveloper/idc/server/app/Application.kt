@@ -141,7 +141,14 @@ fun Application.module() {
     // delaying startup.
     Thread({ companyProvisioning.applyPendingModuleMigrations() }, "module-migrations").apply { isDaemon = true }.start()
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
-    val moduleAccessService = ModuleAccessService(DatabaseFactory.getDataSource(), loginDatabases, serverMailSettings(), moduleRegistry::isInstalled)
+    val moduleAccessService = ModuleAccessService(
+        DatabaseFactory.getDataSource(),
+        loginDatabases,
+        serverMailSettings(),
+        moduleRegistry::isInstalled,
+        moduleRegistry::mcpTools,
+        loginDatabases.service::login,
+    )
     // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.
     val moduleJobs = ModuleJobScheduler(moduleRegistry, moduleAccessService).also { it.start() }
     val companySelfService = CompanySelfService(

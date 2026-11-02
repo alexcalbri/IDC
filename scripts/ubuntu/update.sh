@@ -162,12 +162,14 @@ configure_service_writable_paths() {
     printf 'Servicio actualizado con rutas escribibles para backups y modulos.\n'
 }
 
-configure_nginx_server_route() {
+# Adds "location <prefix>" proxying to the backend, before "location / {", when the site lacks it.
+ensure_nginx_proxy_location() {
+    local prefix=$1
     if [[ ! -f $NGINX_SITE ]]; then
-        printf 'AVISO: no se encontro %s; omitiendo configuracion Nginx de /server.\n' "$NGINX_SITE" >&2
+        printf 'AVISO: no se encontro %s; omitiendo configuracion Nginx de %s.\n' "$NGINX_SITE" "$prefix" >&2
         return
     fi
-    if grep -Eq '^[[:space:]]*location[[:space:]]+/server([[:space:]]|\{)' "$NGINX_SITE"; then
+    if grep -Fq "location $prefix " "$NGINX_SITE" || grep -Fq "location $prefix{" "$NGINX_SITE"; then
         return
     fi
     if ! grep -q "proxy_pass http://127.0.0.1:$APP_PORT" "$NGINX_SITE"; then
@@ -176,15 +178,16 @@ configure_nginx_server_route() {
     fi
 
     cp -a "$NGINX_SITE" "$NGINX_SITE.update-backup.$(date -u +%Y%m%dT%H%M%SZ)"
-    python3 - "$NGINX_SITE" "$APP_PORT" <<'PY'
+    python3 - "$NGINX_SITE" "$APP_PORT" "$prefix" <<'PY'
 from pathlib import Path
 import sys
 
 path = Path(sys.argv[1])
 port = sys.argv[2]
+prefix = sys.argv[3]
 text = path.read_text()
 marker = "    location / {\n"
-block = f"""    location /server {{
+block = f"""    location {prefix} {{
         proxy_pass http://127.0.0.1:{port};
         proxy_http_version 1.1;
         proxy_set_header Host $host;
@@ -193,15 +196,21 @@ block = f"""    location /server {{
         proxy_set_header X-Forwarded-Proto $scheme;
     }}
 """
-if "location /server" in text:
+if f"location {prefix} " in text:
     sys.exit(0)
 if marker not in text:
-    sys.exit("No se encontro el bloque location / para insertar /server.")
+    sys.exit(f"No se encontro el bloque location / para insertar {prefix}.")
 path.write_text(text.replace(marker, block + marker, 1))
 PY
     nginx -t
     systemctl reload nginx
-    printf 'Nginx actualizado para proxyear /server al backend.\n'
+    printf 'Nginx actualizado para proxyear %s al backend.\n' "$prefix"
+}
+
+configure_nginx_server_route() {
+    ensure_nginx_proxy_location /server
+    # OAuth discovery for AI agents (module Agentes IA, claude.ai custom connectors).
+    ensure_nginx_proxy_location /.well-known/oauth-
 }
 
 apply_control_migrations() {
