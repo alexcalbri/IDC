@@ -34,6 +34,22 @@ import kotlin.io.path.readText
 import kotlin.io.path.relativeTo
 import kotlin.io.path.walk
 
+/**
+ * Optional GitHub token of the server owner (MODULE_GITHUB_TOKEN in server.env). It raises the API
+ * limit from 60 to 5000 requests per hour and allows private catalogs. It is a credential: it is set
+ * only in the server's configuration file and sent only to GitHub hosts over HTTPS.
+ */
+object GitHubAuth {
+    private val hosts = setOf("api.github.com", "codeload.github.com", "github.com")
+
+    // Header value for [url], or null when there is no token or the URL is not GitHub over HTTPS.
+    fun header(token: String?, url: String): String? {
+        val value = token?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val uri = runCatching { URI.create(url) }.getOrNull() ?: return null
+        return "Bearer $value".takeIf { uri.scheme == "https" && uri.host?.lowercase() in hosts }
+    }
+}
+
 /** Folder of a GitHub repository that holds the module catalog, e.g. .../tree/develop/modules. */
 data class GitHubLocation(val owner: String, val repo: String, val ref: String, val path: String) {
     // One request downloads the whole branch; only the module's folder is extracted.
@@ -76,11 +92,13 @@ class ModulePackageBuilder(
     private val compilerDir: Path,
     private val compileClasspath: String,
     private val javaExecutable: String,
+    private val githubToken: String? = null,
 ) {
     private val log = LoggerFactory.getLogger(ModulePackageBuilder::class.java)
     private val http = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(15))
-        .followRedirects(HttpClient.Redirect.NORMAL)
+        // Redirects are followed by hand so the token is never sent to a host other than GitHub.
+        .followRedirects(HttpClient.Redirect.NEVER)
         .build()
 
     /** Downloads [moduleId] from the catalog [source], builds it and returns the installed package. */
@@ -121,10 +139,18 @@ class ModulePackageBuilder(
     }
 
     private fun download(url: String, target: Path): Path {
-        val response = http.send(
-            HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofMinutes(5)).GET().build(),
-            HttpResponse.BodyHandlers.ofFile(target),
-        )
+        var current = url
+        var response: HttpResponse<Path>
+        var redirects = 0
+        while (true) {
+            val request = HttpRequest.newBuilder(URI.create(current)).timeout(Duration.ofMinutes(5)).GET()
+            GitHubAuth.header(githubToken, current)?.let { request.header("Authorization", it) }
+            response = http.send(request.build(), HttpResponse.BodyHandlers.ofFile(target))
+            val location = response.headers().firstValue("Location").orElse(null)
+            if (response.statusCode() !in 300..399 || location == null) break
+            if (++redirects > 5) throw ModuleBuildException("Demasiadas redirecciones al descargar el modulo.")
+            current = URI.create(current).resolve(location).toString()
+        }
         if (response.statusCode() != 200) throw ModuleBuildException("No se pudo descargar el codigo del modulo (HTTP ${response.statusCode()}).")
         if (Files.size(target) > MaxArchiveBytes) throw ModuleBuildException("El repositorio descargado es demasiado grande.")
         return target
@@ -280,12 +306,12 @@ class ModulePackageBuilder(
          * Builder for the installed server: compiler/ next to lib/ in the distribution and the
          * running server's classpath. Returns null outside an installed distribution (e.g. :server:run).
          */
-        fun forRunningServer(packagesRoot: Path): ModulePackageBuilder? {
+        fun forRunningServer(packagesRoot: Path, githubToken: String? = null): ModulePackageBuilder? {
             val location = runCatching { Path.of(ModulePackageBuilder::class.java.protectionDomain.codeSource.location.toURI()) }.getOrNull()
                 ?: return null
             val compilerDir = location.parent?.parent?.resolve("compiler")?.takeIf { Files.isDirectory(it) } ?: return null
             val java = ProcessHandle.current().info().command().orElse("java")
-            return ModulePackageBuilder(packagesRoot, compilerDir, System.getProperty("java.class.path"), java)
+            return ModulePackageBuilder(packagesRoot, compilerDir, System.getProperty("java.class.path"), java, githubToken)
         }
     }
 }

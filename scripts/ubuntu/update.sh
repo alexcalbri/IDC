@@ -155,6 +155,7 @@ configure_server_env() {
     append_config_value COMPANY_BACKUPS_ROOT "$APP_DIR/company-backups"
     append_config_value MODULE_CATALOG_URL 'https://github.com/alexcalbri/IDC/tree/master/modules'
     append_config_value MODULE_PACKAGES_ROOT "$APP_DIR/server-modules"
+    append_config_value MODULE_GITHUB_TOKEN ''
     append_config_value VERSION_CATALOG_URL ''
     if [[ -f $NGINX_SITE ]] && grep -Eq 'listen[[:space:]]+443' "$NGINX_SITE"; then
         append_config_value PUBLIC_SCHEME https

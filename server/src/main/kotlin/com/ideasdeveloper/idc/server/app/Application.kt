@@ -107,7 +107,8 @@ fun Application.module() {
             registry.registerInstalled(definition)
         }
     }
-    val remoteModuleCatalog = RemoteModuleCatalog()
+    val githubToken = environment.config.propertyOrNull("modules.githubToken")?.getString()?.trim()?.takeIf { it.isNotEmpty() }
+    val remoteModuleCatalog = RemoteModuleCatalog(githubToken)
     val loginDatabases = LoginDatabases(
         central = DatabaseFactory.getDataSource(),
         centralDatabase = DatabaseFactory.getDatabase(),
@@ -134,7 +135,7 @@ fun Application.module() {
         remoteModuleCatalog = remoteModuleCatalog,
         defaultCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
         modulePackagesRoot = modulePackagesRoot,
-        modulePackageBuilder = ModulePackageBuilder.forRunningServer(modulePackagesRoot),
+        modulePackageBuilder = ModulePackageBuilder.forRunningServer(modulePackagesRoot, githubToken),
         requestRestart = ::restartToLoadModules,
     )
     // Applies migrations of newly loaded module versions to the companies that use them, without

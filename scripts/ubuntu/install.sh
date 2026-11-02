@@ -656,6 +656,9 @@ install -d -m 700 "$CONFIG_DIR"
     printf 'COMPANY_BACKUPS_ROOT=%s\n' "$COMPANY_BACKUPS_DIR"
     printf 'MODULE_CATALOG_URL=%s\n' "$DEFAULT_MODULE_CATALOG_URL"
     printf 'MODULE_PACKAGES_ROOT=%s\n' "$MODULE_PACKAGES_DIR"
+    # Optional GitHub token (fine-grained, read-only on public repositories) to avoid GitHub's
+    # 60 requests/hour limit when listing and installing modules; edit and restart ideascore.
+    printf 'MODULE_GITHUB_TOKEN=\n'
     printf 'VERSION_CATALOG_URL=\n'
     # Read by the root domain helper (hotspot portals and other module domains).
     printf 'PUBLIC_SCHEME=%s\n' "$PUBLIC_SCHEME"

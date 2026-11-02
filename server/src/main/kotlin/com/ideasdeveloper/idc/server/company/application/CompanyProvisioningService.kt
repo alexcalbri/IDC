@@ -524,6 +524,8 @@ class CompanyProvisioningService(
                 upsert.executeUpdate()
             }
         }
+        // Saving the URL (even the same one) reads the catalog again on the next listing.
+        remoteModuleCatalog.forget(normalized)
         return ServerModuleCatalogResponse(catalogUrl = normalized)
     }
 

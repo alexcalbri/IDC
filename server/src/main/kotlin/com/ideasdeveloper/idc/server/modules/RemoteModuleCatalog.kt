@@ -5,6 +5,8 @@ import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.http.HttpHeaders
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
@@ -32,7 +34,15 @@ import java.util.Base64
  * para nuevas instalaciones; los servidores que ya la instalaron conservan su
  * registro local en `server_modules` y su paquete descargado.
  */
-class RemoteModuleCatalog : AutoCloseable {
+class RemoteModuleCatalog(
+    // Optional GitHub token (see GitHubAuth); sent only to GitHub.
+    private val githubToken: String? = null,
+    private val clock: () -> Long = System::currentTimeMillis,
+) : AutoCloseable {
+    private companion object {
+        const val CacheMillis = 5 * 60_000L
+    }
+
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -51,8 +61,18 @@ class RemoteModuleCatalog : AutoCloseable {
     private val moduleIdPattern = Regex("[a-z][a-z0-9_]{0,62}")
     private val checksumPattern = Regex("[A-Fa-f0-9]{64}")
 
+    private class Cached(val readAt: Long, val modules: List<RemoteModulePackage>)
+
+    // Last good reading per catalog URL. GitHub allows 60 unauthenticated API requests per hour and a
+    // reading costs one per module folder plus one; the modules screen asks every few seconds while
+    // a module installs, so without this the limit runs out and the catalog looks empty for an hour.
+    private val cache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
+
     fun modules(catalogUrl: String): List<RemoteModulePackage> {
-        val url = catalogUrl.trim().takeIf { it.isNotBlank() }?.toGitHubContentsApiUrl() ?: return emptyList()
+        val key = catalogUrl.trim()
+        val url = key.takeIf { it.isNotBlank() }?.toGitHubContentsApiUrl() ?: return emptyList()
+        val now = clock()
+        cache[key]?.takeIf { now - it.readAt < CacheMillis }?.let { return it.modules }
         // Modules are built from this repository folder when the server owner installs them.
         val source = GitHubLocation.parse(catalogUrl)
         return runBlocking {
@@ -62,14 +82,21 @@ class RemoteModuleCatalog : AutoCloseable {
                     .map { it.copy(source = source) }
                     .distinctBy { it.definition.id }
                     .sortedBy { it.definition.id }
+                    .also { cache[key] = Cached(now, it) }
             } catch (_: Exception) {
-                emptyList()
+                // GitHub unreachable or rate limited: keep offering the last good reading.
+                cache[key]?.modules ?: emptyList()
             }
         }
     }
 
+    // Reads the catalog again on the next call (after changing the catalog URL or to check updates now).
+    fun forget(catalogUrl: String) {
+        cache.remove(catalogUrl.trim())
+    }
+
     private suspend fun modulesFrom(url: String): List<RemoteModulePackage> {
-        val text = client.get(url).body<String>()
+        val text = get(url)
         return when (val element = json.parseToJsonElement(text)) {
             is JsonObject -> modulesFromObject(element)
             is JsonArray -> modulesFromGitHubDirectory(element)
@@ -98,12 +125,16 @@ class RemoteModuleCatalog : AutoCloseable {
             }
 
     private suspend fun loadModuleManifest(url: String, expectedFolder: String): RemoteModulePackage? {
-        val text = client.get(url).body<String>()
+        val text = get(url)
         return when (val element = json.parseToJsonElement(text)) {
             is JsonObject -> decodeModuleManifest(element, expectedFolder)
             else -> null
         }
     }
+
+    private suspend fun get(url: String): String = client.get(url) {
+        GitHubAuth.header(githubToken, url)?.let { header(HttpHeaders.Authorization, it) }
+    }.body()
 
     private fun decodeModuleManifest(element: JsonObject, expectedFolder: String?): RemoteModulePackage? {
         val manifest = element["content"]?.jsonPrimitive?.contentOrNull

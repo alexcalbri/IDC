@@ -416,6 +416,7 @@ Document verified variables in a table here as they are implemented:
 | `MIGRATIONS_ROOT` | No | Repository/source root containing `database/...` migrations; defaults to the server working directory. |
 | `COMPANY_BACKUPS_ROOT` | No | Server-side directory for company ZIP files created from the Empresa business-owner screen; defaults to `build/company-backups`. |
 | `MODULE_CATALOG_URL` | No | URL of the remote module repository directory. Installer default: `https://github.com/alexcalbri/IDC/tree/master/modules`. GitHub tree URLs and Contents API URLs are accepted. Empty means no remote modules are shown for new installs. |
+| `MODULE_GITHUB_TOKEN` | No | GitHub token for the module catalog and module downloads. Without it GitHub allows 60 API requests per hour per IP, which listing the catalog can use up; with it, 5000. Use a fine-grained token with read-only access to public repositories (or to the private catalog repository). It is sent only to GitHub over HTTPS and is set only here, never in the app. Restart `ideascore` after changing it. |
 | `MODULE_PACKAGES_ROOT` | No | Server-side directory where downloaded module packages are stored; defaults to `build/server-modules`. |
 | `VERSION_CATALOG_URL` | No | URL of the remote JSON version catalog used by `/version`. Official URL: `https://raw.githubusercontent.com/alexcalbri/IDC/master/version.json`. |
 
