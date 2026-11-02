@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.modules.agentes
 
 import com.ideasdeveloper.idc.server.modules.McpTool
 import com.ideasdeveloper.idc.server.modules.RegisteredMcpTool
+import com.ideasdeveloper.idc.server.modules.RegisteredModuleMcp
 import com.ideasdeveloper.idc.server.modules.UserModuleAccess
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -62,6 +63,15 @@ class AgentesMcpTest {
         val owner = access(emptySet(), owner = true)
         assertEquals(setOf("crm_search_leads"), names(AgentesMcp.visibleTools(catalog, token(modules = setOf("crm")), owner)))
         assertEquals(setOf("clientes_search_customers", "crm_search_leads"), names(AgentesMcp.visibleTools(catalog, token(readOnly = true), owner)))
+    }
+
+    // The bridge only relays what each module says about itself, and only for modules the agent can use.
+    @Test
+    fun instructionsComeFromTheUsableModules() {
+        val modules = catalog.groupBy { it.moduleId }.map { (id, tools) -> RegisteredModuleMcp(id, tools.first().moduleName, "Instrucciones de $id.", tools) }
+        val visible = AgentesMcp.visibleTools(catalog, token(), access(setOf("clientes.view")))
+        val text = AgentesMcp.instructions("Puente.", modules, visible)
+        assertEquals("Puente.\n\n## Clientes\nInstrucciones de clientes.", text)
     }
 
     private fun protocol(granted: Set<String>, denied: MutableList<String> = mutableListOf()): AgentesMcp {

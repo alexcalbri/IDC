@@ -37,6 +37,38 @@ class McpTool(
     val handler: (McpToolCall) -> JsonElement,
 )
 
+/**
+ * What the registry checks before offering a module's tool, so a mistake in one module never breaks
+ * the endpoint for the rest: a valid name, a qualified name MCP clients accept (Claude allows up to
+ * 64 characters) and a permission the module itself declares, so the business owner can grant it.
+ */
+object McpToolRules {
+    const val MaxQualifiedNameLength = 64
+    private val namePattern = Regex("^[a-z][a-z0-9_]*$")
+
+    fun problem(definition: ModuleDefinition, tool: McpTool): String? = when {
+        !namePattern.matches(tool.name) -> "el nombre debe cumplir [a-z][a-z0-9_]*"
+        "${definition.id}_${tool.name}".length > MaxQualifiedNameLength -> "'${definition.id}_${tool.name}' pasa de $MaxQualifiedNameLength caracteres"
+        definition.permissions.none { it.id == tool.permission } -> "el permiso '${tool.permission}' no esta declarado en el modulo"
+        else -> null
+    }
+}
+
+/**
+ * A module's own MCP: everything it tells AI agents about itself. The "agentes" module is only the
+ * bridge between these and the model; it knows nothing about any module, so a module update that
+ * changes its MCP reaches agents without updating anything else.
+ */
+class ModuleMcp(
+    // Guidance for the model, written by the module: what the module is for, how its tools fit
+    // together and the rules to follow. Agents receive it only while they can use some tool of it.
+    val instructions: String,
+    val tools: List<McpTool>,
+)
+
+// The MCP of an installed module, as the registry exposes it, with the tools that passed McpToolRules.
+class RegisteredModuleMcp(val moduleId: String, val moduleName: String, val instructions: String, val tools: List<RegisteredMcpTool>)
+
 // A tool of an installed module, as the registry exposes it to the MCP endpoint.
 class RegisteredMcpTool(val moduleId: String, val moduleName: String, val tool: McpTool) {
     val qualifiedName: String get() = "${moduleId}_${tool.name}"

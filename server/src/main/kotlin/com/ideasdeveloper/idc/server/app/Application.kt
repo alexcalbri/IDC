@@ -146,7 +146,7 @@ fun Application.module() {
         loginDatabases,
         serverMailSettings(),
         moduleRegistry::isInstalled,
-        moduleRegistry::mcpTools,
+        moduleRegistry::mcp,
         loginDatabases.service::login,
     )
     // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.

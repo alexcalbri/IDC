@@ -34,3 +34,16 @@ Implemented baseline:
 - Module-specific fields must be stored by the owning module, not in the shared
   Clientes field table, unless they are intentionally promoted to the shared
   customer record.
+
+## AI agent tools
+
+With the `agentes` module, agents can use (`ClientesMcpTools.kt`), with the same permissions and
+validations as the routes:
+
+| Tool | Permission | Does |
+|---|---|---|
+| `clientes_search_customers`, `clientes_get_customer`, `clientes_list_customer_fields` | `clientes.view` | Search customers, read one by id or code, list the custom fields. |
+| `clientes_create_customer` | `clientes.create` | Creates a customer (name required, no duplicated email). |
+| `clientes_update_customer` | `clientes.edit` | Changes only the data sent. |
+| `clientes_archive_customer` | `clientes.delete` | Archives a customer, like `DELETE /customers/{id}`. |
+| `clientes_create_customer_field` | `clientes.fields.manage` | Adds a custom field, like `POST /fields`. |

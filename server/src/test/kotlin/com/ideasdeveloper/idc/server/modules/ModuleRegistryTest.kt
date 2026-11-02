@@ -2,6 +2,9 @@ package com.ideasdeveloper.idc.server.modules
 
 import com.ideasdeveloper.idc.ui.UiAppTheme
 import com.ideasdeveloper.idc.ui.UiTheme
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import java.util.ServiceLoader
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -49,5 +52,66 @@ class ModuleRegistryTest {
 
         registry.install("marca")
         assertEquals(listOf("marca.oceano"), registry.themes().map { it.id })
+    }
+
+    private fun tool(name: String, permission: String) = McpTool(name, name, name, permission) { JsonNull }
+
+    @Test
+    fun onlyInstalledModulesOfferTheirValidAgentTools() {
+        val agentic = object : ServerModule {
+            override val definition = ModuleDefinition(
+                id = "ventas", displayName = "Ventas", description = "Ventas",
+                permissions = listOf(ModulePermissionDefinition("ventas.view", "Ver", "Ver")),
+            )
+            override val mcp: ModuleMcp
+                get() = ModuleMcp(
+                    "Ventas registra pedidos.",
+                    listOf(
+                        tool("search_orders", "ventas.view"),
+                        tool("search_orders", "ventas.view"),
+                        tool("Bad-Name", "ventas.view"),
+                        tool("delete_everything", "clientes.delete"),
+                        tool("x".repeat(60), "ventas.view"),
+                    ),
+                )
+        }
+        val registry = ModuleRegistry(listOf(agentic))
+        assertEquals(emptyList(), registry.mcpTools())
+
+        registry.install("ventas")
+        assertEquals(listOf("ventas_search_orders"), registry.mcpTools().map { it.qualifiedName })
+        assertEquals("Ventas registra pedidos.", registry.mcp().single().instructions)
+    }
+
+    // Credentials are typed only in the app: no tool of any module may take one as an argument.
+    @Test
+    fun noModuleToolTakesCredentials() {
+        val credential = Regex("(?i)(password|secret|token|api_?key|contrasena)")
+        fun names(schema: JsonObject): List<String> {
+            val properties = schema["properties"] as? JsonObject ?: JsonObject(emptyMap())
+            return properties.keys.toList() + properties.values.flatMap { property ->
+                val nested = property as? JsonObject ?: return@flatMap emptyList()
+                names(nested) + ((nested["items"] as? JsonObject)?.let(::names).orEmpty())
+            }
+        }
+        val offending = ServiceLoader.load(ServerModuleProvider::class.java).map { it.create() }.flatMap { module ->
+            module.mcp?.tools.orEmpty().flatMap { tool -> names(tool.inputSchema).filter { credential.containsMatchIn(it) }.map { "${module.definition.id}/${tool.name}: $it" } }
+        }
+        assertEquals(emptyList(), offending)
+    }
+
+    // Every module compiled with the server: a tool the registry would drop is a bug of that module.
+    @Test
+    fun everyModuleToolFollowsTheRules() {
+        val modules = ServiceLoader.load(ServerModuleProvider::class.java).map { it.create() }
+        assertTrue(modules.isNotEmpty())
+        val problems = modules.flatMap { module ->
+            val mcp = module.mcp ?: return@flatMap emptyList()
+            val tools = mcp.tools
+            tools.mapNotNull { tool -> McpToolRules.problem(module.definition, tool)?.let { "${module.definition.id}/${tool.name}: $it" } } +
+                tools.groupBy { it.name }.filterValues { it.size > 1 }.keys.map { "${module.definition.id}/$it: nombre repetido" } +
+                listOfNotNull("${module.definition.id}: instrucciones vacias".takeIf { mcp.instructions.isBlank() })
+        }
+        assertEquals(emptyList(), problems)
     }
 }

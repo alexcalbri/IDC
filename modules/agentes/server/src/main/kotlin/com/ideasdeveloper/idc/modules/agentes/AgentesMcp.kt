@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.modules.agentes
 
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
 import com.ideasdeveloper.idc.server.modules.RegisteredMcpTool
+import com.ideasdeveloper.idc.server.modules.RegisteredModuleMcp
 import com.ideasdeveloper.idc.server.modules.UserModuleAccess
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -127,6 +128,16 @@ class AgentesMcp(
         const val InvalidRequest = -32600
         const val MethodNotFound = -32601
         const val InvalidParams = -32602
+
+        /**
+         * The bridge's own text ([base]) followed by the instructions each module wrote for agents,
+         * only for the modules the agent can use some tool of. The bridge adds nothing about modules.
+         */
+        fun instructions(base: String, modules: List<RegisteredModuleMcp>, visible: List<VisibleTool>): String {
+            val usable = visible.map { it.registered.moduleId }.toSet()
+            return (listOf(base) + modules.filter { it.moduleId in usable && it.instructions.isNotEmpty() }.map { "## ${it.moduleName}\n${it.instructions}" })
+                .joinToString("\n\n")
+        }
 
         /** Tools the agent may use now: allowed by its token and permitted to its user in an enabled module. */
         fun visibleTools(all: List<RegisteredMcpTool>, token: AgentToken, access: UserModuleAccess): List<VisibleTool> =

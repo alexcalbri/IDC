@@ -144,10 +144,10 @@ class HotspotAccess(private val access: ModuleAccessService) {
         }
     }
 
-    private fun userLabel(user: HotspotUser) = if (user.serverOwner) "${user.username} (dueno del servidor)" else user.username
+    internal fun userLabel(user: HotspotUser) = if (user.serverOwner) "${user.username} (dueno del servidor)" else user.username
 
     // "COMPANY · SSID" of every user-code network of the other active companies.
-    private fun otherCompanyNetworks(): List<String> {
+    internal fun otherCompanyNetworks(): List<String> {
         val companies = access.centralConnection().use { central ->
             central.prepareStatement("SELECT code FROM companies WHERE is_active AND NOT is_server_workspace ORDER BY code").use { query ->
                 query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }

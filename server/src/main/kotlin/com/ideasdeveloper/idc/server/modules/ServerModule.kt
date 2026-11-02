@@ -6,6 +6,7 @@ import com.ideasdeveloper.idc.ui.isValid
 import java.util.concurrent.ConcurrentHashMap
 import io.ktor.server.routing.Route
 import kotlinx.serialization.Serializable
+import org.slf4j.LoggerFactory
 
 interface ServerModule {
     val definition: ModuleDefinition
@@ -22,9 +23,10 @@ interface ServerModule {
     // Periodic work run for every company that has the module enabled (see ModuleJob).
     val jobs: List<ModuleJob>
         get() = emptyList()
-    // Functions AI agents may use through the MCP endpoint, each behind a permission (see McpTool).
-    val mcpTools: List<McpTool>
-        get() = emptyList()
+    // The module's own MCP for AI agents: its instructions and tools, each tool behind a permission
+    // (see ModuleMcp). Override it with a getter (`get() = ...`) so it is built when first read.
+    val mcp: ModuleMcp?
+        get() = null
 
     fun routes(route: Route, access: ModuleAccessService) {
     }
@@ -164,16 +166,40 @@ class ModuleRegistry(
 
     internal fun routedModules(): Collection<ServerModule> = modulesById.values
 
-    // Agent tools of installed modules. A package built for an older server has no mcpTools and offers none.
-    fun mcpTools(): List<RegisteredMcpTool> = installedIds.sorted().flatMap { moduleId ->
-        val module = modulesById[moduleId] ?: return@flatMap emptyList()
-        val tools = try {
-            module.mcpTools
+    private val ignoredMcpTools: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * The MCP of every installed module that has one, read on every call so an updated module is
+     * offered as it is now. A package built for an older server has no mcp and offers nothing; a
+     * module whose mcp fails to build is skipped, so it never breaks the others.
+     */
+    fun mcp(): List<RegisteredModuleMcp> = installedIds.sorted().mapNotNull { moduleId ->
+        val module = modulesById[moduleId] ?: return@mapNotNull null
+        val mcp = try {
+            module.mcp
         } catch (_: LinkageError) {
-            emptyList()
-        }
-        tools.distinctBy { it.name }.map { RegisteredMcpTool(moduleId, module.definition.displayName, it) }
+            null
+        } catch (failure: Exception) {
+            if (ignoredMcpTools.add("$moduleId/*")) {
+                LoggerFactory.getLogger("ModuleRegistry").warn("MCP del modulo '{}' ignorado: no se pudo construir.", moduleId, failure)
+            }
+            null
+        } ?: return@mapNotNull null
+        val tools = mcp.tools.distinctBy { it.name }
+            .filter { tool ->
+                val problem = McpToolRules.problem(module.definition, tool) ?: return@filter true
+                // Tools are listed on every agent request: warn once per tool.
+                if (ignoredMcpTools.add("$moduleId/${tool.name}")) {
+                    LoggerFactory.getLogger("ModuleRegistry").warn("Herramienta MCP '{}' del modulo '{}' ignorada: {}", tool.name, moduleId, problem)
+                }
+                false
+            }
+            .map { RegisteredMcpTool(moduleId, module.definition.displayName, it) }
+        RegisteredModuleMcp(moduleId, module.definition.displayName, mcp.instructions.trim(), tools).takeIf { tools.isNotEmpty() }
     }
+
+    // Agent tools of every installed module.
+    fun mcpTools(): List<RegisteredMcpTool> = mcp().flatMap { it.tools }
 
     // Valid themes of installed modules, with ids prefixed by the module id.
     fun themes(): List<UiAppTheme> = installedIds.sorted().flatMap { moduleId ->

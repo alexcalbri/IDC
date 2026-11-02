@@ -27,6 +27,21 @@ git_source() {
 [[ $EUID -eq 0 ]] || die 'Ejecuta con sudo bash update.sh.'
 [[ -r /dev/tty ]] || die 'Se necesita una terminal interactiva; usa ssh -t.'
 
+# One install or update at a time (install.sh takes the same lock): the script runs again under flock,
+# which holds the lock until it ends.
+# -o keeps the lock out of child processes, so a Gradle daemon left running cannot keep it held.
+readonly MAINTENANCE_LOCK_FILE=/run/ideascore-maintenance.lock
+readonly MAINTENANCE_LOCK_BUSY=75
+if [[ ${IDEASCORE_MAINTENANCE_LOCKED:-} != 1 ]]; then
+    [[ -f $0 ]] || die 'Descarga update.sh y ejecutalo como archivo: sudo bash update.sh'
+    command -v flock >/dev/null 2>&1 || die 'No se encontro flock (paquete util-linux).'
+    lock_status=0
+    flock -n -o -E "$MAINTENANCE_LOCK_BUSY" "$MAINTENANCE_LOCK_FILE" \
+        env IDEASCORE_MAINTENANCE_LOCKED=1 bash -- "$0" "$@" || lock_status=$?
+    (( lock_status != MAINTENANCE_LOCK_BUSY )) || die 'Ya hay una instalacion o actualizacion de IdeasCore en curso. Espera a que termine.'
+    exit "$lock_status"
+fi
+
 readonly APP_DIR=/opt/ideascore
 readonly SOURCE_DIR=$APP_DIR/source
 readonly APP_RUNTIME_DIR=$APP_DIR/app
@@ -53,8 +68,19 @@ cleanup_update_swap() {
 trap 'cleanup_update_swap; printf "Actualizacion interrumpida (linea %s). Revisa los respaldos antes de reintentar.\n" "$LINENO" >&2' ERR
 trap 'cleanup_update_swap' EXIT
 
+recover_stale_update_swap() {
+    [[ -e $UPDATE_SWAP_FILE ]] || return 0
+    printf 'Se encontro swap temporal de una actualizacion anterior interrumpida; se recupera.\n'
+    if awk 'NR > 1 { print $1 }' /proc/swaps | grep -Fxq "$UPDATE_SWAP_FILE"; then
+        swapoff "$UPDATE_SWAP_FILE"
+    fi
+    rm -f "$UPDATE_SWAP_FILE"
+}
+
 ensure_update_swap() {
     local available_kb total_swap_kb
+    # Before measuring: a leftover active swap would count as available and then never be removed.
+    recover_stale_update_swap
     available_kb=$(awk '/MemAvailable:/ { print $2 }' /proc/meminfo)
     total_swap_kb=$(awk '/SwapTotal:/ { print $2 }' /proc/meminfo)
 
@@ -62,7 +88,6 @@ ensure_update_swap() {
         return
     fi
 
-    [[ ! -e $UPDATE_SWAP_FILE ]] || die "Ya existe $UPDATE_SWAP_FILE. Revisalo antes de actualizar."
     printf 'Memoria limitada detectada; se creara swap temporal de %s MiB para compilar.\n' "$UPDATE_SWAP_SIZE_MB"
     if command -v fallocate >/dev/null 2>&1; then
         fallocate -l "${UPDATE_SWAP_SIZE_MB}M" "$UPDATE_SWAP_FILE" ||

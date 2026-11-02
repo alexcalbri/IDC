@@ -4,6 +4,7 @@ import com.ideasdeveloper.idc.server.modules.McpSchema
 import com.ideasdeveloper.idc.server.modules.McpTool
 import com.ideasdeveloper.idc.server.modules.McpToolCall
 import com.ideasdeveloper.idc.server.modules.McpToolException
+import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -33,6 +34,19 @@ object CrmMcpTools {
         "estimatedValue" to McpSchema.number("Valor estimado del negocio."),
         "followUpOn" to McpSchema.date("Proximo seguimiento."),
     )
+
+    // What this module tells agents about itself (see ModuleMcp): leads, settings and integrations.
+    val mcp: ModuleMcp
+        get() = ModuleMcp(Instructions, tools + CrmSettingsMcpTools.tools + CrmIntegrationMcpTools.tools + CrmImportMcpTools.tools)
+
+    private const val Instructions =
+        "El CRM sigue a los interesados (leads) por un embudo de etapas; cerrar en una etapa ganada o perdida termina el seguimiento. " +
+            "Cada lead es un cliente de Clientes. Con intereses activados, cada usuario ve solo los leads de sus intereses o los que tiene " +
+            "asignados: veras exactamente lo que ve tu usuario. Las etapas, intereses y usuarios se nombran como los devuelve list_pipeline. " +
+            "Los nuevos leads pueden traer un responsable sugerido que se aprueba o descarta. Antes de enviar un mensaje a un lead, crear " +
+            "una reserva o cambiar configuracion o integraciones, muestra lo que vas a hacer y espera la confirmacion del usuario. " +
+            "Las credenciales de las integraciones y del correo (API keys, tokens, secretos, contrasenas) se configuran solo en la app; " +
+            "nunca las pidas ni las recibas."
 
     val tools = listOf(
         McpTool(
@@ -122,6 +136,74 @@ object CrmMcpTools {
                 required = listOf("id", "note"),
             ),
         ) { call -> note(call) },
+        McpTool(
+            name = "get_lead_messages",
+            title = "Mensajes de un lead",
+            description = "Devuelve los mensajes enviados y recibidos con un lead visible (correo, WhatsApp, Messenger, Instagram), del mas reciente al mas antiguo.",
+            permission = CrmScreens.View,
+            readOnly = true,
+            inputSchema = McpSchema.obj(
+                mapOf("id" to McpSchema.uuid("Id del lead."), "limit" to McpSchema.integer("Cantidad maxima de mensajes.", 1, 100)),
+                required = listOf("id"),
+            ),
+        ) { call -> messages(call) },
+        McpTool(
+            name = "list_message_templates",
+            title = "Plantillas y canales de mensajes",
+            description = "Lista las plantillas de mensajes de la empresa y los canales por los que se puede escribir a los leads.",
+            permission = CrmScreens.View,
+            readOnly = true,
+        ) { call -> templates(call) },
+        McpTool(
+            name = "send_message",
+            title = "Enviar mensaje a un lead",
+            description = "Envia un mensaje a un lead visible por un canal (correo, WhatsApp...), con texto propio o una plantilla; los marcadores de la plantilla " +
+                "se llenan con los datos del lead. Le llega de inmediato a la persona: muestra el mensaje al usuario y espera su confirmacion antes de enviarlo.",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "id" to McpSchema.uuid("Id del lead."),
+                    "channel" to McpSchema.string("Canal: id o nombre de list_message_templates, por ejemplo email o WhatsApp."),
+                    "text" to McpSchema.string("Texto del mensaje; si se omite se usa la plantilla."),
+                    "subject" to McpSchema.string("Asunto (correo); si se omite se usa el de la plantilla."),
+                    "template" to McpSchema.string("Nombre de la plantilla (list_message_templates)."),
+                ),
+                required = listOf("id", "channel"),
+            ),
+        ) { call -> send(call) },
+        McpTool(
+            name = "mark_lead_reviewed",
+            title = "Marcar lead como revisado",
+            description = "Quita el aviso de revision de un lead visible (por ejemplo un lead que volvio a escribir o un posible duplicado).",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
+        ) { call -> reviewed(call) },
+        McpTool(
+            name = "list_pending_assignments",
+            title = "Asignaciones pendientes",
+            description = "Lista los leads con un responsable sugerido que falta aprobar o descartar.",
+            permission = CrmScreens.Assign,
+            readOnly = true,
+            inputSchema = McpSchema.obj(mapOf("limit" to McpSchema.integer("Cantidad maxima de leads.", 1, 100))),
+        ) { call -> pendingAssignments(call) },
+        McpTool(
+            name = "resolve_assignment",
+            title = "Aprobar o descartar asignacion",
+            description = "Aprueba (el sugerido pasa a ser el responsable) o descarta la sugerencia de responsable de un lead visible.",
+            permission = CrmScreens.Assign,
+            inputSchema = McpSchema.obj(
+                mapOf("id" to McpSchema.uuid("Id del lead."), "approve" to McpSchema.boolean("true aprueba, false descarta.")),
+                required = listOf("id", "approve"),
+            ),
+        ) { call -> resolveAssignment(call) },
+        McpTool(
+            name = "delete_lead",
+            title = "Eliminar lead",
+            description = "Elimina un lead visible con su actividad; el cliente queda en Clientes. No se puede deshacer: confirma con el usuario antes.",
+            permission = CrmScreens.Delete,
+            destructive = true,
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
+        ) { call -> delete(call) },
     )
 
     private fun context(call: McpToolCall) = CrmScreens.Context.load(call.tenant, call.permissions)
@@ -328,6 +410,125 @@ object CrmMcpTools {
     }
 
     // The agent's arguments over [base], as the lead form would send them.
+    private fun messages(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            putJsonArray("messages") {
+                CrmInbox.messages(call.tenant, lead.id, call.int("limit", 20, 1..100)).forEach { message ->
+                    add(buildJsonObject {
+                        put("direction", if (message.direction == "out") "enviado" else "recibido")
+                        put("channel", CrmChannels.find(message.channel)?.label ?: message.channel)
+                        if (message.subject.isNotEmpty()) put("subject", message.subject)
+                        put("body", message.body.take(5_000))
+                        put("status", message.status)
+                        if (message.error.isNotEmpty()) put("error", message.error)
+                        put("author", message.author)
+                        put("at", message.createdAt.toString())
+                    })
+                }
+            }
+        }
+    }
+
+    private fun templates(call: McpToolCall): JsonElement = buildJsonObject {
+        putJsonArray("channels") {
+            CrmChannels.all.forEach { channel ->
+                add(buildJsonObject {
+                    put("id", channel.id)
+                    put("name", channel.label)
+                })
+            }
+        }
+        putJsonArray("templates") {
+            CrmMail.templates(call.tenant).forEach { template ->
+                add(buildJsonObject {
+                    put("name", template.name)
+                    put("subject", template.subject)
+                    put("body", template.body.take(5_000))
+                })
+            }
+        }
+    }
+
+    // Same composition and channel checks as the reply form of the lead.
+    private fun send(call: McpToolCall): JsonElement {
+        val context = CrmScreens.Context.load(call.tenant, call.permissions, call.access.serverMail)
+        val lead = visibleLead(call, context)
+        val wanted = call.requiredString("channel", 40)
+        val channel = CrmChannels.all.firstOrNull { it.id.equals(wanted, ignoreCase = true) || it.label.equals(wanted, ignoreCase = true) }
+            ?: throw McpToolException("No existe el canal '$wanted'. Canales: ${CrmChannels.all.joinToString { it.label }}.")
+        val values = mapOf(
+            "channel" to channel.label,
+            "template" to call.string("template", 200),
+            "text" to call.string("text", 20_001),
+            "subject" to call.string("subject", 500),
+        )
+        val (_, email) = try {
+            CrmAdminScreens.composeReply(context, lead, values)
+        } catch (failure: CrmValidationException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        val actor = actor(call)
+        try {
+            val externalId = channel.send(CrmChannelContext(call.tenant, call.access.serverMail), lead, email)
+            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, externalId, "sent", "", actor.userId, actor.name)
+        } catch (failure: CrmChannelException) {
+            CrmInbox.addMessage(call.tenant, lead.id, "out", channel.id, email.subject, email.text, null, "failed", failure.message.orEmpty(), actor.userId, actor.name)
+            throw McpToolException("No se pudo enviar por ${channel.label}: ${failure.message.orEmpty()}")
+        }
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put("result", "Mensaje enviado por ${channel.label}.")
+        }
+    }
+
+    private fun reviewed(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        if (lead.reviewReason.isEmpty()) throw McpToolException("Ese lead no tiene nada pendiente de revisar.")
+        CrmRepository.clearReview(call.tenant, lead, actor(call))
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put("result", "Lead marcado como revisado.")
+        }
+    }
+
+    private fun pendingAssignments(call: McpToolCall): JsonElement {
+        val context = context(call)
+        return buildJsonObject {
+            putJsonArray("leads") {
+                CrmRepository.pendingSuggestions(call.tenant, context.scope, call.int("limit", 50, 1..100)).forEach { add(json(it, context, brief = true)) }
+            }
+        }
+    }
+
+    private fun resolveAssignment(call: McpToolCall): JsonElement {
+        val context = context(call)
+        if (!context.canAssign) throw McpToolException("El usuario no tiene permiso para asignar leads.")
+        if (!call.has("approve")) throw McpToolException("El argumento 'approve' es obligatorio.")
+        val lead = visibleLead(call, context)
+        if (lead.suggestedOwnerUserId == null) throw McpToolException("Ese lead no tiene una sugerencia de responsable pendiente.")
+        val approve = call.boolean("approve")
+        val owner = CrmRepository.resolveSuggestion(call.tenant, lead, approve, context.names, actor(call))
+        owner?.takeIf { it != context.scope.userId }?.let { CrmNotify.assigned(call.tenant, lead.id, it) }
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put("result", if (approve) "Responsable asignado: ${context.names.user(owner)}." else "Sugerencia descartada.")
+        }
+    }
+
+    private fun delete(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        if (!CrmRepository.deleteLead(call.tenant, lead.id)) throw McpToolException("Ese lead ya no existe.")
+        return buildJsonObject {
+            put("id", lead.id.toString())
+            put("result", "Lead ${lead.name} eliminado; el cliente sigue en Clientes.")
+        }
+    }
+
     private fun leadValues(call: McpToolCall, base: Map<String, String>): Map<String, String> =
         base + leadArguments.keys.filter { call.has(it) }.associateWith { call.string(it, 10_000) }
 

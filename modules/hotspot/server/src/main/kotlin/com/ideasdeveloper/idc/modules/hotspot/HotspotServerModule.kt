@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.modules.hotspot
 
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
 import com.ideasdeveloper.idc.server.modules.ServerModule
@@ -66,7 +67,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente o de usuario segun la red; otros modulos dan acceso con pases.",
-        version = "0.5.0",
+        version = "0.6.0",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -76,6 +77,9 @@ object HotspotServerModule : ServerModule {
         ),
         ui = ModuleUiEntry(type = "native", entry = HotspotScreens.UiRoute, home = "dashboard"),
     )
+
+    override val mcp: ModuleMcp
+        get() = HotspotMcpTools.mcp
 
     override fun routes(route: Route, access: ModuleAccessService) {
         HotspotPortal(access).install(route)
@@ -321,7 +325,7 @@ object HotspotServerModule : ServerModule {
      * domain goes back to 'pending' so the root helper publishes it again. Returns false when the
      * domain belongs to another company.
      */
-    private fun registerDomain(access: ModuleAccessService, companyCode: String, domain: String?): Boolean =
+    internal fun registerDomain(access: ModuleAccessService, companyCode: String, domain: String?): Boolean =
         access.centralConnection().use { central ->
             central.autoCommit = false
             try {
@@ -371,7 +375,7 @@ object HotspotServerModule : ServerModule {
         }
 
     // Human-readable domain status and whether the portal is published.
-    private fun domainState(access: ModuleAccessService, companyCode: String, domain: String?): Pair<String, Boolean> {
+    internal fun domainState(access: ModuleAccessService, companyCode: String, domain: String?): Pair<String, Boolean> {
         if (domain == null) return "Sin dominio configurado" to false
         return access.centralConnection().use { central ->
             central.prepareStatement(

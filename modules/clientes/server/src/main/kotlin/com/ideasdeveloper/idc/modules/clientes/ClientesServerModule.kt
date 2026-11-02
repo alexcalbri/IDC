@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.modules.clientes
 import com.ideasdeveloper.idc.server.modules.ModuleActionDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.ModuleFieldDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleViewDefinition
@@ -71,7 +72,8 @@ object ClientesServerModule : ServerModule {
         ),
     )
 
-    override val mcpTools = ClientesMcpTools.tools
+    override val mcp: ModuleMcp
+        get() = ClientesMcpTools.mcp
 
     override fun routes(route: Route, access: ModuleAccessService) {
         route.route("/modules/clientes") {
@@ -84,33 +86,13 @@ object ClientesServerModule : ServerModule {
             post("/fields") {
                 if (!call.requireModulePermission(access, ClientesModule.id, "clientes.fields.manage")) return@post
                 val request = call.receive<CreateCustomerFieldRequest>()
-                val fieldKey = request.fieldKey.trim()
-                val label = request.label.trim()
-                val fieldType = request.fieldType.trim()
-                if (!Regex("[a-z][a-z0-9_]{0,62}").matches(fieldKey) || label.isBlank() || fieldType !in allowedFieldTypes) {
+                if (!validField(request)) {
                     call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_FIELD", "El campo dinamico no es valido."))
                     return@post
                 }
                 val connection = access.tenantConnection(call) ?: return@post call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
-                val fieldId = UUID.randomUUID()
-                connection.use { tenant ->
-                    tenant.prepareStatement(
-                        """
-                        INSERT INTO customer_field_definitions (id, field_key, label, field_type, control_type, is_required, display_order)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        """.trimIndent()
-                    ).use { insert ->
-                        insert.setObject(1, fieldId)
-                        insert.setString(2, fieldKey)
-                        insert.setString(3, label)
-                        insert.setString(4, fieldType)
-                        insert.setString(5, request.controlType.ifBlank { fieldType })
-                        insert.setBoolean(6, request.required)
-                        insert.setInt(7, request.displayOrder)
-                        insert.executeUpdate()
-                    }
-                }
-                call.respond(HttpStatusCode.Created, CustomerFieldResponse(fieldId.toString(), fieldKey, label, fieldType, request.required, true, request.displayOrder))
+                val field = connection.use { tenant -> insertField(tenant, request) }
+                call.respond(HttpStatusCode.Created, field)
             }
 
             get("/customers") {
@@ -173,18 +155,48 @@ object ClientesServerModule : ServerModule {
                 val customerId = call.parameters["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@delete call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
                 val connection = access.tenantConnection(call) ?: return@delete call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
-                connection.use { tenant ->
-                    tenant.prepareStatement("UPDATE customers SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'archived'").use { update ->
-                        update.setObject(1, customerId)
-                        if (update.executeUpdate() != 1) return@delete call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
-                    }
+                if (!connection.use { tenant -> archiveCustomer(tenant, customerId) }) {
+                    return@delete call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
                 }
                 call.respond(HttpStatusCode.NoContent)
             }
         }
     }
 
-    private val allowedFieldTypes = setOf("text", "textarea", "number", "money", "date", "datetime", "email", "phone", "boolean", "select", "multi_select")
+    private val fieldKeyPattern = Regex("[a-z][a-z0-9_]{0,62}")
+
+    internal fun validField(request: CreateCustomerFieldRequest): Boolean =
+        fieldKeyPattern.matches(request.fieldKey.trim()) && request.label.isNotBlank() && request.fieldType.trim() in ClientesModule.fieldTypes
+
+    internal fun insertField(tenant: Connection, request: CreateCustomerFieldRequest): CustomerFieldResponse {
+        val fieldId = UUID.randomUUID()
+        val fieldKey = request.fieldKey.trim()
+        val label = request.label.trim()
+        val fieldType = request.fieldType.trim()
+        tenant.prepareStatement(
+            """
+            INSERT INTO customer_field_definitions (id, field_key, label, field_type, control_type, is_required, display_order)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """.trimIndent()
+        ).use { insert ->
+            insert.setObject(1, fieldId)
+            insert.setString(2, fieldKey)
+            insert.setString(3, label)
+            insert.setString(4, fieldType)
+            insert.setString(5, request.controlType.ifBlank { fieldType })
+            insert.setBoolean(6, request.required)
+            insert.setInt(7, request.displayOrder)
+            insert.executeUpdate()
+        }
+        return CustomerFieldResponse(fieldId.toString(), fieldKey, label, fieldType, request.required, true, request.displayOrder)
+    }
+
+    // Customers are archived, never deleted. False when the customer does not exist or is already archived.
+    internal fun archiveCustomer(tenant: Connection, customerId: UUID): Boolean =
+        tenant.prepareStatement("UPDATE customers SET status = 'archived', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status <> 'archived'").use { update ->
+            update.setObject(1, customerId)
+            update.executeUpdate() == 1
+        }
 
     internal fun validateCustomerRequest(connection: Connection, request: CreateCustomerRequest): ClientesErrorResponse? {
         // Email and phone are optional since V005; only the name is required.

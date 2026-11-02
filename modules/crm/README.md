@@ -291,3 +291,67 @@ added twice; imports send no notifications.
 
 Automations (move by rule) and attachments
 come in the next versions.
+
+## AI agent tools
+
+With the `agentes` module, agents can use (`CrmMcpTools.kt`). They load the same context as the
+screens, so an agent sees and changes only the leads of its user's scope:
+
+| Tool | Permission | Does |
+|---|---|---|
+| `crm_list_pipeline`, `crm_search_leads`, `crm_get_lead`, `crm_list_follow_ups`, `crm_pipeline_summary` | `crm.view` | Stages, interests and owners; search and read leads; follow-ups; pipeline totals. |
+| `crm_get_lead_messages`, `crm_list_message_templates` | `crm.view` | A lead's conversation; templates and channels. |
+| `crm_create_lead`, `crm_update_lead`, `crm_move_lead`, `crm_add_lead_note`, `crm_mark_lead_reviewed` | `crm.leads.manage` | Same rules as the forms (Cloudbeds rooms block winning without a reservation). |
+| `crm_send_message` | `crm.leads.manage` | Sends by email, WhatsApp, Messenger or Instagram with the reply form's checks; recorded in the conversation (also when it fails). |
+| `crm_list_pending_assignments`, `crm_resolve_assignment` | `crm.assign` | Approve or discard suggested owners. |
+| `crm_delete_lead` | `crm.leads.delete` | Deletes a lead (marked destructive); the customer stays. |
+
+Settings tools (`CrmSettingsMcpTools.kt`, permission `crm.settings`), with the same parsing as the
+settings screens; edits change only what is sent:
+
+| Tool | Does |
+|---|---|
+| `crm_get_settings` | Interests and who sees each, stages (with lead counts), stage templates, mail (no passwords), template variables, anti-spam, team notifications, digest hour. |
+| `crm_set_interests_enabled`, `crm_save_interest`, `crm_delete_interest`, `crm_set_user_interests` | Interests and per-user visibility. |
+| `crm_save_stage`, `crm_delete_stage`, `crm_apply_pipeline_template` | Pipeline stages (templates only while there are no leads; marked destructive). |
+| `crm_update_mail_settings` | SMTP and IMAP, except passwords. |
+| `crm_save_message_template`, `crm_delete_message_template` | Message templates. |
+| `crm_update_spam_rules` | Anti-spam rules (lists sent replace the current ones). |
+| `crm_update_user_notifications`, `crm_set_digest_hour` | Team email notifications and daily digest hour. |
+
+Integration tools (`CrmIntegrationMcpTools.kt`):
+
+| Tool | Permission | Does |
+|---|---|---|
+| `crm_get_integrations` | `crm.settings` | Meta, WordPress (with its agents), Encuentra24 and Cloudbeds status; credentials only as "configured". |
+| `crm_update_meta`, `crm_meta_connect_page`, `crm_meta_connect_whatsapp` | `crm.settings` | Enable Meta, page / WhatsApp account / number, record echoes; connect the page and WhatsApp with the stored token. |
+| `crm_update_wordpress`, `crm_wordpress_test`, `crm_wordpress_sync_agents`, `crm_wordpress_map_agent` | `crm.settings` | Enable the site and its URL, test the plugin, sync agents and link them to CRM users. |
+| `crm_update_encuentra24`, `crm_encuentra24_sync` | `crm.settings` | Enable, company slug, import now. |
+| `crm_update_cloudbeds`, `crm_cloudbeds_test` | `crm.settings` | Enable, property, payment method, welcome email, archive on checkout; test. |
+| `crm_get_lead_items` | `crm.view` | A lead's properties, rooms and other items, and its Cloudbeds reservations. |
+| `crm_search_properties`, `crm_link_property`, `crm_close_property_sale` | `crm.leads.manage` | Website properties; closing a sale marks it sold on the site and wins the lead. |
+| `crm_add_lead_item`, `crm_set_lead_item_status`, `crm_remove_lead_item` | `crm.leads.manage` | Manual items and item status. |
+| `crm_search_rooms`, `crm_assign_room`, `crm_create_reservation` | `crm.leads.manage` | Free Cloudbeds rooms, assign one (names and rate are read from Cloudbeds again), create the real reservation. |
+
+Selling a property, assigning a room and reserving run `CrmLeadItemActions`, the same code as the
+screens.
+
+Import and bulk tools (`CrmImportMcpTools.kt`):
+
+| Tool | Permission | Does |
+|---|---|---|
+| `crm_list_imports`, `crm_get_import` | `crm.settings` | Imports with status and totals, mappable fields, saved mappings; one import's columns, sample rows, values to map, preview and failed rows. |
+| `crm_import_csv`, `crm_import_from_url`, `crm_import_leadspro` | `crm.settings` | Read a source into an import waiting for its mapping. |
+| `crm_list_monday_boards`, `crm_import_monday` | `crm.settings` | monday.com boards with the token saved in the app (the token is never offered). |
+| `crm_map_import`, `crm_apply_import_preset`, `crm_start_import`, `crm_cancel_import` | `crm.settings` | Column and value mapping (optionally saved), start and cancel. |
+| `crm_bulk_update_leads` | `crm.leads.manage` (+ assign / delete permissions) | Move, assign or delete up to 500 visible leads, with `CrmBulkActions` (the same code as *Acciones en lote*). |
+
+The module's own agent instructions are in `CrmMcpTools.kt` (`CrmMcpTools.mcp` joins every tool
+file).
+
+Changes appear in the lead activity as `usuario (agente <nombre>)`. **Credentials never pass through
+an agent**: API keys, tokens, the Meta app secret and verify token, the WordPress shared secret and
+the SMTP/IMAP passwords are typed (or generated) only in the app. No tool takes or returns them
+(only "configured" flags); to save other settings the tools send the stored values back to the same
+save functions server side. `ModuleRegistryTest.noModuleToolTakesCredentials` fails if a tool of any
+module takes an argument named like a credential.

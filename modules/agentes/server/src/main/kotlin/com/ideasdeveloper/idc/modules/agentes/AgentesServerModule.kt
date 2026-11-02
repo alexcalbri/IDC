@@ -4,6 +4,7 @@ import com.ideasdeveloper.idc.server.modules.McpToolCall
 import com.ideasdeveloper.idc.server.modules.McpToolException
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.ModuleJob
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
@@ -64,6 +65,10 @@ object AgentesServerModule : ServerModule {
     )
 
     override val runtimeTables = listOf("agent_tokens", "agent_activity")
+
+    // Its own MCP (managing connections), offered through the same bridge as every module.
+    override val mcp: ModuleMcp
+        get() = AgentesMcpTools.mcp
 
     override val definition = ModuleDefinition(
         id = AgentesModule.id,
@@ -203,10 +208,12 @@ object AgentesServerModule : ServerModule {
     }
 
     private fun AgentSession.protocol(tenant: Connection, access: ModuleAccessService): AgentesMcp {
-        val visible = lazy { AgentesMcp.visibleTools(access.mcpTools(), token, this.access) }
+        // Each module's own MCP (instructions and tools), filtered to what this agent may use.
+        val modules = access.moduleMcp()
+        val visible = AgentesMcp.visibleTools(modules.flatMap { it.tools }, token, this.access)
         return AgentesMcp(
-            instructions = instructions(token, this.access.companyCode),
-            tools = { visible.value },
+            instructions = AgentesMcp.instructions(instructions(token, this.access.companyCode), modules, visible),
+            tools = { visible },
             invoke = { tool, arguments -> runTool(tenant, access, token, tool, arguments) },
             denied = { name -> AgentTokens.log(tenant, token.id, name.ifBlank { "(sin nombre)" }, "denied", "Herramienta desconocida o sin permiso.") },
         )

@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.clientes
 
 import com.ideasdeveloper.idc.server.modules.McpSchema
+import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.McpTool
 import com.ideasdeveloper.idc.server.modules.McpToolCall
 import com.ideasdeveloper.idc.server.modules.McpToolException
@@ -26,6 +27,16 @@ object ClientesMcpTools {
             put("description", "Campos personalizados de la empresa por su clave (ver list_customer_fields).")
         },
     )
+
+    // What this module tells agents about itself (see ModuleMcp).
+    val mcp: ModuleMcp
+        get() = ModuleMcp(Instructions, tools)
+
+    private const val Instructions =
+        "Clientes es la base de contactos de la empresa; otros modulos (CRM, hotspot) usan estos mismos clientes. " +
+            "Busca antes de crear para no duplicar: no se permiten dos clientes con el mismo correo. Cada cliente tiene un codigo " +
+            "(customerCode) que tambien sirve para identificarlo. Los campos personalizados de la empresa se envian en dynamicFields " +
+            "por su clave; consultalos con list_customer_fields. Archivar no borra al cliente: deja de aparecer en la lista y en las busquedas."
 
     val tools = listOf(
         McpTool(
@@ -75,6 +86,30 @@ object ClientesMcpTools {
             permission = "clientes.edit",
             inputSchema = McpSchema.obj(customerArguments + ("id" to McpSchema.uuid("Id del cliente.")), required = listOf("id")),
         ) { call -> update(call) },
+        McpTool(
+            name = "archive_customer",
+            title = "Archivar cliente",
+            description = "Archiva un cliente: deja de aparecer en la lista y en las busquedas, pero conserva sus datos e historial. " +
+                "Confirma con el usuario antes.",
+            permission = "clientes.delete",
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del cliente.")), required = listOf("id")),
+        ) { call -> archive(call) },
+        McpTool(
+            name = "create_customer_field",
+            title = "Crear campo personalizado de clientes",
+            description = "Agrega un campo personalizado a la ficha de todos los clientes de la empresa. Revisa antes list_customer_fields para no duplicarlo.",
+            permission = "clientes.fields.manage",
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "fieldKey" to McpSchema.string("Clave unica en minusculas, por ejemplo fecha_nacimiento ([a-z][a-z0-9_]*, hasta 63)."),
+                    "label" to McpSchema.string("Nombre visible del campo."),
+                    "fieldType" to McpSchema.string("Tipo de dato.", ClientesModule.fieldTypes.sorted()),
+                    "required" to McpSchema.boolean("Si es obligatorio al crear o editar clientes."),
+                    "displayOrder" to McpSchema.integer("Orden en la ficha; menor aparece antes.", 0, 10_000),
+                ),
+                required = listOf("fieldKey", "label", "fieldType"),
+            ),
+        ) { call -> createField(call) },
     )
 
     private fun search(call: McpToolCall): JsonElement {
@@ -134,6 +169,32 @@ object ClientesMcpTools {
         if (ClientesServerModule.emailExists(call.tenant, request.primaryEmail, id)) throw McpToolException("Ya existe otro cliente con ese correo.")
         if (!ClientesServerModule.upsertCustomer(call.tenant, id, request, insert = false)) throw McpToolException("Cliente no encontrado.")
         return Json.encodeToJsonElement(find(call, id, "")!!)
+    }
+
+    private fun archive(call: McpToolCall): JsonElement {
+        val id = call.requiredUuid("id")
+        if (!ClientesServerModule.archiveCustomer(call.tenant, id)) throw McpToolException("Cliente no encontrado o ya archivado.")
+        return buildJsonObject {
+            put("id", id.toString())
+            put("result", "Cliente archivado.")
+        }
+    }
+
+    private fun createField(call: McpToolCall): JsonElement {
+        val request = CreateCustomerFieldRequest(
+            fieldKey = call.requiredString("fieldKey", 63),
+            label = call.requiredString("label", 200),
+            fieldType = call.requiredString("fieldType", 40),
+            required = call.boolean("required"),
+            displayOrder = call.int("displayOrder", 0, 0..10_000),
+        )
+        if (!ClientesServerModule.validField(request)) {
+            throw McpToolException("Campo no valido: la clave debe cumplir [a-z][a-z0-9_]* y el tipo ser uno de ${ClientesModule.fieldTypes.sorted().joinToString()}.")
+        }
+        if (ClientesServerModule.loadFields(call.tenant).any { it.fieldKey == request.fieldKey.trim() }) {
+            throw McpToolException("Ya existe un campo con la clave '${request.fieldKey.trim()}'.")
+        }
+        return Json.encodeToJsonElement(ClientesServerModule.insertField(call.tenant, request))
     }
 
     private fun find(call: McpToolCall, id: UUID?, code: String): CustomerResponse? =

@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.ModuleJob
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
@@ -83,7 +84,8 @@ object CrmServerModule : ServerModule {
         "crm_import_presets",
     )
 
-    override val mcpTools = CrmMcpTools.tools
+    override val mcp: ModuleMcp
+        get() = CrmMcpTools.mcp
 
     override val jobs = listOf(
         // Notifications, digests and scheduled emails queued in crm_outbox.
@@ -531,92 +533,36 @@ object CrmServerModule : ServerModule {
                             CrmRepository.addActivity(tenant, lead.id, "item", "${item.title}: ${CrmItems.statusLabels[status]}.", actor)
                             show("lead", UiNotice("${item.title}: ${CrmItems.statusLabels[status]}.", UiTone.Success), back)
                         }
-                        else -> {
-                            if (item.source != CrmWordPress.Source) return show("lead", UiNotice("Solo las propiedades del sitio se cierran asi.", UiTone.Warning), back)
-                            val price = values["price"].orEmpty().trim().ifEmpty { null }?.let {
-                                it.replace(",", "").toBigDecimalOrNull()?.takeIf { value -> value.signum() >= 0 }
-                                    ?: return show("lead", UiNotice("El precio debe ser un numero positivo.", UiTone.Danger), back)
-                            }
-                            val date = CrmWordPressScreens.saleDate(values["date"], context.today)
-                            try {
-                                CrmWordPress.markSold(tenant, item.externalId.toLong(), price, date)
-                            } catch (failure: CrmWordPressException) {
-                                return show("lead", UiNotice("La venta no se cerro: ${failure.message}", UiTone.Danger), back)
-                            }
-                            CrmItems.setStatus(tenant, item, "sold", price ?: item.price)
-                            CrmRepository.addActivity(tenant, lead.id, "item", "Venta cerrada: ${item.title}${price?.let { " por ${it.toPlainString()}" }.orEmpty()} el $date. Marcada como vendida en el sitio.", actor)
-                            // The lead is won: first won stage of the pipeline.
-                            context.stages.firstOrNull { it.kind == StageKind.Won }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
-                            show("lead", UiNotice("Venta cerrada y propiedad marcada como vendida.", UiTone.Success), back)
+                        else -> try {
+                            show("lead", UiNotice(CrmLeadItemActions.markSold(context, lead, item, values, actor), UiTone.Success), back)
+                        } catch (notice: CrmActionNotice) {
+                            show("lead", UiNotice(notice.message.orEmpty(), if (notice.warning) UiTone.Warning else UiTone.Danger), back)
                         }
                     }
                 }
                 "rooms:assign" -> {
                     val lead = visibleLead("lead") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
                     val keep = params - setOf("op", "room", "type", "roomName", "typeName", "total", "max")
-                    val stay = try {
-                        CrmCloudbedsScreens.stay(lead, params, context.today)
-                    } catch (failure: CrmValidationException) {
-                        return show("rooms", UiNotice(failure.message.orEmpty(), UiTone.Danger), keep)
+                    try {
+                        show("rooms", UiNotice(CrmLeadItemActions.assignRoom(context, lead, params, actor), UiTone.Success), keep)
+                    } catch (notice: CrmActionNotice) {
+                        show("rooms", UiNotice(notice.message.orEmpty(), if (notice.warning) UiTone.Warning else UiTone.Danger), keep)
                     }
-                    val room = params["room"].orEmpty().takeIf { it.isNotBlank() && it.length <= 60 } ?: return show("rooms", UiNotice("Habitacion invalida.", UiTone.Danger), keep)
-                    val chosenDates = CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }.map { it.startsOn to it.endsOn }.toSet()
-                    if (chosenDates.isNotEmpty() && chosenDates != setOf(stay.start to stay.end)) {
-                        return show("rooms", UiNotice("Las habitaciones de una reserva comparten fechas: quita las otras o busca con sus fechas.", UiTone.Warning), keep)
-                    }
-                    val title = "${params["roomName"].orEmpty()} - ${params["typeName"].orEmpty()}".trim(' ', '-').ifEmpty { "Habitacion $room" }
-                    CrmItems.link(
-                        tenant, lead.id, CrmCloudbeds.Source, room, title,
-                        subtitle = params["max"]?.toIntOrNull()?.takeIf { it > 0 }?.let { "Hasta $it personas" }.orEmpty(),
-                        price = params["total"]?.toBigDecimalOrNull(), status = "chosen", startsOn = stay.start, endsOn = stay.end,
-                        data = mapOf("roomTypeId" to params["type"].orEmpty(), "max" to params["max"].orEmpty(), "adults" to stay.adults.toString(), "children" to stay.children.toString()),
-                    )
-                    CrmRepository.addActivity(tenant, lead.id, "item", "Habitacion asignada: $title, del ${stay.start} al ${stay.end}.", actor)
-                    show("rooms", UiNotice("$title asignada a ${lead.name}.", UiTone.Success), keep)
                 }
                 "lead:reserve" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
                     val back = mapOf("id" to lead.id.toString())
-                    val rooms = CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }
-                    val start = rooms.firstOrNull()?.startsOn
-                    val end = rooms.firstOrNull()?.endsOn
-                    if (rooms.isEmpty() || start == null || end == null) return show("lead", UiNotice("Asigna al menos una habitacion.", UiTone.Warning), back)
-                    if (rooms.any { it.startsOn != start || it.endsOn != end }) return show("lead", UiNotice("Las habitaciones tienen fechas distintas; deja solo las de una estadia.", UiTone.Warning), back)
-                    val requests = try {
-                        rooms.map { room ->
-                            val adults = values["adults_${room.id}"]?.trim()?.toIntOrNull()?.takeIf { it in 1..50 } ?: throw CrmValidationException("Cada habitacion necesita al menos un adulto (${room.title}).")
-                            val children = values["children_${room.id}"]?.trim()?.ifEmpty { "0" }?.toIntOrNull()?.takeIf { it in 0..50 } ?: 0
-                            val max = room.data["max"]?.toIntOrNull() ?: 0
-                            if (max > 0 && adults + children > max) throw CrmValidationException("${room.title} admite hasta $max personas.")
-                            CbRoomRequest(room.externalId, room.data["roomTypeId"].orEmpty().ifEmpty { throw CrmValidationException("Vuelve a asignar ${room.title}.") }, adults, children)
+                    try {
+                        val reservation = CrmLeadItemActions.reserve(context, lead, values, actor)
+                        show("lead", UiNotice(reservation.message, if (reservation.warning) UiTone.Warning else UiTone.Success), back)
+                    } catch (notice: CrmActionNotice) {
+                        // Rules (no rooms, mixed dates) reopen the lead; bad input keeps what the user typed.
+                        if (notice.warning) {
+                            show("lead", UiNotice(notice.message.orEmpty(), UiTone.Warning), back)
+                        } else {
+                            show("lead", UiNotice(notice.message.orEmpty(), UiTone.Danger), back, values)
                         }
-                    } catch (failure: CrmValidationException) {
-                        return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), back, values)
                     }
-                    val country = values["country"].orEmpty().trim().uppercase()
-                    if (country.isNotEmpty() && !country.matches(Regex("^[A-Z]{2}$"))) return show("lead", UiNotice("El pais es un codigo de 2 letras, por ejemplo NI o US.", UiTone.Danger), back, values)
-                    val (first, last) = CrmContacts.splitName(lead.name)
-                    val guest = CbGuest(first, last, lead.email, CrmContacts.normalizePhone(lead.phone), country, values["zip"].orEmpty().trim().take(20))
-                    val result = try {
-                        val payment = CrmCloudbeds.paymentLabels.entries.firstOrNull { it.value == values["payment"] }?.key
-                        CrmCloudbeds.reserve(tenant, lead.id, start, end, guest, requests, payment)
-                    } catch (failure: CrmCloudbedsException) {
-                        return show("lead", UiNotice("La reserva no se creo: ${failure.message}", UiTone.Danger), back, values)
-                    } catch (failure: CrmValidationException) {
-                        return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), back, values)
-                    }
-                    val roomNames = rooms.joinToString { it.title }
-                    CrmCloudbeds.saveReservation(tenant, lead.id, result, start, end, roomNames, lead.email)
-                    rooms.zip(requests).forEach { (room, request) ->
-                        CrmItems.setStatus(tenant, room, "booked")
-                        CrmItems.setData(tenant, room, room.data + mapOf("adults" to request.adults.toString(), "children" to request.children.toString(), "reservation" to result.reservationId))
-                    }
-                    CrmRepository.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor)
-                    context.stages.firstOrNull { it.kind == StageKind.Won }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
-                    val notice = if (result.unassigned > 0) {
-                        UiNotice("Reserva ${result.reservationId} creada, pero Cloudbeds dejo ${result.unassigned} habitacion(es) sin asignar (puede que se ocupara o que la propiedad no permita elegir habitacion). Revisala en Cloudbeds.", UiTone.Warning)
-                    } else UiNotice("Reserva ${result.reservationId} creada en Cloudbeds.", UiTone.Success)
-                    show("lead", notice, back)
                 }
                 "integrations:cbSave" -> {
                     try {
@@ -709,31 +655,13 @@ object CrmServerModule : ServerModule {
                     }.mapNotNull { runCatching { UUID.fromString(it.removePrefix("lead:")) }.getOrNull() }
                         .mapNotNull { CrmRepository.lead(tenant, it) }
                         .filter { context.scope.canSee(it.interestId, it.ownerUserId) }
-                    if (selected.isEmpty()) return show("bulk", UiNotice("Marca al menos un lead.", UiTone.Warning), keep)
-                    val notice = when (values["action"]) {
-                        CrmImportScreens.ActionStage -> {
-                            val stage = context.stages.firstOrNull { it.name == values["stage"] } ?: return show("bulk", UiNotice("Elige la etapa.", UiTone.Danger), keep)
-                            selected.forEach { CrmRepository.moveLead(tenant, it, stage, context.stages, actor) }
-                            "${selected.size} lead(s) movidos a ${stage.name}."
-                        }
-                        CrmImportScreens.ActionOwner -> {
-                            if (!context.canAssign) return show("bulk", UiNotice("No tienes permiso para asignar leads.", UiTone.Danger), keep)
-                            val owner = context.users.firstOrNull { it.name == values["owner"] }?.id
-                            selected.forEach { lead ->
-                                tenant.prepareStatement("UPDATE crm_leads SET owner_user_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, owner); it.setObject(2, lead.id); it.executeUpdate() }
-                                CrmRepository.addActivity(tenant, lead.id, "owner", "Responsable: ${context.names.user(owner)} (en lote).", actor)
-                                owner?.takeIf { it != lead.ownerUserId && it != context.scope.userId }?.let { CrmNotify.assigned(tenant, lead.id, it) }
-                            }
-                            "${selected.size} lead(s) asignados a ${context.names.user(owner)}."
-                        }
-                        CrmImportScreens.ActionDelete -> {
-                            if (!permissions.has(CrmScreens.Delete)) return show("bulk", UiNotice("No tienes permiso para eliminar leads.", UiTone.Danger), keep)
-                            selected.forEach { CrmRepository.deleteLead(tenant, it.id) }
-                            "${selected.size} lead(s) eliminados (los clientes quedan en Clientes)."
-                        }
-                        else -> return show("bulk", UiNotice("Elige la accion.", UiTone.Danger), keep)
+                    val action = values["action"].orEmpty()
+                    val value = if (action == CrmImportScreens.ActionOwner) values["owner"].orEmpty() else values["stage"].orEmpty()
+                    try {
+                        show("bulk", UiNotice(CrmBulkActions.apply(context, selected, action, value, actor), UiTone.Success), keep)
+                    } catch (notice: CrmActionNotice) {
+                        show("bulk", UiNotice(notice.message.orEmpty(), if (notice.warning) UiTone.Warning else UiTone.Danger), keep)
                     }
-                    show("bulk", UiNotice(notice, UiTone.Success), keep)
                 }
                 "lead:itemManual" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())

@@ -156,6 +156,32 @@ the source module writes them with plain SQL and never needs hotspot code.
 | `POST /modules/hotspot/ui/access?grant=add\|delete&id=` | Server owners in the server company. |
 | `GET /modules/hotspot/report/export?from=&to=` | `hotspot.reports.export` (CSV) |
 
+## AI agent tools
+
+With the `agentes` module, agents can use (`HotspotMcpTools.kt`), with the same permissions and
+validations as the screens:
+
+| Tool | Permission | Does |
+|---|---|---|
+| `hotspot_summary` | `hotspot.reports.view` | Registrations, unique visitors, authorized and failed connections in a date range (up to 366 days), connections per day and emails collected. |
+| `hotspot_search_visitors` | `hotspot.reports.view` | Portal registrations searched by name, email or phone, newest first. |
+| `hotspot_get_settings` | `hotspot.settings.view` | Domain and its status, appearance, legal texts, times, limits, email and integrations. Secrets only as "configured". |
+| `hotspot_update_settings` | `hotspot.settings.manage` | Changes only the fields sent (same `merge` validation as the forms). Changing the domain registers it for Nginx/HTTPS like the portal form. |
+| `hotspot_list_networks` | `hotspot.settings.view` | Configured SSIDs with id, access type, who gets in and times, plus the access sources that can be chosen. |
+| `hotspot_save_network` | `hotspot.settings.manage` | Creates a network, or edits one by id changing only what is sent. |
+| `hotspot_delete_network` | `hotspot.settings.manage` | Deletes a network (marked destructive); its guests go back to the form. |
+| `hotspot_set_integration` | `hotspot.settings.manage` + business owner | Turns an integration on or off, like *Integraciones*. |
+| `hotspot_my_wifi_code` | `hotspot.view` | The connected user's WiFi code (created on first use, like *Accesos WiFi*). |
+| `hotspot_export_report` | `hotspot.reports.export` | The CSV of *Reportes* for a date range. |
+| `hotspot_list_user_codes` | `hotspot.view` + business owner | Every user's WiFi code. |
+| `hotspot_list_access_grants`, `hotspot_add_access_grant`, `hotspot_remove_access_grant` | `hotspot.view` + server owner in the server company | Access of server-company users to user-code networks of other companies. |
+| `hotspot_unifi_list_consoles`, `hotspot_unifi_choose_console`, `hotspot_unifi_choose_site` | `hotspot.settings.manage` | Pick the UniFi console and site with the API key saved in the app (like *Buscar consolas*). |
+| `hotspot_list_controller_ssids` | `hotspot.settings.view` | SSIDs of the network controller, to create networks. |
+
+Not offered, so credentials never pass through an agent: the UniFi API key and the SMTP password
+(typed only in the app; the UniFi tools use the stored key server side). Read-only agent tokens
+only get the reading tools. The module's own agent instructions are in `HotspotMcpTools.kt`.
+
 ## Domains and HTTPS
 
 Saving a domain stores it in `public_domains` with status `pending`. The root

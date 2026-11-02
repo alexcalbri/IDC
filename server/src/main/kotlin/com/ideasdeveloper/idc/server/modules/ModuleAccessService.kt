@@ -36,8 +36,8 @@ class ModuleAccessService(
     val serverMail: SmtpSettings? = null,
     // Whether the server owner installed the module; routes of every compiled module exist from startup.
     private val moduleInstalled: (String) -> Boolean = { true },
-    // Agent tools of the installed modules (ModuleRegistry.mcpTools).
-    private val moduleTools: () -> List<RegisteredMcpTool> = { emptyList() },
+    // The MCP of each installed module (ModuleRegistry.mcp).
+    private val moduleMcp: () -> List<RegisteredModuleMcp> = { emptyList() },
     // The app's login (ScopedLoginService.login), for module sign-in pages such as OAuth.
     private val login: (LoginCredentials) -> LoginSuccessResponse? = { null },
 ) {
@@ -46,8 +46,11 @@ class ModuleAccessService(
     // Public module endpoints (e.g. a captive portal) must check this before serving anything.
     fun isInstalled(moduleId: String): Boolean = moduleInstalled(moduleId)
 
-    // Agent tools of every installed module; the MCP endpoint filters them per company and user.
-    fun mcpTools(): List<RegisteredMcpTool> = moduleTools()
+    // The MCP of every installed module; the MCP endpoint filters it per company and user.
+    fun moduleMcp(): List<RegisteredModuleMcp> = moduleMcp.invoke()
+
+    // Agent tools of every installed module.
+    fun mcpTools(): List<RegisteredMcpTool> = moduleMcp().flatMap { it.tools }
 
     /**
      * Checks a user's password like the app's login and leaves no session behind, for module pages

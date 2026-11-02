@@ -60,6 +60,20 @@ source /etc/os-release
 [[ -d /run/systemd/system ]] || die 'Se necesita systemd (no ejecutar dentro de un contenedor).'
 [[ -r /dev/tty ]] || die 'Se necesita una terminal interactiva; usa ssh -t.'
 
+# One install or update at a time (update.sh takes the same lock): the script runs again under flock,
+# which holds the lock until it ends. -o keeps the lock out of child processes such as a Gradle daemon.
+readonly MAINTENANCE_LOCK_FILE=/run/ideascore-maintenance.lock
+readonly MAINTENANCE_LOCK_BUSY=75
+if [[ ${IDEASCORE_MAINTENANCE_LOCKED:-} != 1 ]]; then
+    [[ -f $0 ]] || die 'Descarga install.sh y ejecutalo como archivo: sudo bash install.sh'
+    command -v flock >/dev/null 2>&1 || die 'No se encontro flock (paquete util-linux).'
+    lock_status=0
+    flock -n -o -E "$MAINTENANCE_LOCK_BUSY" "$MAINTENANCE_LOCK_FILE" \
+        env IDEASCORE_MAINTENANCE_LOCKED=1 bash -- "$0" "$@" || lock_status=$?
+    (( lock_status != MAINTENANCE_LOCK_BUSY )) || die 'Ya hay una instalacion o actualizacion de IdeasCore en curso. Espera a que termine.'
+    exit "$lock_status"
+fi
+
 readonly APP_DIR=/opt/ideascore
 readonly CONFIG_DIR=/etc/ideascore
 readonly SERVICE_FILE=/etc/systemd/system/ideascore.service
@@ -106,8 +120,29 @@ cleanup_install_swap() {
 trap 'cleanup_install_swap; printf "Instalación interrumpida (línea %s). Se conservan los archivos y datos para diagnóstico.\n" "$LINENO" >&2' ERR
 trap 'cleanup_install_swap' EXIT
 
+# An interrupted install or update can leave its temporary swap behind, even active (an active swap
+# file cannot be deleted). The maintenance lock guarantees none is running, so any swap under
+# APP_DIR is stale.
+recover_stale_swaps() {
+    local swap_file
+    while IFS= read -r swap_file; do
+        if [[ $swap_file == "$APP_DIR"/* ]]; then
+            printf 'Desactivando swap temporal de una ejecucion anterior: %s\n' "$swap_file"
+            swapoff "$swap_file"
+        fi
+    done < <(awk 'NR > 1 { print $1 }' /proc/swaps)
+    for swap_file in "$INSTALL_SWAP_FILE" "$APP_DIR/update.swap"; do
+        if [[ -e $swap_file ]]; then
+            printf 'Eliminando swap temporal de una ejecucion anterior: %s\n' "$swap_file"
+            rm -f "$swap_file"
+        fi
+    done
+}
+
 ensure_install_swap() {
     local available_kb total_swap_kb
+    # Before measuring: a leftover active swap would count as available and then never be removed.
+    recover_stale_swaps
     available_kb=$(awk '/MemAvailable:/ { print $2 }' /proc/meminfo)
     total_swap_kb=$(awk '/SwapTotal:/ { print $2 }' /proc/meminfo)
 
@@ -115,7 +150,6 @@ ensure_install_swap() {
         return
     fi
 
-    [[ ! -e $INSTALL_SWAP_FILE ]] || die "Ya existe $INSTALL_SWAP_FILE. Revisalo antes de instalar."
     printf 'Memoria limitada detectada; se creara swap temporal de %s MiB para compilar.\n' "$INSTALL_SWAP_SIZE_MB"
     if command -v fallocate >/dev/null 2>&1; then
         fallocate -l "${INSTALL_SWAP_SIZE_MB}M" "$INSTALL_SWAP_FILE" ||
@@ -228,14 +262,7 @@ clean_files_and_services() {
     rm -f /etc/systemd/system/ideascore-domains{,-renew}.{service,timer} /usr/local/sbin/ideascore-domains-sync
     rm -f /etc/nginx/sites-enabled/ideascore "$NGINX_SITE"
     rm -f /etc/nginx/sites-enabled/ideascore-domain-* /etc/nginx/sites-available/ideascore-domain-*
-    # An interrupted install or update can leave its temporary swap active; an active swap file cannot be deleted.
-    local swap_file
-    while IFS= read -r swap_file; do
-        if [[ $swap_file == "$APP_DIR"/* ]]; then
-            printf 'Desactivando swap temporal %s...\n' "$swap_file"
-            swapoff "$swap_file"
-        fi
-    done < <(awk 'NR > 1 { print $1 }' /proc/swaps)
+    recover_stale_swaps
     rm -rf "$APP_DIR" "$CONFIG_DIR" "$ACME_ROOT"
     if getent passwd ideascore >/dev/null; then
         userdel -r ideascore >/dev/null 2>&1 || userdel ideascore >/dev/null 2>&1 || true

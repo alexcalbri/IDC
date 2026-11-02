@@ -226,9 +226,19 @@ External services (Meta, a WordPress plugin, a PMS) call
 ## AI agent tools (MCP)
 
 With the `agentes` module, each user connects their own AI agent, which is
-limited to that user's permissions. A module offers functions to agents by
-overriding `ServerModule.mcpTools` with `McpTool`s
-(`server/.../modules/McpTools.kt`):
+limited to that user's permissions. Each module has its own MCP: it overrides
+`ServerModule.mcp` with a `ModuleMcp` (`server/.../modules/McpTools.kt`) that
+holds what the module tells agents about itself:
+
+```kotlin
+override val mcp: ModuleMcp
+    get() = VentasMcpTools.mcp   // in VentasMcpTools.kt: ModuleMcp(Instructions, tools)
+```
+
+- `instructions`: what the module is for, how its tools fit together and the
+  rules to follow, written for the model. Agents receive it only while they
+  can use some tool of the module.
+- `tools`: `McpTool`s, each a function of the module:
 
 - Every tool declares the `permission` it needs. The endpoint lists and runs
   it only when the module is enabled for the company and the user holds that
@@ -239,6 +249,30 @@ overriding `ServerModule.mcpTools` with `McpTool`s
   message the agent can act on.
 - Mark tools that only read with `readOnly = true` (read-only tokens use only
   those) and irreversible ones with `destructive = true`.
+- `agentes` is only the bridge: it holds no tool and knows no module (and no
+  module depends on it). It reads the installed modules' `mcp` on every
+  agent request, so a module update that adds or changes tools reaches agents
+  once that module is updated, without updating `agentes` or other modules.
+  MCP clients refresh their tool list when they reconnect (for example a new
+  conversation in claude.ai).
+- Offering tools is optional: the agent sees `<moduleId>_<name>` as soon as the
+  module is installed, and stops seeing it when the module is removed or
+  disabled. Put them in a `<Module>McpTools.kt` next to the module's server
+  code. A tool that needs a new permission is used only after the business
+  owner grants it, like any screen.
+- Credentials (API keys, tokens, secrets, passwords) never pass through an
+  agent: no tool takes them as arguments or returns them; return only whether
+  they are configured, and when saving other settings send the stored values
+  back server side. `ModuleRegistryTest.noModuleToolTakesCredentials` fails
+  for an argument named like a credential.
+- Override `mcp` with a getter as above: it is built when first read, after
+  the module object initialized. A module whose `mcp` throws is skipped (and
+  logged once) without affecting the others.
+- The registry ignores (and logs once) a tool whose name does not match
+  `[a-z][a-z0-9_]*`, whose `<moduleId>_<name>` is longer than 64 characters, or
+  whose permission the module does not declare in its `ModuleDefinition`; a
+  repeated name keeps the first. `ModuleRegistryTest` fails for any module
+  compiled with the server that breaks these rules.
 
 See `modules/agentes/README.md` for the endpoint and an example.
 
