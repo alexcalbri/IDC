@@ -40,7 +40,10 @@ class ModuleAccessService(
     private val moduleMcp: () -> List<RegisteredModuleMcp> = { emptyList() },
     // The app's login (ScopedLoginService.login), for module sign-in pages such as OAuth.
     private val login: (LoginCredentials) -> LoginSuccessResponse? = { null },
+    // What each installed module adds to a customer's history (ModuleRegistry.customerTimelines).
+    private val customerTimelines: () -> List<RegisteredCustomerTimeline> = { emptyList() },
 ) {
+    private val log = org.slf4j.LoggerFactory.getLogger(ModuleAccessService::class.java)
     private val tokenGenerator = SessionTokenGenerator()
 
     // Public module endpoints (e.g. a captive portal) must check this before serving anything.
@@ -145,6 +148,30 @@ class ModuleAccessService(
             // Before core migration V003 the profile columns do not exist yet.
             null
         }
+    }
+
+    /**
+     * A customer's history from every installed module that is enabled for the company and whose
+     * permission the user holds, newest first. A module that fails is left out (and logged), so one
+     * module never hides the others' history.
+     */
+    fun customerHistory(tenant: Connection, permissions: ModulePermissions, customerId: UUID, limit: Int = 100): List<CustomerHistoryEntry> {
+        val enabled = enabledModules(tenant)
+        return customerTimelines()
+            .filter { it.moduleId in enabled && isInstalled(it.moduleId) && permissions.has(it.timeline.permission) }
+            .flatMap { registered ->
+                try {
+                    registered.timeline.entries(CustomerTimelineQuery(customerId, tenant, permissions, this, limit)).take(limit).map { registered to it }
+                } catch (failure: Exception) {
+                    log.warn("Customer history of module {} failed: {}", registered.moduleId, failure.message)
+                    emptyList()
+                }
+            }
+            .sortedByDescending { it.second.at }
+            .take(limit)
+            .map { (registered, entry) ->
+                CustomerHistoryEntry(entry.at.toString(), registered.moduleId, registered.moduleName, entry.kind, entry.title, entry.detail, entry.author)
+            }
     }
 
     // Central control-plane connection for module-owned central tables such as public_domains.

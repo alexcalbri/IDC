@@ -82,10 +82,24 @@ Tenant migrations `migrations/V001__create_hotspot.sql`, `V002__add_networks.sql
 | `hotspot_integrations` | Integrations of the module and whether they are enabled (V003). |
 | `hotspot_user_codes` | WiFi code of each user (and of server owners in the server company) (V003). |
 | `hotspot_user_network_grants` | Server company only: networks of other companies its users may join (V003). |
+| `hotspot_code_sessions` | One shared session per customer or user code (V005); `hotspot_accesses.session_id` links each device. |
 
 Central table `public_domains` (control migration V005) maps each portal domain
 to its company. The UniFi API key and company SMTP password are stored in the
 tenant database and never returned to the client.
+
+## Shared sessions per code
+
+Access by customer code or user code is one session per code, shared by every device that uses it:
+
+- The first device opens the session with the network's access time (or the pass's minutes).
+- Another device that enters the same code while the session is open joins it: it is authorized only
+  for the time left, skips the reconnection wait and spends no pass balance (`joined = true`).
+- Every minute the `code-sessions` job finds expired sessions and disconnects each device (MAC) that
+  used the code (`UNAUTHORIZE_GUEST_ACCESS` in UniFi); `hotspot_accesses.disconnected_at` records it.
+  A device that could not be disconnected is retried for a day.
+- The reconnection wait counts from the access that opened the session, never from devices that
+  joined it. Form access (email code) is per device and does not use sessions.
 
 ## Access passes
 

@@ -72,6 +72,8 @@ fun LoginScreen(
     var administratorToggleVisible by rememberSaveable { mutableStateOf(false) }
     var recoveringPassword by remember { mutableStateOf(false) }
     val needsServerConfiguration = savedConfiguration == null
+    // Con un servidor guardado el campo se oculta, pero se puede cambiar sin iniciar sesion.
+    var editingServer by rememberSaveable { mutableStateOf(needsServerConfiguration) }
 
     val isLoading = state.isLoading
     val canSubmit = serverUrl.isNotBlank() &&
@@ -164,8 +166,26 @@ fun LoginScreen(
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 32.dp)
             )
             Spacer(Modifier.height(16.dp))
-            if (needsServerConfiguration) {
-                // Solicita la URL solo cuando no existe configuracion local previa.
+            if (!editingServer) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Servidor: $serverUrl",
+                        color = AppTheme.colors.onScreenMuted,
+                        fontSize = 13.sp,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { editingServer = true }, enabled = !isLoading) {
+                        Text("Cambiar servidor", color = AppTheme.colors.onScreen)
+                    }
+                }
+                Spacer(Modifier.height(8.dp))
+            }
+            if (editingServer) {
+                // Solicita la URL la primera vez o cuando el usuario quiere cambiar de servidor.
                 Box(
                     modifier = Modifier
                         .background(AppTheme.colors.fieldOnScreen.copy(alpha = 0.5f), MaterialTheme.shapes.medium)

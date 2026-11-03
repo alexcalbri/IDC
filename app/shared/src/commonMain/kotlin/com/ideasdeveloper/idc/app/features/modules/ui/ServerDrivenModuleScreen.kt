@@ -40,6 +40,7 @@ import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.modules.data.CreateCustomerFieldRequest
 import com.ideasdeveloper.idc.app.features.modules.data.CreateCustomerRequest
 import com.ideasdeveloper.idc.app.features.modules.data.CustomerFieldResponse
+import com.ideasdeveloper.idc.app.features.modules.data.CustomerHistoryEntry
 import com.ideasdeveloper.idc.app.features.modules.data.CustomerResponse
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleApi
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleDefinition
@@ -217,6 +218,9 @@ private fun CustomerServerDrivenContent(
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
+    // Cliente cuyo historial esta abierto y sus eventos.
+    var historyCustomerId by remember { mutableStateOf<String?>(null) }
+    var history by remember { mutableStateOf<List<CustomerHistoryEntry>>(emptyList()) }
 
     fun activeContext(): Triple<String, String, String>? {
         val activeServerUrl = serverUrl ?: return null
@@ -372,11 +376,53 @@ private fun CustomerServerDrivenContent(
                             }
                         }
                     }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.danger)) { Text("Eliminar") }
+                    Button(onClick = {
+                        if (historyCustomerId == customer.id) {
+                            historyCustomerId = null
+                            return@Button
+                        }
+                        val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
+                        loading = true
+                        scope.launch {
+                            try {
+                                history = ModuleApi(activeServerUrl).use { api -> api.customerHistory(token, companyCode, customer.id) }
+                                historyCustomerId = customer.id
+                            } catch (exception: ModuleException) {
+                                error = exception.message
+                            } finally {
+                                loading = false
+                            }
+                        }
+                    }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) {
+                        Text(if (historyCustomerId == customer.id) "Ocultar historial" else "Historial")
+                    }
+                }
+                if (historyCustomerId == customer.id) {
+                    CustomerHistory(history, primaryColor)
                 }
             }
         }
     }
 }
+// Historial del cliente, del evento mas reciente al mas antiguo, con el modulo que lo registro.
+@Composable
+private fun CustomerHistory(entries: List<CustomerHistoryEntry>, primaryColor: Color) {
+    Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Historial", fontWeight = FontWeight.SemiBold, color = primaryColor)
+        if (entries.isEmpty()) {
+            Text("Aun no hay actividad registrada para este cliente.", color = AppTheme.colors.muted)
+        }
+        entries.forEach { entry ->
+            Column(modifier = Modifier.fillMaxWidth().background(AppTheme.colors.surface, MaterialTheme.shapes.small).padding(8.dp)) {
+                Text(entry.title, color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
+                val author = entry.author.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
+                Text("${entry.at.take(16).replace('T', ' ')} UTC · ${entry.moduleName}$author", color = AppTheme.colors.muted)
+                if (entry.detail.isNotBlank()) Text(entry.detail, color = AppTheme.colors.text)
+            }
+        }
+    }
+}
+
 private suspend inline fun <T> ModuleApi.use(block: suspend (ModuleApi) -> T): T {
     return try {
         block(this)

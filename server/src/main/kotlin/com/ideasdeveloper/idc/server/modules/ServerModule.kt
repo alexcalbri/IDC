@@ -27,6 +27,9 @@ interface ServerModule {
     // (see ModuleMcp). Override it with a getter (`get() = ...`) so it is built when first read.
     val mcp: ModuleMcp?
         get() = null
+    // What the module adds to a customer's history (see CustomerTimeline); override it with a getter.
+    val customerTimeline: CustomerTimeline?
+        get() = null
 
     fun routes(route: Route, access: ModuleAccessService) {
     }
@@ -196,6 +199,28 @@ class ModuleRegistry(
             }
             .map { RegisteredMcpTool(moduleId, module.definition.displayName, it) }
         RegisteredModuleMcp(moduleId, module.definition.displayName, mcp.instructions.trim(), tools).takeIf { tools.isNotEmpty() }
+    }
+
+    // Customer history providers of installed modules whose permission the module declares.
+    fun customerTimelines(): List<RegisteredCustomerTimeline> = installedIds.sorted().mapNotNull { moduleId ->
+        val module = modulesById[moduleId] ?: return@mapNotNull null
+        val timeline = try {
+            module.customerTimeline
+        } catch (_: LinkageError) {
+            null
+        } catch (failure: Exception) {
+            if (ignoredMcpTools.add("$moduleId/timeline")) {
+                LoggerFactory.getLogger("ModuleRegistry").warn("Historial de clientes del modulo '{}' ignorado: no se pudo construir.", moduleId, failure)
+            }
+            null
+        } ?: return@mapNotNull null
+        if (module.definition.permissions.none { it.id == timeline.permission }) {
+            if (ignoredMcpTools.add("$moduleId/timeline-permission")) {
+                LoggerFactory.getLogger("ModuleRegistry").warn("Historial de clientes del modulo '{}' ignorado: el permiso '{}' no esta declarado.", moduleId, timeline.permission)
+            }
+            return@mapNotNull null
+        }
+        RegisteredCustomerTimeline(moduleId, module.definition.displayName, timeline)
     }
 
     // Agent tools of every installed module.

@@ -159,6 +159,7 @@ fun Application.module() {
         // The server's own MCP (companies and modules, server owners only) and each module's.
         { listOf(serverMcp) + moduleRegistry.mcp().filterNot { it.moduleId == ServerMcpModuleId } },
         loginDatabases.service::login,
+        moduleRegistry::customerTimelines,
     )
     // Name and email of each user and password recovery by email code.
     val accountService = AccountService(

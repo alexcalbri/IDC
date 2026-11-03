@@ -100,6 +100,19 @@ class ModuleRegistryTest {
         assertEquals(emptyList(), offending)
     }
 
+    // A customer history behind a permission the module does not declare would never be shown.
+    @Test
+    fun everyCustomerTimelineUsesADeclaredPermission() {
+        val modules = ServiceLoader.load(ServerModuleProvider::class.java).map { it.create() }
+        val problems = modules.mapNotNull { module ->
+            val timeline = module.customerTimeline ?: return@mapNotNull null
+            "${module.definition.id}: ${timeline.permission}".takeIf { module.definition.permissions.none { it.id == timeline.permission } }
+        }
+        assertEquals(emptyList(), problems)
+        // Clientes, CRM and hotspot report customer history.
+        assertTrue(modules.filter { it.customerTimeline != null }.map { it.definition.id }.containsAll(listOf("clientes", "crm", "hotspot")))
+    }
+
     // Every module compiled with the server: a tool the registry would drop is a bug of that module.
     @Test
     fun everyModuleToolFollowsTheRules() {

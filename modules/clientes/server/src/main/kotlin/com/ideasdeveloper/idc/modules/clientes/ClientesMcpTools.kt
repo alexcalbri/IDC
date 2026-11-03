@@ -36,7 +36,8 @@ object ClientesMcpTools {
         "Clientes es la base de contactos de la empresa; otros modulos (CRM, hotspot) usan estos mismos clientes. " +
             "Busca antes de crear para no duplicar: no se permiten dos clientes con el mismo correo. Cada cliente tiene un codigo " +
             "(customerCode) que tambien sirve para identificarlo. Los campos personalizados de la empresa se envian en dynamicFields " +
-            "por su clave; consultalos con list_customer_fields. Archivar no borra al cliente: deja de aparecer en la lista y en las busquedas."
+            "por su clave; consultalos con list_customer_fields. Archivar no borra al cliente: deja de aparecer en la lista y en las busquedas. " +
+            "get_customer_history reune lo que paso con el cliente en todos los modulos (cambios, leads, reservas, WiFi...)."
 
     val tools = listOf(
         McpTool(
@@ -65,6 +66,22 @@ object ClientesMcpTools {
                 ),
             ),
         ) { call -> customer(call) },
+        McpTool(
+            name = "get_customer_history",
+            title = "Historial del cliente",
+            description = "Historial del cliente, del mas reciente al mas antiguo: quien lo creo, edito o archivo y que cambio, y lo que " +
+                "registran los otros modulos instalados que el usuario puede ver (leads y reservas del CRM, conexiones WiFi del hotspot...). " +
+                "Incluye clientes archivados.",
+            permission = "clientes.view",
+            readOnly = true,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "id" to McpSchema.uuid("Id del cliente."),
+                    "limit" to McpSchema.integer("Cantidad maxima de eventos.", 1, 200),
+                ),
+                required = listOf("id"),
+            ),
+        ) { call -> history(call) },
         McpTool(
             name = "list_customer_fields",
             title = "Campos personalizados de clientes",
@@ -152,6 +169,7 @@ object ClientesMcpTools {
         if (ClientesServerModule.emailExists(call.tenant, request.primaryEmail, null)) throw McpToolException("Ya existe un cliente con ese correo.")
         val id = UUID.randomUUID()
         ClientesServerModule.upsertCustomer(call.tenant, id, request, insert = true)
+        ClientesActivity.record(call.tenant, id, "created", "", author(call))
         return Json.encodeToJsonElement(find(call, id, "")!!)
     }
 
@@ -168,16 +186,26 @@ object ClientesMcpTools {
         ClientesServerModule.validateCustomerRequest(call.tenant, request)?.let { throw McpToolException(it.message) }
         if (ClientesServerModule.emailExists(call.tenant, request.primaryEmail, id)) throw McpToolException("Ya existe otro cliente con ese correo.")
         if (!ClientesServerModule.upsertCustomer(call.tenant, id, request, insert = false)) throw McpToolException("Cliente no encontrado.")
+        ClientesServerModule.recordUpdate(call.tenant, id, current, request, author(call))
         return Json.encodeToJsonElement(find(call, id, "")!!)
     }
 
     private fun archive(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
         if (!ClientesServerModule.archiveCustomer(call.tenant, id)) throw McpToolException("Cliente no encontrado o ya archivado.")
+        ClientesActivity.record(call.tenant, id, "archived", "", author(call))
         return buildJsonObject {
             put("id", id.toString())
             put("result", "Cliente archivado.")
         }
+    }
+
+    private fun author(call: McpToolCall) = ClientesActivity.author(call.tenant, call.permissions, call.access, call.agentName)
+
+    private fun history(call: McpToolCall): JsonElement {
+        val id = call.requiredUuid("id")
+        if (!ClientesServerModule.customerExists(call.tenant, id)) throw McpToolException("Cliente no encontrado.")
+        return Json.encodeToJsonElement(CustomerHistoryResponse(call.access.customerHistory(call.tenant, call.permissions, id, call.int("limit", 50, 1..200))))
     }
 
     private fun createField(call: McpToolCall): JsonElement {

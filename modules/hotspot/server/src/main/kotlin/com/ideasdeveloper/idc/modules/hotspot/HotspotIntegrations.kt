@@ -20,6 +20,12 @@ interface NetworkController {
 
     fun authorizeGuest(settings: HotspotSettings, mac: String): GuestAuthorization
 
+    /**
+     * Ends the guest access of [mac] (its code session expired). authorized = true means the device
+     * no longer has access, including when it is not connected anymore.
+     */
+    fun disconnectGuest(settings: HotspotSettings, mac: String): GuestAuthorization
+
     /** SSIDs configured in the controller, to pick them in Redes WiFi. Throws [NetworkControllerException]. */
     fun wifiNetworks(settings: HotspotSettings): List<String>
 }
@@ -34,6 +40,8 @@ object UnifiController : NetworkController {
     override fun isConfigured(settings: HotspotSettings) = settings.unifiConfigured
 
     override fun authorizeGuest(settings: HotspotSettings, mac: String) = UnifiClient.authorizeGuest(settings, mac)
+
+    override fun disconnectGuest(settings: HotspotSettings, mac: String) = UnifiClient.unauthorizeGuest(settings, mac)
 
     // The settings screen lists the SSIDs on every render; a short cache spares a cloud call each time.
     private const val SsidCacheMillis = 60_000L

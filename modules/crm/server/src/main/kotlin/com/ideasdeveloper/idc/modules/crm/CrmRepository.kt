@@ -326,13 +326,30 @@ object CrmRepository {
         if (input.interestId != lead.interestId) {
             addActivity(tenant, lead.id, "interest", "Interes: ${names.interest(input.interestId)}.", actor)
         }
-        val changed = listOf(
-            input.name != lead.name, input.email != lead.email, input.phone != lead.phone, input.source != lead.source,
-            input.language != lead.language, input.message != lead.message, input.details != lead.details,
-            input.targetStart != lead.targetStart, input.targetEnd != lead.targetEnd,
-            input.estimatedValue?.stripTrailingZeros() != lead.estimatedValue?.stripTrailingZeros(), input.followUpOn != lead.followUpOn,
-        ).any { it }
-        if (changed) addActivity(tenant, lead.id, "updated", "Datos del lead actualizados.", actor)
+        leadChanges(lead, input)?.let { addActivity(tenant, lead.id, "updated", it, actor) }
+    }
+
+    /** "Campo: antes -> despues" for each changed value of the lead form, or null when nothing changed. */
+    fun leadChanges(lead: CrmLead, input: CrmLeadInput): String? {
+        fun shown(value: Any?) = value?.toString()?.takeIf { it.isNotBlank() } ?: "(vacio)"
+        val lines = buildList {
+            fun compare(label: String, before: Any?, after: Any?) {
+                if (before != after) add("$label: ${shown(before)} -> ${shown(after)}")
+            }
+            compare("Nombre", lead.name, input.name)
+            compare("Correo", lead.email, input.email)
+            compare("Telefono", lead.phone, input.phone)
+            compare("Origen", lead.source, input.source)
+            compare("Idioma", lead.language, input.language)
+            // Long texts would flood the history: only say they changed.
+            if (lead.message != input.message) add("Mensaje modificado")
+            if (lead.details != input.details) add("Detalles modificados")
+            compare("Fecha de inicio", lead.targetStart, input.targetStart)
+            compare("Fecha de fin", lead.targetEnd, input.targetEnd)
+            compare("Valor estimado", lead.estimatedValue?.stripTrailingZeros()?.toPlainString(), input.estimatedValue?.stripTrailingZeros()?.toPlainString())
+            compare("Seguimiento", lead.followUpOn, input.followUpOn)
+        }
+        return lines.takeIf { it.isNotEmpty() }?.joinToString("\n")
     }
 
     // Moves a lead to another stage, records the stage history and keeps closed_at in line with the stage kind.

@@ -66,6 +66,31 @@ object UnifiClient {
         }
     }
 
+    /** Removes the guest access of [mac]; a device that is no longer connected has nothing to remove. */
+    fun unauthorizeGuest(settings: HotspotSettings, mac: String): GuestAuthorization {
+        if (!settings.unifiConfigured) return GuestAuthorization(false, "UniFi no esta configurado.")
+        val base = "$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}" +
+            "/proxy/network/integration/v1/sites/${settings.unifiSiteId}"
+        return try {
+            val clientId = findClientId(base, settings.unifiApiKey!!, mac)
+                ?: return GuestAuthorization(true, "El dispositivo ya no esta conectado.")
+            val response = send(
+                HttpRequest.newBuilder(URI.create("$base/clients/${encode(clientId)}/actions"))
+                    .header("Content-Type", "application/json")
+                    .header("Accept", "application/json")
+                    .header("X-API-Key", settings.unifiApiKey)
+                    .POST(HttpRequest.BodyPublishers.ofString(JsonObject(mapOf("action" to JsonPrimitive("UNAUTHORIZE_GUEST_ACCESS"))).toString())),
+            )
+            if (response.statusCode() in 200..299) {
+                GuestAuthorization(true, "Desconectado")
+            } else {
+                GuestAuthorization(false, "UniFi respondio HTTP ${response.statusCode()}: ${response.body().take(300)}")
+            }
+        } catch (failure: Exception) {
+            GuestAuthorization(false, "No se pudo contactar UniFi: ${failure.message}")
+        }
+    }
+
     // Consoles the API key can reach (UniFi Site Manager /v1/hosts).
     fun consoles(apiKey: String): List<UnifiConsole> {
         val consoles = mutableListOf<UnifiConsole>()

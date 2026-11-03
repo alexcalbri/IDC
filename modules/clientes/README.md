@@ -46,4 +46,14 @@ validations as the routes:
 | `clientes_create_customer` | `clientes.create` | Creates a customer (name required, no duplicated email). |
 | `clientes_update_customer` | `clientes.edit` | Changes only the data sent. |
 | `clientes_archive_customer` | `clientes.delete` | Archives a customer, like `DELETE /customers/{id}`. |
+| `clientes_get_customer_history` | `clientes.view` | The customer's history, like `GET /customers/{id}/history`. |
 | `clientes_create_customer_field` | `clientes.fields.manage` | Adds a custom field, like `POST /fields`. |
+
+## Customer history
+
+`GET /modules/clientes/customers/{id}/history` (`clientes.view`) returns what happened with a
+customer, newest first: who created, edited (field by field, before and after) or archived it in
+Clientes (`customer_activity`), plus what every installed module reports through its
+`CustomerTimeline` (CRM leads, reservations, sales and notes; hotspot WiFi connections...). Each
+module's entries appear only when it is enabled and the user holds its permission. Clientes knows no
+module: see "Customer history" in `modules/README.md`.

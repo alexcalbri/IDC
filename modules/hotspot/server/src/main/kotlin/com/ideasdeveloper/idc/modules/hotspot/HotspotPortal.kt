@@ -286,6 +286,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val customer = if (HotspotNetworks.isCustomerCode(code)) findCustomerByCode(connection, code) else null
         val values = customer?.let { FormValues(name = it.name, email = it.email, phone = it.phone) }
         if (customer != null && values != null && HotspotPasses.HotspotCustomers in network.accessSources && customer.type == HotspotPasses.HotspotCustomers) {
+            joinOpenSession(target, guest, settings, Owner.Customer(customer.id), values, HotspotNetworks.CustomerCode, ::retry)?.let { return it }
             minutesUntilReconnect(connection, customer.email, settings.reconnectMinutes)?.let { remaining ->
                 return HotspotPortalPages.wait(settings, remaining, byCode = true)
             }
@@ -301,6 +302,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
         }
         val notCurrent = "Tu acceso a esta red no esta vigente. Consulta al personal del local."
         val (pass, minutes) = HotspotPasses.usable(passes, settings.accessMinutes, Instant.now()) ?: return retry(notCurrent)
+        // Another device already uses this code: it shares that session and spends no balance.
+        joinOpenSession(target, guest, settings, Owner.Customer(customer.id), values, HotspotNetworks.CustomerCode, ::retry)?.let { return it }
         // A balance is spent before authorizing so two devices cannot use the same minutes.
         val spent = pass.rule == HotspotPasses.Balance
         if (spent && !HotspotPasses.spend(connection, pass.id, minutes)) return retry(notCurrent)
@@ -343,6 +346,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         }
         val (user, userCompany) = found
         val owner = Owner.User(user.id, userCompany)
+        joinOpenSession(target, guest, settings, owner, FormValues(name = user.name), HotspotNetworks.UserCode, retry)?.let { return it }
         minutesUntilUserReconnect(connection, owner, settings.reconnectMinutes)?.let { remaining ->
             return HotspotPortalPages.wait(settings, remaining, byCode = true)
         }
@@ -373,12 +377,23 @@ class HotspotPortal(private val access: ModuleAccessService) {
         retry: (String) -> String,
         passId: UUID? = null,
         onRejected: () -> Unit = {},
+        // An open session of the same code this device joins; null starts a new one.
+        joining: CodeSession? = null,
     ): String {
         val connection = target.connection
         val registrationId = UUID.randomUUID()
         insertRegistration(connection, registrationId, owner, values, birthday = null, guest = guest, accessMode = accessMode)
         val result = target.controller.authorizeGuest(settings, guest.mac)
-        recordAccess(connection, registrationId, owner, values.email.ifBlank { null }, guest.mac, result, settings.accessMinutes, passId)
+        // Every device of a code shares one session, so they all lose access when it expires.
+        val session = when {
+            !result.authorized -> null
+            joining != null -> joining
+            else -> HotspotCodeSessions.start(connection, owner.codeOwner(), settings.accessMinutes, passId)
+        }
+        recordAccess(
+            connection, registrationId, owner, values.email.ifBlank { null }, guest.mac, result, settings.accessMinutes, passId,
+            sessionId = session?.id, joined = joining != null,
+        )
         if (!result.authorized) {
             onRejected()
             log.warn("Hotspot {}: {} rechazo {}: {}", target.companyCode, target.controller.name, guest.mac, result.message)
@@ -387,10 +402,27 @@ class HotspotPortal(private val access: ModuleAccessService) {
         return HotspotPortalPages.success(settings, values.name, settings.successUrls.randomOrNull() ?: guest.continueUrl.takeIf { it.isNotBlank() })
     }
 
+    /**
+     * When another device is using the same code, lets this one in for the time that session has
+     * left (no reconnection wait, no balance spent); null when the code has no open session.
+     */
+    private fun joinOpenSession(
+        target: PortalTarget,
+        guest: GuestContext,
+        settings: HotspotSettings,
+        owner: Owner,
+        values: FormValues,
+        accessMode: String,
+        retry: (String) -> String,
+    ): String? {
+        val session = HotspotCodeSessions.open(target.connection, owner.codeOwner()) ?: return null
+        return authorizeByCode(target, guest, settings.copy(accessMinutes = session.minutesLeft()), owner, values, accessMode, retry, joining = session)
+    }
+
     private fun minutesUntilUserReconnect(connection: Connection, owner: Owner.User, reconnectMinutes: Int): Long? {
         if (reconnectMinutes <= 0) return null
         val lastAccess = connection.prepareStatement(
-            "SELECT max(created_at) FROM hotspot_accesses WHERE user_id = ? AND user_company = ? AND authorized"
+            "SELECT max(created_at) FROM hotspot_accesses WHERE user_id = ? AND user_company = ? AND authorized AND NOT joined"
         ).use { query ->
             query.setObject(1, owner.id)
             query.setString(2, owner.company)
@@ -500,11 +532,13 @@ class HotspotPortal(private val access: ModuleAccessService) {
         result: GuestAuthorization,
         minutes: Int,
         passId: UUID? = null,
+        sessionId: UUID? = null,
+        joined: Boolean = false,
     ) {
         connection.prepareStatement(
             """
-            INSERT INTO hotspot_accesses (id, registration_id, email, mac, authorized, minutes, unifi_message, user_id, user_company, pass_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO hotspot_accesses (id, registration_id, email, mac, authorized, minutes, unifi_message, user_id, user_company, pass_id, session_id, joined)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, UUID.randomUUID())
@@ -517,6 +551,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
             insert.setObject(8, (owner as? Owner.User)?.id)
             insert.setString(9, (owner as? Owner.User)?.company)
             insert.setObject(10, passId)
+            insert.setObject(11, sessionId)
+            insert.setBoolean(12, joined)
             insert.executeUpdate()
         }
     }
@@ -524,7 +560,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private fun minutesUntilReconnect(connection: Connection, email: String, reconnectMinutes: Int): Long? {
         if (reconnectMinutes <= 0) return null
         val lastAccess = connection.prepareStatement(
-            "SELECT max(created_at) FROM hotspot_accesses WHERE lower(email) = lower(?) AND authorized"
+            "SELECT max(created_at) FROM hotspot_accesses WHERE lower(email) = lower(?) AND authorized AND NOT joined"
         ).use { query ->
             query.setString(1, email)
             query.executeQuery().use { rows -> if (rows.next()) rows.getTimestamp(1)?.toInstant() else null }
@@ -677,6 +713,11 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private sealed interface Owner {
         data class Customer(val id: UUID?) : Owner
         data class User(val id: UUID, val company: String) : Owner
+
+        fun codeOwner(): CodeOwner = when (this) {
+            is Customer -> CodeOwner(customerId = id)
+            is User -> CodeOwner(userId = id, userCompany = company)
+        }
     }
 
     private data class CodeCustomer(val id: UUID, val name: String, val email: String, val phone: String, val type: String)

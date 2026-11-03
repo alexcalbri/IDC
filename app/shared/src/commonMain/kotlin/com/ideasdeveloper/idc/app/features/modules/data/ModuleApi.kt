@@ -105,6 +105,24 @@ class ModuleApi(serverUrl: String) {
         }
     }
 
+    // Historial del cliente: cambios en Clientes y lo que aportan los demas modulos instalados.
+    suspend fun customerHistory(accessToken: String, companyCode: String, customerId: String): List<CustomerHistoryEntry> {
+        try {
+            val response = client.get("$baseUrl/modules/clientes/customers/$customerId/history") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+            if (response.status == HttpStatusCode.OK) return response.body<CustomerHistoryResponse>().entries
+            throw ModuleException("No se pudo cargar el historial del cliente.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: ModuleException) {
+            throw exception
+        } catch (_: Exception) {
+            throw ModuleException("No se pudo comunicar con el servidor.")
+        }
+    }
+
     suspend fun createCustomer(accessToken: String, companyCode: String, request: CreateCustomerRequest): CustomerResponse {
         try {
             val response = client.post("$baseUrl/modules/clientes/customers") {
@@ -309,6 +327,20 @@ data class CreateCustomerRequest(
     val primaryPhone: String,
     val dynamicFields: JsonObject = JsonObject(emptyMap()),
 )
+
+@Serializable
+data class CustomerHistoryEntry(
+    val at: String,
+    val moduleId: String,
+    val moduleName: String,
+    val kind: String,
+    val title: String,
+    val detail: String = "",
+    val author: String = "",
+)
+
+@Serializable
+data class CustomerHistoryResponse(val entries: List<CustomerHistoryEntry> = emptyList())
 
 @Serializable
 data class CustomerResponse(

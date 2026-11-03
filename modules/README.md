@@ -285,6 +285,26 @@ override val mcp: ModuleMcp
 
 See `modules/agentes/README.md` for the endpoint and an example.
 
+## Customer history
+
+A module can add events to a customer's history in Clientes (the shared customers) by overriding
+`ServerModule.customerTimeline` with a getter that returns a `CustomerTimeline`
+(`server/.../modules/CustomerTimeline.kt`):
+
+```kotlin
+override val customerTimeline: CustomerTimeline
+    get() = VentasCustomerTimeline.timeline   // CustomerTimeline(permission = "ventas.view") { query -> ... }
+```
+
+- `permission` must be declared by the module; entries are shown only when the module is enabled
+  for the company and the user holds it (`ModuleRegistryTest` checks the declaration).
+- The function receives `query.customerId`, `query.tenant`, `query.permissions` and `query.limit`;
+  it only reads, applies the same visibility rules as the module's screens and returns at most
+  `limit` `CustomerTimelineEntry` (date, kind, title, detail, author), newest first.
+- Clientes shows every module's entries together (`GET /customers/{id}/history`, the app's
+  *Historial* button and `clientes_get_customer_history`) without knowing any module; a module that
+  fails is left out and logged. Use it for reservations, stays, special requests, purchases...
+
 ## Who made a change
 
 Every user (business owner, server owner and staff) has a name and an email

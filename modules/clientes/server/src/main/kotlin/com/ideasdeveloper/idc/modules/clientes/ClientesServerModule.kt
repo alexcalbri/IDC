@@ -1,6 +1,11 @@
 package com.ideasdeveloper.idc.modules.clientes
 
+import com.ideasdeveloper.idc.server.modules.CustomerHistoryEntry
+import com.ideasdeveloper.idc.server.modules.CustomerTimeline
 import com.ideasdeveloper.idc.server.modules.ModuleActionDefinition
+import com.ideasdeveloper.idc.server.modules.ModulePermissions
+import com.ideasdeveloper.idc.server.modules.requireModuleAccess
+import io.ktor.server.application.ApplicationCall
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
@@ -33,13 +38,16 @@ object ClientesServerModule : ServerModule {
         "modules/clientes/migrations/V003__add_customer_type.sql",
         "modules/clientes/migrations/V004__add_customer_code.sql",
         "modules/clientes/migrations/V005__optional_customer_contact_fields.sql",
+        "modules/clientes/migrations/V006__create_customer_activity.sql",
     )
+
+    override val runtimeTables = listOf("customer_activity")
 
     override val definition = ModuleDefinition(
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.6.0",
+        version = "0.7.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -74,6 +82,9 @@ object ClientesServerModule : ServerModule {
 
     override val mcp: ModuleMcp
         get() = ClientesMcpTools.mcp
+
+    override val customerTimeline: CustomerTimeline
+        get() = ClientesActivity.timeline
 
     override fun routes(route: Route, access: ModuleAccessService) {
         route.route("/modules/clientes") {
@@ -119,7 +130,7 @@ object ClientesServerModule : ServerModule {
             }
 
             post("/customers") {
-                if (!call.requireModulePermission(access, ClientesModule.id, "clientes.create")) return@post
+                val permissions = call.requirePermission(access, "clientes.create") ?: return@post
                 val request = call.receive<CreateCustomerRequest>()
                 val connection = access.tenantConnection(call) ?: return@post call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
                 connection.use { tenant ->
@@ -129,12 +140,13 @@ object ClientesServerModule : ServerModule {
                     }
                     val customerId = UUID.randomUUID()
                     upsertCustomer(tenant, customerId, request, insert = true)
+                    ClientesActivity.record(tenant, customerId, "created", "", ClientesActivity.author(tenant, permissions, access))
                     call.respond(HttpStatusCode.Created, request.toResponse(customerId, "active", customerCode(tenant, customerId)))
                 }
             }
 
             put("/customers/{customerId}") {
-                if (!call.requireModulePermission(access, ClientesModule.id, "clientes.edit")) return@put
+                val permissions = call.requirePermission(access, "clientes.edit") ?: return@put
                 val customerId = call.parameters["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@put call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
                 val request = call.receive<CreateCustomerRequest>()
@@ -144,23 +156,72 @@ object ClientesServerModule : ServerModule {
                     if (emailExists(tenant, request.primaryEmail.trim(), customerId)) {
                         return@put call.respond(HttpStatusCode.Conflict, ClientesErrorResponse("CUSTOMER_DUPLICATE_EMAIL", "Ya existe otro cliente con ese correo."))
                     }
-                    val updated = upsertCustomer(tenant, customerId, request, insert = false)
+                    val before = activeCustomer(tenant, customerId)
+                    val updated = before != null && upsertCustomer(tenant, customerId, request, insert = false)
                     if (!updated) return@put call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
+                    recordUpdate(tenant, customerId, before!!, request, ClientesActivity.author(tenant, permissions, access))
                     call.respond(HttpStatusCode.OK, request.toResponse(customerId, "active", customerCode(tenant, customerId)))
                 }
             }
 
             delete("/customers/{customerId}") {
-                if (!call.requireModulePermission(access, ClientesModule.id, "clientes.delete")) return@delete
+                val permissions = call.requirePermission(access, "clientes.delete") ?: return@delete
                 val customerId = call.parameters["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     ?: return@delete call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
                 val connection = access.tenantConnection(call) ?: return@delete call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
-                if (!connection.use { tenant -> archiveCustomer(tenant, customerId) }) {
+                val archived = connection.use { tenant ->
+                    archiveCustomer(tenant, customerId).also { done ->
+                        if (done) ClientesActivity.record(tenant, customerId, "archived", "", ClientesActivity.author(tenant, permissions, access))
+                    }
+                }
+                if (!archived) {
                     return@delete call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
                 }
                 call.respond(HttpStatusCode.NoContent)
             }
+
+            // The customer's history from Clientes and every installed module the user may see.
+            get("/customers/{customerId}/history") {
+                val permissions = call.requirePermission(access, "clientes.view") ?: return@get
+                val customerId = call.parameters["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
+                val connection = access.tenantConnection(call) ?: return@get call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+                connection.use { tenant ->
+                    if (!customerExists(tenant, customerId)) return@get call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
+                    call.respond(HttpStatusCode.OK, CustomerHistoryResponse(access.customerHistory(tenant, permissions, customerId)))
+                }
+            }
         }
+    }
+
+    // The user's permissions in Clientes when they hold [permissionId]; otherwise answers 401/403 and returns null.
+    private suspend fun ApplicationCall.requirePermission(access: ModuleAccessService, permissionId: String): ModulePermissions? {
+        val permissions = requireModuleAccess(access, ClientesModule.id) ?: return null
+        if (!permissions.has(permissionId)) {
+            respond(HttpStatusCode.Forbidden, ClientesErrorResponse("missing_permission", "No tienes permiso para usar esta funcion."))
+            return null
+        }
+        return permissions
+    }
+
+    internal fun activeCustomer(tenant: Connection, id: UUID): CustomerResponse? = tenant.prepareStatement(
+        "SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code, flexible_attributes::text AS flexible_attributes FROM customers WHERE id = ? AND status <> 'archived'"
+    ).use { query ->
+        query.setObject(1, id)
+        query.executeQuery().use { rows -> if (rows.next()) rowCustomer(rows) else null }
+    }
+
+    // Archived customers keep their history.
+    internal fun customerExists(tenant: Connection, id: UUID): Boolean =
+        tenant.prepareStatement("SELECT 1 FROM customers WHERE id = ?").use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { it.next() }
+        }
+
+    // Records what changed in an edit; an edit that changed nothing is not recorded.
+    internal fun recordUpdate(tenant: Connection, id: UUID, before: CustomerResponse, request: CreateCustomerRequest, author: Pair<UUID?, String>) {
+        val labels = loadFields(tenant).associate { it.fieldKey to it.label }
+        ClientesActivity.changes(before, request, labels)?.let { ClientesActivity.record(tenant, id, "updated", it, author) }
     }
 
     private val fieldKeyPattern = Regex("[a-z][a-z0-9_]{0,62}")
@@ -291,6 +352,9 @@ data class CustomerResponse(val id: String, val displayName: String, val primary
 
 @Serializable
 data class CustomersResponse(val customers: List<CustomerResponse>)
+
+@Serializable
+data class CustomerHistoryResponse(val entries: List<CustomerHistoryEntry>)
 
 @Serializable
 data class ClientesErrorResponse(val code: String, val message: String)

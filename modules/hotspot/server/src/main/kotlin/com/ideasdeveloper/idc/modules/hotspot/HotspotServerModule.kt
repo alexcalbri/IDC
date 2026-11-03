@@ -2,6 +2,8 @@ package com.ideasdeveloper.idc.modules.hotspot
 
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.CustomerTimeline
+import com.ideasdeveloper.idc.server.modules.ModuleJob
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
@@ -47,6 +49,7 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V002__add_networks.sql",
         "modules/hotspot/migrations/V003__add_integrations_and_user_codes.sql",
         "modules/hotspot/migrations/V004__add_access_passes.sql",
+        "modules/hotspot/migrations/V005__add_code_sessions.sql",
     )
 
     override val runtimeTables = listOf(
@@ -61,13 +64,14 @@ object HotspotServerModule : ServerModule {
         "hotspot_user_network_grants",
         "hotspot_pass_sources",
         "hotspot_access_passes",
+        "hotspot_code_sessions",
     )
 
     override val definition = ModuleDefinition(
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente o de usuario segun la red; otros modulos dan acceso con pases.",
-        version = "0.6.1",
+        version = "0.8.0",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -80,6 +84,17 @@ object HotspotServerModule : ServerModule {
 
     override val mcp: ModuleMcp
         get() = HotspotMcpTools.mcp
+
+    override val customerTimeline: CustomerTimeline
+        get() = HotspotCustomerTimeline.timeline
+
+    // Disconnects every device of a code when its shared session expires (HotspotCodeSessions).
+    override val jobs = listOf(
+        ModuleJob("code-sessions", java.time.Duration.ofMinutes(1)) { context ->
+            val settings = HotspotSettingsRepository.load(context.tenant)
+            HotspotCodeSessions.expire(context.tenant, settings, HotspotIntegrations.controller(context.tenant))
+        },
+    )
 
     override fun routes(route: Route, access: ModuleAccessService) {
         HotspotPortal(access).install(route)
