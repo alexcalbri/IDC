@@ -105,7 +105,11 @@ object CrmImportMcpTools {
             inputSchema = McpSchema.obj(
                 mapOf(
                     jobArgument,
-                    "columns" to map("Columna del archivo -> clave del campo."),
+                    "columns" to map(
+                        "Columna del archivo -> clave del campo (ver fields en list_imports): campos del lead, files (archivos del lead), " +
+                            "crm:<clave> o cliente:<clave> para campos existentes, new:crm o new:cliente para crear el campo. " +
+                            "Datos de la persona (documento de identidad, nacimiento, direccion) van como campo del cliente. Confirma con el usuario antes de crear campos.",
+                    ),
                     "stages" to map("Valor de la columna de etapa -> nombre de la etapa del CRM."),
                     "owners" to map("Valor de la columna de responsable -> nombre del usuario del CRM."),
                     "interests" to map("Valor de la columna de interes -> nombre del interes del CRM."),
@@ -205,7 +209,13 @@ object CrmImportMcpTools {
 
     private fun imports(call: McpToolCall): JsonElement = buildJsonObject {
         putJsonArray("imports") { CrmImport.jobs(call.tenant).forEach { add(jobSummary(it)) } }
-        put("fields", JsonObject(CrmImportParse.fields.filterKeys { it.isNotEmpty() }.mapValues { JsonPrimitive(it.value) }))
+        put(
+            "fields",
+            JsonObject(
+                CrmImportTargets.options(CrmFields.all(call.tenant), CrmImportTargets.customerFields(call.tenant))
+                    .filterKeys { it.isNotEmpty() }.mapValues { JsonPrimitive(it.value) },
+            ),
+        )
         put("presets", JsonArray(CrmImport.presets(call.tenant).keys.sorted().map(::JsonPrimitive)))
         put("mondayTokenConfigured", CrmImport.mondayToken(call.tenant) != null)
     }
@@ -256,6 +266,7 @@ object CrmImportMcpTools {
         val job = job(call)
         return JsonObject(jobSummary(job) + buildJsonObject {
             put("columns", JsonObject(job.columns.associateWith { JsonPrimitive(job.mapping.columns[it].orEmpty()) }))
+            put("columnTypes", JsonObject(job.columnTypes.mapValues { JsonPrimitive(it.value) }))
             put("stages", JsonObject(job.mapping.stages.mapValues { JsonPrimitive(it.value) }))
             put("owners", JsonObject(job.mapping.owners.mapValues { JsonPrimitive(it.value) }))
             put("interests", JsonObject(job.mapping.interests.mapValues { JsonPrimitive(it.value) }))
@@ -296,16 +307,23 @@ object CrmImportMcpTools {
         if (job.status != "mapping") throw McpToolException("Esa importacion ya empezo.")
         val columns = stringMap(call, "columns")
         columns.keys.firstOrNull { it !in job.columns }?.let { throw McpToolException("La columna '$it' no esta en el archivo. Columnas: ${job.columns.joinToString()}.") }
-        columns.values.firstOrNull { it.isNotEmpty() && it !in CrmImportParse.fields }?.let { throw McpToolException("El campo '$it' no existe; revisa fields en list_imports.") }
+        val targets = CrmImportTargets.options(context.fields, CrmImportTargets.customerFields(call.tenant))
+        columns.values.firstOrNull { it.isNotEmpty() && it !in targets }?.let { throw McpToolException("El campo '$it' no existe; revisa fields en list_imports.") }
         val mapping = CrmImportMapping(
             columns = columns.filterValues { it.isNotEmpty() },
             stages = stringMap(call, "stages").filterValues { it.isNotEmpty() },
             owners = stringMap(call, "owners").filterValues { it.isNotEmpty() },
             interests = stringMap(call, "interests").filterValues { it.isNotEmpty() },
         )
-        CrmImport.saveMapping(call.tenant, job, mapping)
-        call.string("presetName", 80).takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(call.tenant, it, mapping) }
-        return previewResult(call, job, context, mapping)
+        // "new:crm" / "new:cliente" create the field first, typed from the monday column.
+        val created = CrmImport.saveMappingCreatingFields(call.tenant, job, mapping)
+        val saved = CrmImport.job(call.tenant, job.id)!!
+        call.string("presetName", 80).takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(call.tenant, it, saved.mapping) }
+        val result = previewResult(call, job, context, saved.mapping)
+        return if (created.isEmpty()) result else buildJsonObject {
+            (result as JsonObject).forEach { (key, value) -> put(key, value) }
+            put("createdFields", JsonArray(created.map { JsonPrimitive(it) }))
+        }
     }
 
     private fun applyPreset(call: McpToolCall): JsonElement {

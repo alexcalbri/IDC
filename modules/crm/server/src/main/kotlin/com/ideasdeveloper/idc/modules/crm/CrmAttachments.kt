@@ -68,6 +68,60 @@ object CrmAttachments {
         return ref
     }
 
+    /**
+     * Stores an imported file directly in a lead's field. [sourceRef] (e.g. monday:asset:1) keeps a
+     * new import of the same item from attaching it again. The stored file is removed if the row fails.
+     */
+    fun importLinked(
+        tenant: Connection,
+        files: ModuleFiles,
+        leadId: UUID,
+        fieldKey: String,
+        name: String,
+        path: String,
+        contentType: String,
+        content: InputStream,
+        sourceRef: String,
+        uploadedBy: String,
+    ) {
+        val fileName = cleanName(name).ifEmpty { "archivo" }
+        val count = tenant.prepareStatement("SELECT count(*) FROM crm_attachments WHERE lead_id = ? AND deleted_at IS NULL").use { query ->
+            query.setObject(1, leadId)
+            query.executeQuery().use { rows -> rows.next(); rows.getInt(1) }
+        }
+        if (count >= MaxFilesPerLead) throw CrmValidationException("el lead ya tiene $MaxFilesPerLead archivos")
+        val type = contentType.substringBefore(';').trim().take(200).ifBlank { "application/octet-stream" }
+        val stored = try {
+            files.put(fileName, type, content, MaxFileBytes)
+        } catch (_: FileTooLargeException) {
+            throw CrmValidationException("supera ${MaxFileBytes / (1024 * 1024)} MB")
+        }
+        try {
+            tenant.prepareStatement(
+                """
+                INSERT INTO crm_attachments (id, lead_id, field_key, file_name, folder_path, content_type, size_bytes, storage_backend, storage_ref, uploaded_by, source_ref)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """.trimIndent()
+            ).use { insert ->
+                insert.setObject(1, UUID.randomUUID())
+                insert.setObject(2, leadId)
+                insert.setString(3, fieldKey)
+                insert.setString(4, fileName)
+                insert.setString(5, cleanPath(path))
+                insert.setString(6, type)
+                insert.setLong(7, stored.size)
+                insert.setString(8, stored.backend)
+                insert.setString(9, stored.ref)
+                insert.setString(10, uploadedBy.take(200))
+                insert.setString(11, sourceRef.take(200))
+                insert.executeUpdate()
+            }
+        } catch (failure: Exception) {
+            runCatching { files.delete(stored) }
+            throw failure
+        }
+    }
+
     /** Files of a lead by field key, ordered by folder and name. */
     fun forLead(tenant: Connection, leadId: UUID): Map<String, List<UiFileRef>> = tenant.prepareStatement(
         "SELECT id, field_key, file_name, folder_path, size_bytes FROM crm_attachments WHERE lead_id = ? AND deleted_at IS NULL ORDER BY folder_path, file_name"

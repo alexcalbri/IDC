@@ -67,6 +67,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V009__monday_background_read.sql",
         "modules/crm/migrations/V010__custom_fields_and_attachments.sql",
         "modules/crm/migrations/V011__attachments_in_file_storage.sql",
+        "modules/crm/migrations/V012__import_fields_and_files.sql",
     )
 
     override val runtimeTables = listOf(
@@ -135,7 +136,7 @@ object CrmServerModule : ServerModule {
         // Imports: queued monday boards are read, then imports in progress apply 300 rows a minute.
         ModuleJob("import", Duration.ofMinutes(1)) { context ->
             CrmImport.readQueued(context.tenant)
-            CrmImport.runPending(context.tenant, 300, java.time.LocalDate.now())
+            CrmImport.runPending(context.tenant, 300, java.time.LocalDate.now(), context.access.files(context.companyCode, CrmModule.id))
         },
         ModuleJob("encuentra24", Duration.ofMinutes(5)) { context ->
             if (CrmEncuentra24.load(context.tenant).ready) {
@@ -179,7 +180,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.11.0",
+        version = "0.12.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -742,15 +743,20 @@ object CrmServerModule : ServerModule {
                             if (job.status != "mapping") return show("importjob", UiNotice("Esa importacion ya empezo.", UiTone.Warning), back)
                             val mapping = if (params["op"] == "preset") {
                                 CrmImport.presets(tenant)[values["preset"]] ?: return show("importjob", UiNotice("Ese mapeo ya no existe.", UiTone.Warning), back)
-                            } else CrmImportScreens.mapping(job, values)
-                            CrmImport.saveMapping(tenant, job, mapping)
-                            values["presetName"]?.trim()?.takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(tenant, it, mapping) }
+                            } else CrmImportScreens.mapping(context, job, values)
+                            // Columns marked "Crear campo..." become fields of the CRM or of the customer first.
+                            val created = CrmImport.saveMappingCreatingFields(tenant, job, mapping)
                             val saved = CrmImport.job(tenant, job.id)!!
+                            values["presetName"]?.trim()?.takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(tenant, it, saved.mapping) }
                             val preview = CrmImport.preview(tenant, saved, CrmImport.Context(context.stages, context.interests, context.users, context.today, saved.source))
                             val missing = if ("name" !in mapping.columns.values && "email" !in mapping.columns.values && "phone" !in mapping.columns.values) " Ninguna columna es nombre, correo o telefono." else ""
                             show(
                                 "importjob",
-                                UiNotice("Vista previa: ${preview.created} nuevos, ${preview.updated} actualizados, ${preview.conflicts} por revisar, ${preview.skipped} omitidos.$missing", if (missing.isEmpty()) UiTone.Success else UiTone.Warning),
+                                UiNotice(
+                                    (if (created.isEmpty()) "" else "Campos creados: ${created.joinToString()}. ") +
+                                        "Vista previa: ${preview.created} nuevos, ${preview.updated} actualizados, ${preview.conflicts} por revisar, ${preview.skipped} omitidos.$missing",
+                                    if (missing.isEmpty()) UiTone.Success else UiTone.Warning,
+                                ),
                                 back,
                             )
                         }

@@ -254,9 +254,10 @@ hour) and archiving after check-out.
 - **monday** (GraphQL API with a personal token): the token is saved for the
   company (`crm_settings.monday_token`, V008) and the active boards it can read
   are listed by workspace, each with a checkbox (subitem boards and docs are
-  left out). For every marked board: every column as text, the group, the
-  board (mapped to the interest), the creation date, updates and subitems as
-  notes; the item id is the import key. Reading a big board takes minutes,
+  left out). For every marked board: every column as text with its monday
+  type, the group, the board (mapped to the interest), the creation date,
+  updates (up to 100 per item) with their replies and subitems as notes, and
+  the files of file columns and of updates; the item id is the import key. Reading a big board takes minutes,
   longer than the app waits for a response, so marking boards only queues the
   import (status `reading`, V009); the `import` job reads them on its next
   minute and leaves the import ready to map, or `failed` with the reason.
@@ -283,6 +284,26 @@ is merged; rows without name, email and phone are skipped; importing again
 updates the lead with the same import key (`crm_leads.import_key`); historical
 comments become notes with their original date and the same note is never
 added twice; imports send no notifications.
+
+**Fields and files (V012)**: besides the lead fields, a column can go to the
+lead's files (`files`), to an existing custom field of the CRM (`crm:<key>`) or
+of the customer in Clientes (`cliente:<key>`, values in
+`customers.flexible_attributes`), or to a field created when the mapping is
+saved (`new:crm`, `new:cliente`). Columns without a field are proposed as an
+existing field with the same name, the lead's files for monday file columns,
+a new customer field for personal data (document id, birth date, address...)
+and a new CRM field for anything else with values; the mapping screen lists
+them under **Campos que faltan** so the user confirms or picks "No importar".
+New fields take the type of the monday column (status and dropdown become
+lists with the values of the rows; dropdown allows several). Invalid values
+are left out and reported with the row; empty values never erase.
+Files are kept as monday asset ids with the row and downloaded when the row is
+applied (monday links expire within the hour): column files go to
+Documentos in a folder named after the column (or to the mapped CRM files
+field), update files to Documentos > Actualizaciones de monday > date; each
+file is attached once per lead (`crm_attachments.source_ref`); files over 25 MB
+or that fail are reported with the row. The `import` job stops after about 50
+seconds per run so large downloads continue on the next minute.
 
 **Acciones en lote**: the filtered leads (50 per page) with a checkbox each,
 "select all visible", and move to a stage, assign a responsible user (with

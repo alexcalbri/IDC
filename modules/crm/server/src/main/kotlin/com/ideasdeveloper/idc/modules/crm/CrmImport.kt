@@ -23,6 +23,7 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.UUID
+import com.ideasdeveloper.idc.server.modules.ModuleFiles
 
 // How a job turns columns into CRM fields and source values into stages, users and interests.
 data class CrmImportMapping(
@@ -50,6 +51,8 @@ data class CrmImportJob(
     // monday board ids still to read (status reading) and why a job failed.
     val boards: List<String> = emptyList(),
     val error: String = "",
+    // Type of each column as the source reported it (monday), to type the fields the import creates.
+    val columnTypes: Map<String, String> = emptyMap(),
 )
 
 data class CrmImportNote(val date: LocalDate?, val author: String, val text: String)
@@ -101,14 +104,18 @@ object CrmImport {
     }
 
     /**
-     * Items of monday boards through the GraphQL API: every column as text, the group, the board
-     * (used as interest), the creation date, updates and subitems as notes, and the item id as key.
+     * Items of monday boards through the GraphQL API: every column as text (and its type), the
+     * group, the board (used as interest), the creation date, updates with their replies and
+     * subitems as notes, the files of file columns and of updates, and the item id as key.
      */
     fun fromMonday(token: String, boardIds: List<String>): CrmTable {
         if (token.isBlank()) throw CrmImportException("Escribe el token de la API de monday.")
         if (boardIds.isEmpty() || boardIds.any { !it.matches(Regex("^[0-9]{1,20}$")) }) throw CrmImportException("Escribe los ID de los tableros (numeros separados por coma).")
-        val itemFields = "id name created_at group { title } column_values { column { title } text } updates(limit: 30) { text_body created_at creator { name } } subitems { name column_values { column { title } text } }"
+        val itemFields = "id name created_at group { title } column_values { type text value column { title } } " +
+            "updates(limit: 100) { text_body created_at creator { name } assets { id name } replies { text_body created_at creator { name } } } " +
+            "subitems { name column_values { column { title } text } }"
         val columns = linkedSetOf("Nombre")
+        val types = mutableMapOf<String, String>()
         val rows = mutableListOf<Map<String, String>>()
         boardIds.forEach { boardId ->
             var data = monday(token, "query { boards(ids: [$boardId]) { name items_page(limit: 100) { cursor items { $itemFields } } } }")
@@ -118,23 +125,38 @@ object CrmImport {
             while (page != null) {
                 page["items"].arr().mapNotNull { it.obj() }.forEach { item ->
                     val row = linkedMapOf("Nombre" to item["name"].str())
+                    val files = mutableListOf<CrmMondayFile>()
                     item["column_values"].arr().mapNotNull { it.obj() }.forEach { value ->
                         val title = value["column"].obj()?.get("title").str().ifEmpty { return@forEach }
                         columns += title
+                        types.putIfAbsent(title, value["type"].str())
                         row[title] = value["text"].str()
+                        if (value["type"].str() == "file") files += CrmMondayFiles.fromColumnValue(title, value["value"].str())
                     }
                     row[CrmImportParse.GroupColumn] = item["group"].obj()?.get("title").str()
                     row[BoardColumn] = boardName
                     row[KeyColumn] = "monday:${item["id"].str()}"
                     row["__created"] = item["created_at"].str()
-                    val notes = item["updates"].arr().mapNotNull { it.obj() }.map { update ->
-                        CrmImportNote(CrmImportParse.date(update["created_at"].str()), update["creator"].obj()?.get("name").str(), update["text_body"].str())
+                    val notes = item["updates"].arr().mapNotNull { it.obj() }.flatMap { update ->
+                        val date = CrmImportParse.date(update["created_at"].str())
+                        val attached = update["assets"].arr().mapNotNull { it.obj() }.map { asset ->
+                            CrmMondayFile(asset["id"].str(), asset["name"].str(), update = date?.toString() ?: "sin-fecha")
+                        }
+                        files += attached
+                        val text = update["text_body"].str() + if (attached.isEmpty()) "" else
+                            "\nAdjuntos: ${attached.joinToString { it.name }} (en ${CrmFields.DocumentsLabel} > ${CrmMondayFiles.UpdatesFolder})"
+                        listOf(CrmImportNote(date, update["creator"].obj()?.get("name").str(), text.trim())) +
+                            update["replies"].arr().mapNotNull { it.obj() }.map { reply ->
+                                val author = reply["creator"].obj()?.get("name").str()
+                                CrmImportNote(CrmImportParse.date(reply["created_at"].str()), author, "Respuesta${if (author.isEmpty()) "" else " de $author"}: ${reply["text_body"].str()}")
+                            }
                     } + item["subitems"].arr().mapNotNull { it.obj() }.map { subitem ->
                         val details = subitem["column_values"].arr().mapNotNull { it.obj() }
                             .mapNotNull { value -> value["text"].str().ifEmpty { null }?.let { "${value["column"].obj()?.get("title").str()}: $it" } }
                         CrmImportNote(null, "monday", "Subelemento: ${subitem["name"].str()}${if (details.isEmpty()) "" else " (${details.joinToString()})"}")
                     }
                     row[NotesColumn] = notesJson(notes)
+                    if (files.isNotEmpty()) row[CrmMondayFiles.FilesColumn] = CrmMondayFiles.encode(files)
                     rows += row
                     if (rows.size > CrmImportParse.MaxRows) throw CrmImportException("Los tableros tienen mas de ${CrmImportParse.MaxRows} elementos.")
                 }
@@ -144,7 +166,7 @@ object CrmImport {
                 page = data["next_items_page"].obj()
             }
         }
-        return CrmTable(columns.toList() + listOf(CrmImportParse.GroupColumn, BoardColumn), rows)
+        return CrmTable(columns.toList() + listOf(CrmImportParse.GroupColumn, BoardColumn), rows, types)
     }
 
     fun mondayToken(tenant: Connection): String? =
@@ -181,6 +203,8 @@ object CrmImport {
             val id = board["id"].str().takeIf { it.matches(Regex("^[0-9]{1,20}$")) } ?: return@mapNotNull null
             CrmMondayBoard(id, board["name"].str().ifEmpty { id }, board["workspace"].obj()?.get("name").str().ifEmpty { MainWorkspace }, board["items_count"].str().toIntOrNull())
         }
+
+    internal fun mondayQuery(token: String, query: String): JsonObject = monday(token, query)
 
     private fun monday(token: String, query: String): JsonObject {
         val request = HttpRequest.newBuilder(URI.create("https://api.monday.com/v2"))
@@ -327,15 +351,23 @@ object CrmImport {
         val columns = table.columns.filter { !it.startsWith("__") }
         var guessed = CrmImportParse.guess(columns)
         if (BoardColumn in columns && "interest" !in guessed.values) guessed = guessed + (BoardColumn to "interest")
+        // Columns the CRM has no field for: an existing custom field with that name, or a new one to confirm.
+        val crmFields = CrmFields.all(tenant)
+        val customerFields = CrmImportTargets.customerFields(tenant)
+        guessed = guessed.mapValues { (column, field) ->
+            if (field.isNotEmpty() || column == CrmImportParse.GroupColumn || column == BoardColumn) field
+            else CrmImportTargets.propose(column, table.types[column], table.rows.any { !it[column].isNullOrBlank() }, crmFields, customerFields)
+        }
         val moved = tenant.prepareStatement(
-            "UPDATE crm_import_jobs SET name = ?, status = 'mapping', mapping = CAST(? AS jsonb), columns = CAST(? AS jsonb), total = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?"
+            "UPDATE crm_import_jobs SET name = ?, status = 'mapping', mapping = CAST(? AS jsonb), columns = CAST(? AS jsonb), total = ?, column_types = CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = ?"
         ).use { update ->
             update.setString(1, name.take(200))
             update.setString(2, mappingJson(CrmImportMapping(guessed)).toString())
             update.setString(3, JsonArray(columns.map { JsonPrimitive(it) }).toString())
             update.setInt(4, table.rows.size)
-            update.setObject(5, id)
-            update.setString(6, from)
+            update.setString(5, JsonObject(table.types.filterKeys { it in columns }.mapValues { JsonPrimitive(it.value) }).toString())
+            update.setObject(6, id)
+            update.setString(7, from)
             update.executeUpdate()
         }
         if (moved == 0) return
@@ -356,7 +388,7 @@ object CrmImport {
     fun job(tenant: Connection, id: UUID): CrmImportJob? = jobQuery(tenant, "WHERE id = ?") { it.setObject(1, id) }.firstOrNull()
 
     private fun jobQuery(tenant: Connection, tail: String, bind: (java.sql.PreparedStatement) -> Unit = {}): List<CrmImportJob> = tenant.prepareStatement(
-        "SELECT id, source, name, status, mapping::text, columns::text, total, processed, created, updated, skipped, conflicts, errors, created_at, boards::text, error FROM crm_import_jobs $tail"
+        "SELECT id, source, name, status, mapping::text, columns::text, total, processed, created, updated, skipped, conflicts, errors, created_at, boards::text, error, column_types::text FROM crm_import_jobs $tail"
     ).use { query ->
         bind(query)
         query.executeQuery().use { rows ->
@@ -369,6 +401,7 @@ object CrmImport {
                         rows.getTimestamp(14).toInstant(),
                         runCatching { json.parseToJsonElement(rows.getString(15)) }.getOrNull().arr().map { it.str() },
                         rows.getString(16),
+                        runCatching { json.parseToJsonElement(rows.getString(17)) }.getOrNull().obj()?.mapValues { it.value.str() }.orEmpty(),
                     )
                 )
             }
@@ -417,6 +450,27 @@ object CrmImport {
         }
     }
 
+    /** Different values of one column, for the options of the dropdown fields the import creates. */
+    fun columnValues(tenant: Connection, job: CrmImportJob, column: String, limit: Int = 200): List<String> = tenant.prepareStatement(
+        "SELECT DISTINCT data ->> ? FROM crm_import_rows WHERE job_id = ? AND coalesce(data ->> ?, '') <> '' LIMIT ?"
+    ).use { query ->
+        query.setString(1, column)
+        query.setObject(2, job.id)
+        query.setString(3, column)
+        query.setInt(4, limit)
+        query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+    }
+
+    /**
+     * Saves the mapping of the form, creating first the fields its columns ask for ("Crear campo...").
+     * Returns the labels of the created fields.
+     */
+    fun saveMappingCreatingFields(tenant: Connection, job: CrmImportJob, mapping: CrmImportMapping): List<String> = transaction(tenant) {
+        val (columns, created) = CrmImportTargets.createMissing(tenant, mapping.columns, job.columnTypes) { column -> columnValues(tenant, job, column) }
+        saveMapping(tenant, job, mapping.copy(columns = columns))
+        created
+    }
+
     /** Different values of the columns mapped to [field] (for the stage, owner and interest maps). */
     fun distinctValues(tenant: Connection, job: CrmImportJob, field: String, limit: Int = 60): List<String> {
         val columns = job.mapping.columns.filterValues { it == field }.keys
@@ -439,6 +493,8 @@ object CrmImport {
         val users: List<CrmUser>,
         val today: LocalDate,
         val source: String,
+        val crmFields: List<CrmField> = emptyList(),
+        val customerFields: List<CustomerField> = emptyList(),
     )
 
     // A row reduced to CRM values.
@@ -453,6 +509,11 @@ object CrmImport {
         val fields: Map<String, String>,
         val notes: List<CrmImportNote>,
         val createdAt: LocalDate?,
+        // Custom fields of the CRM and of the customer, by key, with the source text.
+        val crm: Map<String, String> = emptyMap(),
+        val customer: Map<String, String> = emptyMap(),
+        // monday files of the row with the field key and folder each one goes to.
+        val files: List<Pair<CrmMondayFile, Pair<String, String>>> = emptyList(),
     )
 
     fun values(row: Map<String, String>, mapping: CrmImportMapping, context: Context): Values {
@@ -491,8 +552,35 @@ object CrmImport {
             ),
             notes = notes(row[NotesColumn]) + noteColumns,
             createdAt = created,
+            crm = custom(row, mapping, CrmImportTargets.CrmPrefix),
+            customer = custom(row, mapping, CrmImportTargets.CustomerPrefix),
+            files = filesOf(row, mapping, context),
         )
     }
+
+    // Text of the columns mapped to custom fields of one kind, by field key (several columns: joined).
+    private fun custom(row: Map<String, String>, mapping: CrmImportMapping, prefix: String): Map<String, String> =
+        mapping.columns.filterValues { it.startsWith(prefix) }.entries
+            .groupBy({ it.value.removePrefix(prefix) }, { row[it.key]?.trim().orEmpty() })
+            .mapValues { (_, texts) -> texts.filter { it.isNotEmpty() }.joinToString(", ") }
+            .filterValues { it.isNotEmpty() }
+
+    /**
+     * Where each monday file of the row goes: files of a column mapped to the lead's files land in
+     * Documentos in a folder named after the column, those of a column mapped to a CRM files field
+     * in that field; files of updates go to Documentos > Actualizaciones de monday > date.
+     */
+    private fun filesOf(row: Map<String, String>, mapping: CrmImportMapping, context: Context): List<Pair<CrmMondayFile, Pair<String, String>>> =
+        CrmMondayFiles.decode(row[CrmMondayFiles.FilesColumn]).mapNotNull { file ->
+            val place = when {
+                file.update.isNotEmpty() -> CrmFields.Documents to "${CrmMondayFiles.UpdatesFolder}/${file.update}"
+                else -> when (val target = mapping.columns[file.column].orEmpty()) {
+                    CrmImportTargets.Files -> CrmFields.Documents to file.column
+                    else -> context.crmFields.firstOrNull { target == CrmImportTargets.CrmPrefix + it.key && it.type == CrmFieldType.Files }?.let { it.key to "" }
+                }
+            }
+            place?.let { file to it }
+        }
 
     private fun sha(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }.take(32)
 
@@ -574,13 +662,14 @@ object CrmImport {
             id
         }
         updateFields(tenant, leadId, values, existing != null, context)
+        val problems = CrmImportTargets.apply(tenant, leadId, values.crm, values.customer, context.crmFields, context.customerFields)
         addNotes(tenant, leadId, values.notes)
         listings?.let { raw ->
             runCatching { json.parseToJsonElement(raw) }.getOrNull().arr().forEach { element ->
                 CrmWordPress.listing(element)?.let { CrmWordPress.linkListing(tenant, leadId, it, null) }
             }
         }
-        return (if (existing != null) Outcome.Updated else Outcome.Created) to ""
+        return (if (existing != null) Outcome.Updated else Outcome.Created) to problems.joinToString("; ")
     }
 
     // Fills the lead with the row values; on updates only non-empty values replace the current ones.
@@ -671,27 +760,49 @@ object CrmImport {
         return Preview(created, updated, skipped, conflicts)
     }
 
-    /** Applies up to [limit] pending rows of every running job. Each row is committed on its own. */
-    fun runPending(tenant: Connection, limit: Int, today: LocalDate): Int {
+    /**
+     * Applies up to [limit] pending rows of every running job. Each row is committed on its own; its
+     * monday files are downloaded afterwards into [files] (left out without it). Stops after
+     * [budget] so a run with many downloads leaves the rest to the next one.
+     */
+    fun runPending(tenant: Connection, limit: Int, today: LocalDate, files: ModuleFiles? = null, budget: Duration = Duration.ofSeconds(50)): Int {
         val running = jobQuery(tenant, "WHERE status = 'running' ORDER BY created_at")
+        val deadline = Instant.now().plus(budget)
         var done = 0
         running.forEach { job ->
-            val context = Context(CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant), today, job.source)
+            val context = Context(
+                CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant), today, job.source,
+                CrmFields.all(tenant), CrmImportTargets.customerFields(tenant),
+            )
+            val token = if (job.source == "monday") mondayToken(tenant) else null
             val label = when (job.source) { "monday" -> "monday"; "leadspro" -> "CT Leads Pro"; else -> "archivo" }
             val pending = tenant.prepareStatement("SELECT row_no, data::text FROM crm_import_rows WHERE job_id = ? AND status = 'pending' ORDER BY row_no LIMIT ?").use { query ->
                 query.setObject(1, job.id)
                 query.setInt(2, limit - done)
                 query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getInt(1) to rows.getString(2)) } }
             }
-            pending.forEach { (rowNo, raw) ->
+            for ((rowNo, raw) in pending) {
+                if (Instant.now().isAfter(deadline)) break
                 val row = runCatching { json.parseToJsonElement(raw) }.getOrNull().obj()?.mapValues { it.value.str() }.orEmpty()
-                val (status, message) = try {
+                val values = values(row, job.mapping, context)
+                var (status, message) = try {
                     transaction(tenant) {
-                        val (outcome, text) = apply(tenant, values(row, job.mapping, context), context, label, row[ListingsColumn])
+                        val (outcome, text) = apply(tenant, values, context, label, row[ListingsColumn])
                         outcome.status to text
                     }
                 } catch (failure: Exception) {
                     "error" to (failure.message ?: failure.javaClass.simpleName)
+                }
+                if ((status == "created" || status == "updated") && values.files.isNotEmpty()) {
+                    val problems = when {
+                        files == null -> emptyList()
+                        token == null -> listOf("sin token de monday para descargar los archivos")
+                        else -> leadByKey(tenant, values.key)?.let { leadId ->
+                            val places = values.files.toMap()
+                            CrmMondayFiles.import(tenant, files, token, leadId, values.files.map { it.first }) { places[it] }
+                        }.orEmpty()
+                    }
+                    if (problems.isNotEmpty()) message = listOf(message, "Archivos: " + problems.take(5).joinToString("; ")).filter { it.isNotEmpty() }.joinToString(" | ")
                 }
                 tenant.prepareStatement("UPDATE crm_import_rows SET status = ?, message = ? WHERE job_id = ? AND row_no = ?").use { update ->
                     update.setString(1, status)
@@ -702,6 +813,7 @@ object CrmImport {
                 }
                 done++
             }
+            if (Instant.now().isAfter(deadline)) return done
             tenant.prepareStatement(
                 """
                 UPDATE crm_import_jobs j SET

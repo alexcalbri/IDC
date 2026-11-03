@@ -11,7 +11,8 @@ import javax.xml.parsers.DocumentBuilderFactory
 class CrmImportException(message: String) : Exception(message)
 
 // Rows read from a source: the column names in order and each row as column -> value.
-data class CrmTable(val columns: List<String>, val rows: List<Map<String, String>>)
+// [types]: type of each column as the source reports it (monday column types), when it does.
+data class CrmTable(val columns: List<String>, val rows: List<Map<String, String>>, val types: Map<String, String> = emptyMap())
 
 /** Reading of CSV, XLSX and monday exports, and the automatic column mapping. */
 object CrmImportParse {

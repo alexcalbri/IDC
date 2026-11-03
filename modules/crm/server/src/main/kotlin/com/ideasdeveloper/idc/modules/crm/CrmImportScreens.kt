@@ -171,10 +171,14 @@ object CrmImportScreens {
                 UiCard(listOf(UiList(problems, emptyText = "Sin filas por revisar.")), title = "Filas por revisar o con error"),
             )
         }
-        val fieldOptions = CrmImportParse.fields
+        val fieldOptions = CrmImportTargets.options(context.fields, CrmImportTargets.customerFields(context.tenant))
         val columnFields = job.columns.map { column ->
-            UiField("col:$column", column, type = "dropdown", options = fieldOptions.values.toList(), section = "Columnas")
+            val type = job.columnTypes[column]?.takeIf { it.isNotEmpty() }?.let { " (monday: $it)" }.orEmpty()
+            UiField("col:$column", column + type, type = "dropdown", options = fieldOptions.values.toList(), section = "Columnas")
         }
+        // Columns proposed as new fields: the user confirms them by saving the mapping.
+        val toCreate = job.columns.filter { job.mapping.columns[it] in setOf(CrmImportTargets.NewCrm, CrmImportTargets.NewCustomer) }
+        val fileColumns = job.columns.filter { job.columnTypes[it] == "file" }
         val columnValues = job.columns.associate { column -> "col:$column" to (fieldOptions[job.mapping.columns[column].orEmpty()] ?: fieldOptions.getValue("")) }
         fun valueFields(field: String, prefix: String, section: String, options: List<String>, mapped: Map<String, String>) =
             CrmImport.distinctValues(context.tenant, job, field).map { value -> UiField("$prefix:$value", value, type = "dropdown", options = options, section = section) } to
@@ -204,6 +208,11 @@ object CrmImportScreens {
                 listOf(
                     UiText("Elige a que campo del CRM va cada columna y como se traducen sus valores. Las etapas e intereses que no elijas se buscan por nombre." +
                         if (context.interestsEnabled) "" else " (Los intereses estan desactivados: se ignoran.)"),
+                    UiText(
+                        "Datos de la persona (documento de identidad, fecha de nacimiento, direccion...) van como campo del cliente: los ven Clientes y los demas modulos. " +
+                            "Lo propio del negocio va como campo del CRM.",
+                        UiTextStyle.Caption,
+                    ),
                     UiForm(
                         "mapping", columnFields + stageFields + ownerFields + interestFields + UiField("presetName", "Guardar este mapeo como (opcional)", section = "Mapeo guardado"),
                         columnValues + stageValues + ownerValues + interestValues,
@@ -213,6 +222,28 @@ object CrmImportScreens {
                 ),
                 title = "Mapeo",
             ),
+            toCreate.takeIf { it.isNotEmpty() }?.let { columns ->
+                UiCard(
+                    listOf(
+                        UiText("Estas columnas no tienen un campo en el CRM. Al guardar el mapeo se crean los campos marcados con \"Crear campo...\"; elige \"No importar\" para las que no quieras."),
+                        UiList(
+                            columns.map { column ->
+                                val target = if (job.mapping.columns[column] == CrmImportTargets.NewCustomer) "campo del cliente" else "campo del CRM"
+                                val (type, multiple) = CrmImportTargets.crmType(job.columnTypes[column])
+                                UiListItem(column, "Se crearia como $target de tipo ${type.label}${if (multiple) " (varias opciones)" else ""}")
+                            },
+                        ),
+                    ),
+                    title = "Campos que faltan",
+                )
+            },
+            fileColumns.takeIf { it.isNotEmpty() || job.source == "monday" }?.let {
+                UiText(
+                    "Los archivos de las columnas que mapees a \"Archivos del lead\" y los adjuntos de las actualizaciones se descargan de monday al importar " +
+                        "(hasta ${CrmAttachments.MaxFileBytes / (1024 * 1024)} MB cada uno) y quedan en ${CrmFields.DocumentsLabel}. Las actualizaciones y sus respuestas se importan como notas.",
+                    UiTextStyle.Caption,
+                )
+            },
             UiCard(
                 listOf(UiTable(sampleColumns.map { UiTableColumn(it, it) }, sample.map { (_, row, _) -> sampleColumns.associateWith { row[it].orEmpty().take(60) } })),
                 title = "Primeras filas",
@@ -227,8 +258,8 @@ object CrmImportScreens {
     }
 
     /** Reads the mapping form back into a mapping. */
-    fun mapping(job: CrmImportJob, values: Map<String, String>): CrmImportMapping {
-        val byLabel = CrmImportParse.fields.entries.associate { it.value to it.key }
+    fun mapping(context: CrmScreens.Context, job: CrmImportJob, values: Map<String, String>): CrmImportMapping {
+        val byLabel = CrmImportTargets.options(context.fields, CrmImportTargets.customerFields(context.tenant)).entries.associate { it.value to it.key }
         fun section(prefix: String, ignore: String) = values.filterKeys { it.startsWith("$prefix:") }
             .mapKeys { it.key.removePrefix("$prefix:") }
             .filterValues { it.isNotBlank() && it != ignore && it != Keep }
