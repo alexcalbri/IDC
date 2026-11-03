@@ -121,6 +121,8 @@ fun App(initialServerUrl: String = "") {
                     serverUrl = clientConfiguration?.serverUrl,
                     onNavigateTo = { route -> navController.navigate(route.routeName()) },
                     onLogout = ::requestLogout,
+                    // La configuracion guardada ahora apunta a la otra empresa.
+                    onCompanySwitched = { clientConfiguration = ClientConfigurationStore.load() },
                 )
             }
             composable("module/{moduleId}") { backStackEntry ->

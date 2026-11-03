@@ -9,6 +9,7 @@ import io.ktor.server.application.ApplicationCall
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
+import com.ideasdeveloper.idc.server.modules.SettingsTable
 import com.ideasdeveloper.idc.server.modules.ModuleFieldDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleViewDefinition
@@ -42,6 +43,9 @@ object ClientesServerModule : ServerModule {
     )
 
     override val runtimeTables = listOf("customer_activity")
+
+    // A duplicated company starts with the same custom customer fields, without customers.
+    override val duplicatedSettings = listOf(SettingsTable("customer_field_definitions"))
 
     override val definition = ModuleDefinition(
         id = ClientesModule.id,

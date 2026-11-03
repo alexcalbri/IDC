@@ -1,5 +1,8 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import androidx.compose.ui.semantics.Role
+import androidx.compose.material3.RadioButton
+import androidx.compose.foundation.selection.selectable
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -78,6 +81,32 @@ fun CompanyProvisioningScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var companies by remember { mutableStateOf<List<CompanySummaryResponse>>(emptyList()) }
+    // Empresa que se esta duplicando (dialogo abierto).
+    var duplicatingCompany by remember { mutableStateOf<CompanySummaryResponse?>(null) }
+    var duplicateBusy by remember { mutableStateOf(false) }
+    var duplicateError by remember { mutableStateOf<String?>(null) }
+    // Empresa que se vincula al grupo de otra (mismo business owner).
+    var linkingCompany by remember { mutableStateOf<CompanySummaryResponse?>(null) }
+
+    fun link(company: CompanySummaryResponse, targetCode: String?) {
+        val activeServerUrl = serverUrl ?: return
+        val activeSession = session ?: return
+        isRefreshing = true
+        error = null
+        message = null
+        scope.launch {
+            try {
+                companies = CompanyApi(activeServerUrl).use { api -> api.linkCompany(activeSession.accessToken, company.code, targetCode) }
+                linkingCompany = null
+                message = if (targetCode == null) "${company.name} ya no esta vinculada a otras empresas."
+                else "${company.name} quedo vinculada con $targetCode: su business owner puede cambiar entre ellas sin volver a iniciar sesion."
+            } catch (exception: CompanyException) {
+                error = exception.message
+            } finally {
+                isRefreshing = false
+            }
+        }
+    }
     var companyPendingDeletion by remember { mutableStateOf<String?>(null) }
     var isCreateCompanyExpanded by remember { mutableStateOf(true) }
     var editingCompanyCode by remember { mutableStateOf<String?>(null) }
@@ -112,6 +141,49 @@ fun CompanyProvisioningScreen(
         } else {
             onReturnToDashboard()
         }
+    }
+
+    linkingCompany?.let { company ->
+        LinkCompanyDialog(
+            company = company,
+            candidates = companies.filter { it.code != company.code && it.code !in company.linkedCompanies },
+            busy = isRefreshing,
+            onConfirm = { target -> link(company, target) },
+            onDismiss = { linkingCompany = null },
+        )
+    }
+
+    duplicatingCompany?.let { source ->
+        DuplicateCompanyDialog(
+            sourceName = source.name,
+            busy = duplicateBusy,
+            error = duplicateError,
+            onConfirm = { newCode, newOwner ->
+                val activeServerUrl = serverUrl
+                val activeSession = session
+                if (activeServerUrl != null && activeSession != null) {
+                    duplicateBusy = true
+                    duplicateError = null
+                    scope.launch {
+                        try {
+                            val created = CompanyApi(activeServerUrl).use { api -> api.duplicateCompany(activeSession.accessToken, source.code, newCode, newOwner) }
+                            duplicatingCompany = null
+                            message = buildString {
+                                append("Empresa ${created.code} creada como copia de ${source.name}")
+                                append(if (newOwner == null) "; su business owner entra con el mismo usuario y puede cambiar entre ambas." else " con el business owner ${created.businessOwnerUsername}.")
+                                if (created.settingsNotCopied.isNotEmpty()) append(" No se copio la configuracion de: ${created.settingsNotCopied.joinToString()}.")
+                            }
+                            companies = CompanyApi(activeServerUrl).use { api -> api.listCompanies(activeSession.accessToken) }
+                        } catch (exception: CompanyException) {
+                            duplicateError = exception.message
+                        } finally {
+                            duplicateBusy = false
+                        }
+                    }
+                }
+            },
+            onDismiss = { duplicatingCompany = null },
+        )
     }
 
     // Recarga empresas y modulos habilitables desde el servidor actual.
@@ -409,6 +481,13 @@ fun CompanyProvisioningScreen(
                             onRequestDelete = {
                                 companyPendingDeletion = company.code
                             },
+                            onDuplicate = {
+                                duplicateError = null
+                                duplicatingCompany = company
+                            },
+                            linkedNames = company.linkedCompanies.map { code -> companies.firstOrNull { it.code == code }?.name ?: code },
+                            onLink = { linkingCompany = company },
+                            onUnlink = { link(company, null) },
                             onCancelDelete = {
                                 companyPendingDeletion = null
                             },
@@ -569,6 +648,10 @@ private fun CompanyModulesRow(
     onRequestDelete: () -> Unit,
     onCancelDelete: () -> Unit,
     onConfirmDelete: () -> Unit,
+    onDuplicate: () -> Unit,
+    linkedNames: List<String>,
+    onLink: () -> Unit,
+    onUnlink: () -> Unit,
     isEditing: Boolean,
     editingName: String,
     editingLogoUrl: String,
@@ -616,6 +699,19 @@ private fun CompanyModulesRow(
             style = MaterialTheme.typography.bodySmall,
             color = if (company.isActive) AppTheme.colors.success else AppTheme.colors.warning,
         )
+        Text(
+            if (linkedNames.isEmpty()) "Sin empresas vinculadas" else "Mismo business owner que: ${linkedNames.joinToString()}",
+            style = MaterialTheme.typography.bodySmall,
+            color = AppTheme.colors.muted,
+        )
+        if (!isEditing) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TextButton(enabled = enabled, onClick = onLink) { Text("Vincular", color = primaryColor) }
+                if (linkedNames.isNotEmpty()) {
+                    TextButton(enabled = enabled, onClick = onUnlink) { Text("Desvincular", color = AppTheme.colors.danger) }
+                }
+            }
+        }
 
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -644,6 +740,16 @@ private fun CompanyModulesRow(
                     colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
                 ) {
                     Text("Editar")
+                }
+            }
+            if (company.isActive && !isEditing) {
+                // Copia modulos y configuracion en una empresa nueva del mismo business owner.
+                Button(
+                    enabled = enabled,
+                    onClick = onDuplicate,
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                ) {
+                    Text("Duplicar")
                 }
             }
             // Cambia entre activar y desactivar la empresa completa.
@@ -766,4 +872,47 @@ private suspend inline fun <T> CompanyApi.use(block: suspend (CompanyApi) -> T):
     } finally {
         close()
     }
+}
+
+/**
+ * Elige la empresa con la que [company] comparte business owner. Vincularlas deja que su dueno
+ * cambie entre ellas desde el panel sin volver a iniciar sesion.
+ */
+@Composable
+private fun LinkCompanyDialog(
+    company: CompanySummaryResponse,
+    candidates: List<CompanySummaryResponse>,
+    busy: Boolean,
+    onConfirm: (targetCode: String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var selected by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Vincular ${company.name}") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Vincula solo empresas del mismo dueno: el business owner de una podra entrar a la otra sin contrasena.",
+                    color = AppTheme.colors.muted,
+                )
+                if (candidates.isEmpty()) Text("No hay otras empresas para vincular.", color = AppTheme.colors.muted)
+                candidates.forEach { candidate ->
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth().selectable(
+                            selected = selected == candidate.code, enabled = !busy, role = Role.RadioButton, onClick = { selected = candidate.code },
+                        ),
+                    ) {
+                        RadioButton(selected = selected == candidate.code, onClick = null, enabled = !busy)
+                        Text("${candidate.name} (${candidate.code})", color = AppTheme.colors.text, modifier = Modifier.padding(start = 8.dp))
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { selected?.let(onConfirm) }, enabled = selected != null && !busy) { Text("Vincular") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") } },
+    )
 }

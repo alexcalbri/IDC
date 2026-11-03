@@ -4,6 +4,8 @@ import com.ideasdeveloper.idc.server.auth.application.AuthenticationService
 import com.ideasdeveloper.idc.server.auth.application.SessionService
 import com.ideasdeveloper.idc.server.auth.application.ScopedLoginService
 import com.ideasdeveloper.idc.server.auth.application.UserProfileRules
+import com.ideasdeveloper.idc.server.auth.domain.ApplicationUser
+import com.ideasdeveloper.idc.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.idc.server.auth.domain.LoginScope
 import com.ideasdeveloper.idc.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.PostgresCredentialVerifier
@@ -34,7 +36,7 @@ class LoginDatabases(
         .associateBy { it.databaseName }
         .toMutableMap()
     private val pools = mutableMapOf<String, HikariDataSource>()
-    private val scopes = mutableMapOf<String, LoginScope>()
+    private val scopes = mutableMapOf<String, Scope>()
     private val tenantDatabaseNamePattern = Regex("[a-z][a-z0-9_]{0,62}")
 
     val service = ScopedLoginService(
@@ -68,8 +70,40 @@ class LoginDatabases(
         pools.remove(databaseName)?.close()
     }
 
+    /**
+     * Signs the business owner of [fromCode] (session [token]) into [toCode] as the business owner
+     * of [toCode], without a password, when both companies are active and share the owner group
+     * (control V008). Only the server owner puts companies in a group (duplicating with the same
+     * owner or linking them), so the group says both owners are the same person even when each
+     * company has its own user. Null when any of that does not hold.
+     */
+    fun switchCompany(fromCode: String, token: String, toCode: String): LoginSuccessResponse? {
+        if (fromCode == toCode) return null
+        val databases = central.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT target.database_name, origin.database_name
+                FROM companies origin
+                JOIN companies target ON target.owner_group = origin.owner_group
+                WHERE origin.code = ? AND target.code = ?
+                  AND origin.is_active AND target.is_active
+                  AND NOT origin.is_server_workspace AND NOT target.is_server_workspace
+                """.trimIndent()
+            ).use { query ->
+                query.setString(1, fromCode)
+                query.setString(2, toCode)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+            }
+        } ?: return null
+        val origin = tenantScope(databases.second) ?: return null
+        origin.ownerBySession(token) ?: return null
+        val target = tenantScope(databases.first) ?: return null
+        val targetOwner = target.businessOwner()?.takeIf { it.isActive } ?: return null
+        return target.respond(targetOwner, toCode)
+    }
+
     @Synchronized
-    private fun tenantScope(name: String): LoginScope? {
+    private fun tenantScope(name: String): Scope? {
         scopes[name]?.let { return it }
         val config = configurations[name]
             ?: name.takeIf { it.matches(tenantDatabaseNamePattern) }?.let { inferredTenantConfig(it) }
@@ -102,26 +136,50 @@ class LoginDatabases(
         password = runtimePassword,
     )
 
-    private fun scope(source: DataSource, database: Database, url: String, server: Boolean): LoginScope {
+    private fun scope(source: DataSource, database: Database, url: String, server: Boolean) = Scope(source, database, url, server)
+
+    /** Sign-in of one database: the server (server owners) or a company. */
+    private inner class Scope(private val source: DataSource, database: Database, url: String, private val server: Boolean) : LoginScope {
         val users = ApplicationUserRepository(database)
-        val authentication = AuthenticationService(PostgresCredentialVerifier(url), users)
-        val sessions = SessionService(ApplicationSessionRepository(database), users, SessionTokenGenerator(), lifetimeSeconds)
-        return LoginScope { credentials ->
-            val user = authentication.authenticate(credentials) ?: return@LoginScope null
-            val owner = source.connection.use { connection ->
-                val table = if (server) "server_owners" else "business_owner"
-                connection.prepareStatement("SELECT 1 FROM $table WHERE user_id = ?").use { query ->
-                    query.setObject(1, java.util.UUID.fromString(user.id.toString()))
-                    query.executeQuery().use { it.next() }
-                }
+        private val authentication = AuthenticationService(PostgresCredentialVerifier(url), users)
+        private val sessions = SessionService(ApplicationSessionRepository(database), users, SessionTokenGenerator(), lifetimeSeconds)
+
+        override fun login(credentials: LoginCredentials): LoginSuccessResponse? {
+            val user = authentication.authenticate(credentials) ?: return null
+            return respond(user, credentials.companyCode)
+        }
+
+        fun isOwner(user: ApplicationUser): Boolean = source.connection.use { connection ->
+            val table = if (server) "server_owners" else "business_owner"
+            connection.prepareStatement("SELECT 1 FROM $table WHERE user_id = ?").use { query ->
+                query.setObject(1, java.util.UUID.fromString(user.id.toString()))
+                query.executeQuery().use { it.next() }
             }
-            if (server && !owner) return@LoginScope null
+        }
+
+        // The business owner user of this company.
+        fun businessOwner(): ApplicationUser? {
+            val role = source.connection.use { connection ->
+                connection.prepareStatement(
+                    "SELECT users.postgres_role FROM business_owner owner JOIN application_users users ON users.id = owner.user_id LIMIT 1"
+                ).use { query -> query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null } }
+            } ?: return null
+            return users.findByPostgresRole(role)
+        }
+
+        // The business owner behind a valid session of this company.
+        fun ownerBySession(token: String): ApplicationUser? = sessions.validateSession(token)?.takeIf { !server && isOwner(it) }
+
+        // Opens a session for [user] and describes it as the app expects after signing in.
+        fun respond(user: ApplicationUser, companyCode: String?): LoginSuccessResponse? {
+            val owner = isOwner(user)
+            if (server && !owner) return null
             val session = sessions.createSession(user)
             val workspace = if (server) serverWorkspace() else null
             val profile = profile(source, java.util.UUID.fromString(user.id.toString()))
-            LoginSuccessResponse(session.userId, session.username, session.accessToken, session.expiresInSeconds,
+            return LoginSuccessResponse(session.userId, session.username, session.accessToken, session.expiresInSeconds,
                 scope = if (server) "server" else "company",
-                companyCode = if (server) null else credentials.companyCode,
+                companyCode = if (server) null else companyCode,
                 role = if (server) "server_owner" else if (owner) "business_owner" else "user",
                 enabledModules = if (server) workspace?.second.orEmpty() else visibleModules(source, java.util.UUID.fromString(user.id.toString()), owner),
                 workspaceCompanyCode = workspace?.first,

@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.app.features.shell.ui
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,8 +42,11 @@ fun AuthenticatedTopBar(
     onSettings: () -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
+    // Con opciones, tocar el titulo abre este menu (p. ej. las otras empresas del business owner).
+    titleMenu: List<TopBarMenuItem> = emptyList(),
 ) {
     val colors = AppTheme.colors
+    var titleMenuExpanded by remember { mutableStateOf(false) }
     // Controla el menu de acciones y anima el icono cuando se abre.
     var menuExpanded by remember { mutableStateOf(false) }
     val menuRotation by animateFloatAsState(
@@ -75,12 +79,40 @@ fun AuthenticatedTopBar(
 
         // Muestra titulo y subtitulo contextual de la pantalla actual.
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = title,
-                color = colors.onScreen,
-                fontSize = 18.sp,
-                fontWeight = FontWeight.Bold,
-            )
+            Box {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = if (titleMenu.isEmpty()) Modifier else Modifier.clickable { titleMenuExpanded = true },
+                ) {
+                    Text(
+                        text = title,
+                        color = colors.onScreen,
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    if (titleMenu.isNotEmpty()) {
+                        Spacer(Modifier.width(6.dp))
+                        Text("v", color = colors.onScreenMuted, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                DropdownMenu(expanded = titleMenuExpanded, onDismissRequest = { titleMenuExpanded = false }) {
+                    titleMenu.forEach { item ->
+                        DropdownMenuItem(
+                            text = {
+                                Column {
+                                    Text(item.label, fontWeight = if (item.current) FontWeight.Bold else FontWeight.Normal)
+                                    item.caption?.let { Text(it, fontSize = 12.sp, color = colors.muted) }
+                                }
+                            },
+                            enabled = !item.current,
+                            onClick = {
+                                titleMenuExpanded = false
+                                item.onClick()
+                            },
+                        )
+                    }
+                }
+            }
             subtitle?.takeIf { it.isNotBlank() }?.let {
                 Text(
                     text = it,
@@ -138,6 +170,9 @@ fun AuthenticatedTopBar(
         }
     }
 }
+
+// Opcion del menu del titulo; [current] se muestra marcada y no se puede elegir.
+data class TopBarMenuItem(val label: String, val caption: String? = null, val current: Boolean = false, val onClick: () -> Unit)
 
 // Convierte colores hex guardados por la empresa a Color de Compose.
 fun String.toComposeColor(fallback: Color): Color {

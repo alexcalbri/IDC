@@ -14,6 +14,8 @@ data class CompanySummaryResponse(
     val primaryColor: String = "#667EEA",
     val secondaryColor: String = "#764BA2",
     val accentColor: String = "#FFFFFF",
+    // Empresas del mismo business owner; el owner cambia entre ellas desde el panel.
+    val linkedCompanies: List<String> = emptyList(),
 )
 
 @Serializable

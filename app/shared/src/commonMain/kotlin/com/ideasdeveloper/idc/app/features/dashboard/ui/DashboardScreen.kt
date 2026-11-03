@@ -21,6 +21,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
+import com.ideasdeveloper.idc.app.features.company.data.CompanySwitch
+import com.ideasdeveloper.idc.app.features.company.data.OwnedCompany
+import com.ideasdeveloper.idc.app.features.shell.ui.TopBarMenuItem
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 import com.ideasdeveloper.idc.app.core.version.ClientVersion
 import com.ideasdeveloper.idc.app.core.version.VersionApi
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
@@ -36,14 +43,57 @@ fun DashboardScreen(
     onNavigateTo: (NavRoute) -> Unit,
     onLogout: () -> Unit,
     modifier: Modifier = Modifier,
+    // La sesion paso a otra empresa del mismo business owner (la app recarga su configuracion).
+    onCompanySwitched: () -> Unit = {},
 ) {
     // Determina si el usuario puede entrar a la administracion de empresa.
     val canSeeEmpresa = session?.role in setOf("server_owner", "business_owner")
     val canManageServerModules = session?.role == "server_owner"
     // Obtiene los modulos activos que el servidor envio durante el inicio de sesion.
     val enabledModules = session?.enabledModules.orEmpty()
-    // Carga la identidad visual de la empresa para pintar el dashboard.
-    val companyIdentity = remember { CompanyIdentityStore.current() }
+    // Carga la identidad visual de la empresa para pintar el dashboard; cambia al cambiar de empresa.
+    val savedIdentity by CompanyIdentityStore.identity.collectAsState()
+    val companyIdentity = savedIdentity ?: CompanyIdentityStore.current()
+    val scope = rememberCoroutineScope()
+    val companyCode = session?.companyCode
+    val isBusinessOwner = session?.role == "business_owner" && companyCode != null
+    // Empresas del mismo business owner para el menu del titulo.
+    var ownedCompanies by remember(session?.accessToken) { mutableStateOf<List<OwnedCompany>>(emptyList()) }
+    var companyMessage by remember { mutableStateOf<String?>(null) }
+    var switching by remember { mutableStateOf(false) }
+    fun loadOwnedCompanies() {
+        val url = serverUrl ?: return
+        val active = session ?: return
+        val code = companyCode ?: return
+        if (!isBusinessOwner) return
+        scope.launch {
+            ownedCompanies = runCatching {
+                val api = CompanyApi(url)
+                try { api.ownedCompanies(active.accessToken, code).companies } finally { api.close() }
+            }.getOrDefault(emptyList())
+        }
+    }
+
+    LaunchedEffect(session?.accessToken) { loadOwnedCompanies() }
+
+    fun switchTo(target: OwnedCompany) {
+        val url = serverUrl ?: return
+        val active = session ?: return
+        switching = true
+        companyMessage = "Entrando a ${target.name}..."
+        scope.launch {
+            val failure = CompanySwitch.switchTo(url, active, target)
+            switching = false
+            companyMessage = failure
+            if (failure == null) onCompanySwitched()
+        }
+    }
+
+    val titleMenu = if (isBusinessOwner && !switching && ownedCompanies.size > 1) {
+        ownedCompanies.map { company ->
+            TopBarMenuItem(company.name, caption = company.code, current = company.code == companyCode) { switchTo(company) }
+        }
+    } else emptyList()
     val colors = AppTheme.colors
     val primaryColor = colors.accent
     var versionNotice by remember { mutableStateOf<String?>(null) }
@@ -71,12 +121,13 @@ fun DashboardScreen(
     ) {
         // Renderiza la barra superior autenticada con acceso a ajustes y cierre de sesion.
         AuthenticatedTopBar(
-            title = "Dashboard",
-            subtitle = "Principal",
+            title = if (companyCode != null) companyIdentity.name else "Dashboard",
+            subtitle = if (companyCode != null) "Dashboard principal" else "Principal",
             primaryColor = primaryColor,
             onSettings = { onNavigateTo(NavRoute.Settings) },
             onLogout = onLogout,
             modifier = Modifier.align(Alignment.TopCenter),
+            titleMenu = titleMenu,
         )
 
         Column(
@@ -99,6 +150,14 @@ fun DashboardScreen(
                 color = AppTheme.colors.onScreenMuted,
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 24.dp)
             )
+
+            companyMessage?.let {
+                Text(
+                    text = it,
+                    color = AppTheme.colors.onScreen,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+            }
 
             versionNotice?.let {
                 Text(

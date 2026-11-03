@@ -26,6 +26,27 @@ modules.
 11. The company login response includes enabled modules, and the dashboard
     renders those modules through the generic `module/{moduleId}` route.
 
+### Duplicating a company and switching between companies
+
+- `POST /companies/{code}/duplicate` (server owner only) takes `{"code": "...", "newOwner": null}`.
+  Without `newOwner` the copy reuses the business owner's PostgreSQL role (granted CONNECT on the
+  new database), name, email and application password and joins the source's `owner_group`
+  (control V008); with `newOwner` (`username`, `password`, `name`, `email`) a new role is created
+  and the copy starts its own group. Either way the same modules are enabled and each module's
+  `duplicatedSettings` copied; data, staff users and integration credentials are not. A failure
+  before the company is registered drops the new database (and the new role).
+- `PUT /companies/{code}/link` (server owner) with `{"targetCode": "..."}` moves the company into
+  the target's owner group; `{"targetCode": null}` takes it out. `GET /companies` returns
+  `linkedCompanies` for each company.
+- `GET /companies/me/companies` lists the active companies of the owner group.
+- `POST /auth/switch-company` (`{"companyCode": "..."}`, with the current token and
+  `X-Company-Code`) lets the business owner of a company open a session as the business owner of
+  another company of its group, and answers like `/auth/login`. Only the server owner forms
+  groups, so a group means "same person" even with a different user per company; it is never
+  derived from the email, which users can change themselves.
+- Deleting a company keeps the business owner's role while it still has CONNECT on another
+  company database.
+
 ## Client Files
 
 ### `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/App.kt`

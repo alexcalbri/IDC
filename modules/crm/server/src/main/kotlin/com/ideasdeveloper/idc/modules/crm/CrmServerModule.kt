@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.modules.crm
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
+import com.ideasdeveloper.idc.server.modules.SettingsTable
 import com.ideasdeveloper.idc.server.modules.ModuleJob
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.CustomerTimeline
@@ -96,6 +97,21 @@ object CrmServerModule : ServerModule {
         "crm_import_presets",
         "crm_field_definitions",
         "crm_attachments",
+    )
+
+    /**
+     * A duplicated company gets the same pipeline, interests, custom fields, templates, spam rules
+     * and import presets. Leads, conversations and per-user settings stay behind, and so do the
+     * integrations (mail, Meta, WordPress, Encuentra24, Cloudbeds, monday): they are connected again.
+     */
+    override val duplicatedSettings = listOf(
+        SettingsTable("crm_settings", reset = mapOf("monday_token" to null, "digest_sent_on" to null)),
+        SettingsTable("crm_stages"),
+        SettingsTable("crm_interests"),
+        SettingsTable("crm_field_definitions"),
+        SettingsTable("crm_email_templates"),
+        SettingsTable("crm_spam_settings"),
+        SettingsTable("crm_import_presets"),
     )
 
     override val mcp: ModuleMcp

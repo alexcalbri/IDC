@@ -94,6 +94,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V005__create_public_domains.sql
     database/control/migrations/V006__add_server_workspace.sql
     database/control/migrations/V007__add_audit_actor_identity.sql
+    database/control/migrations/V008__add_company_owner_group.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -623,6 +624,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V004__create_serv
 apply_migration "$DB_NAME" control database/control/migrations/V005__create_public_domains.sql
 apply_migration "$DB_NAME" control database/control/migrations/V006__add_server_workspace.sql
 apply_migration "$DB_NAME" control database/control/migrations/V007__add_audit_actor_identity.sql
+apply_migration "$DB_NAME" control database/control/migrations/V008__add_company_owner_group.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';

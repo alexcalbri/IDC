@@ -299,6 +299,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V006__add_server_workspace.sql.'
     [[ -f database/control/migrations/V007__add_audit_actor_identity.sql ]] ||
         die 'No se encontro database/control/migrations/V007__add_audit_actor_identity.sql.'
+    [[ -f database/control/migrations/V008__add_company_owner_group.sql ]] ||
+        die 'No se encontro database/control/migrations/V008__add_company_owner_group.sql.'
     [[ -f database/core/migrations/V003__add_application_user_profile.sql ]] ||
         die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
 
@@ -310,6 +312,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V005__create_public_domains.sql
     apply_migration "$db_name" control database/control/migrations/V006__add_server_workspace.sql
     apply_migration "$db_name" control database/control/migrations/V007__add_audit_actor_identity.sql
+    apply_migration "$db_name" control database/control/migrations/V008__add_company_owner_group.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT UPDATE (display_name, email) ON application_users TO :"db_user";

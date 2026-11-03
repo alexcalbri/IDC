@@ -12,6 +12,11 @@ import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
+import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
+import io.ktor.client.plugins.timeout
+import io.ktor.client.statement.HttpResponse
+import io.ktor.http.encodeURLPathPart
+import io.ktor.http.isSuccess
 import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.Url
@@ -688,6 +693,62 @@ class CompanyApi(serverUrl: String) {
             }
 
             throw CompanyException("El servidor no pudo actualizar el modulo.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
+    // Empresas del mismo business owner (la actual incluida).
+    suspend fun ownedCompanies(accessToken: String, companyCode: String): OwnedCompaniesResponse = call("No se pudieron cargar tus empresas.") {
+        client.get("$baseUrl/companies/me/companies") {
+            bearerAuth(accessToken)
+            header("X-Company-Code", companyCode)
+        }
+    }
+
+    // El dueno del servidor duplica una empresa; sin newOwner la copia mantiene el business owner.
+    suspend fun duplicateCompany(accessToken: String, sourceCode: String, newCode: String, newOwner: DuplicateOwnerRequest?): CreateCompanyResponse =
+        call("No se pudo duplicar la empresa.") {
+            client.post("$baseUrl/companies/${sourceCode.encodeURLPathPart()}/duplicate") {
+                bearerAuth(accessToken)
+                // Copiar modulos y configuracion tarda mas que una pantalla.
+                timeout { requestTimeoutMillis = 5 * 60_000 }
+                contentType(ContentType.Application.Json)
+                setBody(DuplicateCompanyRequest(newCode.trim(), newOwner))
+            }
+        }
+
+    // Vincula la empresa al grupo de otra (mismo business owner) o, con targetCode null, la desvincula.
+    suspend fun linkCompany(accessToken: String, companyCode: String, targetCode: String?): List<CompanySummaryResponse> =
+        call("No se pudo vincular la empresa.") {
+            client.put("$baseUrl/companies/${companyCode.encodeURLPathPart()}/link") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(LinkCompanyRequest(targetCode))
+            }
+        }
+
+    // Abre una sesion en otra empresa del mismo business owner sin pedir la contrasena.
+    suspend fun switchCompany(accessToken: String, companyCode: String, targetCode: String): LoginResponse = call("No se pudo cambiar de empresa.") {
+        client.post("$baseUrl/auth/switch-company") {
+            bearerAuth(accessToken)
+            header("X-Company-Code", companyCode)
+            contentType(ContentType.Application.Json)
+            setBody(SwitchCompanyRequest(targetCode))
+        }
+    }
+
+    // Respuesta 2xx como [T]; si no, el mensaje del servidor o [failure].
+    private suspend inline fun <reified T> call(failure: String, request: () -> HttpResponse): T {
+        try {
+            val response = request()
+            if (response.status.isSuccess()) return response.body()
+            val message = runCatching { response.body<CompanyErrorResponse>().message }.getOrNull()
+            throw CompanyException(message ?: failure)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {

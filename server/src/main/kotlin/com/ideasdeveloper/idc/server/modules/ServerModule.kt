@@ -30,6 +30,11 @@ interface ServerModule {
     // What the module adds to a customer's history (see CustomerTimeline); override it with a getter.
     val customerTimeline: CustomerTimeline?
         get() = null
+    // Configuration copied when a company is duplicated (see SettingsTable): parent tables first.
+    // Leave out data (customers, leads...) and per-user rows; reset credentials and anything that
+    // identifies the original company outside the server (domains, webhook secrets, API keys).
+    val duplicatedSettings: List<SettingsTable>
+        get() = emptyList()
 
     fun routes(route: Route, access: ModuleAccessService) {
     }

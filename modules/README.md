@@ -223,6 +223,22 @@ because each one records its backend. Delete stored files only after the transac
 dropped their rows has committed (the CRM marks rows and a job deletes them). The files of a
 company are removed when the company is deleted.
 
+## Duplicating a company
+
+Only the server owner duplicates a company (Empresas > Duplicar), giving the new code and
+choosing whether the copy keeps the business owner (same user and password, same owner group) or
+gets a new one (own user, own group). The copy gets the same profile and enabled modules; staff
+users and data are not copied. The server owner can also link companies of the same owner
+(Empresas > Vincular) or unlink them. The business owner of a company of a group (control V008)
+switches to the others from the company name in the dashboard without signing in again.
+
+Each module decides what of its configuration travels with `duplicatedSettings`: a list of
+`SettingsTable(name, reset)` in parent-first order. The rows are copied as they are, replacing the
+ones its migrations seeded, and the `reset` columns get the given value. Leave out data and
+per-user rows, and reset credentials and anything that ties the copy to the original outside the
+server (domains, webhook secrets, API keys): integrations are connected again in the copy.
+`DuplicatedSettingsTest` checks that every table and column exists in the module migrations.
+
 ## Public webhooks
 
 External services (Meta, a WordPress plugin, a PMS) call

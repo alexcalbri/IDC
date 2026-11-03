@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.modules.hotspot
 
+import com.ideasdeveloper.idc.server.modules.SettingsTable
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.CustomerTimeline
@@ -65,6 +66,31 @@ object HotspotServerModule : ServerModule {
         "hotspot_pass_sources",
         "hotspot_access_passes",
         "hotspot_code_sessions",
+    )
+
+    /**
+     * A duplicated company gets the same portal, times, networks and integrations between modules.
+     * Visitors, codes and accesses stay behind; the UniFi connection, the company SMTP and the
+     * portal domain are cleared, so the copy never controls or answers for the original's WiFi.
+     */
+    override val duplicatedSettings = listOf(
+        SettingsTable(
+            "hotspot_settings",
+            reset = mapOf(
+                "domain" to null,
+                "unifi_console_id" to null,
+                "unifi_site_id" to null,
+                "unifi_api_key" to null,
+                "smtp_mode" to "servidor",
+                "smtp_host" to null,
+                "smtp_username" to null,
+                "smtp_password" to null,
+                "smtp_from" to null,
+            ),
+        ),
+        SettingsTable("hotspot_networks"),
+        SettingsTable("hotspot_integrations"),
+        SettingsTable("hotspot_pass_sources"),
     )
 
     override val definition = ModuleDefinition(

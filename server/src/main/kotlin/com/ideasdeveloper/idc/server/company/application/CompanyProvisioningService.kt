@@ -1,6 +1,9 @@
 package com.ideasdeveloper.idc.server.company.application
 
 import com.ideasdeveloper.idc.server.modules.CompanyFiles
+import com.ideasdeveloper.idc.server.company.api.OwnedCompanyResponse
+import com.ideasdeveloper.idc.server.company.api.DuplicateOwnerRequest
+import com.ideasdeveloper.idc.server.modules.SettingsCopy
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.TenantDatabaseConfig
 import com.ideasdeveloper.idc.server.auth.application.UserProfileRules
 import com.ideasdeveloper.idc.server.company.api.CreateCompanyRequest
@@ -149,7 +152,7 @@ class CompanyProvisioningService(
     fun listCompanies(): List<CompanySummaryResponse> {
         val companies = central.connection.use { connection ->
             connection.prepareStatement(
-                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active FROM companies WHERE NOT is_server_workspace ORDER BY code"
+                "SELECT code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active, owner_group FROM companies WHERE NOT is_server_workspace ORDER BY code"
             ).use { query ->
                 query.executeQuery().use { rows ->
                     buildList {
@@ -164,15 +167,16 @@ class CompanyProvisioningService(
                                     accentColor = rows.getString("accent_color"),
                                     databaseName = rows.getString("database_name"),
                                     isActive = rows.getBoolean("is_active"),
-                                )
+                                ) to rows.getString("owner_group")
                             )
                         }
                     }
                 }
             }
         }
+        val groups = companies.groupBy({ it.second }, { it.first.code })
 
-        return companies.map { company ->
+        return companies.map { (company, group) ->
             CompanySummaryResponse(
                 code = company.code,
                 name = company.name,
@@ -183,6 +187,7 @@ class CompanyProvisioningService(
                 primaryColor = company.primaryColor,
                 secondaryColor = company.secondaryColor,
                 accentColor = company.accentColor,
+                linkedCompanies = groups[group].orEmpty() - company.code,
             )
         }
     }
@@ -311,6 +316,258 @@ class CompanyProvisioningService(
         )
     }
 
+    /**
+     * Creates [newCode] as a copy of [sourceCode]: same profile, the same enabled modules and each
+     * module's settings (ServerModule.duplicatedSettings), without data, staff users or integration
+     * credentials. Only the server owner duplicates. With [newOwner] null the copy keeps the business
+     * owner (same user and password) and joins the source's owner group, so the owner switches
+     * between both; with a new owner the copy gets its own user and is not linked.
+     */
+    fun duplicateCompany(sourceCode: String, newCode: String, provisioningRole: String, newOwner: DuplicateOwnerRequest? = null): CreateCompanyResponse {
+        val code = newCode.trim()
+        val source = sourceCode.trim()
+        rejectServerWorkspace(source)
+        if (code == ServerWorkspace.Code) throw CompanyProvisioningException("El codigo ${ServerWorkspace.Code} esta reservado para el espacio del servidor.")
+        if (!companyCodePattern.matches(code)) {
+            throw CompanyProvisioningException("El codigo debe iniciar con una letra minuscula y usar solo letras minusculas, numeros o guion bajo (hasta 63).")
+        }
+        val databaseName = "idc_$code"
+        val (sourceCompany, ownerGroup) = central.connection.use { connection ->
+            if (connection.exists("companies", "code", code)) throw CompanyProvisioningException("Ya existe una empresa con ese codigo.")
+            if (connection.exists("companies", "database_name", databaseName)) throw CompanyProvisioningException("Ya existe una base de datos registrada para ese codigo.")
+            val row = findCompany(connection, source) ?: throw CompanyProvisioningException("La empresa a duplicar no existe o esta desactivada.")
+            row to ownerGroup(connection, source)
+        }
+        val sourceTenant = loginDatabases.tenantConfig(sourceCompany.databaseName)
+            ?: throw CompanyProvisioningException("La empresa a duplicar no tiene conexion tenant configurada.")
+        val newOwnerInput = newOwner?.let { input ->
+            val username = input.username.trim()
+            validate(code, sourceCompany.name, username, input.password, CreateCompanyRequest(code, sourceCompany.name, username, input.password))
+            UserProfileRules.problem(input.name.trim(), input.email.trim())?.let { throw CompanyProvisioningException("Business owner: $it") }
+            input.copy(username = username, name = input.name.trim(), email = input.email.trim())
+        }
+
+        // The owner of the copy is the same person: same PostgreSQL role, name, email and password.
+        data class Owner(val role: String, val name: String?, val email: String?, val credentials: List<Any?>?)
+        val (sourceOwner, enabledModules) = tenantRuntimeConnection(sourceTenant).use { tenant ->
+            val owner = tenant.prepareStatement(
+                """
+                SELECT users.id, users.postgres_role, users.display_name, users.email
+                FROM business_owner owner JOIN application_users users ON users.id = owner.user_id
+                LIMIT 1
+                """.trimIndent()
+            ).use { query ->
+                query.executeQuery().use { rows ->
+                    if (!rows.next()) throw CompanyProvisioningException("La empresa a duplicar no tiene business owner.")
+                    val userId = rows.getObject(1, UUID::class.java)
+                    val credentials = tenant.prepareStatement(
+                        "SELECT password_salt, password_hash, iterations FROM application_user_credentials WHERE user_id = ?"
+                    ).use { credentialQuery ->
+                        credentialQuery.setObject(1, userId)
+                        credentialQuery.executeQuery().use { found -> if (found.next()) listOf(found.getString(1), found.getString(2), found.getInt(3)) else null }
+                    }
+                    Owner(rows.getString(2), rows.getString(3), rows.getString(4), credentials)
+                }
+            }
+            val modules = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
+                query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+            }
+            owner to modules
+        }
+
+        val owner = newOwnerInput?.let { Owner(it.username, it.name, it.email, null) } ?: sourceOwner
+        val tenantConfig = tenantConfig(databaseName)
+        var registered = false
+        var roleCreated = false
+        try {
+            adminConnection(provisioningRole).use { admin ->
+                admin.autoCommit = true
+                if (admin.existsDatabase(databaseName)) throw CompanyProvisioningException("La base de datos de la empresa ya existe.")
+                if (newOwnerInput != null) {
+                    if (admin.existsRole(owner.role)) throw CompanyProvisioningException("El usuario PostgreSQL del business owner ya existe.")
+                } else if (!admin.existsRole(owner.role)) {
+                    throw CompanyProvisioningException("No existe el usuario PostgreSQL del business owner.")
+                }
+                admin.createStatement().use { statement ->
+                    statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
+                    if (newOwnerInput != null) {
+                        statement.executeUpdate(
+                            "CREATE ROLE ${quoteIdentifier(owner.role)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(newOwnerInput.password)}"
+                        )
+                        roleCreated = true
+                    }
+                    statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
+                    statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(owner.role)}")
+                }
+            }
+            tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+                applyTenantCoreMigrations(tenant)
+                applyBaseModuleMigrations(tenant)
+                seedBusinessOwner(tenant, owner.role, owner.name.orEmpty(), owner.email.orEmpty())
+                owner.credentials?.let { (salt, hash, iterations) ->
+                    tenant.prepareStatement(
+                        """
+                        INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
+                        SELECT user_id, ?, ?, ? FROM business_owner
+                        """.trimIndent()
+                    ).use { insert ->
+                        insert.setString(1, salt as String)
+                        insert.setString(2, hash as String)
+                        insert.setInt(3, iterations as Int)
+                        insert.executeUpdate()
+                    }
+                }
+                grantTenantPermissions(tenant, owner.role)
+            }
+            val request = CreateCompanyRequest(
+                code = code,
+                name = sourceCompany.name,
+                businessOwnerUsername = owner.role,
+                businessOwnerPassword = "",
+                businessOwnerName = owner.name.orEmpty(),
+                businessOwnerEmail = owner.email.orEmpty(),
+                logoUrl = sourceCompany.logoUrl,
+                primaryColor = sourceCompany.primaryColor,
+                secondaryColor = sourceCompany.secondaryColor,
+                accentColor = sourceCompany.accentColor,
+            )
+            central.connection.use { connection ->
+                connection.autoCommit = false
+                try {
+                    val companyId = UUID.randomUUID()
+                    // Same owner: same group. A new owner starts its own group.
+                    insertCompany(connection, companyId, request, databaseName, if (newOwnerInput == null) ownerGroup else companyId)
+                    insertAudit(
+                        connection, provisioningRole, "company.duplicated", code, null,
+                        """{"source":"$source","databaseName":"$databaseName","businessOwnerUsername":"${owner.role}","newBusinessOwner":${newOwnerInput != null}}""",
+                    )
+                    connection.commit()
+                } catch (failure: Exception) {
+                    connection.rollback()
+                    throw failure
+                }
+            }
+            registered = true
+        } catch (failure: Exception) {
+            // Nothing points to a half-built database yet: remove it so the code can be used again.
+            if (!registered) {
+                runCatching {
+                    adminConnection(provisioningRole).use { admin ->
+                        admin.autoCommit = true
+                        admin.createStatement().use { statement ->
+                            statement.executeUpdate("DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)}")
+                            if (roleCreated) statement.executeUpdate("DROP ROLE IF EXISTS ${quoteIdentifier(owner.role)}")
+                        }
+                    }
+                }.onFailure { log.warn("No se pudo borrar la base incompleta {}", databaseName, it) }
+            }
+            throw failure
+        }
+        loginDatabases.registerTenant(tenantConfig)
+
+        // Same optional modules, then the settings of every enabled module (base ones included).
+        val copied = modules.filter { it.id in enabledModules || it.locked }
+        copied.filterNot { it.locked }.forEach { definition -> setModuleEnabled(code, definition.id, true, provisioningRole) }
+        val failures = mutableListOf<String>()
+        tenantRuntimeConnection(sourceTenant).use { from ->
+            tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { to ->
+                copied.forEach { definition ->
+                    val tables = moduleRegistry.module(definition.id)?.duplicatedSettings.orEmpty()
+                    if (tables.isEmpty()) return@forEach
+                    runCatching { SettingsCopy.copy(from, to, tables) }.onFailure { failure ->
+                        log.warn("No se copio la configuracion de {} de {} a {}", definition.id, source, code, failure)
+                        failures += definition.displayName
+                    }
+                }
+            }
+        }
+        if (failures.isNotEmpty()) {
+            central.connection.use { connection ->
+                insertAudit(connection, provisioningRole, "company.duplicate_settings_failed", code, null, """{"modules":"${failures.joinToString().escapeJson()}"}""")
+            }
+        }
+        return CreateCompanyResponse(
+            id = code,
+            code = code,
+            name = sourceCompany.name,
+            databaseName = databaseName,
+            businessOwnerUsername = owner.role,
+            enabledModules = loadCompanyModules(databaseName).filter { it.enabled }.map { it.moduleId },
+            settingsNotCopied = failures,
+        )
+    }
+
+    /** The active companies of the owner group of [companyCode], the company itself included. */
+    fun ownerCompanies(companyCode: String): List<OwnedCompanyResponse> = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT code, name FROM companies
+            WHERE owner_group = (SELECT owner_group FROM companies WHERE code = ?) AND is_active AND NOT is_server_workspace
+            ORDER BY name, code
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, companyCode)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(OwnedCompanyResponse(rows.getString(1), rows.getString(2))) } }
+        }
+    }
+
+    private fun ownerGroup(connection: Connection, companyCode: String): UUID =
+        connection.prepareStatement("SELECT owner_group FROM companies WHERE code = ?").use { query ->
+            query.setString(1, companyCode)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else throw CompanyProvisioningException("Empresa no encontrada.") }
+        }
+
+    /**
+     * Links [companyCode] to the owner group of [targetCode] (the server owner says both have the
+     * same business owner, who then switches between them), or with [targetCode] null takes it out
+     * of its group.
+     */
+    fun linkCompany(companyCode: String, targetCode: String?, provisioningRole: String): List<CompanySummaryResponse> {
+        val code = companyCode.trim()
+        rejectServerWorkspace(code)
+        targetCode?.trim()?.let { rejectServerWorkspace(it) }
+        central.connection.use { connection ->
+            findCompanyAnyState(connection, code) ?: throw CompanyProvisioningException("Empresa no encontrada.")
+            val updated = if (targetCode == null) {
+                connection.prepareStatement("UPDATE companies SET owner_group = id WHERE code = ?").use { update ->
+                    update.setString(1, code)
+                    update.executeUpdate()
+                }
+            } else {
+                val target = targetCode.trim()
+                if (target == code) throw CompanyProvisioningException("Elige otra empresa para vincular.")
+                findCompanyAnyState(connection, target) ?: throw CompanyProvisioningException("La empresa a vincular no existe.")
+                connection.prepareStatement(
+                    "UPDATE companies SET owner_group = (SELECT owner_group FROM companies WHERE code = ?) WHERE code = ?"
+                ).use { update ->
+                    update.setString(1, target)
+                    update.setString(2, code)
+                    update.executeUpdate()
+                }
+            }
+            if (updated != 1) throw CompanyProvisioningException("No se pudo actualizar la empresa.")
+            insertAudit(
+                connection, provisioningRole, if (targetCode == null) "company.unlinked" else "company.linked", code, null,
+                """{"linkedTo":"${targetCode.orEmpty().escapeJson()}"}""",
+            )
+        }
+        return listCompanies()
+    }
+
+    // The role also owns another company when it was granted CONNECT on another database (duplicates).
+    private fun ownerRoleUsedElsewhere(admin: Connection, role: String, databaseName: String): Boolean =
+        admin.prepareStatement(
+            """
+            SELECT 1 FROM pg_database database, aclexplode(database.datacl) acl
+            WHERE database.datname <> ? AND acl.grantee = (SELECT oid FROM pg_roles WHERE rolname = ?)
+            LIMIT 1
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, databaseName)
+            query.setString(2, role)
+            query.executeQuery().use { it.next() }
+        }
+
     fun deleteInactiveCompany(companyCode: String, provisioningRole: String) {
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
@@ -360,7 +617,7 @@ class CompanyProvisioningService(
                 runCatching { companyFiles?.deleteCompany(company.code) }
                     .onFailure { log.warn("No se pudieron borrar los archivos de la empresa {}", company.code, it) }
                 val ownerRoleToDrop = ownerRole
-                if (!ownerRoleToDrop.isNullOrBlank() && admin.existsRole(ownerRoleToDrop)) {
+                if (!ownerRoleToDrop.isNullOrBlank() && admin.existsRole(ownerRoleToDrop) && !ownerRoleUsedElsewhere(admin, ownerRoleToDrop, company.databaseName)) {
                     statement.executeUpdate("DROP ROLE IF EXISTS ${quoteIdentifier(ownerRoleToDrop)}")
                     ownerRoleDropped = true
                 }
@@ -1300,12 +1557,12 @@ class CompanyProvisioningService(
         return source.connection
     }
 
-    private fun insertCompany(connection: Connection, companyId: UUID, request: CreateCompanyRequest, databaseName: String) {
+    private fun insertCompany(connection: Connection, companyId: UUID, request: CreateCompanyRequest, databaseName: String, ownerGroup: UUID = companyId) {
         connection.prepareStatement(
             """
             INSERT INTO companies (
-                id, code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE)
+                id, code, name, logo_url, primary_color, secondary_color, accent_color, database_name, is_active, owner_group
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, TRUE, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, companyId)
@@ -1316,6 +1573,7 @@ class CompanyProvisioningService(
             insert.setString(6, request.secondaryColor)
             insert.setString(7, request.accentColor)
             insert.setString(8, databaseName)
+            insert.setObject(9, ownerGroup)
             insert.executeUpdate()
         }
     }
