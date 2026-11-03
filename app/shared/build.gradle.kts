@@ -72,6 +72,8 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.compose.uiTooling)
+            // Selector de archivos y carpetas del sistema (Storage Access Framework).
+            implementation(libs.androidx.activity.compose)
         }
         commonMain.dependencies {
             api(project(":core"))

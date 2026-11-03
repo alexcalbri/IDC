@@ -16,12 +16,14 @@ object AndroidFileExport {
     }
 }
 
-actual fun saveTextFile(fileName: String, content: String, mimeType: String): String {
+actual fun saveTextFile(fileName: String, content: String, mimeType: String): String =
+    // El BOM permite que Excel abra el CSV como UTF-8.
+    saveBinaryFile(fileName, ("\uFEFF" + content).toByteArray(Charsets.UTF_8), mimeType)
+
+actual fun saveBinaryFile(fileName: String, bytes: ByteArray, mimeType: String): String {
     val context = AndroidFileExport.applicationContext
         ?: return "No se pudo guardar el archivo: la app no esta inicializada."
     val name = File(fileName).name
-    // El BOM permite que Excel abra el CSV como UTF-8.
-    val bytes = ("\uFEFF" + content).toByteArray(Charsets.UTF_8)
     return try {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             // Android 10+: carpeta publica Descargas sin pedir permisos.

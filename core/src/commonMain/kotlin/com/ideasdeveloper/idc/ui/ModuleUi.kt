@@ -5,6 +5,8 @@ import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonContentPolymorphicSerializer
 import kotlinx.serialization.json.JsonElement
@@ -126,7 +128,7 @@ data class UiField(
     val key: String,
     val label: String,
     // text, email, phone, url, number, password, select (radio buttons), dropdown (a menu, for longer
-    // lists), textarea, color, date, boolean.
+    // lists; see multiple), textarea, color, date, boolean, files (attachments; see files).
     val type: String = "text",
     val required: Boolean = false,
     val readOnly: Boolean = false,
@@ -137,10 +139,84 @@ data class UiField(
     val section: String = "",
     // Shown only while another field of the form has one of the given values; hidden fields are not required.
     val visibleWhen: UiFieldCondition? = null,
+    // Suggestions while typing (text, email and phone fields); older clients ignore it.
+    val suggest: UiSuggest? = null,
+    // dropdown: several options can be chosen; the value is a JSON array of them (see UiFieldValues).
+    val multiple: Boolean = false,
+    // Type "files": where files are uploaded and downloaded. The value is a JSON array of UiFileRef.
+    val files: UiFiles? = null,
+)
+
+/**
+ * Attachments of a "files" field. Picked files are sent one by one with POST [upload] (raw bytes as
+ * the body, headers X-File-Name and X-File-Path URL-encoded, the path being the folder inside a
+ * picked folder) and the server answers the UiFileRef to keep in the value. GET "[download]/{id}"
+ * returns the file. The module links the refs of the value to its record when the form is saved.
+ */
+@Serializable
+data class UiFiles(
+    val upload: String,
+    val download: String,
+    // Whether whole folders (with their subfolders) can be picked besides files.
+    val folders: Boolean = true,
+    val maxFileBytes: Long = 25L * 1024 * 1024,
 )
 
 @Serializable
+data class UiFileRef(
+    val id: String,
+    val name: String,
+    // Folder of the file inside the picked folder, e.g. "Contrato/Anexos"; "" for loose files.
+    val path: String = "",
+    val size: Long = 0,
+)
+
+// Encoding of the form values that hold several items.
+object UiFieldValues {
+    private val strings = ListSerializer(String.serializer())
+    private val refs = ListSerializer(UiFileRef.serializer())
+
+    // Options chosen in a multiple dropdown; a plain (non JSON) value counts as one option.
+    fun options(value: String): List<String> {
+        val text = value.trim()
+        if (text.isEmpty()) return emptyList()
+        if (!text.startsWith("[")) return listOf(text)
+        return runCatching { UiJson.decodeFromString(strings, text) }.getOrDefault(emptyList())
+    }
+
+    fun options(options: List<String>): String = if (options.isEmpty()) "" else UiJson.encodeToString(strings, options)
+
+    fun files(value: String): List<UiFileRef> =
+        value.trim().takeIf { it.startsWith("[") }?.let { runCatching { UiJson.decodeFromString(refs, it) }.getOrNull() }.orEmpty()
+
+    fun files(files: List<UiFileRef>): String = if (files.isEmpty()) "" else UiJson.encodeToString(refs, files)
+}
+
+@Serializable
 data class UiFieldCondition(val key: String, val values: List<String>)
+
+/**
+ * While the user types in the field (at least [minLength] characters), the app calls GET [route]
+ * (a module route) with the form values plus "q" (the typed text) and "field" (the field key), and
+ * expects [UiSuggestions]. Choosing one writes its values into the form; values it set for keys
+ * that are not fields (e.g. a hidden id) are cleared again if the user edits the field afterwards.
+ */
+@Serializable
+data class UiSuggest(val route: String, val minLength: Int = 2)
+
+@Serializable
+data class UiSuggestion(
+    val title: String,
+    val subtitle: String = "",
+    val values: Map<String, String> = emptyMap(),
+)
+
+@Serializable
+data class UiSuggestions(
+    val items: List<UiSuggestion> = emptyList(),
+    // Shown above the items, e.g. "Ya existe un cliente con este correo".
+    val heading: String = "",
+)
 
 @Serializable
 data class UiTableColumn(val key: String, val label: String)

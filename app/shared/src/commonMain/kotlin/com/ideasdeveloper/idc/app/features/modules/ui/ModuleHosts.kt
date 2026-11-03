@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ideasdeveloper.idc.app.core.platform.EmbeddedWebView
 import com.ideasdeveloper.idc.app.core.platform.prepareEmbeddedWebView
+import com.ideasdeveloper.idc.app.core.platform.saveBinaryFile
 import com.ideasdeveloper.idc.app.core.platform.saveTextFile
 import com.ideasdeveloper.idc.app.core.platform.supportsEmbeddedWebView
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleApi
@@ -135,6 +136,32 @@ fun NativeModuleHost(ui: ModuleUiEntry, context: ModuleCallContext, companyAccen
         setFormValue = { formId, key, value -> forms = forms + (formId to (forms[formId].orEmpty() + (key to value))) },
         onAction = { execute(it) },
         loadImage = { url -> ModuleImageCache.load(context, url) },
+        suggest = { route, params ->
+            val api = ModuleApi(context.serverUrl)
+            try {
+                api.suggestions(context.accessToken, context.companyCode, route, params)
+            } finally {
+                api.close()
+            }
+        },
+        uploadFile = { route, file ->
+            val api = ModuleApi(context.serverUrl)
+            try {
+                api.upload(context.accessToken, context.companyCode, route, file.name, file.path, file.mimeType, file.bytes ?: ByteArray(0))
+            } finally {
+                api.close()
+            }
+        },
+        downloadFile = { route, file ->
+            val api = ModuleApi(context.serverUrl)
+            try {
+                saveBinaryFile(file.name, api.downloadFile(context.accessToken, context.companyCode, route, file.id), "application/octet-stream")
+            } catch (exception: ModuleException) {
+                exception.message ?: "No se pudo descargar ${file.name}."
+            } finally {
+                api.close()
+            }
+        },
     )
 
     ModuleScreenLayout(

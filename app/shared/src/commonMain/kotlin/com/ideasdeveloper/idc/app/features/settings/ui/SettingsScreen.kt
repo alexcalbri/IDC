@@ -42,6 +42,7 @@ import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.auth.ui.ProfileDialog
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.idc.app.features.shell.ui.ConfirmDialog
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import androidx.compose.foundation.layout.width
@@ -71,10 +72,25 @@ fun SettingsScreen(
     var versionStatus by remember { mutableStateOf<String?>(null) }
     var checkingVersion by remember { mutableStateOf(false) }
     var editingProfile by remember { mutableStateOf(false) }
+    var confirmingClear by remember { mutableStateOf(false) }
     val selectedTheme by ThemeStore.selection.collectAsState()
     val moduleThemes by ThemeStore.moduleThemes.collectAsState()
     // Al abrir Ajustes vuelve a pedir los temas por si se instalo o quito un modulo.
     LaunchedEffect(configuration?.serverUrl) { ThemeStore.refresh(configuration?.serverUrl) }
+
+    if (confirmingClear) {
+        ConfirmDialog(
+            title = "Limpiar configuracion local",
+            message = "Se borraran de este dispositivo la URL del servidor, la empresa guardada y tu sesion. " +
+                "Tendras que configurar el servidor e iniciar sesion de nuevo. Los datos del servidor no se modifican.",
+            confirmLabel = "Limpiar y cerrar sesion",
+            onConfirm = {
+                confirmingClear = false
+                onClearLocalConfiguration()
+            },
+            onDismiss = { confirmingClear = false },
+        )
+    }
 
     if (editingProfile && session != null) {
         ProfileDialog(
@@ -201,7 +217,7 @@ fun SettingsScreen(
                         color = AppTheme.colors.muted,
                     )
                     Spacer(Modifier.height(12.dp))
-                    OutlinedButton(onClick = onClearLocalConfiguration) {
+                    OutlinedButton(onClick = { confirmingClear = true }) {
                         Text("Limpiar configuracion local")
                     }
                 }

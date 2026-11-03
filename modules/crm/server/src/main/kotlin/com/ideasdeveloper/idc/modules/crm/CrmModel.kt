@@ -1,6 +1,8 @@
 package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.ui.UiTone
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import java.math.BigDecimal
 import java.time.Instant
 import java.time.LocalDate
@@ -67,6 +69,8 @@ data class CrmLead(
     val reviewReason: String = "",
     // Set when the stay ended (Cloudbeds check-out): the lead leaves the pipeline and lists.
     val archivedAt: Instant? = null,
+    // Values of the custom fields by key (see CrmFields).
+    val customFields: JsonObject = JsonObject(emptyMap()),
 )
 
 data class CrmActivity(
@@ -151,6 +155,10 @@ data class CrmLeadInput(
     val targetEnd: LocalDate?,
     val estimatedValue: BigDecimal?,
     val followUpOn: LocalDate?,
+    // Custom fields sent in the form: new value, or null to clear it. Keys not sent stay as they are.
+    val custom: Map<String, JsonElement?> = emptyMap(),
+    // Files kept in each files field sent in the form (see CrmFields.parseFiles).
+    val files: Map<String, List<UUID>> = emptyMap(),
 )
 
 data class CrmStageInput(val name: String, val kind: StageKind, val tone: StageTone, val position: Int)
@@ -170,6 +178,9 @@ object CrmForms {
         interests: List<CrmInterest>,
         interestsEnabled: Boolean,
         users: List<CrmUser>,
+        fields: List<CrmField> = emptyList(),
+        // Custom values the lead already has (editing), see CrmFields.parseValues.
+        stored: JsonObject = JsonObject(emptyMap()),
     ): CrmLeadInput {
         fun text(key: String, max: Int, label: String): String {
             val value = values[key].orEmpty().trim()
@@ -213,6 +224,8 @@ object CrmForms {
             targetEnd = targetEnd,
             estimatedValue = money(values["estimatedValue"]),
             followUpOn = date(values["followUpOn"], "La fecha de seguimiento"),
+            custom = CrmFields.parseValues(values, fields, stored),
+            files = CrmFields.parseFiles(values, fields),
         )
     }
 

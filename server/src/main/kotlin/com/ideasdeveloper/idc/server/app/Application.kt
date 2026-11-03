@@ -21,6 +21,7 @@ import com.ideasdeveloper.idc.server.company.application.ServerMcpTools
 import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
+import com.ideasdeveloper.idc.server.modules.CompanyFiles
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleJobScheduler
 import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
@@ -102,6 +103,10 @@ fun Application.module() {
         environment.config.propertyOrNull("modules.packagesRoot")?.getString()
             ?: "build/server-modules"
     )
+    // Files modules store for each company (attachments...); back this folder up with the databases.
+    val companyFiles = CompanyFiles.local(
+        Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
+    )
     val classpathModules = loadServerModules()
     val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet())
     val serverModules = (classpathModules + packagedModules).sortedBy { it.definition.id }
@@ -145,6 +150,7 @@ fun Application.module() {
         modulePackagesRoot = modulePackagesRoot,
         modulePackageBuilder = ModulePackageBuilder.forRunningServer(modulePackagesRoot, githubToken),
         requestRestart = ::restartToLoadModules,
+        companyFiles = companyFiles,
     )
     // Applies migrations of newly loaded module versions to the companies that use them, without
     // delaying startup.
@@ -160,6 +166,7 @@ fun Application.module() {
         { listOf(serverMcp) + moduleRegistry.mcp().filterNot { it.moduleId == ServerMcpModuleId } },
         loginDatabases.service::login,
         moduleRegistry::customerTimelines,
+        companyFiles,
     )
     // Name and email of each user and password recovery by email code.
     val accountService = AccountService(

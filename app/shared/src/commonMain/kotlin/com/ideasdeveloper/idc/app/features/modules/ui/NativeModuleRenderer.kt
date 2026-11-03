@@ -43,6 +43,7 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
@@ -73,6 +74,14 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
+import com.ideasdeveloper.idc.ui.UiFileRef
+import com.ideasdeveloper.idc.ui.UiFieldValues
+import com.ideasdeveloper.idc.app.features.modules.data.ModuleException
+import com.ideasdeveloper.idc.app.core.platform.rememberFilePicker
+import com.ideasdeveloper.idc.app.core.platform.PickedFile
+import androidx.compose.runtime.rememberCoroutineScope
 import com.ideasdeveloper.idc.ui.UiAction
 import com.ideasdeveloper.idc.ui.UiBadge
 import com.ideasdeveloper.idc.ui.UiBarChart
@@ -92,12 +101,15 @@ import com.ideasdeveloper.idc.ui.UiNotice
 import com.ideasdeveloper.idc.ui.UiRow
 import com.ideasdeveloper.idc.ui.UiSpacer
 import com.ideasdeveloper.idc.ui.UiStatus
+import com.ideasdeveloper.idc.ui.UiSuggest
+import com.ideasdeveloper.idc.ui.UiSuggestions
 import com.ideasdeveloper.idc.ui.UiTable
 import com.ideasdeveloper.idc.ui.UiText
 import com.ideasdeveloper.idc.ui.UiTextStyle
 import com.ideasdeveloper.idc.ui.UiTimeline
 import com.ideasdeveloper.idc.ui.UiTone
 import com.ideasdeveloper.idc.ui.UiUnknownAction
+import kotlinx.coroutines.delay
 
 // Colores resueltos de una pantalla; lo que el modulo no define usa el tema claro de la app.
 data class ModuleColors(
@@ -148,6 +160,12 @@ class ModuleRenderContext(
     val onAction: (UiAction) -> Unit,
     // Carga imagenes de piezas UiImage; null si no se pudo.
     val loadImage: suspend (url: String) -> ImageBitmap? = { null },
+    // Pide sugerencias de un campo UiField.suggest; sin host que las soporte no hay sugerencias.
+    val suggest: suspend (route: String, params: Map<String, String>) -> UiSuggestions = { _, _ -> UiSuggestions() },
+    // Sube un archivo de un campo "files" y devuelve su referencia; lanza ModuleException si falla.
+    val uploadFile: suspend (route: String, file: PickedFile) -> UiFileRef = { _, _ -> throw ModuleException("Este host no puede subir archivos.") },
+    // Descarga y guarda un adjunto; devuelve el mensaje para el usuario.
+    val downloadFile: suspend (route: String, file: UiFileRef) -> String = { _, _ -> "Este host no puede descargar archivos." },
 )
 
 @Composable
@@ -380,6 +398,8 @@ private fun ModuleButton(node: UiButton, context: ModuleRenderContext) {
 
 @Composable
 private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
+    // Valores que puso una sugerencia elegida en claves que no son campos (p. ej. el id del cliente).
+    var chosenExtraKeys by remember(node.id) { mutableStateOf(emptySet<String>()) }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
         // Agrupa campos consecutivos de la misma seccion bajo un titulo.
         val groups = mutableListOf<Pair<String, MutableList<UiField>>>()
@@ -396,19 +416,230 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
             }
             ResponsiveGrid(fields.size, node.minFieldWidth.dp, 12.dp) { index ->
                 val field = fields[index]
-                ModuleField(field, context.formValue(node.id, field.key), !context.busy, context.colors) { value ->
-                    context.setFormValue(node.id, field.key, value)
+                val suggest = field.suggest
+                if (field.type == "files") {
+                    FilesField(node, field, context)
+                } else if (suggest != null && !field.readOnly) {
+                    SuggestingField(node, field, suggest, context, chosenExtraKeys) { chosenExtraKeys = it }
+                } else {
+                    ModuleField(field, context.formValue(node.id, field.key), !context.busy, context.colors) { value ->
+                        context.setFormValue(node.id, field.key, value)
+                    }
                 }
             }
         }
         node.submit?.let { submit ->
             val missing = visible.firstOrNull { field ->
-                field.required && !field.readOnly && field.type != "password" && context.formValue(node.id, field.key).isBlank()
+                field.required && !field.readOnly && field.type != "password" && field.type != "boolean" && context.formValue(node.id, field.key).isBlank()
             }
             ModuleButton(submit.copy(enabled = submit.enabled && missing == null), context)
             missing?.let { Text("Completa: ${it.label}", color = context.colors.muted, fontSize = 12.sp) }
         }
     }
+}
+
+/**
+ * Campo con sugerencias del servidor: mientras se escribe pide coincidencias (con una pausa para no
+ * consultar en cada tecla) y las muestra debajo. Elegir una llena el formulario con sus valores.
+ */
+@Composable
+private fun SuggestingField(
+    form: UiForm,
+    field: UiField,
+    suggest: UiSuggest,
+    context: ModuleRenderContext,
+    chosenExtraKeys: Set<String>,
+    onChosenExtraKeys: (Set<String>) -> Unit,
+) {
+    val colors = context.colors
+    val value = context.formValue(form.id, field.key)
+    var result by remember(form.id, field.key) { mutableStateOf(UiSuggestions()) }
+    // Valor que dejo la ultima sugerencia elegida: no se vuelve a buscar hasta que el usuario lo cambie.
+    var chosenValue by remember(form.id, field.key) { mutableStateOf<String?>(null) }
+    // Solo se busca lo que el usuario escribe, no los valores iniciales del formulario.
+    var typed by remember(form.id, field.key) { mutableStateOf(false) }
+
+    LaunchedEffect(value, typed) {
+        val query = value.trim()
+        if (!typed || query.length < suggest.minLength || query == chosenValue) {
+            result = UiSuggestions()
+            return@LaunchedEffect
+        }
+        delay(350)
+        val fieldKeys = form.fields.map { it.key }.toSet()
+        val params = (fieldKeys + chosenExtraKeys).associateWith { context.formValue(form.id, it) } + mapOf("q" to query, "field" to field.key)
+        result = context.suggest(suggest.route, params)
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        ModuleField(field, value, !context.busy, colors) { input ->
+            typed = true
+            if (chosenExtraKeys.isNotEmpty() && input != chosenValue) {
+                // El usuario cambio lo que eligio: deja de apuntar al registro sugerido.
+                chosenExtraKeys.forEach { context.setFormValue(form.id, it, "") }
+                onChosenExtraKeys(emptySet())
+            }
+            context.setFormValue(form.id, field.key, input)
+        }
+        if (result.items.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.surfaceAlt, RoundedCornerShape(10.dp))
+                    .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                    .padding(vertical = 4.dp),
+            ) {
+                if (result.heading.isNotBlank()) {
+                    Text(result.heading, color = colors.muted, fontSize = 12.sp, modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                }
+                result.items.forEach { item ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !context.busy) {
+                                val fieldKeys = form.fields.map { it.key }.toSet()
+                                item.values.forEach { (key, itemValue) -> context.setFormValue(form.id, key, itemValue) }
+                                onChosenExtraKeys(item.values.keys - fieldKeys)
+                                chosenValue = (item.values[field.key] ?: value).trim()
+                                result = UiSuggestions()
+                            }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Text(item.title, color = colors.text, fontWeight = FontWeight.SemiBold)
+                        if (item.subtitle.isNotBlank()) Text(item.subtitle, color = colors.muted, fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Adjuntos de un campo "files": lista los archivos agrupados por carpeta, los descarga y sube los que
+ * el usuario elige (archivos sueltos o carpetas completas). El valor del campo es la lista de referencias.
+ */
+@Composable
+private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContext) {
+    val colors = context.colors
+    val files = field.files
+    val scope = rememberCoroutineScope()
+    var status by remember(form.id, field.key) { mutableStateOf<String?>(null) }
+    var uploading by remember(form.id, field.key) { mutableStateOf(false) }
+    val current = UiFieldValues.files(context.formValue(form.id, field.key))
+    val editable = !field.readOnly && files != null
+    val maxBytes = files?.maxFileBytes ?: 0L
+
+    fun setFiles(next: List<UiFileRef>) = context.setFormValue(form.id, field.key, UiFieldValues.files(next))
+
+    val picker = rememberFilePicker(maxBytes) { picked ->
+        if (files == null) return@rememberFilePicker
+        scope.launch {
+            uploading = true
+            val problems = mutableListOf<String>()
+            var added = 0
+            picked.forEachIndexed { index, file ->
+                status = "Subiendo ${index + 1} de ${picked.size}: ${file.name}"
+                if (file.bytes == null) {
+                    problems += "${file.name} supera ${formatBytes(maxBytes)}"
+                    return@forEachIndexed
+                }
+                try {
+                    val ref = context.uploadFile(files.upload, file)
+                    // Se agrega uno por uno para que un error no pierda los que ya subieron.
+                    setFiles(UiFieldValues.files(context.formValue(form.id, field.key)) + ref)
+                    added++
+                } catch (exception: CancellationException) {
+                    throw exception
+                } catch (exception: Exception) {
+                    problems += exception.message ?: "No se pudo subir ${file.name}"
+                }
+            }
+            uploading = false
+            status = buildString {
+                if (added > 0) append("$added ${if (added == 1) "archivo listo" else "archivos listos"}; se guardan al guardar el formulario.")
+                if (problems.isNotEmpty()) {
+                    if (isNotEmpty()) append(" ")
+                    append("No se adjuntaron: ").append(problems.take(5).joinToString("; "))
+                    if (problems.size > 5) append(" y ${problems.size - 5} mas")
+                    append(".")
+                }
+            }
+        }
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        Text(field.label + if (field.required && editable) " *" else "", color = colors.muted, fontSize = 12.sp)
+        Column(
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(colors.surfaceAlt, RoundedCornerShape(10.dp))
+                .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                .padding(10.dp),
+        ) {
+            if (current.isEmpty()) Text("Sin archivos.", color = colors.muted, fontSize = 13.sp)
+            current.groupBy { it.path }.entries.sortedBy { it.key }.forEach { (folder, items) ->
+                if (folder.isNotBlank()) {
+                    Text("Carpeta: $folder", color = colors.accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                }
+                items.forEach { file ->
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(file.name, color = colors.text, fontSize = 14.sp)
+                            if (file.size > 0) Text(formatBytes(file.size), color = colors.muted, fontSize = 11.sp)
+                        }
+                        if (files != null) {
+                            Text(
+                                "Descargar",
+                                color = colors.accent,
+                                fontSize = 13.sp,
+                                modifier = Modifier.clickable(enabled = !uploading) {
+                                    scope.launch { status = context.downloadFile(files.download, file) }
+                                }.padding(4.dp),
+                            )
+                        }
+                        if (editable) {
+                            Text(
+                                "Quitar",
+                                color = colors.danger,
+                                fontSize = 13.sp,
+                                modifier = Modifier.clickable(enabled = !uploading && !context.busy) {
+                                    setFiles(current.filter { it.id != file.id })
+                                    status = "${file.name} se quita al guardar el formulario."
+                                }.padding(4.dp),
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        if (editable) {
+            if (picker.supported) {
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    val enabled = !uploading && !context.busy
+                    OutlinedButton(onClick = { picker.pickFiles() }, enabled = enabled, border = BorderStroke(1.dp, if (enabled) colors.accent else colors.border)) {
+                        Text("Adjuntar archivos", color = if (enabled) colors.accent else colors.muted)
+                    }
+                    if (files?.folders == true && picker.supportsFolders) {
+                        OutlinedButton(onClick = { picker.pickFolder() }, enabled = enabled, border = BorderStroke(1.dp, if (enabled) colors.accent else colors.border)) {
+                            Text("Adjuntar carpeta", color = if (enabled) colors.accent else colors.muted)
+                        }
+                    }
+                }
+            } else {
+                Text("En este dispositivo aun no se pueden adjuntar archivos; hazlo desde la app de escritorio, web o Android.", color = colors.muted, fontSize = 12.sp)
+            }
+        }
+        if (uploading) Text("Espera a que terminen de subir antes de guardar.", color = colors.warning, fontSize = 12.sp)
+        status?.let { Text(it, color = colors.muted, fontSize = 12.sp) }
+        if (field.help.isNotBlank()) Text(field.help, color = colors.muted, fontSize = 12.sp)
+    }
+}
+
+private fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 -> "${(bytes * 10 / (1024 * 1024)) / 10.0} MB"
+    bytes >= 1024 -> "${bytes / 1024} KB"
+    else -> "$bytes B"
 }
 
 @Composable
@@ -419,7 +650,7 @@ private fun ModuleField(field: UiField, value: String, enabled: Boolean, colors:
             field.readOnly -> {
                 Text(field.label, color = colors.muted, fontSize = 12.sp)
                 Text(
-                    value.ifBlank { "-" },
+                    (if (field.multiple) UiFieldValues.options(value).joinToString(", ") else value).ifBlank { "-" },
                     color = colors.text,
                     modifier = Modifier.fillMaxWidth().background(colors.surfaceAlt, RoundedCornerShape(10.dp)).padding(12.dp),
                 )
@@ -444,6 +675,51 @@ private fun ModuleField(field: UiField, value: String, enabled: Boolean, colors:
                             colors = RadioButtonDefaults.colors(selectedColor = colors.accent, unselectedColor = colors.muted),
                         )
                         Text(option, color = colors.text)
+                    }
+                }
+            }
+            field.type == "dropdown" && field.multiple -> {
+                var expanded by remember { mutableStateOf(false) }
+                val chosen = UiFieldValues.options(value)
+                // Opciones que ya tenia el registro aunque el modulo las haya quitado, para poder desmarcarlas.
+                val options = field.options + chosen.filter { it !in field.options }
+                Text(label, color = colors.muted, fontSize = 12.sp)
+                Box {
+                    OutlinedButton(
+                        onClick = { expanded = true },
+                        enabled = enabled && options.isNotEmpty(),
+                        shape = RoundedCornerShape(10.dp),
+                        border = BorderStroke(1.dp, colors.border),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            chosen.joinToString(", ").ifBlank { field.placeholder.ifBlank { "Selecciona una o varias opciones" } },
+                            color = if (chosen.isEmpty()) colors.muted else colors.text,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text("v", color = colors.muted)
+                    }
+                    DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                        options.forEach { option ->
+                            DropdownMenuItem(
+                                text = {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Checkbox(
+                                            checked = option in chosen,
+                                            onCheckedChange = null,
+                                            colors = CheckboxDefaults.colors(checkedColor = colors.accent, uncheckedColor = colors.muted),
+                                        )
+                                        Spacer(Modifier.width(8.dp))
+                                        Text(option)
+                                    }
+                                },
+                                // El menu sigue abierto para marcar varias; se cierra tocando fuera.
+                                onClick = {
+                                    val next = if (option in chosen) chosen - option else options.filter { it in chosen || it == option }
+                                    onChange(UiFieldValues.options(next))
+                                },
+                            )
+                        }
                     }
                 }
             }

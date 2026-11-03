@@ -105,6 +105,8 @@ readonly INSTALL_SWAP_SIZE_MB=4096
 readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
 readonly NODE_OPTIONS_VALUE="--max-old-space-size=2048"
 readonly COMPANY_BACKUPS_DIR=$APP_DIR/company-backups
+# Files modules store per company (CRM attachments...); back it up with the databases.
+readonly COMPANY_FILES_DIR=$APP_DIR/company-files
 readonly MODULE_PACKAGES_DIR=$APP_DIR/server-modules
 readonly DEFAULT_MODULE_CATALOG_URL=https://github.com/alexcalbri/IDC/tree/master/modules
 INSTALL_SWAP_CREATED=false
@@ -667,6 +669,7 @@ install -d -m 700 "$CONFIG_DIR"
     printf 'TENANT_JDBC_URL_PREFIX=jdbc:postgresql://127.0.0.1:5432/\n'
     printf 'MIGRATIONS_ROOT=%s/source\n' "$APP_DIR"
     printf 'COMPANY_BACKUPS_ROOT=%s\n' "$COMPANY_BACKUPS_DIR"
+    printf 'COMPANY_FILES_ROOT=%s\n' "$COMPANY_FILES_DIR"
     printf 'MODULE_CATALOG_URL=%s\n' "$DEFAULT_MODULE_CATALOG_URL"
     printf 'MODULE_PACKAGES_ROOT=%s\n' "$MODULE_PACKAGES_DIR"
     # Optional GitHub token (fine-grained, read-only on public repositories) to avoid GitHub's
@@ -683,7 +686,7 @@ chmod 600 "$CONFIG_DIR/server.env"
 unset DB_PASSWORD
 
 # The service runs with ProtectSystem=strict; these are its only writable paths.
-install -d -m 700 -o ideascore -g ideascore "$COMPANY_BACKUPS_DIR" "$MODULE_PACKAGES_DIR"
+install -d -m 700 -o ideascore -g ideascore "$COMPANY_BACKUPS_DIR" "$COMPANY_FILES_DIR" "$MODULE_PACKAGES_DIR"
 
 cat > "$SERVICE_FILE" <<'UNIT'
 [Unit]
@@ -705,7 +708,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/opt/ideascore/company-backups /opt/ideascore/server-modules
+ReadWritePaths=/opt/ideascore/company-backups /opt/ideascore/company-files /opt/ideascore/server-modules
 UMask=0077
 
 [Install]
@@ -791,6 +794,7 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
     location /modules {
+        client_max_body_size 30m;
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -874,6 +878,7 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
     location /modules {
+        client_max_body_size 30m;
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;

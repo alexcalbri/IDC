@@ -142,6 +142,8 @@ configure_server_env() {
     chmod 700 "$APP_DIR/company-backups"
     install -d -m 700 "$APP_DIR/server-modules"
     chown ideascore:ideascore "$APP_DIR/server-modules"
+    install -d -m 700 "$APP_DIR/company-files"
+    chown ideascore:ideascore "$APP_DIR/company-files"
 
     db_url=$(config_value DB_URL)
     [[ -n $db_url ]] || die 'DB_URL no existe en /etc/ideascore/server.env.'
@@ -153,6 +155,7 @@ configure_server_env() {
     append_config_value TENANT_JDBC_URL_PREFIX "$tenant_prefix"
     append_config_value MIGRATIONS_ROOT "$SOURCE_DIR"
     append_config_value COMPANY_BACKUPS_ROOT "$APP_DIR/company-backups"
+    append_config_value COMPANY_FILES_ROOT "$APP_DIR/company-files"
     append_config_value MODULE_CATALOG_URL 'https://github.com/alexcalbri/IDC/tree/master/modules'
     append_config_value MODULE_PACKAGES_ROOT "$APP_DIR/server-modules"
     append_config_value MODULE_GITHUB_TOKEN ''
@@ -172,12 +175,12 @@ configure_server_env() {
     chmod 600 "$CONFIG_FILE"
 }
 
-# The unit uses ProtectSystem=strict; backups and module packages need write access.
+# The unit uses ProtectSystem=strict; backups, company files and module packages need write access.
 configure_service_writable_paths() {
     local dropin_dir=/etc/systemd/system/$SERVICE_NAME.d
     local dropin=$dropin_dir/writable-paths.conf
     local expected
-    expected=$(printf '[Service]\nReadWritePaths=%s %s\n' "$APP_DIR/company-backups" "$APP_DIR/server-modules")
+    expected=$(printf '[Service]\nReadWritePaths=%s %s %s\n' "$APP_DIR/company-backups" "$APP_DIR/company-files" "$APP_DIR/server-modules")
     if [[ -f $dropin && $(cat "$dropin") == "$expected" ]]; then
         return
     fi
@@ -231,6 +234,44 @@ PY
     nginx -t
     systemctl reload nginx
     printf 'Nginx actualizado para proxyear %s al backend.\n' "$prefix"
+}
+
+# Module routes receive attachments (25 MB per file in the CRM); Nginx allows 1 MB by default.
+ensure_nginx_module_upload_limit() {
+    if [[ ! -f $NGINX_SITE ]] || ! grep -q "proxy_pass http://127.0.0.1:$APP_PORT" "$NGINX_SITE"; then
+        return
+    fi
+    if ! grep -Fq "location /modules {" "$NGINX_SITE"; then
+        return
+    fi
+    if python3 - "$NGINX_SITE" <<'PY'
+from pathlib import Path
+import sys
+
+text = Path(sys.argv[1]).read_text()
+marker = "    location /modules {\n"
+parts = text.split(marker)
+sys.exit(0 if all(part.lstrip().startswith("client_max_body_size") for part in parts[1:]) else 1)
+PY
+    then
+        return
+    fi
+    cp -a "$NGINX_SITE" "$NGINX_SITE.update-backup.$(date -u +%Y%m%dT%H%M%SZ)"
+    python3 - "$NGINX_SITE" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+marker = "    location /modules {\n"
+limit = "        client_max_body_size 30m;\n"
+parts = text.split(marker)
+fixed = parts[0] + "".join(marker + (part if part.lstrip().startswith("client_max_body_size") else limit + part) for part in parts[1:])
+path.write_text(fixed)
+PY
+    nginx -t
+    systemctl reload nginx
+    printf 'Nginx actualizado: /modules acepta archivos de hasta 30 MB.\n'
 }
 
 configure_nginx_server_route() {
@@ -343,6 +384,7 @@ ensure_update_swap
 configure_server_env
 configure_service_writable_paths
 configure_nginx_server_route
+ensure_nginx_module_upload_limit
 
 git_source fetch --tags --prune origin
 git_source checkout "$GIT_REF"

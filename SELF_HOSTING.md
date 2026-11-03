@@ -415,6 +415,7 @@ Document verified variables in a table here as they are implemented:
 | `TENANT_JDBC_URL_PREFIX` | No | Prefix used for newly created tenant JDBC URLs; defaults to the central DB URL up to the last `/`. |
 | `MIGRATIONS_ROOT` | No | Repository/source root containing `database/...` migrations; defaults to the server working directory. |
 | `COMPANY_BACKUPS_ROOT` | No | Server-side directory for company ZIP files created from the Empresa business-owner screen; defaults to `build/company-backups`. |
+| `COMPANY_FILES_ROOT` | No | Server-side directory for the files modules store per company (CRM attachments...), as `{company}/{module}/{yyyy}/{mm}/{id}`; the databases keep only the references. Installer default: `/opt/ideascore/company-files`; defaults to `build/company-files`. Back it up together with PostgreSQL: the app's company ZIPs do not include it. Deleting a company deletes its folder. |
 | `MODULE_CATALOG_URL` | No | URL of the remote module repository directory. Installer default: `https://github.com/alexcalbri/IDC/tree/master/modules`. GitHub tree URLs and Contents API URLs are accepted. Empty means no remote modules are shown for new installs. |
 | `MODULE_GITHUB_TOKEN` | No | GitHub token for the module catalog and module downloads. Without it GitHub allows 60 API requests per hour per IP, which listing the catalog can use up; with it, 5000. Use a fine-grained token with read-only access to public repositories (or to the private catalog repository). It is sent only to GitHub over HTTPS and is set only here, never in the app. Restart `ideascore` after changing it. |
 | `MODULE_PACKAGES_ROOT` | No | Server-side directory where downloaded module packages are stored; defaults to `build/server-modules`. |
@@ -701,7 +702,9 @@ restores.
 can use the Empresa screen to create, list, download, upload and delete ZIP
 files stored under `COMPANY_BACKUPS_ROOT`. The current ZIP contains company
 profile metadata. Uploading a ZIP stores it for safekeeping after validating it
-is readable; it does not restore or overwrite PostgreSQL data.
+is readable; it does not restore or overwrite PostgreSQL data. Neither the ZIP
+nor PostgreSQL holds module files (attachments): back up `COMPANY_FILES_ROOT`
+too, at the same time as the databases.
 
 Full PostgreSQL backup and restore are operational responsibilities for the
 self-hosted server. For production, configure external `pg_dump`/`pg_restore`

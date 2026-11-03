@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.auth.ui
 
+import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -49,6 +50,7 @@ fun LoginScreen(
         LoginViewModel()
     }
     val state by loginViewModel.state.collectAsState()
+    val sessionExpired by SessionStore.expired.collectAsState()
     val savedConfiguration = remember { ClientConfigurationStore.load() }
     val companyIdentity = remember { CompanyIdentityStore.current() }
     val colors = AppTheme.colors
@@ -165,6 +167,15 @@ fun LoginScreen(
                 color = AppTheme.colors.onScreenMuted,
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 32.dp)
             )
+            // Aviso cuando la app regreso aqui porque la sesion vencio o el servidor la rechazo.
+            if (sessionExpired) {
+                Text(
+                    text = "Tu sesion expiro. Inicia sesion de nuevo para continuar.",
+                    color = AppTheme.colors.onScreen,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+            }
             Spacer(Modifier.height(16.dp))
             if (!editingServer) {
                 Row(

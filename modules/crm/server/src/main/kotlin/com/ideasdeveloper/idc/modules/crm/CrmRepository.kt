@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
 import com.ideasdeveloper.idc.server.modules.UserIdentity
+import kotlinx.serialization.json.JsonObject
 import java.math.BigDecimal
 import java.sql.Connection
 import java.sql.PreparedStatement
@@ -17,7 +18,8 @@ object CrmRepository {
     private const val LeadColumns = """
         l.id, l.customer_id, c.display_name, c.primary_email, c.primary_phone, l.stage_id, l.interest_id,
         l.owner_user_id, l.source, l.language, l.message, l.details, l.target_start, l.target_end,
-        l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason, l.archived_at
+        l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason, l.archived_at,
+        l.custom_fields::text AS custom_fields
     """
     private const val LeadFrom = "FROM crm_leads l JOIN customers c ON c.id = l.customer_id"
 
@@ -254,22 +256,14 @@ object CrmRepository {
         }
 
     /**
-     * Creates a lead. The person is the existing customer with the same email (or, without email,
-     * the same phone) when there is one, and its data is not changed; otherwise a new prospect
-     * customer is created in Clientes. Without email and phone a new customer is always created.
+     * Creates a lead for an existing customer when there is one, in this order: [chosenCustomerId] (chosen
+     * from the suggestions of the form), the same email, the same phone (compared by its digits).
+     * The customer keeps its data; only an email or phone it did not have yet is added. Without a
+     * match a new prospect customer is created in Clientes.
      */
-    fun createLead(tenant: Connection, input: CrmLeadInput, stage: CrmStage, actor: CrmActor): UUID = transaction(tenant) {
-        val match = when {
-            input.email.isNotEmpty() -> "lower(primary_email) = lower(?)" to input.email
-            input.phone.isNotEmpty() -> "primary_phone = ?" to input.phone
-            else -> null
-        }
-        val customerId = match?.let { (condition, value) ->
-            tenant.prepareStatement("SELECT id FROM customers WHERE $condition AND status <> 'archived' ORDER BY created_at LIMIT 1").use { query ->
-                query.setString(1, value)
-                query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
-            }
-        } ?: UUID.randomUUID().also { id ->
+    fun createLead(tenant: Connection, input: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID? = null, fields: List<CrmField> = emptyList()): UUID = transaction(tenant) {
+        val existing = chosenCustomerId?.takeIf { activeCustomer(tenant, it) } ?: matchCustomer(tenant, input.email, input.phone)
+        val customerId = existing?.also { CrmInbox.fillMissingContact(tenant, it, input.email, input.phone) } ?: UUID.randomUUID().also { id ->
             tenant.prepareStatement(
                 "INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type) VALUES (?, ?, ?, ?, 'prospect', 'crm')"
             ).use { insert ->
@@ -285,19 +279,96 @@ object CrmRepository {
             """
             INSERT INTO crm_leads (
                 customer_id, stage_id, interest_id, owner_user_id, source, language, message, details,
-                target_start, target_end, estimated_value, follow_up_on, closed_at, id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CURRENT_TIMESTAMP END, ?)
+                target_start, target_end, estimated_value, follow_up_on, closed_at, id, custom_fields
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CURRENT_TIMESTAMP END, ?, CAST(? AS jsonb))
             """.trimIndent()
         ).use { insert ->
-            insert.bind(tenant, listOf(customerId) + leadValues(input) + (stage.kind != StageKind.Open) + id)
+            insert.bind(tenant, listOf(customerId) + leadValues(input) + (stage.kind != StageKind.Open) + id + CrmFields.merge(JsonObject(emptyMap()), input.custom).toString())
             insert.executeUpdate()
         }
         addActivity(tenant, id, "created", "Lead creado en ${stage.name}.", actor, toStage = stage.id)
+        linkFiles(tenant, id, input, fields, actor)
         id
     }
 
+    private fun activeCustomer(tenant: Connection, id: UUID): Boolean =
+        tenant.prepareStatement("SELECT 1 FROM customers WHERE id = ? AND status <> 'archived'").use { query ->
+            query.setObject(1, id)
+            query.executeQuery().use { it.next() }
+        }
+
+    // Digits of a phone; shorter than 7 digits it is too ambiguous to match on.
+    fun phoneDigits(phone: String): String = phone.filter { it.isDigit() }.takeIf { it.length >= 7 }.orEmpty()
+
+    /** The oldest active customer with this email or, failing that, this phone (by its digits). */
+    fun matchCustomer(tenant: Connection, email: String, phone: String): UUID? {
+        fun first(condition: String, value: String): UUID? =
+            tenant.prepareStatement("SELECT id FROM customers WHERE $condition AND status <> 'archived' ORDER BY created_at LIMIT 1").use { query ->
+                query.setString(1, value)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+            }
+        val digits = phoneDigits(phone)
+        return email.trim().takeIf { it.isNotEmpty() }?.let { first("lower(primary_email) = lower(?)", it) }
+            ?: digits.takeIf { it.isNotEmpty() }?.let { first("regexp_replace(primary_phone, '[^0-9]', '', 'g') = ?", it) }
+    }
+
+    data class CustomerSuggestion(val id: UUID, val name: String, val email: String, val phone: String, val code: String?, val openLeads: Int, val exact: Boolean)
+
+    /**
+     * Customers that match what is being typed in the new lead form: [query] in the [field] being
+     * typed (name contains it, email or phone digits start/contain it), plus any customer that
+     * already has exactly the [email] or [phone] of the form, which comes first.
+     */
+    fun customerSuggestions(tenant: Connection, field: String, query: String, email: String, phone: String, limit: Int = 6): List<CustomerSuggestion> {
+        fun like(text: String) = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        val typed = query.trim()
+        val typedDigits = typed.filter { it.isDigit() }
+        val (typedCondition, typedValue) = when (field) {
+            "email" -> "lower(c.primary_email) LIKE ?" to "${like(typed.lowercase())}%"
+            "phone" -> "regexp_replace(c.primary_phone, '[^0-9]', '', 'g') LIKE ?" to (if (typedDigits.length >= 3) "%${like(typedDigits)}%" else "")
+            else -> "lower(c.display_name) LIKE ?" to "%${like(typed.lowercase())}%"
+        }
+        val exactEmail = email.trim()
+        val exactPhone = phoneDigits(phone)
+        if (typedValue.isEmpty() && exactEmail.isEmpty() && exactPhone.isEmpty()) return emptyList()
+        val exact = "((? <> '' AND lower(c.primary_email) = lower(?)) OR (? <> '' AND regexp_replace(c.primary_phone, '[^0-9]', '', 'g') = ?))"
+        return tenant.prepareStatement(
+            """
+            SELECT c.id, c.display_name, c.primary_email, c.primary_phone, c.customer_code,
+                (SELECT count(*) FROM crm_leads l WHERE l.customer_id = c.id AND l.closed_at IS NULL) AS open_leads,
+                $exact AS exact
+            FROM customers c
+            WHERE c.status <> 'archived' AND ($exact OR (? <> '' AND $typedCondition))
+            ORDER BY exact DESC, c.display_name
+            LIMIT ?
+            """.trimIndent()
+        ).use { statement ->
+            val exactValues = listOf(exactEmail, exactEmail, exactPhone, exactPhone)
+            (exactValues + exactValues + listOf(typedValue, typedValue)).forEachIndexed { index, value -> statement.setString(index + 1, value) }
+            statement.setInt(11, limit)
+            statement.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) add(
+                        CustomerSuggestion(
+                            rows.getObject(1, UUID::class.java), rows.getString(2).orEmpty(), rows.getString(3).orEmpty(), rows.getString(4).orEmpty(),
+                            rows.getString(5), rows.getInt(6), rows.getBoolean(7),
+                        )
+                    )
+                }
+            }
+        }
+    }
+
     /** Saves the lead form; contact changes are written to the shared customer. Logs what changed. */
-    fun updateLead(tenant: Connection, lead: CrmLead, input: CrmLeadInput, stages: List<CrmStage>, names: CrmNames, actor: CrmActor) = transaction(tenant) {
+    fun updateLead(
+        tenant: Connection,
+        lead: CrmLead,
+        input: CrmLeadInput,
+        stages: List<CrmStage>,
+        names: CrmNames,
+        actor: CrmActor,
+        fields: List<CrmField> = emptyList(),
+    ) = transaction(tenant) {
         tenant.prepareStatement(
             "UPDATE customers SET display_name = ?, primary_email = ?, primary_phone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
         ).use { update ->
@@ -326,11 +397,28 @@ object CrmRepository {
         if (input.interestId != lead.interestId) {
             addActivity(tenant, lead.id, "interest", "Interes: ${names.interest(input.interestId)}.", actor)
         }
-        leadChanges(lead, input)?.let { addActivity(tenant, lead.id, "updated", it, actor) }
+        if (input.custom.isNotEmpty()) {
+            tenant.prepareStatement("UPDATE crm_leads SET custom_fields = CAST(? AS jsonb) WHERE id = ?").use { update ->
+                update.setString(1, CrmFields.merge(lead.customFields, input.custom).toString())
+                update.setObject(2, lead.id)
+                update.executeUpdate()
+            }
+        }
+        leadChanges(lead, input, fields)?.let { addActivity(tenant, lead.id, "updated", it, actor) }
+        linkFiles(tenant, lead.id, input, fields, actor)
     }
 
     /** "Campo: antes -> despues" for each changed value of the lead form, or null when nothing changed. */
-    fun leadChanges(lead: CrmLead, input: CrmLeadInput): String? {
+    // Links the files of each files field sent in the form and records what was added or removed.
+    private fun linkFiles(tenant: Connection, leadId: UUID, input: CrmLeadInput, fields: List<CrmField>, actor: CrmActor) {
+        val lines = input.files.mapNotNull { (key, ids) ->
+            val label = if (key == CrmFields.Documents) CrmFields.DocumentsLabel else fields.firstOrNull { it.key == key }?.label ?: key
+            CrmAttachments.describe(label, CrmAttachments.link(tenant, leadId, key, ids))
+        }
+        if (lines.isNotEmpty()) addActivity(tenant, leadId, "files", lines.joinToString("\n"), actor)
+    }
+
+    fun leadChanges(lead: CrmLead, input: CrmLeadInput, fields: List<CrmField> = emptyList()): String? {
         fun shown(value: Any?) = value?.toString()?.takeIf { it.isNotBlank() } ?: "(vacio)"
         val lines = buildList {
             fun compare(label: String, before: Any?, after: Any?) {
@@ -349,7 +437,8 @@ object CrmRepository {
             compare("Valor estimado", lead.estimatedValue?.stripTrailingZeros()?.toPlainString(), input.estimatedValue?.stripTrailingZeros()?.toPlainString())
             compare("Seguimiento", lead.followUpOn, input.followUpOn)
         }
-        return lines.takeIf { it.isNotEmpty() }?.joinToString("\n")
+        val custom = CrmFields.changes(fields, lead.customFields, CrmFields.merge(lead.customFields, input.custom))
+        return (lines + custom).takeIf { it.isNotEmpty() }?.joinToString("\n")
     }
 
     // Moves a lead to another stage, records the stage history and keeps closed_at in line with the stage kind.
@@ -507,6 +596,7 @@ object CrmRepository {
         suggestedOwnerUserId = getObject("suggested_owner_user_id", UUID::class.java),
         reviewReason = getString("review_reason"),
         archivedAt = getTimestamp("archived_at")?.toInstant(),
+        customFields = CrmFields.parseStored(getString("custom_fields")),
     )
 
     // Binds positional parameters; collections become uuid[] (used by "= ANY(?)").

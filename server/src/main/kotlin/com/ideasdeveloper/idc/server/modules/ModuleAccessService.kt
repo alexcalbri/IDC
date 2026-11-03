@@ -42,9 +42,14 @@ class ModuleAccessService(
     private val login: (LoginCredentials) -> LoginSuccessResponse? = { null },
     // What each installed module adds to a customer's history (ModuleRegistry.customerTimelines).
     private val customerTimelines: () -> List<RegisteredCustomerTimeline> = { emptyList() },
+    // File storage of the companies (see CompanyFiles); modules reach it through files().
+    private val companyFiles: CompanyFiles = CompanyFiles.local(java.nio.file.Path.of("build/company-files")),
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(ModuleAccessService::class.java)
     private val tokenGenerator = SessionTokenGenerator()
+
+    /** Where [moduleId] stores the files of [companyCode]; the table of the module keeps the returned refs. */
+    fun files(companyCode: String, moduleId: String): ModuleFiles = companyFiles.module(companyCode, moduleId)
 
     // Public module endpoints (e.g. a captive portal) must check this before serving anything.
     fun isInstalled(moduleId: String): Boolean = moduleInstalled(moduleId)

@@ -16,6 +16,13 @@ import com.ideasdeveloper.idc.ui.ModuleUiEntry
 import com.ideasdeveloper.idc.ui.UiJson
 import com.ideasdeveloper.idc.ui.UiNotice
 import com.ideasdeveloper.idc.ui.UiScreen
+import com.ideasdeveloper.idc.ui.UiSuggestions
+import io.ktor.utils.io.jvm.javaio.toInputStream
+import io.ktor.server.response.respondOutputStream
+import io.ktor.server.request.receiveChannel
+import io.ktor.server.request.contentType
+import com.ideasdeveloper.idc.ui.UiFileRef
+import java.net.URLDecoder
 import com.ideasdeveloper.idc.ui.UiTone
 import io.ktor.http.ContentDisposition
 import io.ktor.http.ContentType
@@ -35,6 +42,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
@@ -56,6 +64,8 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V007__imports.sql",
         "modules/crm/migrations/V008__monday_token.sql",
         "modules/crm/migrations/V009__monday_background_read.sql",
+        "modules/crm/migrations/V010__custom_fields_and_attachments.sql",
+        "modules/crm/migrations/V011__attachments_in_file_storage.sql",
     )
 
     override val runtimeTables = listOf(
@@ -84,6 +94,8 @@ object CrmServerModule : ServerModule {
         "crm_import_jobs",
         "crm_import_rows",
         "crm_import_presets",
+        "crm_field_definitions",
+        "crm_attachments",
     )
 
     override val mcp: ModuleMcp
@@ -113,6 +125,10 @@ object CrmServerModule : ServerModule {
             if (CrmEncuentra24.load(context.tenant).ready) {
                 runCatching { CrmEncuentra24.sync(context.tenant) { leadId -> CrmNotify.newLead(context.tenant, leadId) } }
             }
+        },
+        // Stored files of removed attachments, deleted leads and forms never saved.
+        ModuleJob("attachments-cleanup", Duration.ofMinutes(15)) { context ->
+            CrmAttachments.cleanup(context.tenant, context.access.files(context.companyCode, CrmModule.id))
         },
     )
 
@@ -147,7 +163,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.10.0",
+        version = "0.11.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -230,6 +246,87 @@ object CrmServerModule : ServerModule {
         }
 
         route.route(CrmScreens.UiRoute) {
+            // Files of the lead forms: uploads wait for the form to be saved (see CrmAttachments).
+            post("/files") {
+                val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@post
+                if (!permissions.has(CrmScreens.Manage)) {
+                    return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                }
+                val length = call.request.headers[HttpHeaders.ContentLength]?.toLongOrNull()
+                if (length != null && length > CrmAttachments.MaxFileBytes) {
+                    return@post call.respond(HttpStatusCode.PayloadTooLarge, CrmErrorResponse("too_large", "El archivo supera el maximo de ${CrmAttachments.MaxFileBytes / (1024 * 1024)} MB."))
+                }
+                fun header(name: String) = call.request.headers[name]?.let { runCatching { URLDecoder.decode(it, Charsets.UTF_8) }.getOrNull() }.orEmpty()
+                val name = header("X-File-Name")
+                val path = header("X-File-Path")
+                val contentType = call.request.contentType().withoutParameters().toString()
+                val companyCode = access.companyCode(call)
+                    ?: return@post call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                // The body goes straight to the file storage; it is never held in memory whole.
+                val body = call.receiveChannel().toInputStream()
+                val result = withContext(Dispatchers.IO) {
+                    access.tenantConnectionForCompany(companyCode)?.use { tenant ->
+                        runCatching {
+                            val actor = CrmRepository.actor(tenant, permissions, access.userIdentity(tenant, permissions))
+                            CrmAttachments.upload(tenant, access.files(companyCode, CrmModule.id), name, path, contentType, body, actor.name)
+                        }
+                    }
+                } ?: return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
+                result.fold(
+                    onSuccess = { ref -> call.respondText(UiJson.encodeToString(UiFileRef.serializer(), ref), ContentType.Application.Json) },
+                    onFailure = { failure ->
+                        if (failure is CrmValidationException) call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("invalid_file", failure.message.orEmpty()))
+                        else call.respond(HttpStatusCode.InternalServerError, CrmErrorResponse("DATABASE_ERROR", "No se pudo guardar el archivo."))
+                    },
+                )
+            }
+
+            // A file of a lead the user can see, or a pending upload (only its id, just returned to the uploader, reaches it).
+            get("/files/{id}") {
+                val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@get
+                val id = call.parameters["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    ?: return@get call.respond(HttpStatusCode.NotFound)
+                val companyCode = access.companyCode(call)
+                    ?: return@get call.respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
+                val file = withContext(Dispatchers.IO) {
+                    access.tenantConnectionForCompany(companyCode)?.use { tenant ->
+                        CrmAttachments.file(tenant, access.files(companyCode, CrmModule.id), id)?.takeIf { stored ->
+                            val leadId = stored.leadId ?: return@takeIf permissions.has(CrmScreens.Manage)
+                            val lead = CrmRepository.lead(tenant, leadId) ?: return@takeIf false
+                            CrmRepository.scope(tenant, permissions).canSee(lead.interestId, lead.ownerUserId)
+                        }
+                    }
+                } ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("not_found", "Ese archivo ya no esta disponible."))
+                call.response.header(
+                    HttpHeaders.ContentDisposition,
+                    ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, file.ref.name).toString(),
+                )
+                val type = runCatching { ContentType.parse(file.contentType) }.getOrDefault(ContentType.Application.OctetStream)
+                val content = withContext(Dispatchers.IO) { file.open() }
+                    ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("missing_content", "El archivo ya no esta en el almacenamiento del servidor."))
+                call.respondOutputStream(type) { content.use { it.copyTo(this) } }
+            }
+
+            // Customers matching the contact typed in the new lead form (UiField.suggest).
+            get("/suggest/customers") {
+                val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@get
+                if (!permissions.has(CrmScreens.Manage)) {
+                    return@get call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
+                }
+                val query = call.request.queryParameters
+                call.respondTenant(access, UiSuggestions.serializer()) { tenant ->
+                    CrmScreens.customerSuggestions(
+                        CrmRepository.customerSuggestions(
+                            tenant,
+                            field = query["field"].orEmpty(),
+                            query = query["q"].orEmpty().take(200),
+                            email = query["email"].orEmpty().take(254),
+                            phone = query["phone"].orEmpty().take(40),
+                        ),
+                    )
+                }
+            }
+
             get("/{screen}") {
                 val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@get
                 val screen = call.screenId(permissions) ?: return@get
@@ -289,7 +386,7 @@ object CrmServerModule : ServerModule {
                 }
                 "new:create" -> {
                     val input = try {
-                        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users)
+                        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users, context.fields)
                     } catch (failure: CrmValidationException) {
                         return show("new", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
@@ -299,7 +396,8 @@ object CrmServerModule : ServerModule {
                     val stage = context.stage(input.stageId)!!
                     // Without the assign permission the responsible user stays as the form defaulted it (the user).
                     val owned = if (context.canAssign) input else input.copy(ownerUserId = context.scope.userId?.takeIf { id -> context.users.any { it.id == id } })
-                    val id = CrmRepository.createLead(tenant, owned, stage, actor)
+                    val chosen = values["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+                    val id = CrmRepository.createLead(tenant, owned, stage, actor, chosen, context.fields)
                     CrmNotify.newLead(tenant, id)
                     owned.ownerUserId?.takeIf { it != context.scope.userId }?.let { CrmNotify.assigned(tenant, id, it) }
                     show("lead", UiNotice("Lead creado.", UiTone.Success), mapOf("id" to id.toString()))
@@ -307,7 +405,7 @@ object CrmServerModule : ServerModule {
                 "lead:save" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
                     val parsed = try {
-                        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users)
+                        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users, context.fields, lead.customFields)
                     } catch (failure: CrmValidationException) {
                         return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), submitted = values)
                     }
@@ -316,7 +414,7 @@ object CrmServerModule : ServerModule {
                     if (input.interestId != lead.interestId && !context.scope.canUseInterest(input.interestId)) {
                         return show("lead", UiNotice("No puedes asignar ese interes.", UiTone.Danger), submitted = values)
                     }
-                    CrmRepository.updateLead(tenant, lead, input, context.stages, context.names, actor)
+                    CrmRepository.updateLead(tenant, lead, input, context.stages, context.names, actor, context.fields)
                     input.ownerUserId?.takeIf { it != lead.ownerUserId && it != context.scope.userId }?.let { CrmNotify.assigned(tenant, lead.id, it) }
                     if (context.scope.canSee(input.interestId, input.ownerUserId)) {
                         show("lead", UiNotice("Cambios guardados.", UiTone.Success))
@@ -728,6 +826,22 @@ object CrmServerModule : ServerModule {
                     CrmRepository.saveStage(tenant, uuid("id"), input)
                     show("settings", UiNotice("Etapa ${input.name} guardada.", UiTone.Success), emptyMap())
                 }
+                "settings:fieldSave" -> {
+                    val editing = uuid("id")?.let { id -> context.fields.firstOrNull { it.id == id } }
+                    if (uuid("id") != null && editing == null) return show("settings", UiNotice("Ese campo ya no existe.", UiTone.Warning), emptyMap())
+                    val field = try {
+                        CrmFields.save(tenant, editing?.id, CrmFields.parseDefinition(values, editing), context.fields)
+                    } catch (failure: CrmValidationException) {
+                        return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
+                    }
+                    show("settings", UiNotice("Campo ${field.label} guardado.", UiTone.Success), emptyMap())
+                }
+                "settings:fieldDelete" -> {
+                    val field = uuid("id")?.let { id -> context.fields.firstOrNull { it.id == id } }
+                        ?: return show("settings", UiNotice("Ese campo ya no existe.", UiTone.Warning), emptyMap())
+                    CrmFields.delete(tenant, field)
+                    show("settings", UiNotice("Campo ${field.label} eliminado.", UiTone.Success), emptyMap())
+                }
                 "settings:stageDelete" -> {
                     val id = uuid("id") ?: return show("settings", UiNotice("Etapa invalida.", UiTone.Danger), emptyMap())
                     if (context.stages.size <= 1) return show("settings", UiNotice("El pipeline necesita al menos una etapa.", UiTone.Warning), emptyMap())
@@ -779,14 +893,18 @@ object CrmServerModule : ServerModule {
     }
 
     // Opens the tenant database of the authorized company, runs [block] and responds with its screen.
-    private suspend fun ApplicationCall.respondScreen(access: ModuleAccessService, block: (Connection) -> UiScreen) {
+    private suspend fun ApplicationCall.respondScreen(access: ModuleAccessService, block: (Connection) -> UiScreen) =
+        respondTenant(access, UiScreen.serializer(), block)
+
+    // Opens the tenant database of the authorized company, runs [block] and responds with its result as JSON.
+    private suspend fun <T> ApplicationCall.respondTenant(access: ModuleAccessService, serializer: KSerializer<T>, block: (Connection) -> T) {
         val companyCode = access.companyCode(this)
             ?: return respond(HttpStatusCode.BadRequest, CrmErrorResponse("MISSING_COMPANY", "La empresa es requerida."))
         val connection = withContext(Dispatchers.IO) { access.tenantConnectionForCompany(companyCode) }
             ?: return respond(HttpStatusCode.Forbidden, CrmErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
         try {
-            val screen = connection.use { tenant -> withContext(Dispatchers.IO) { block(tenant) } }
-            respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
+            val result = connection.use { tenant -> withContext(Dispatchers.IO) { block(tenant) } }
+            respondText(UiJson.encodeToString(serializer, result), ContentType.Application.Json)
         } catch (failure: SQLException) {
             respond(HttpStatusCode.InternalServerError, CrmErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
         }

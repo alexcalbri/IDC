@@ -157,7 +157,7 @@ object CrmInbox {
     }
 
     // Adds the email or phone a known customer did not have yet; existing values are never replaced.
-    private fun fillMissingContact(tenant: Connection, customer: UUID, email: String, phone: String) {
+    internal fun fillMissingContact(tenant: Connection, customer: UUID, email: String, phone: String) {
         tenant.prepareStatement(
             """
             UPDATE customers SET primary_email = CASE WHEN primary_email = '' THEN ? ELSE primary_email END,

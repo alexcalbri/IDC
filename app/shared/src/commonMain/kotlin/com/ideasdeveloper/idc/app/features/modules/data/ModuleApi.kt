@@ -25,9 +25,15 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
+import com.ideasdeveloper.idc.app.core.session.SessionExpiry
 import com.ideasdeveloper.idc.ui.UiJson
 import com.ideasdeveloper.idc.ui.UiRequest
 import com.ideasdeveloper.idc.ui.UiScreen
+import com.ideasdeveloper.idc.ui.UiSuggestions
+import com.ideasdeveloper.idc.ui.UiFileRef
+import io.ktor.client.plugins.timeout
+import io.ktor.http.encodeURLParameter
+import io.ktor.http.encodeURLPathPart
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -48,6 +54,7 @@ class ModuleApi(serverUrl: String) {
     private val client = HttpClient {
         expectSuccess = false
         followRedirects = false
+        install(SessionExpiry)
 
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
@@ -250,6 +257,62 @@ class ModuleApi(serverUrl: String) {
             throw exception
         } catch (_: Exception) {
             throw ModuleException("No se pudo cargar la imagen.")
+        }
+    }
+
+    // Sugerencias de un campo mientras se escribe; si fallan no se muestra nada en lugar de un error.
+    suspend fun suggestions(accessToken: String, companyCode: String, route: String, params: Map<String, String>): UiSuggestions = try {
+        UiJson.decodeFromString(UiSuggestions.serializer(), send("GET", route, accessToken, companyCode, params))
+    } catch (exception: CancellationException) {
+        throw exception
+    } catch (_: Exception) {
+        UiSuggestions()
+    }
+
+    // Sube un archivo de un campo "files" (UiFiles.upload); el servidor responde la referencia que guarda el formulario.
+    suspend fun upload(accessToken: String, companyCode: String, route: String, name: String, path: String, mimeType: String, bytes: ByteArray): UiFileRef {
+        if (!route.startsWith("/modules/") || route.contains("..")) throw ModuleException("La accion no es valida.")
+        try {
+            val response = client.post("$baseUrl$route") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                header("X-File-Name", name.encodeURLParameter())
+                header("X-File-Path", path.encodeURLParameter())
+                // Un archivo grande en una conexion lenta tarda mas que una pantalla.
+                timeout { requestTimeoutMillis = 10 * 60_000 }
+                contentType(runCatching { ContentType.parse(mimeType) }.getOrDefault(ContentType.Application.OctetStream))
+                setBody(bytes)
+            }
+            val text = response.bodyAsText()
+            if (response.status.isSuccess()) return UiJson.decodeFromString(UiFileRef.serializer(), text)
+            val message = runCatching { Json.parseToJsonElement(text).jsonObject["message"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+            throw ModuleException(message ?: "No se pudo subir $name (${response.status.value}).")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: ModuleException) {
+            throw exception
+        } catch (_: Exception) {
+            throw ModuleException("No se pudo subir $name.")
+        }
+    }
+
+    // Descarga un adjunto de un campo "files": GET {download}/{id}.
+    suspend fun downloadFile(accessToken: String, companyCode: String, route: String, id: String): ByteArray {
+        if (!route.startsWith("/modules/") || route.contains("..")) throw ModuleException("La accion no es valida.")
+        try {
+            val response = client.get("$baseUrl$route/${id.encodeURLPathPart()}") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                timeout { requestTimeoutMillis = 10 * 60_000 }
+            }
+            if (!response.status.isSuccess()) throw ModuleException("No se pudo descargar el archivo (${response.status.value}).")
+            return response.readRawBytes()
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: ModuleException) {
+            throw exception
+        } catch (_: Exception) {
+            throw ModuleException("No se pudo descargar el archivo.")
         }
     }
 

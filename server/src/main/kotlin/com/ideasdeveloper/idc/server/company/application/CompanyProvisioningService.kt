@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.server.company.application
 
+import com.ideasdeveloper.idc.server.modules.CompanyFiles
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.TenantDatabaseConfig
 import com.ideasdeveloper.idc.server.auth.application.UserProfileRules
 import com.ideasdeveloper.idc.server.company.api.CreateCompanyRequest
@@ -46,6 +47,8 @@ class CompanyProvisioningService(
     // Null outside an installed distribution (e.g. :server:run), where modules cannot be built.
     private val modulePackageBuilder: ModulePackageBuilder?,
     private val requestRestart: () -> Unit,
+    // Files the modules stored for the company; removed with the company.
+    private val companyFiles: CompanyFiles? = null,
 ) {
     private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
     // Progress of optional modules being built for installation, shown in the module list.
@@ -353,6 +356,9 @@ class CompanyProvisioningService(
                     statement.executeUpdate("DROP DATABASE IF EXISTS ${quoteIdentifier(company.databaseName)}")
                     tenantDatabaseDropped = true
                 }
+                // Without its database nobody can reach these files any more.
+                runCatching { companyFiles?.deleteCompany(company.code) }
+                    .onFailure { log.warn("No se pudieron borrar los archivos de la empresa {}", company.code, it) }
                 val ownerRoleToDrop = ownerRole
                 if (!ownerRoleToDrop.isNullOrBlank() && admin.existsRole(ownerRoleToDrop)) {
                     statement.executeUpdate("DROP ROLE IF EXISTS ${quoteIdentifier(ownerRoleToDrop)}")

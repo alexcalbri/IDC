@@ -11,6 +11,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.savedstate.read
+import kotlinx.coroutines.delay
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
 import com.ideasdeveloper.idc.app.core.session.SessionStore
@@ -25,6 +26,7 @@ import com.ideasdeveloper.idc.app.features.company.ui.ServerStaffScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
 import com.ideasdeveloper.idc.app.features.settings.ui.SettingsScreen
+import com.ideasdeveloper.idc.app.features.shell.ui.ConfirmDialog
 import com.ideasdeveloper.idc.navigation.NavRoute
 import com.ideasdeveloper.idc.navigation.NavRoute.Companion.routeName
 
@@ -36,7 +38,10 @@ fun App(initialServerUrl: String = "") {
         val navController = rememberNavController()
         val restoredSession = remember { SessionStore.restore() }
         val session by SessionStore.session.collectAsState()
-        val currentSession = session ?: restoredSession
+        // Tras cerrar o vencer la sesion no se vuelve a usar la restaurada al iniciar.
+        val currentSession = session
+        val sessionExpired by SessionStore.expired.collectAsState()
+        var confirmingLogout by remember { mutableStateOf(false) }
         remember { CompanyIdentityStore.restore() }
         var clientConfiguration by remember { mutableStateOf(ClientConfigurationStore.load()) }
         // Trae los temas de los modulos instalados en el servidor configurado.
@@ -52,14 +57,40 @@ fun App(initialServerUrl: String = "") {
             }
         }
 
-        // Cierra la sesion local y deja al usuario en la pantalla de login.
-        fun logout() {
-            SessionStore.clear()
+        // Deja solo la pantalla de login en la pila, sin importar desde donde se llegue.
+        fun openLogin() {
             navController.navigate("login") {
-                popUpTo("dashboard") {
+                popUpTo(navController.graph.id) {
                     inclusive = true
                 }
                 launchSingleTop = true
+            }
+        }
+
+        // Cierra la sesion local y deja al usuario en la pantalla de login.
+        fun logout() {
+            SessionStore.clear()
+            openLogin()
+        }
+
+        // Los botones de "Cerrar sesion" primero piden confirmacion.
+        fun requestLogout() {
+            confirmingLogout = true
+        }
+
+        // Cierra la sesion cuando vence el token aunque el usuario no haga ninguna peticion.
+        LaunchedEffect(session) {
+            if (session == null) return@LaunchedEffect
+            val remaining = SessionStore.remaining() ?: return@LaunchedEffect
+            delay(remaining)
+            SessionStore.expire()
+        }
+
+        // Sesion vencida (por tiempo o rechazada por el servidor): de vuelta al login, que muestra el aviso.
+        LaunchedEffect(sessionExpired) {
+            if (sessionExpired) {
+                confirmingLogout = false
+                openLogin()
             }
         }
 
@@ -89,7 +120,7 @@ fun App(initialServerUrl: String = "") {
                     session = currentSession,
                     serverUrl = clientConfiguration?.serverUrl,
                     onNavigateTo = { route -> navController.navigate(route.routeName()) },
-                    onLogout = ::logout,
+                    onLogout = ::requestLogout,
                 )
             }
             composable("module/{moduleId}") { backStackEntry ->
@@ -103,7 +134,7 @@ fun App(initialServerUrl: String = "") {
                         serverUrl = clientConfiguration?.serverUrl,
                         session = currentSession,
                         onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                        onLogout = ::logout,
+                        onLogout = ::requestLogout,
                         onReturnToDashboard = ::openDashboard,
                     )
                 } else if (moduleId == "server-staff" && currentSession?.role == "server_owner") {
@@ -111,7 +142,7 @@ fun App(initialServerUrl: String = "") {
                         serverUrl = clientConfiguration?.serverUrl,
                         session = currentSession,
                         onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                        onLogout = ::logout,
+                        onLogout = ::requestLogout,
                         onReturnToDashboard = ::openDashboard,
                     )
                 } else if (moduleId == "empresa") {
@@ -120,7 +151,7 @@ fun App(initialServerUrl: String = "") {
                             serverUrl = clientConfiguration?.serverUrl,
                             session = currentSession,
                             onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                            onLogout = ::logout,
+                            onLogout = ::requestLogout,
                             onReturnToDashboard = ::openDashboard,
                         )
                     } else {
@@ -128,7 +159,7 @@ fun App(initialServerUrl: String = "") {
                             serverUrl = clientConfiguration?.serverUrl,
                             session = currentSession,
                             onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                            onLogout = ::logout,
+                            onLogout = ::requestLogout,
                             onReturnToDashboard = ::openDashboard,
                         )
                     }
@@ -140,7 +171,7 @@ fun App(initialServerUrl: String = "") {
                         session = currentSession,
                         fallbackTitle = moduleName,
                         onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                        onLogout = ::logout,
+                        onLogout = ::requestLogout,
                         onReturnToDashboard = ::openDashboard,
                     )
                 }
@@ -149,7 +180,7 @@ fun App(initialServerUrl: String = "") {
                 SettingsScreen(
                     configuration = clientConfiguration,
                     session = currentSession,
-                    onLogout = ::logout,
+                    onLogout = ::requestLogout,
                     onReturnToDashboard = ::openDashboard,
                     onClearLocalConfiguration = {
                         ClientConfigurationStore.clear()
@@ -169,7 +200,22 @@ fun App(initialServerUrl: String = "") {
                 required = true,
                 onSaved = { profile -> SessionStore.update { it.copy(displayName = profile.displayName, email = profile.email, profileComplete = profile.profileComplete) } },
                 onDismiss = {},
-                onLogout = ::logout,
+                onLogout = ::requestLogout,
+            )
+        }
+
+        // Va al final para quedar encima del dialogo de perfil obligatorio.
+        if (confirmingLogout && currentSession != null) {
+            ConfirmDialog(
+                title = "Cerrar sesion",
+                message = "Se cerrara tu sesion en este dispositivo y tendras que volver a iniciar sesion. " +
+                    "Los cambios que no hayas guardado se perderan.",
+                confirmLabel = "Cerrar sesion",
+                onConfirm = {
+                    confirmingLogout = false
+                    logout()
+                },
+                onDismiss = { confirmingLogout = false },
             )
         }
     }

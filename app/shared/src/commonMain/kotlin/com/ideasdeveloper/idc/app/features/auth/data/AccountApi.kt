@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.auth.data
 
+import com.ideasdeveloper.idc.app.core.session.SessionExpiry
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -40,6 +41,7 @@ class AccountApi(serverUrl: String) {
     private val client = HttpClient {
         expectSuccess = false
         followRedirects = false
+        install(SessionExpiry)
         install(ContentNegotiation) { json(Json { ignoreUnknownKeys = true }) }
         install(HttpTimeout) {
             requestTimeoutMillis = 30_000

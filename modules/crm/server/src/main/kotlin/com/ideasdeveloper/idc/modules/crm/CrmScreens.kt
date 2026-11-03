@@ -9,6 +9,12 @@ import com.ideasdeveloper.idc.ui.UiBoardColumn
 import com.ideasdeveloper.idc.ui.UiButton
 import com.ideasdeveloper.idc.ui.UiCard
 import com.ideasdeveloper.idc.ui.UiField
+import com.ideasdeveloper.idc.ui.UiFieldCondition
+import com.ideasdeveloper.idc.ui.UiFieldValues
+import com.ideasdeveloper.idc.ui.UiFiles
+import com.ideasdeveloper.idc.ui.UiSuggest
+import com.ideasdeveloper.idc.ui.UiSuggestions
+import com.ideasdeveloper.idc.ui.UiSuggestion
 import com.ideasdeveloper.idc.ui.UiForm
 import com.ideasdeveloper.idc.ui.UiGrid
 import com.ideasdeveloper.idc.ui.UiList
@@ -94,6 +100,8 @@ object CrmScreens {
         // Public origin of this server (https://host), for the webhook URLs shown in Integraciones.
         val publicBase: String = "",
         val today: LocalDate = LocalDate.now(),
+        // Custom lead fields defined in Configuracion.
+        val fields: List<CrmField> = emptyList(),
     ) {
         val names = CrmNames(users, interests)
         val interestsEnabled get() = scope.interestsEnabled
@@ -109,6 +117,7 @@ object CrmScreens {
             fun load(tenant: Connection, permissions: ModulePermissions, serverMail: SmtpSettings? = null, publicBase: String = "") = Context(
                 tenant, permissions, CrmRepository.scope(tenant, permissions),
                 CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant), serverMail, publicBase = publicBase,
+                fields = CrmFields.all(tenant),
             )
         }
     }
@@ -377,10 +386,19 @@ object CrmScreens {
 
     // ---- Lead form ----
 
-    private fun leadFields(context: Context, readOnly: Boolean, currentInterest: UUID?): List<UiField> = buildList {
-        add(UiField("name", "Nombre", required = true, readOnly = readOnly, section = "Contacto"))
-        add(UiField("email", "Correo", type = "email", readOnly = readOnly, section = "Contacto"))
-        add(UiField("phone", "Telefono", type = "phone", readOnly = readOnly, section = "Contacto"))
+    // Route the new lead form asks while the contact is typed, to reuse an existing customer.
+    const val CustomerSuggestRoute = "$UiRoute/suggest/customers"
+
+    private fun leadFields(context: Context, readOnly: Boolean, currentInterest: UUID?, suggestCustomers: Boolean = false): List<UiField> = buildList {
+        val suggest = UiSuggest(CustomerSuggestRoute).takeIf { suggestCustomers }
+        add(UiField("name", "Nombre", required = true, readOnly = readOnly, section = "Contacto", suggest = suggest))
+        add(
+            UiField(
+                "email", "Correo", type = "email", readOnly = readOnly, section = "Contacto", suggest = suggest?.copy(minLength = 3),
+                help = if (suggestCustomers) "Si ya hay un cliente con este correo o telefono, el lead se le asigna." else "",
+            ),
+        )
+        add(UiField("phone", "Telefono", type = "phone", readOnly = readOnly, section = "Contacto", suggest = suggest?.copy(minLength = 3)))
         add(UiField("language", "Idioma", readOnly = readOnly, section = "Contacto"))
         add(UiField("stage", "Etapa", type = "dropdown", required = true, readOnly = readOnly, options = context.stages.map { it.name }, section = "Seguimiento"))
         if (context.interestsEnabled) {
@@ -403,6 +421,49 @@ object CrmScreens {
         add(UiField("estimatedValue", "Valor estimado", type = "number", readOnly = readOnly, section = "Lo que busca"))
         add(UiField("message", "Mensaje del lead", type = "textarea", readOnly = readOnly, section = "Mensaje y detalles"))
         add(UiField("details", "Detalles", type = "textarea", readOnly = readOnly, help = "Cotizacion, personas, preferencias...", section = "Mensaje y detalles"))
+        context.fields.forEach { field -> add(customField(field, readOnly)) }
+        add(
+            UiField(
+                CrmFields.Documents, CrmFields.DocumentsLabel, type = "files", readOnly = readOnly, files = Files, section = CrmFields.DocumentsLabel,
+                help = "Adjunta documentos o carpetas completas. Se guardan al guardar el lead.",
+            ),
+        )
+    }
+
+    // Where the app uploads and downloads the files of the lead form (see CrmServerModule).
+    const val FilesRoute = "$UiRoute/files"
+    private val Files = UiFiles(upload = FilesRoute, download = FilesRoute, maxFileBytes = CrmAttachments.MaxFileBytes)
+
+    private fun customField(field: CrmField, readOnly: Boolean) = UiField(
+        field.key,
+        field.label,
+        type = field.type.uiType,
+        required = field.required,
+        readOnly = readOnly,
+        options = field.options,
+        section = CrmFields.Section,
+        multiple = field.multiple,
+        files = Files.takeIf { field.type == CrmFieldType.Files },
+    )
+
+    /** Suggestions of the new lead form: choosing one fills the contact and links that customer. */
+    fun customerSuggestions(customers: List<CrmRepository.CustomerSuggestion>): UiSuggestions {
+        val exact = customers.any { it.exact }
+        return UiSuggestions(
+            heading = if (exact) "Ya existe un cliente con este correo o telefono: el lead se le asignara." else "Clientes existentes",
+            items = customers.map { customer ->
+                val leads = when (customer.openLeads) {
+                    0 -> ""
+                    1 -> "1 lead abierto"
+                    else -> "${customer.openLeads} leads abiertos"
+                }
+                UiSuggestion(
+                    title = customer.name.ifBlank { customer.email.ifBlank { customer.phone } },
+                    subtitle = listOf(customer.code.orEmpty(), customer.email, customer.phone, leads).filter { it.isNotBlank() }.joinToString(" - "),
+                    values = mapOf("name" to customer.name, "email" to customer.email, "phone" to customer.phone, "customerId" to customer.id.toString()),
+                )
+            },
+        )
     }
 
     fun leadValues(context: Context, lead: CrmLead): Map<String, String> = mapOf(
@@ -420,7 +481,14 @@ object CrmScreens {
         "estimatedValue" to lead.estimatedValue?.toPlainString().orEmpty(),
         "message" to lead.message,
         "details" to lead.details,
-    )
+    ) + CrmFields.formValues(context.fields, lead.customFields) + fileValues(context, lead)
+
+    // Files of the lead for its files fields; fields without files get "".
+    private fun fileValues(context: Context, lead: CrmLead): Map<String, String> {
+        val stored = CrmAttachments.forLead(context.tenant, lead.id)
+        val keys = listOf(CrmFields.Documents) + context.fields.filter { it.type == CrmFieldType.Files }.map { it.key }
+        return keys.associateWith { UiFieldValues.files(stored[it].orEmpty()) }
+    }
 
     private fun newLead(context: Context, submitted: Map<String, String>?): List<UiNode> {
         if (context.stages.isEmpty()) return listOf(UiText("Crea al menos una etapa en Configuracion.", tone = UiTone.Warning))
@@ -428,13 +496,14 @@ object CrmScreens {
             "stage" to context.stages.first().name,
             "interest" to if (context.interestsEnabled && !context.scope.seesAll && !context.scope.reception) context.usableInterests.firstOrNull()?.name.orEmpty() else CrmForms.NoInterest,
             "owner" to (context.scope.userId?.let { id -> context.users.firstOrNull { it.id == id }?.name } ?: CrmForms.Unassigned),
-        )
+            // Every custom field is sent even if left untouched, so required ones are checked.
+        ) + context.fields.associate { it.key to "" } + (CrmFields.Documents to "")
         return listOf(
-            UiText("Correo y telefono son opcionales. Si ya existe un cliente con ese correo (o, sin correo, con ese telefono), el lead se vincula a el sin cambiar sus datos."),
+            UiText("Correo y telefono son opcionales. Mientras escribes se sugieren los clientes existentes; si ya hay uno con ese correo o telefono, el lead se le asigna en lugar de crear otro."),
             UiCard(
                 listOf(
                     UiForm(
-                        "lead", leadFields(context, readOnly = false, currentInterest = null), defaults + submitted.orEmpty(),
+                        "lead", leadFields(context, readOnly = false, currentInterest = null, suggestCustomers = true), defaults + submitted.orEmpty(),
                         submit = UiButton("Crear lead", UiRequest(UiRoute + "/new", params = mapOf("op" to "create"), formId = "lead")),
                     ),
                 ),
@@ -515,6 +584,7 @@ object CrmScreens {
             "stage" -> "Cambio de etapa" to UiTone.Success
             "owner" -> "Responsable" to UiTone.Warning
             "interest" -> "Interes" to UiTone.Info
+            "files" -> "Archivos" to UiTone.Info
             else -> "Actualizado" to UiTone.Neutral
         }
         val body = if (activity.kind == "stage" && activity.fromStage != null && activity.toStage != null) "${activity.fromStage} -> ${activity.toStage}" else activity.body
@@ -524,6 +594,66 @@ object CrmScreens {
     private fun time(instant: Instant) = timeFormat.format(instant.atZone(ZoneId.systemDefault()))
 
     // ---- Settings ----
+
+    private fun customFieldsCard(context: Context, params: Map<String, String>, submitted: Map<String, String>?): UiCard {
+        val editing = params["field"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { id -> context.fields.firstOrNull { it.id == id } }
+        val rows = context.fields.map { field ->
+            val detail = buildList {
+                add(field.type.label)
+                if (field.type == CrmFieldType.Dropdown) add(if (field.multiple) "varias opciones" else "una opcion")
+                if (field.required) add("obligatorio")
+            }.joinToString(", ")
+            UiRow(
+                listOf(
+                    UiText("${field.position}. ${field.label} ($detail)"),
+                    UiButton("Editar", UiNavigate("settings", mapOf("field" to field.id.toString())), style = "secondary"),
+                    UiButton(
+                        "Eliminar",
+                        UiRequest(
+                            UiRoute + "/settings", params = mapOf("op" to "fieldDelete", "id" to field.id.toString()),
+                            confirm = "Se elimina el campo ${field.label} y lo que tenga en todos los leads. Continuar?",
+                        ),
+                        style = "danger",
+                    ),
+                ),
+            )
+        }
+        val section = if (editing == null) "Nuevo campo" else "Editar ${editing.label}"
+        val dropdown = UiFieldCondition("type", listOf(CrmFieldType.Dropdown.label))
+        val formFields = listOf(
+            UiField("label", "Nombre", required = true, section = section),
+            UiField(
+                "type", "Tipo", type = "dropdown", required = true, readOnly = editing != null, options = CrmFieldType.entries.map { it.label }, section = section,
+                help = if (editing != null) "El tipo no cambia despues de crear el campo." else "",
+            ),
+            UiField(
+                "options", "Opciones de la lista", type = "textarea", required = true, section = section, visibleWhen = dropdown,
+                help = "Una opcion por linea. Quitar una opcion no borra lo que ya tengan los leads, pero ya no se podra elegir.",
+            ),
+            UiField("multiple", "Permitir elegir varias opciones", type = "boolean", section = section, visibleWhen = dropdown),
+            UiField("required", "Obligatorio", type = "boolean", section = section),
+            UiField("position", "Posicion", type = "number", help = "Orden en la ficha del lead.", section = section),
+        )
+        val values = editing?.let {
+            mapOf(
+                "label" to it.label, "type" to it.type.label, "options" to it.options.joinToString("\n"),
+                "multiple" to it.multiple.toString(), "required" to it.required.toString(), "position" to it.position.toString(),
+            )
+        } ?: mapOf("type" to CrmFieldType.Text.label, "position" to ((context.fields.maxOfOrNull { it.position } ?: -1) + 1).toString())
+        val saveParams = mapOf("op" to "fieldSave") + listOfNotNull(editing?.let { "id" to it.id.toString() })
+        return UiCard(
+            listOf(UiText("Campos propios de la empresa que aparecen en la ficha de cada lead, en la seccion ${CrmFields.Section}.")) +
+                rows.ifEmpty { listOf(UiText("Aun no hay campos personalizados.", tone = UiTone.Neutral)) } +
+                listOfNotNull(UiButton("Nuevo campo", UiNavigate("settings"), style = "secondary").takeIf { editing != null }) +
+                UiForm(
+                    "customField", formFields,
+                    values + submitted.orEmpty().filterKeys { it in setOf("label", "type", "options", "multiple", "required", "position") },
+                    submit = UiButton(if (editing == null) "Agregar campo" else "Guardar campo", UiRequest(UiRoute + "/settings", params = saveParams, formId = "customField")),
+                    minFieldWidth = 220,
+                ),
+            title = "Campos personalizados",
+        )
+    }
 
     private fun settings(context: Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> {
         val editingStage = params["stage"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { context.stage(it) }
@@ -596,6 +726,8 @@ object CrmScreens {
                 )
             }
         }
+
+        nodes += customFieldsCard(context, params, submitted)
 
         val stageRows = context.stages.map { stage ->
             UiRow(

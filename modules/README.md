@@ -211,6 +211,18 @@ its own). `sendHtml` takes the HTML and a plain-text alternative; the module
 builds the HTML and must escape every value that comes from users or
 customers.
 
+## Files
+
+Modules never write files to the disk themselves. `access.files(companyCode, moduleId)` gives
+the module's file storage for that company (`ModuleFiles`): `put(name, contentType, stream,
+maxBytes)` streams a file and returns a `StoredFileRef(backend, ref, size)` that the module keeps
+in its own table (store both `backend` and `ref`), `open(ref)` reads it back and `delete(ref)`
+removes it. Today every company stores on the server disk under `COMPANY_FILES_ROOT`; a company
+may later use another backend (e.g. its own Google Drive), and files written before keep working
+because each one records its backend. Delete stored files only after the transaction that
+dropped their rows has committed (the CRM marks rows and a job deletes them). The files of a
+company are removed when the company is deleted.
+
 ## Public webhooks
 
 External services (Meta, a WordPress plugin, a PMS) call
@@ -341,7 +353,7 @@ The server builds every screen with the current data; the app only draws it.
 | `UiCard` | Surface with optional title and header actions. |
 | `UiMetric`, `UiStatus` | KPI value with caption; colored status dot. |
 | `UiBarChart`, `UiTable` | Bar chart; horizontally scrollable table. |
-| `UiForm` | Fields (`text`, `email`, `phone`, `url`, `number`, `password`, `select`, `textarea`, `color`, `date`, `boolean`, read-only) grouped by section. |
+| `UiForm` | Fields (`text`, `email`, `phone`, `url`, `number`, `password`, `select`, `textarea`, `color`, `date`, `boolean`, read-only) grouped by section. A field with `suggest` (`UiSuggest(route, minLength)`) asks `GET route` with the form values plus `q` and `field` while the user types, and expects `UiSuggestions`; choosing an item writes its `values` into the form (keys that are not fields, such as a hidden id, are cleared again if the user edits the field). A `dropdown` with `multiple = true` lets the user check several options; its value is a JSON array (`UiFieldValues.options`). A `files` field (with `UiFiles(upload, download, folders)`) lets the user attach files or whole folders: each file is sent to `POST upload` (raw body, `X-File-Name`/`X-File-Path` URL-encoded) and answered with a `UiFileRef`; the value is the JSON array of refs (`UiFieldValues.files`), downloaded from `GET download/{id}`. Older apps show these fields as plain text. |
 | `UiImage` | Image from an `https://` URL or a module route (`/modules/...`, sent with the session). Web clients need CORS on external hosts. |
 | `UiButton`, `UiDivider`, `UiSpacer` | Actions and spacing. |
 

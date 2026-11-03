@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.data
 
+import com.ideasdeveloper.idc.app.core.session.SessionExpiry
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -244,6 +245,7 @@ class CompanyApi(serverUrl: String) {
     private val client = HttpClient {
         expectSuccess = false
         followRedirects = false
+        install(SessionExpiry)
 
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })

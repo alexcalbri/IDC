@@ -5,10 +5,14 @@ import com.ideasdeveloper.idc.server.modules.McpTool
 import com.ideasdeveloper.idc.server.modules.McpToolCall
 import com.ideasdeveloper.idc.server.modules.McpToolException
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
+import com.ideasdeveloper.idc.ui.UiFieldValues
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
@@ -33,6 +37,14 @@ object CrmMcpTools {
         "targetEnd" to McpSchema.date("Fecha de fin de lo que busca."),
         "estimatedValue" to McpSchema.number("Valor estimado del negocio."),
         "followUpOn" to McpSchema.date("Proximo seguimiento."),
+        "customFields" to buildJsonObject {
+            put("type", "object")
+            put(
+                "description",
+                "Campos personalizados de la empresa (ver list_pipeline), por nombre o clave: texto, numero, fecha AAAA-MM-DD, " +
+                    "true/false o, en listas de varias opciones, un arreglo de opciones. Los archivos se adjuntan solo desde la app.",
+            )
+        },
     )
 
     // What this module tells agents about itself (see ModuleMcp): leads, settings and integrations.
@@ -239,6 +251,22 @@ object CrmMcpTools {
                 putJsonArray("interests") { context.usableInterests.forEach { add(JsonPrimitive(it.name)) } }
                 put("canUseNoInterest", context.scope.seesAll || context.scope.reception)
             }
+            putJsonArray("customFields") {
+                context.fields.forEach { field ->
+                    add(
+                        buildJsonObject {
+                            put("key", field.key)
+                            put("name", field.label)
+                            put("type", field.type.label)
+                            if (field.type == CrmFieldType.Dropdown) {
+                                putJsonArray("options") { field.options.forEach { add(JsonPrimitive(it)) } }
+                                put("multiple", field.multiple)
+                            }
+                            put("required", field.required)
+                        },
+                    )
+                }
+            }
             put("canAssign", context.canAssign)
             putJsonArray("owners") { context.users.forEach { add(JsonPrimitive(it.name)) } }
         }
@@ -315,7 +343,7 @@ object CrmMcpTools {
 
     private fun create(call: McpToolCall): JsonElement {
         val context = context(call)
-        val values = leadValues(call, emptyMap()).toMutableMap()
+        val values = (leadValues(call, emptyMap()) + customValues(call, context)).toMutableMap()
         values["stage"] = values["stage"]?.takeIf { it.isNotEmpty() }?.let { stage(context, it).name }
             ?: context.stages.firstOrNull { it.kind == StageKind.Open }?.name.orEmpty()
         // Like the form: users limited to their interests start with the first one.
@@ -327,7 +355,7 @@ object CrmMcpTools {
         if (!context.scope.canUseInterest(input.interestId)) throw McpToolException("El usuario no puede crear leads de ese interes.")
         val owned = if (context.canAssign && call.has("owner")) input else input.copy(ownerUserId = context.scope.userId?.takeIf { id -> context.users.any { it.id == id } })
         val stage = context.stage(input.stageId)!!
-        val id = CrmRepository.createLead(call.tenant, owned, stage, actor(call))
+        val id = CrmRepository.createLead(call.tenant, owned, stage, actor(call), fields = context.fields)
         CrmNotify.newLead(call.tenant, id)
         owned.ownerUserId?.takeIf { it != context.scope.userId }?.let { CrmNotify.assigned(call.tenant, id, it) }
         return json(CrmRepository.lead(call.tenant, id)!!, context, brief = false)
@@ -354,13 +382,13 @@ object CrmMcpTools {
             "followUpOn" to lead.followUpOn?.toString().orEmpty(),
         )
         if (call.has("owner") && !context.canAssign) throw McpToolException("El usuario no puede cambiar el responsable del lead.")
-        val values = leadValues(call, current).toMutableMap()
+        val values = (leadValues(call, current) + customValues(call, context)).toMutableMap()
         if (call.has("stage")) values["stage"] = stage(context, call.string("stage", 60)).name
-        val parsed = parse(values, context)
+        val parsed = parse(values, context, lead.customFields)
         // A new stage is applied afterwards like move_lead, which records the stage history.
         val input = parsed.copy(stageId = lead.stageId, ownerUserId = if (call.has("owner")) parsed.ownerUserId else lead.ownerUserId)
         if (input.interestId != lead.interestId && !context.scope.canUseInterest(input.interestId)) throw McpToolException("El usuario no puede asignar ese interes.")
-        CrmRepository.updateLead(call.tenant, lead, input, context.stages, context.names, actor(call))
+        CrmRepository.updateLead(call.tenant, lead, input, context.stages, context.names, actor(call), context.fields)
         input.ownerUserId?.takeIf { it != lead.ownerUserId && it != context.scope.userId }?.let { CrmNotify.assigned(call.tenant, lead.id, it) }
         if (call.has("stage") && parsed.stageId != lead.stageId) {
             CrmRepository.lead(call.tenant, lead.id)?.let { moveChecked(call, context, it, context.stage(parsed.stageId)!!) }
@@ -530,10 +558,26 @@ object CrmMcpTools {
     }
 
     private fun leadValues(call: McpToolCall, base: Map<String, String>): Map<String, String> =
-        base + leadArguments.keys.filter { call.has(it) }.associateWith { call.string(it, 10_000) }
+        base + leadArguments.keys.filter { it != "customFields" && call.has(it) }.associateWith { call.string(it, 10_000) }
 
-    private fun parse(values: Map<String, String>, context: CrmScreens.Context): CrmLeadInput = try {
-        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users)
+    // customFields of the call as form values, by field key.
+    private fun customValues(call: McpToolCall, context: CrmScreens.Context): Map<String, String> {
+        val sent = call.arguments["customFields"] as? JsonObject ?: return emptyMap()
+        return sent.entries.associate { (name, value) ->
+            val field = context.fields.firstOrNull { it.key == name || it.label.equals(name.trim(), ignoreCase = true) }
+                ?: throw McpToolException("No existe el campo personalizado $name (ver list_pipeline).")
+            if (field.type == CrmFieldType.Files) throw McpToolException("Los archivos de ${field.label} se adjuntan desde la app.")
+            field.key to when (value) {
+                is JsonArray -> UiFieldValues.options(value.mapNotNull { (it as? JsonPrimitive)?.contentOrNull })
+                is JsonNull -> ""
+                is JsonPrimitive -> value.content
+                else -> throw McpToolException("Valor invalido para ${field.label}.")
+            }
+        }
+    }
+
+    private fun parse(values: Map<String, String>, context: CrmScreens.Context, stored: JsonObject = JsonObject(emptyMap())): CrmLeadInput = try {
+        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users, context.fields, stored)
     } catch (failure: CrmValidationException) {
         throw McpToolException(failure.message.orEmpty())
     }
@@ -564,6 +608,24 @@ object CrmMcpTools {
             lead.targetStart?.let { put("targetStart", it.toString()) }
             lead.targetEnd?.let { put("targetEnd", it.toString()) }
             lead.suggestedOwnerUserId?.let { put("suggestedOwner", context.names.user(it)) }
+            val files = CrmAttachments.forLead(context.tenant, lead.id)
+            if (context.fields.isNotEmpty()) {
+                put(
+                    "customFields",
+                    buildJsonObject {
+                        context.fields.forEach { field ->
+                            if (field.type == CrmFieldType.Files) {
+                                putJsonArray(field.label) { files[field.key].orEmpty().forEach { add(JsonPrimitive(listOf(it.path, it.name).filter { p -> p.isNotEmpty() }.joinToString("/"))) } }
+                            } else {
+                                lead.customFields[field.key]?.let { put(field.label, it) }
+                            }
+                        }
+                    },
+                )
+            }
+            putJsonArray("documents") {
+                files[CrmFields.Documents].orEmpty().forEach { add(JsonPrimitive(listOf(it.path, it.name).filter { p -> p.isNotEmpty() }.joinToString("/"))) }
+            }
         }
     }
 }

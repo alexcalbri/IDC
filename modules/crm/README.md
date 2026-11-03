@@ -50,9 +50,9 @@ The visibility rule lives in `CrmScope` (`canSee` and its SQL twin
 | `leads` | `crm.view` | Searchable, filterable list (`UiList`) with pages of 50. |
 | `reception` | `crm.reception` | Leads without interest (only with interests on). |
 | `followups` | `crm.view` | Open leads with follow-up overdue, today or in the next 7 days. |
-| `new` | `crm.leads.manage` | New lead. Email and phone are optional (Clientes V005). An existing customer with the same email, or without email the same phone, is reused unchanged; otherwise a `prospect` customer of type `crm` is created. |
-| `lead` | `crm.view` | Detail form, notes and activity timeline (`UiTimeline`). Editing contact data updates the shared customer. |
-| `settings` | `crm.settings` | Interests switch, interest catalog, interests per user, stages and templates. |
+| `new` | `crm.leads.manage` | New lead. Email and phone are optional (Clientes V005). While name, email or phone are typed the form suggests existing customers (`GET /modules/crm/ui/suggest/customers`, same permission); choosing one fills the contact and links that customer. Otherwise an existing customer with the same email, or else the same phone (compared by digits, at least 7), is reused; only an email or phone it lacked is added. Without a match a `prospect` customer of type `crm` is created. |
+| `lead` | `crm.view` | Detail form, notes and activity timeline (`UiTimeline`). Editing contact data updates the shared customer. The form also shows the custom fields and the **Documentos** attachments (see below). |
+| `settings` | `crm.settings` | Interests switch, interest catalog, interests per user, custom fields, stages and templates. |
 
 Routes: `GET /modules/crm/ui/{screen}` and `POST /modules/crm/ui/{screen}?op=...`
 (`move`, `create`, `save`, `note`, `delete`, `interests`, `interestSave`,
@@ -132,6 +132,7 @@ sent by job `outbox` every minute with up to 5 attempts.
 | `cloudbeds-welcome` | 15 min | Welcome emails before check-in. |
 | `cloudbeds-sync` | 30 min | Reservation statuses; archive after check-out. |
 | `import` | 1 min | Apply 300 rows of running imports. |
+| `attachments-cleanup` | 15 min | Delete stored files of removed attachments, deleted leads and uploads never saved (after a day); move V010 contents out of the database. |
 
 ## Meta: WhatsApp, Messenger and Instagram (V003)
 
@@ -286,6 +287,31 @@ added twice; imports send no notifications.
 **Acciones en lote**: the filtered leads (50 per page) with a checkbox each,
 "select all visible", and move to a stage, assign a responsible user (with
 `crm.assign`) or delete (with `crm.leads.delete`).
+
+## Custom fields and attachments (V010)
+
+- **Custom fields** (`crm_field_definitions`): created in Configuracion with a name, a type
+  (Texto, Texto largo, Numero, Correo, Telefono, Enlace, Fecha, Si / No, Lista desplegable,
+  Archivos y carpetas), whether it is required and its position. A dropdown has its own options
+  (one per line) and may allow several (`multiple`, sent to the app as `UiField.multiple`). The
+  key is `cf_` plus the name (`cf_fecha_de_firma`) and the type never changes after creation.
+  Values live in `crm_leads.custom_fields` (JSONB: strings, booleans, arrays for multiple
+  dropdowns); an option removed from the list stays valid in the leads that already had it.
+  Changes are logged in the lead history. Deleting a field deletes its values and files.
+- **Attachments** (`crm_attachments`): every lead has a built-in **Documentos** field and custom
+  fields of type Archivos work the same way. Files or whole folders (with subfolders, kept as
+  `folder_path`) are uploaded one by one to `POST /modules/crm/ui/files` (`crm.leads.manage`,
+  25 MB per file, 500 files per lead) and streamed to the server file storage of the company
+  (`ModuleAccessService.files`, under `COMPANY_FILES_ROOT`); the row keeps name, folder, lead,
+  `storage_backend` and `storage_ref` (V011). An upload belongs to no lead until the form is
+  saved. Removing a file, deleting its field or deleting the lead only marks the row; the
+  `attachments-cleanup` job deletes the stored file and then the row, so a failed save never
+  loses a file. The same job moves files still kept in the database by V010.
+  `GET /modules/crm/ui/files/{id}` downloads a file of a lead the user can see. Added and
+  removed files are logged in the history (kind `files`).
+- Agents read the definitions in `crm_list_pipeline`, the values in `crm_get_lead` and set them
+  with `customFields` in `crm_create_lead` / `crm_update_lead` (by name or key); files are only
+  attached from the app.
 
 ## Not in this version
 
