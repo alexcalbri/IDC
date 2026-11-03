@@ -135,5 +135,20 @@ This module also has its own MCP, like any other, only about itself (`AgentesMcp
 as *Mis agentes* and *Agentes de la empresa*. Creating a connection is not offered: its token is a
 credential and is shown only in the app.
 
+## Server owners
+
+A server owner's agent manages the whole server:
+
+- The server's own MCP (`server/.../company/application/ServerMcpTools.kt`, tools `servidor_*`, only
+  for server owners): list, create, edit, activate, deactivate and delete companies, enable modules
+  per company and in the server workspace, install, update and remove modules, and the module catalog.
+- Every installed module's tools, in any company: the bridge adds an `acting_company` argument and runs
+  the tool in that company's database with the server owner's live access there (it must still be an
+  active server owner, the company active and the module enabled in it). Without the argument, the tool
+  runs in the server workspace. The activity log stays in the server workspace, as `<tool> @ <company>`.
+- Credentials still never pass through the agent. `servidor_create_company` gives the business owner
+  a random password nobody sees; the server owner sets the real one in the app (*Empresas > Editar >
+  Contrasena del business owner*), which also closes the business owner's open sessions.
+
 How a module writes its MCP, and the rules the registry enforces (names, permissions, no
 credentials), are in `modules/README.md`; each module's README lists its own tools.

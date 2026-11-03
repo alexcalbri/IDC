@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.modules.agentes
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
 import com.ideasdeveloper.idc.server.modules.RegisteredMcpTool
 import com.ideasdeveloper.idc.server.modules.RegisteredModuleMcp
+import com.ideasdeveloper.idc.server.modules.ServerMcpModuleId
 import com.ideasdeveloper.idc.server.modules.UserModuleAccess
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -16,8 +17,13 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import java.util.concurrent.ConcurrentHashMap
 
-// A tool the connected agent may use, with the user's permissions in its module.
-class VisibleTool(val registered: RegisteredMcpTool, val permissions: ModulePermissions) {
+/**
+ * A tool the connected agent may use, with the user's permissions in its module in the agent's own
+ * company. [anyCompany]: a server owner's agent, which may also run it in any company of the server
+ * (argument [AgentesMcp.ActingCompany]); [permissions] is then null when the module is not enabled
+ * in the agent's own company.
+ */
+class VisibleTool(val registered: RegisteredMcpTool, val permissions: ModulePermissions?, val anyCompany: Boolean = false) {
     val name: String get() = registered.qualifiedName
 }
 
@@ -112,7 +118,7 @@ class AgentesMcp(
             put("name", visible.name)
             put("title", title)
             put("description", tool.description)
-            put("inputSchema", tool.inputSchema)
+            put("inputSchema", if (visible.anyCompany) withActingCompany(tool.inputSchema) else tool.inputSchema)
             putJsonObject("annotations") {
                 put("title", title)
                 put("readOnlyHint", tool.readOnly)
@@ -122,7 +128,19 @@ class AgentesMcp(
         }
     }
 
+    // Adds the bridge's own argument to a module tool's schema; the bridge removes it before the tool runs.
+    private fun withActingCompany(schema: JsonObject): JsonObject {
+        val properties = schema["properties"] as? JsonObject ?: JsonObject(emptyMap())
+        val acting = buildJsonObject {
+            put("type", "string")
+            put("description", "Codigo de la empresa donde actuar (servidor_list_companies). Si se omite, el espacio del servidor.")
+        }
+        return JsonObject(schema + ("properties" to JsonObject(properties + (ActingCompany to acting))))
+    }
+
     companion object {
+        // Argument of a server owner's agent to run a module tool in another company. Modules must not use it.
+        const val ActingCompany = "acting_company"
         val SupportedVersions = listOf("2025-06-18", "2025-03-26", "2024-11-05")
         const val ParseError = -32700
         const val InvalidRequest = -32600
@@ -139,15 +157,25 @@ class AgentesMcp(
                 .joinToString("\n\n")
         }
 
-        /** Tools the agent may use now: allowed by its token and permitted to its user in an enabled module. */
+        /**
+         * Tools the agent may use now: allowed by its token and permitted to its user in an enabled module.
+         * A server owner's agent gets every installed module's tools, to use in any company; whether the
+         * module is enabled there is checked on each call.
+         */
         fun visibleTools(all: List<RegisteredMcpTool>, token: AgentToken, access: UserModuleAccess): List<VisibleTool> =
             all.mapNotNull { registered ->
                 if (!token.allowsModule(registered.moduleId)) return@mapNotNull null
                 if (token.readOnly && !registered.tool.readOnly) return@mapNotNull null
-                val permissions = access.permissions(registered.moduleId) ?: return@mapNotNull null
-                if (!permissions.has(registered.tool.permission)) return@mapNotNull null
-                VisibleTool(registered, permissions)
+                val anyCompany = access.serverOwner && registered.moduleId != ServerMcpModuleId
+                val permissions = access.permissions(registered.moduleId)
+                if (permissions == null && !anyCompany) return@mapNotNull null
+                if (permissions != null && !permissions.has(registered.tool.permission)) return@mapNotNull null
+                VisibleTool(registered, permissions, anyCompany)
             }
+
+        // The company a server owner's agent asked to act on, or null for its own company.
+        fun actingCompany(arguments: JsonObject): String? =
+            (arguments[ActingCompany] as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
 
         fun result(id: JsonElement, result: JsonObject) = buildJsonObject {
             put("jsonrpc", "2.0")

@@ -273,6 +273,15 @@ override val mcp: ModuleMcp
   whose permission the module does not declare in its `ModuleDefinition`; a
   repeated name keeps the first. `ModuleRegistryTest` fails for any module
   compiled with the server that breaks these rules.
+- Server owners: their agent can run any module's tools in any company of the
+  server. The bridge adds an `acting_company` argument to every tool for them
+  and runs the handler with that company's `tenant` and full permissions
+  (`call.permissions.serverOwner = true`: a central user, not in the
+  company's `application_users`, as in the server workspace). Do not name an
+  argument `acting_company`, and do not assume `serverOwner` means the server
+  workspace; compare `companyCode` with `ServerWorkspace.Code` for that.
+- The server itself has an MCP too (`ServerMcpTools`, id `servidor`, server
+  owners only): companies and modules. No module may use the id `servidor`.
 
 See `modules/agentes/README.md` for the endpoint and an example.
 

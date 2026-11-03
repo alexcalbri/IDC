@@ -11,6 +11,7 @@ import com.ideasdeveloper.idc.server.company.api.companyRoutes
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.idc.server.company.application.CompanySelfService
+import com.ideasdeveloper.idc.server.company.application.ServerMcpTools
 import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
@@ -20,6 +21,7 @@ import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
 import com.ideasdeveloper.idc.server.modules.ModulePackageLoader
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
+import com.ideasdeveloper.idc.server.modules.ServerMcpModuleId
 import com.ideasdeveloper.idc.server.modules.ServerModule
 import com.ideasdeveloper.idc.server.modules.ServerModuleProvider
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
@@ -141,13 +143,15 @@ fun Application.module() {
     // Applies migrations of newly loaded module versions to the companies that use them, without
     // delaying startup.
     Thread({ companyProvisioning.applyPendingModuleMigrations() }, "module-migrations").apply { isDaemon = true }.start()
+    val serverMcp = ServerMcpTools.mcp(companyProvisioning)
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
     val moduleAccessService = ModuleAccessService(
         DatabaseFactory.getDataSource(),
         loginDatabases,
         serverMailSettings(),
         moduleRegistry::isInstalled,
-        moduleRegistry::mcp,
+        // The server's own MCP (companies and modules, server owners only) and each module's.
+        { listOf(serverMcp) + moduleRegistry.mcp().filterNot { it.moduleId == ServerMcpModuleId } },
         loginDatabases.service::login,
     )
     // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.

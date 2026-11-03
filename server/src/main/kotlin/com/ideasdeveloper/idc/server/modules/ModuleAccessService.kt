@@ -78,9 +78,7 @@ class ModuleAccessService(
      * longer is one) gets null, and permissions are read now, so revoking one applies to the next call.
      */
     fun userAccess(tenant: Connection, companyCode: String, userId: UUID, serverOwner: Boolean): UserModuleAccess? {
-        val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
-            query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
-        }
+        val enabled = enabledModules(tenant)
         if (serverOwner) {
             if (companyCode != ServerWorkspace.Code || !isServerWorkspace(companyCode) || !isActiveServerOwner(userId)) return null
             return UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, moduleInstalled)
@@ -103,6 +101,28 @@ class ModuleAccessService(
         }
         return UserModuleAccess(companyCode, userId, businessOwner, serverOwner = false, granted, enabled, moduleInstalled)
     }
+
+    /**
+     * A server owner acting in any active company of the server, with every permission there, like
+     * in the server workspace (their AI agent manages the companies of the server). Null when the user
+     * is no longer an active server owner or the company is not active. The caller closes the connection.
+     */
+    fun serverOwnerAccess(companyCode: String, userId: UUID): Pair<Connection, UserModuleAccess>? {
+        if (!isActiveServerOwner(userId)) return null
+        val tenant = tenantConnectionForCompany(companyCode) ?: return null
+        val enabled = try {
+            enabledModules(tenant)
+        } catch (failure: SQLException) {
+            tenant.close()
+            throw failure
+        }
+        return tenant to UserModuleAccess(companyCode, userId, businessOwner = true, serverOwner = true, granted = emptySet(), enabled, moduleInstalled)
+    }
+
+    private fun enabledModules(tenant: Connection): Set<String> =
+        tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
+            query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
+        }
 
     // Central control-plane connection for module-owned central tables such as public_domains.
     fun centralConnection(): Connection = central.connection
@@ -341,7 +361,8 @@ class ModulePermissions(
     private val granted: Set<String>,
     // Signed-in user: a tenant user, or for server owners their central user id.
     val userId: UUID? = null,
-    // True only for a server_owner using the server workspace.
+    // A server owner (a central user, not in the tenant's users): in the server workspace, or in any
+    // company through their AI agent (ModuleAccessService.serverOwnerAccess).
     val serverOwner: Boolean = false,
 ) {
     fun has(permissionId: String): Boolean = businessOwner || permissionId in granted
@@ -361,12 +382,14 @@ class UserModuleAccess internal constructor(
     private val installed: (String) -> Boolean,
 ) {
     // The user's permissions in the module, or null when the module is not installed or not enabled.
-    fun permissions(moduleId: String): ModulePermissions? =
-        if (moduleId in enabledModules && installed(moduleId)) {
-            ModulePermissions(companyCode, accessToken = "", businessOwner, granted, userId, serverOwner)
-        } else {
-            null
-        }
+    // The server's own tools (ServerMcpModuleId) belong to server owners only.
+    fun permissions(moduleId: String): ModulePermissions? {
+        val usable = if (moduleId == ServerMcpModuleId) serverOwner else moduleId in enabledModules && installed(moduleId)
+        return if (usable) ModulePermissions(companyCode, accessToken = "", businessOwner, granted, userId, serverOwner) else null
+    }
+    // Whether the user can use the tool somewhere: a server owner in every company of the server
+    // (ModuleAccessService.serverOwnerAccess), anyone else where the module is enabled and permitted.
+    fun mayUse(tool: RegisteredMcpTool): Boolean = serverOwner || permissions(tool.moduleId)?.has(tool.tool.permission) == true
 }
 
 sealed class ModulePermissionLookup {

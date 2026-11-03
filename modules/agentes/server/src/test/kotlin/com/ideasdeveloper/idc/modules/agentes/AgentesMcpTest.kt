@@ -1,8 +1,10 @@
 package com.ideasdeveloper.idc.modules.agentes
 
+import com.ideasdeveloper.idc.server.company.application.ServerWorkspace
 import com.ideasdeveloper.idc.server.modules.McpTool
 import com.ideasdeveloper.idc.server.modules.RegisteredMcpTool
 import com.ideasdeveloper.idc.server.modules.RegisteredModuleMcp
+import com.ideasdeveloper.idc.server.modules.ServerMcpModuleId
 import com.ideasdeveloper.idc.server.modules.UserModuleAccess
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -72,6 +74,35 @@ class AgentesMcpTest {
         val visible = AgentesMcp.visibleTools(catalog, token(), access(setOf("clientes.view")))
         val text = AgentesMcp.instructions("Puente.", modules, visible)
         assertEquals("Puente.\n\n## Clientes\nInstrucciones de clientes.", text)
+    }
+
+    // A server owner's agent manages every company: all installed modules' tools plus the server's,
+    // module tools taking acting_company; the module must be enabled where it acts (checked per call).
+    @Test
+    fun serverOwnerAgentReachesEveryCompany() {
+        val server = RegisteredMcpTool(ServerMcpModuleId, "Servidor", tool("list_companies", "server_owner"))
+        val all = catalog + server
+        val ownerAccess = UserModuleAccess(ServerWorkspace.Code, userId, true, serverOwner = true, emptySet(), setOf("clientes")) { true }
+        val visible = AgentesMcp.visibleTools(all, token().copy(serverOwner = true), ownerAccess)
+        assertEquals(names(all.map { VisibleTool(it, null) }), names(visible))
+        val byName = visible.associateBy { it.name }
+        assertTrue(byName.getValue("crm_search_leads").anyCompany)
+        assertNull(byName.getValue("crm_search_leads").permissions)
+        assertTrue(byName.getValue("clientes_search_customers").permissions != null)
+        assertTrue(!byName.getValue("servidor_list_companies").anyCompany)
+
+        val listed = AgentesMcp("test", { visible }, { _, _ -> ToolOutcome.Success(JsonPrimitive("ok")) })
+            .handle(request(1, "tools/list"))!!.jsonObject["result"]!!.jsonObject["tools"]!!.jsonArray
+            .associate { it.jsonObject["name"]!!.jsonPrimitive.content to it.jsonObject["inputSchema"]!!.jsonObject["properties"]!!.jsonObject }
+        assertTrue(AgentesMcp.ActingCompany in listed.getValue("crm_search_leads"))
+        assertTrue(AgentesMcp.ActingCompany !in listed.getValue("servidor_list_companies"))
+
+        // Anyone else never gets the server's tools nor acting_company.
+        val staff = AgentesMcp.visibleTools(all, token(), access(setOf("crm.view")))
+        assertEquals(setOf("crm_search_leads"), names(staff))
+        assertTrue(staff.none { it.anyCompany })
+        assertEquals("acme", AgentesMcp.actingCompany(Json.parseToJsonElement("""{"acting_company":" acme "}""").jsonObject))
+        assertNull(AgentesMcp.actingCompany(JsonObject(emptyMap())))
     }
 
     private fun protocol(granted: Set<String>, denied: MutableList<String> = mutableListOf()): AgentesMcp {

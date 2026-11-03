@@ -384,6 +384,75 @@ class CompanyProvisioningService(
         }
     }
 
+    /**
+     * Sets a new password for the company's business owner and closes their open sessions. Only the
+     * server owner does this, from the app: companies created by an AI agent get a random password
+     * nobody knows, because credentials never go through the MCP.
+     */
+    fun resetBusinessOwnerPassword(companyCode: String, password: String, provisioningRole: String) {
+        val normalizedCompanyCode = companyCode.trim()
+        rejectServerWorkspace(normalizedCompanyCode)
+        if (password.length < 12) {
+            throw CompanyProvisioningException("La contrasena del business owner debe tener al menos 12 caracteres.")
+        }
+        val company = central.connection.use { connection ->
+            findCompanyAnyState(connection, normalizedCompanyCode)
+                ?: throw CompanyProvisioningException("Empresa no encontrada.")
+        }
+        val tenantConfig = loginDatabases.tenantConfig(company.databaseName)
+            ?: throw CompanyProvisioningException("La empresa no tiene conexion tenant configurada.")
+        val (ownerId, ownerRole) = tenantRuntimeConnection(tenantConfig).use { tenant ->
+            tenant.prepareStatement(
+                """
+                SELECT users.id, users.postgres_role
+                FROM business_owner owner
+                JOIN application_users users ON users.id = owner.user_id
+                LIMIT 1
+                """.trimIndent()
+            ).use { query ->
+                query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) to rows.getString(2) else null }
+            }
+        } ?: throw CompanyProvisioningException("La empresa no tiene business owner.")
+
+        adminConnection(provisioningRole).use { admin ->
+            admin.autoCommit = true
+            admin.createStatement().use { statement ->
+                statement.executeUpdate("ALTER ROLE ${quoteIdentifier(ownerRole)} PASSWORD ${quoteLiteral(password)}")
+            }
+        }
+        tenantRuntimeConnection(tenantConfig).use { tenant ->
+            // An application password would keep the old one working; owners sign in with their role.
+            tenant.prepareStatement("DELETE FROM application_user_credentials WHERE user_id = ?").use { delete ->
+                delete.setObject(1, ownerId)
+                delete.executeUpdate()
+            }
+            tenant.prepareStatement(
+                "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
+            ).use { revoke ->
+                revoke.setObject(1, ownerId)
+                revoke.executeUpdate()
+            }
+        }
+        central.connection.use { connection ->
+            insertAudit(connection, provisioningRole, "company.owner_password_reset", normalizedCompanyCode, null, """{"businessOwnerUsername":"$ownerRole"}""")
+        }
+    }
+
+    // Postgres role of an active server owner, the role their changes run as; null when not one.
+    fun serverOwnerRole(userId: UUID): String? = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT users.postgres_role
+            FROM server_owners owners
+            JOIN application_users users ON users.id = owners.user_id
+            WHERE owners.user_id = ? AND users.is_active
+            """.trimIndent()
+        ).use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        }
+    }
+
     fun setModuleEnabled(companyCode: String, moduleId: String, enabled: Boolean, provisioningRole: String): CompanySummaryResponse {
         val normalizedCompanyCode = companyCode.trim()
         val normalizedModuleId = moduleId.trim()

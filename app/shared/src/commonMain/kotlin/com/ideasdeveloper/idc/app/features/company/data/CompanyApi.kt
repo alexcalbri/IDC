@@ -594,6 +594,39 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    // Pone una nueva contrasena al business owner de una empresa y cierra sus sesiones.
+    suspend fun resetBusinessOwnerPassword(accessToken: String, companyCode: String, password: String) {
+        try {
+            val response = client.put("$baseUrl/companies/$companyCode/owner-password") {
+                bearerAuth(accessToken)
+                contentType(ContentType.Application.Json)
+                setBody(ResetBusinessOwnerPasswordRequest(password))
+            }
+
+            if (response.status == HttpStatusCode.NoContent) {
+                return
+            }
+
+            if (
+                response.status == HttpStatusCode.BadRequest ||
+                response.status == HttpStatusCode.Forbidden ||
+                response.status == HttpStatusCode.Conflict ||
+                response.status == HttpStatusCode.ServiceUnavailable
+            ) {
+                val error = response.body<CompanyErrorResponse>()
+                throw CompanyException(error.message)
+            }
+
+            throw CompanyException("El servidor no pudo cambiar la contrasena.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
     // Elimina una empresa desactivada y delega al servidor el borrado de su base tenant.
     suspend fun deleteCompany(accessToken: String, companyCode: String) {
         try {

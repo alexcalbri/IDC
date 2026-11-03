@@ -66,6 +66,9 @@ class ModuleMcp(
     val tools: List<McpTool>,
 )
 
+// Module id of the server's own MCP (companies and modules), offered to server owners only; no module may use it.
+const val ServerMcpModuleId = "servidor"
+
 // The MCP of an installed module, as the registry exposes it, with the tools that passed McpToolRules.
 class RegisteredModuleMcp(val moduleId: String, val moduleName: String, val instructions: String, val tools: List<RegisteredMcpTool>)
 

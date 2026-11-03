@@ -476,6 +476,27 @@ fun CompanyProvisioningScreen(
                                     }
                                 }
                             },
+                            onResetOwnerPassword = { password ->
+                                val activeServerUrl = serverUrl
+                                val activeSession = session
+                                if (activeServerUrl != null && activeSession != null) {
+                                    isRefreshing = true
+                                    error = null
+                                    message = null
+                                    scope.launch {
+                                        try {
+                                            CompanyApi(activeServerUrl).use { api ->
+                                                api.resetBusinessOwnerPassword(activeSession.accessToken, company.code, password)
+                                            }
+                                            message = "Contrasena del business owner de ${company.name} actualizada."
+                                        } catch (exception: CompanyException) {
+                                            error = exception.message
+                                        } finally {
+                                            isRefreshing = false
+                                        }
+                                    }
+                                }
+                            },
                             onChangeModule = { moduleId, enabled ->
                                 val activeServerUrl = serverUrl
                                 val activeSession = session
@@ -535,6 +556,7 @@ private fun CompanyModulesRow(
     onStartEdit: () -> Unit,
     onCancelEdit: () -> Unit,
     onSaveEdit: () -> Unit,
+    onResetOwnerPassword: (password: String) -> Unit,
     onChangeModule: (moduleId: String, enabled: Boolean) -> Unit,
 ) {
     Column(
@@ -633,6 +655,51 @@ private fun CompanyModulesRow(
         }
 
         if (isEditing) {
+            // Unica forma de poner la contrasena del business owner: las empresas creadas por un
+            // agente IA quedan con una contrasena aleatoria porque las credenciales no pasan por el MCP.
+            var newOwnerPassword by remember(company.code) { mutableStateOf("") }
+            var newOwnerPasswordConfirmation by remember(company.code) { mutableStateOf("") }
+            Text("Contrasena del business owner", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+            OutlinedTextField(
+                value = newOwnerPassword,
+                onValueChange = { newOwnerPassword = it },
+                label = { Text("Nueva contrasena") },
+                singleLine = true,
+                enabled = enabled,
+                visualTransformation = PasswordVisualTransformation(),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            OutlinedTextField(
+                value = newOwnerPasswordConfirmation,
+                onValueChange = { newOwnerPasswordConfirmation = it },
+                label = { Text("Confirmar contrasena") },
+                singleLine = true,
+                enabled = enabled,
+                visualTransformation = PasswordVisualTransformation(),
+                isError = newOwnerPasswordConfirmation.isNotEmpty() && newOwnerPassword != newOwnerPasswordConfirmation,
+                supportingText = {
+                    if (newOwnerPasswordConfirmation.isNotEmpty() && newOwnerPassword != newOwnerPasswordConfirmation) {
+                        Text("Las contrasenas no coinciden.")
+                    } else {
+                        Text("Minimo 12 caracteres. Cierra las sesiones abiertas del business owner.")
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                Button(
+                    enabled = enabled && newOwnerPassword.length >= 12 && newOwnerPassword == newOwnerPasswordConfirmation,
+                    onClick = {
+                        onResetOwnerPassword(newOwnerPassword)
+                        newOwnerPassword = ""
+                        newOwnerPasswordConfirmation = ""
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                ) {
+                    Text("Restablecer contrasena")
+                }
+            }
+
             Text("Modulos disponibles", style = MaterialTheme.typography.titleMedium, color = primaryColor)
             Text(
                 "Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa.",

@@ -74,7 +74,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.1.0",
+        version = "0.2.0",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,
@@ -214,23 +214,62 @@ object AgentesServerModule : ServerModule {
         return AgentesMcp(
             instructions = AgentesMcp.instructions(instructions(token, this.access.companyCode), modules, visible),
             tools = { visible },
-            invoke = { tool, arguments -> runTool(tenant, access, token, tool, arguments) },
+            invoke = { tool, arguments -> runTool(tenant, access, tool, arguments) },
             denied = { name -> AgentTokens.log(tenant, token.id, name.ifBlank { "(sin nombre)" }, "denied", "Herramienta desconocida o sin permiso.") },
         )
     }
 
-    private fun runTool(tenant: Connection, access: ModuleAccessService, token: AgentToken, tool: VisibleTool, arguments: JsonObject): ToolOutcome {
-        val call = McpToolCall(arguments, tool.permissions, tenant, access, token.name)
+    /**
+     * Runs a tool in the agent's own company, or for a server owner's agent in the company named by
+     * [AgentesMcp.ActingCompany], with the server owner's live access there. The activity log stays in
+     * the agent's own company.
+     */
+    private fun AgentSession.runTool(tenant: Connection, access: ModuleAccessService, tool: VisibleTool, arguments: JsonObject): ToolOutcome {
+        val target = AgentesMcp.actingCompany(arguments)?.takeIf { tool.anyCompany && it != this.access.companyCode }
+        val toolArguments = JsonObject(arguments - AgentesMcp.ActingCompany)
+        val logName = if (target == null) tool.name else "${tool.name} @ $target"
+        fun refuse(message: String): ToolOutcome {
+            AgentTokens.log(tenant, token.id, logName, "error", message)
+            return ToolOutcome.Failure(message)
+        }
+        if (target == null) {
+            val permissions = tool.permissions
+                ?: return refuse("${tool.registered.moduleName} no esta activo en el espacio del servidor. Indica la empresa en ${AgentesMcp.ActingCompany}.")
+            return execute(tenant, tenant, access, tool, permissions, toolArguments, logName)
+        }
+        val (company, companyAccess) = try {
+            access.serverOwnerAccess(target, token.userId)
+        } catch (failure: SQLException) {
+            log.warn("Agent could not open company {}: {}", target, failure.message)
+            null
+        } ?: return refuse("La empresa $target no existe, esta desactivada o no se pudo abrir.")
+        return company.use { connection ->
+            val permissions = companyAccess.permissions(tool.registered.moduleId)
+                ?: return@use refuse("${tool.registered.moduleName} no esta activo en la empresa $target.")
+            execute(tenant, connection, access, tool, permissions, toolArguments, logName)
+        }
+    }
+
+    private fun AgentSession.execute(
+        logTenant: Connection,
+        tenant: Connection,
+        access: ModuleAccessService,
+        tool: VisibleTool,
+        permissions: ModulePermissions,
+        arguments: JsonObject,
+        logName: String,
+    ): ToolOutcome {
+        val call = McpToolCall(arguments, permissions, tenant, access, token.name)
         return try {
             val result: JsonElement = tool.registered.tool.handler(call)
-            AgentTokens.log(tenant, token.id, tool.name, "ok")
+            AgentTokens.log(logTenant, token.id, logName, "ok")
             ToolOutcome.Success(result)
         } catch (failure: McpToolException) {
-            AgentTokens.log(tenant, token.id, tool.name, "error", failure.message.orEmpty())
+            AgentTokens.log(logTenant, token.id, logName, "error", failure.message.orEmpty())
             ToolOutcome.Failure(failure.message.orEmpty())
         } catch (failure: Exception) {
-            log.error("Agent tool {} failed for company {}", tool.name, tool.permissions.companyCode, failure)
-            runCatching { AgentTokens.log(tenant, token.id, tool.name, "error", "Error interno") }
+            log.error("Agent tool {} failed for company {}", tool.name, permissions.companyCode, failure)
+            runCatching { AgentTokens.log(logTenant, token.id, logName, "error", "Error interno") }
             ToolOutcome.Failure("No se pudo completar la operacion.")
         }
     }
@@ -240,6 +279,7 @@ object AgentesServerModule : ServerModule {
             "Solo tienes las herramientas que ese usuario tiene permitidas" +
             (if (token.readOnly) ", en modo solo lectura" else "") +
             ". Si necesitas algo que no aparece en tus herramientas, pide al usuario que solicite el permiso a su administrador. " +
+            (if (token.serverOwner) "Como dueno del servidor puedes usar las herramientas de los modulos en cualquier empresa del servidor indicando su codigo en ${AgentesMcp.ActingCompany}. " else "") +
             "Todo lo que hagas queda registrado a nombre del usuario; confirma con el antes de crear, modificar o eliminar datos."
 
     // Browsers send Origin; a page on another site must not reach the endpoint with a user's token.
@@ -284,9 +324,7 @@ object AgentesServerModule : ServerModule {
                 withContext(Dispatchers.IO) {
                     val owner = owner(tenant, permissions)
                     val userAccess = access.userAccess(tenant, permissions.companyCode, owner.userId, owner.serverOwner)
-                    val userTools = userAccess?.let { user ->
-                        access.mcpTools().filter { registered -> user.permissions(registered.moduleId)?.has(registered.tool.permission) == true }
-                    }.orEmpty()
+                    val userTools = userAccess?.let { user -> access.mcpTools().filter(user::mayUse) }.orEmpty()
                     block(AgentesScreens.Context(tenant, permissions, owner, userTools, endpoint))
                 }
             }

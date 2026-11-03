@@ -62,6 +62,11 @@ data class UpdateCompanyModuleRequest(
 )
 
 @Serializable
+data class ResetBusinessOwnerPasswordRequest(
+    val password: String,
+)
+
+@Serializable
 data class UpdateCompanyStatusRequest(
     val active: Boolean,
 )

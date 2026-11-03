@@ -300,7 +300,7 @@ object AgentOAuth {
             if (!AgentTokens.moduleEnabled(connection)) return@use null
             val userAccess = access.userAccess(connection, user.companyCode, user.userId, user.serverOwner) ?: return@use null
             if (userAccess.permissions(AgentesModule.id)?.has(AgentesScreens.Connect) != true) return@use null
-            access.mcpTools().filter { userAccess.permissions(it.moduleId)?.has(it.tool.permission) == true }
+            access.mcpTools().filter(userAccess::mayUse)
         }
     }
 

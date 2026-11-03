@@ -72,6 +72,11 @@ data class UpdateCompanyStatusRequest(
 )
 
 @Serializable
+data class ResetBusinessOwnerPasswordRequest(
+    val password: String,
+)
+
+@Serializable
 // Payload para actualizar los datos administrables de una empresa.
 data class UpdateCompanyRequest(
     val name: String,
