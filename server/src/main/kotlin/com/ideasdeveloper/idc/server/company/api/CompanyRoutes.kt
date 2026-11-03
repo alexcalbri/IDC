@@ -80,28 +80,6 @@ fun Route.companyRoutes(
         }
     }
 
-    // Empresas del mismo business owner (la actual incluida), para cambiar entre ellas.
-    get("/companies/me/companies") {
-        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
-        val context = call.businessOwnerContext()
-        val service = selfService
-        val provisioningService = provisioning
-        if (context == null || service == null || provisioningService == null) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
-            return@get
-        }
-        try {
-            val companies = withContext(Dispatchers.IO) {
-                // El perfil confirma que la sesion es del business owner de esa empresa.
-                service.profile(context.companyCode, context.token)
-                provisioningService.ownerCompanies(context.companyCode)
-            }
-            call.respond(HttpStatusCode.OK, OwnedCompaniesResponse(context.companyCode, companies))
-        } catch (exception: CompanySelfException) {
-            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", exception.message ?: "Debes iniciar sesion como business_owner."))
-        }
-    }
-
     // Lista los ZIPs de backup almacenados para la empresa actual.
     get("/companies/me/backups") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
@@ -839,6 +817,22 @@ fun Route.companyRoutes(
             call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_NOT_LINKED", exception.message ?: "No se pudo vincular la empresa."))
         } catch (exception: SQLException) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
+        }
+    }
+
+    // Nombre del servidor que ven los server owners en el panel y el selector de empresas.
+    put("/server/name") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+        val service = provisioning
+            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+        val request = runCatching { call.receive<ServerNameRequest>() }.getOrNull()
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+        try {
+            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerName(request.name, serverOwnerRole) })
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("SERVER_NAME_INVALID", exception.message ?: "Nombre invalido."))
         }
     }
 

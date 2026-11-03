@@ -95,6 +95,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V006__add_server_workspace.sql
     database/control/migrations/V007__add_audit_actor_identity.sql
     database/control/migrations/V008__add_company_owner_group.sql
+    database/control/migrations/V009__add_server_owner_company_sessions.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -625,6 +626,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V005__create_publ
 apply_migration "$DB_NAME" control database/control/migrations/V006__add_server_workspace.sql
 apply_migration "$DB_NAME" control database/control/migrations/V007__add_audit_actor_identity.sql
 apply_migration "$DB_NAME" control database/control/migrations/V008__add_company_owner_group.sql
+apply_migration "$DB_NAME" control database/control/migrations/V009__add_server_owner_company_sessions.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
@@ -649,6 +651,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON server_owner_company_sessions TO :"db_user";
 COMMIT;
 SQL
 PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \

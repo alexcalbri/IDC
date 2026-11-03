@@ -15,12 +15,19 @@ data class CreateCompanyResponse(
     val settingsNotCopied: List<String> = emptyList(),
 )
 
-// Una empresa del mismo business owner, para cambiar entre ellas desde el panel.
+// Una empresa a la que la sesion puede cambiar desde el panel.
 @Serializable
 data class OwnedCompany(val code: String, val name: String)
 
+// serverName viene solo para el dueno del servidor (puede volver al servidor); current es null en el servidor.
 @Serializable
-data class OwnedCompaniesResponse(val current: String, val companies: List<OwnedCompany>)
+data class SwitchTargetsResponse(val serverName: String? = null, val current: String? = null, val companies: List<OwnedCompany> = emptyList())
+
+@Serializable
+data class ServerNameRequest(val name: String)
+
+@Serializable
+data class ServerNameResponse(val name: String)
 
 // Sin newOwner la copia mantiene el business owner de la empresa original.
 @Serializable
@@ -33,5 +40,6 @@ data class DuplicateOwnerRequest(val username: String, val password: String, val
 @Serializable
 data class LinkCompanyRequest(val targetCode: String? = null)
 
+// companyCode null: volver al servidor (solo el dueno del servidor).
 @Serializable
-data class SwitchCompanyRequest(val companyCode: String)
+data class SwitchCompanyRequest(val companyCode: String? = null)

@@ -14,16 +14,15 @@ data class CreateCompanyResponse(
     val settingsNotCopied: List<String> = emptyList(),
 )
 
-// A company of the same business owner, for the company switcher.
-@Serializable
-data class OwnedCompanyResponse(val code: String, val name: String)
-
-@Serializable
-data class OwnedCompaniesResponse(val current: String, val companies: List<OwnedCompanyResponse>)
-
 // Without newOwner the copy keeps the business owner of the source company.
 @Serializable
 data class DuplicateCompanyRequest(val code: String, val newOwner: DuplicateOwnerRequest? = null)
+
+@Serializable
+data class ServerNameRequest(val name: String)
+
+@Serializable
+data class ServerNameResponse(val name: String)
 
 @Serializable
 data class DuplicateOwnerRequest(val username: String, val password: String, val name: String, val email: String)

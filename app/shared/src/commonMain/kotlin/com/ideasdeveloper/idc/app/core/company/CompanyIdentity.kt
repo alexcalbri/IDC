@@ -11,6 +11,9 @@ data class CompanyIdentity(
     val accentColor: String,
 )
 
+// Identidad del servidor con el nombre que le puso su dueno.
+fun serverIdentity(name: String?) = ServerOwnerIdentity.copy(name = name?.takeIf { it.isNotBlank() } ?: ServerOwnerIdentity.name)
+
 // Identidad por defecto cuando la sesion pertenece al dueno del servidor.
 val ServerOwnerIdentity = CompanyIdentity(
     id = "server",

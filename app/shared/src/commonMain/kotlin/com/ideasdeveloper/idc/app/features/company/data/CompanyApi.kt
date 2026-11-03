@@ -702,11 +702,20 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
-    // Empresas del mismo business owner (la actual incluida).
-    suspend fun ownedCompanies(accessToken: String, companyCode: String): OwnedCompaniesResponse = call("No se pudieron cargar tus empresas.") {
-        client.get("$baseUrl/companies/me/companies") {
+    // A donde puede cambiar la sesion: empresas y, para el dueno del servidor, el servidor.
+    suspend fun switchTargets(accessToken: String, companyCode: String?): SwitchTargetsResponse = call("No se pudieron cargar las empresas.") {
+        client.get("$baseUrl/auth/switch-targets") {
             bearerAuth(accessToken)
-            header("X-Company-Code", companyCode)
+            companyCode?.let { header("X-Company-Code", it) }
+        }
+    }
+
+    // Nombre del servidor (solo el dueno del servidor).
+    suspend fun updateServerName(accessToken: String, name: String): ServerNameResponse = call("No se pudo cambiar el nombre del servidor.") {
+        client.put("$baseUrl/server/name") {
+            bearerAuth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(ServerNameRequest(name.trim()))
         }
     }
 
@@ -732,11 +741,11 @@ class CompanyApi(serverUrl: String) {
             }
         }
 
-    // Abre una sesion en otra empresa del mismo business owner sin pedir la contrasena.
-    suspend fun switchCompany(accessToken: String, companyCode: String, targetCode: String): LoginResponse = call("No se pudo cambiar de empresa.") {
+    // Abre una sesion en otra empresa (o, con targetCode null, en el servidor) sin pedir la contrasena.
+    suspend fun switchCompany(accessToken: String, companyCode: String?, targetCode: String?): LoginResponse = call("No se pudo cambiar de empresa.") {
         client.post("$baseUrl/auth/switch-company") {
             bearerAuth(accessToken)
-            header("X-Company-Code", companyCode)
+            companyCode?.let { header("X-Company-Code", it) }
             contentType(ContentType.Application.Json)
             setBody(SwitchCompanyRequest(targetCode))
         }

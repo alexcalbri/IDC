@@ -24,6 +24,9 @@ import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanySwitch
 import com.ideasdeveloper.idc.app.features.company.data.OwnedCompany
+import com.ideasdeveloper.idc.app.features.company.data.CompanyException
+import com.ideasdeveloper.idc.app.features.company.data.SwitchTargetsResponse
+import com.ideasdeveloper.idc.app.core.company.serverIdentity
 import com.ideasdeveloper.idc.app.features.shell.ui.TopBarMenuItem
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
@@ -56,31 +59,31 @@ fun DashboardScreen(
     val companyIdentity = savedIdentity ?: CompanyIdentityStore.current()
     val scope = rememberCoroutineScope()
     val companyCode = session?.companyCode
-    val isBusinessOwner = session?.role == "business_owner" && companyCode != null
-    // Empresas del mismo business owner para el menu del titulo.
-    var ownedCompanies by remember(session?.accessToken) { mutableStateOf<List<OwnedCompany>>(emptyList()) }
+    val isServerOwner = session?.role == "server_owner"
+    // Business owners and server owners (also inside a company they entered) can switch.
+    val canSwitch = isServerOwner || (session?.role == "business_owner" && companyCode != null)
+    var targets by remember(session?.accessToken) { mutableStateOf<SwitchTargetsResponse?>(null) }
     var companyMessage by remember { mutableStateOf<String?>(null) }
     var switching by remember { mutableStateOf(false) }
-    fun loadOwnedCompanies() {
-        val url = serverUrl ?: return
-        val active = session ?: return
-        val code = companyCode ?: return
-        if (!isBusinessOwner) return
-        scope.launch {
-            ownedCompanies = runCatching {
-                val api = CompanyApi(url)
-                try { api.ownedCompanies(active.accessToken, code).companies } finally { api.close() }
-            }.getOrDefault(emptyList())
-        }
+    var renamingServer by remember { mutableStateOf(false) }
+
+    LaunchedEffect(session?.accessToken) {
+        val url = serverUrl ?: return@LaunchedEffect
+        val active = session ?: return@LaunchedEffect
+        if (!canSwitch) return@LaunchedEffect
+        targets = runCatching {
+            val api = CompanyApi(url)
+            try { api.switchTargets(active.accessToken, companyCode) } finally { api.close() }
+        }.getOrNull()
+        // Al volver al servidor se muestra el nombre que tiene ahora.
+        if (companyCode == null) targets?.serverName?.let { CompanyIdentityStore.save(serverIdentity(it)) }
     }
 
-    LaunchedEffect(session?.accessToken) { loadOwnedCompanies() }
-
-    fun switchTo(target: OwnedCompany) {
+    fun switchTo(target: OwnedCompany?) {
         val url = serverUrl ?: return
         val active = session ?: return
         switching = true
-        companyMessage = "Entrando a ${target.name}..."
+        companyMessage = "Entrando a ${target?.name ?: targets?.serverName ?: "el servidor"}..."
         scope.launch {
             val failure = CompanySwitch.switchTo(url, active, target)
             switching = false
@@ -89,11 +92,42 @@ fun DashboardScreen(
         }
     }
 
-    val titleMenu = if (isBusinessOwner && !switching && ownedCompanies.size > 1) {
-        ownedCompanies.map { company ->
-            TopBarMenuItem(company.name, caption = company.code, current = company.code == companyCode) { switchTo(company) }
+    val titleMenu = targets?.takeIf { !switching }?.let { options ->
+        val items = buildList {
+            options.serverName?.let { name ->
+                add(TopBarMenuItem(name, caption = "Servidor", current = companyCode == null) { switchTo(null) })
+            }
+            options.companies.forEach { company ->
+                add(TopBarMenuItem(company.name, caption = company.code, current = company.code == companyCode) { switchTo(company) })
+            }
+            if (isServerOwner && companyCode == null) add(TopBarMenuItem("Cambiar nombre del servidor...") { renamingServer = true })
         }
-    } else emptyList()
+        // Una sola empresa sin servidor no tiene a donde cambiar.
+        items.takeIf { it.count { item -> !item.current } > 0 }
+    }.orEmpty()
+
+    if (renamingServer) {
+        ServerNameDialog(
+            current = companyIdentity.name,
+            onSave = { name ->
+                val url = serverUrl ?: return@ServerNameDialog
+                val active = session ?: return@ServerNameDialog
+                scope.launch {
+                    companyMessage = try {
+                        val api = CompanyApi(url)
+                        val saved = try { api.updateServerName(active.accessToken, name) } finally { api.close() }
+                        CompanyIdentityStore.save(serverIdentity(saved.name))
+                        targets = targets?.copy(serverName = saved.name)
+                        renamingServer = false
+                        null
+                    } catch (exception: CompanyException) {
+                        exception.message
+                    }
+                }
+            },
+            onDismiss = { renamingServer = false },
+        )
+    }
     val colors = AppTheme.colors
     val primaryColor = colors.accent
     var versionNotice by remember { mutableStateOf<String?>(null) }
@@ -121,8 +155,8 @@ fun DashboardScreen(
     ) {
         // Renderiza la barra superior autenticada con acceso a ajustes y cierre de sesion.
         AuthenticatedTopBar(
-            title = if (companyCode != null) companyIdentity.name else "Dashboard",
-            subtitle = if (companyCode != null) "Dashboard principal" else "Principal",
+            title = companyIdentity.name,
+            subtitle = "Dashboard principal",
             primaryColor = primaryColor,
             onSettings = { onNavigateTo(NavRoute.Settings) },
             onLogout = onLogout,
@@ -150,6 +184,14 @@ fun DashboardScreen(
                 color = AppTheme.colors.onScreenMuted,
                 modifier = Modifier.padding(vertical = 8.dp).padding(bottom = 24.dp)
             )
+
+            if (session?.serverOwnerAccess == true) {
+                Text(
+                    text = "Entraste como dueno del servidor: lo que hagas aqui queda a nombre del business owner de la empresa.",
+                    color = AppTheme.colors.onScreen,
+                    modifier = Modifier.padding(bottom = 16.dp),
+                )
+            }
 
             companyMessage?.let {
                 Text(
@@ -303,4 +345,24 @@ private fun DashboardActionCard(
             }
         }
     }
+}
+
+@Composable
+private fun ServerNameDialog(current: String, onSave: (String) -> Unit, onDismiss: () -> Unit) {
+    var name by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nombre del servidor") },
+        text = {
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it.take(80) },
+                label = { Text("Nombre") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        },
+        confirmButton = { TextButton(onClick = { onSave(name) }, enabled = name.isNotBlank()) { Text("Guardar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
 }

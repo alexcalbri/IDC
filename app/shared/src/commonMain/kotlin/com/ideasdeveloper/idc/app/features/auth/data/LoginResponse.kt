@@ -19,4 +19,8 @@ data class LoginResponse(
     val email: String? = null,
     // Falso hasta que el usuario tenga nombre y correo; la app los pide antes de continuar.
     val profileComplete: Boolean = true,
+    // Sesiones del servidor: nombre del servidor, que se muestra en lugar de una empresa.
+    val serverName: String? = null,
+    // El dueno del servidor abrio esta sesion de empresa como su business owner (selector de empresas).
+    val serverOwnerAccess: Boolean = false,
 )

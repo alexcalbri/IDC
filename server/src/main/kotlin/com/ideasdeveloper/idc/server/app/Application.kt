@@ -226,7 +226,8 @@ fun Application.module() {
         rateLimit(RateLimitName("login")) {
             authRoutes(
                 loginService = loginDatabases.service,
-                switchCompany = loginDatabases::switchCompany,
+                switchTargets = loginDatabases::switchTargets,
+                switchTo = loginDatabases::switchTo,
             )
             passwordResetRoutes(accountService)
         }

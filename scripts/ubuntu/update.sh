@@ -301,6 +301,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V007__add_audit_actor_identity.sql.'
     [[ -f database/control/migrations/V008__add_company_owner_group.sql ]] ||
         die 'No se encontro database/control/migrations/V008__add_company_owner_group.sql.'
+    [[ -f database/control/migrations/V009__add_server_owner_company_sessions.sql ]] ||
+        die 'No se encontro database/control/migrations/V009__add_server_owner_company_sessions.sql.'
     [[ -f database/core/migrations/V003__add_application_user_profile.sql ]] ||
         die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
 
@@ -313,6 +315,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V006__add_server_workspace.sql
     apply_migration "$db_name" control database/control/migrations/V007__add_audit_actor_identity.sql
     apply_migration "$db_name" control database/control/migrations/V008__add_company_owner_group.sql
+    apply_migration "$db_name" control database/control/migrations/V009__add_server_owner_company_sessions.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT UPDATE (display_name, email) ON application_users TO :"db_user";
@@ -321,6 +324,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON server_owner_company_sessions TO :"db_user";
 SQL
 
     [[ -f database/tenant/migrations/V004__create_application_permissions.sql ]] ||

@@ -1,5 +1,10 @@
 package com.ideasdeveloper.idc.app.features.auth.presentation
 
+import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
+import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.idc.app.core.company.serverIdentity
+import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.idc.app.core.company.CompanyIdentity
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.ideasdeveloper.idc.app.core.config.ClientConfiguration
@@ -27,6 +32,24 @@ class LoginViewModel : ViewModel() {
     val state = _state.asStateFlow()
 
     // Ejecuta el flujo completo de autenticacion contra el servidor configurado.
+    // Marca de la sesion recien iniciada: el servidor, o la empresa (su perfil cuando lo puede leer).
+    private suspend fun refreshIdentity(serverUrl: String, response: LoginResponse, companyCode: String?) {
+        if (companyCode == null) {
+            CompanyIdentityStore.save(serverIdentity(response.serverName))
+            return
+        }
+        val profile = if (response.role == "business_owner") {
+            runCatching {
+                val api = CompanyApi(serverUrl)
+                try { api.companyProfile(response.accessToken, companyCode) } finally { api.close() }
+            }.getOrNull()
+        } else null
+        val identity = profile?.let { CompanyIdentity(it.code, it.code, it.name, it.logoUrl, it.primaryColor, it.secondaryColor, it.accentColor) }
+            ?: CompanyIdentityStore.current().takeIf { it.code == companyCode }
+            ?: serverIdentity(null).copy(id = companyCode, code = companyCode, name = companyCode)
+        CompanyIdentityStore.save(identity)
+    }
+
     fun login(
         serverUrl: String,
         username: String,
@@ -78,6 +101,7 @@ class LoginViewModel : ViewModel() {
                         companyCode = code,
                     )
                 )
+                refreshIdentity(serverUrl.trim().trimEnd('/'), response, code)
                 _state.value = LoginUiState(succeeded = true)
             } catch (exception: CancellationException) {
                 throw exception

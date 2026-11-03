@@ -8,6 +8,8 @@ import com.ideasdeveloper.idc.server.auth.domain.ApplicationUser
 import com.ideasdeveloper.idc.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.idc.server.auth.domain.LoginScope
 import com.ideasdeveloper.idc.server.auth.domain.LoginSuccessResponse
+import com.ideasdeveloper.idc.server.auth.domain.SwitchTarget
+import com.ideasdeveloper.idc.server.auth.domain.SwitchTargetsResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.PostgresCredentialVerifier
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
 import com.zaxxer.hikari.HikariConfig
@@ -39,8 +41,11 @@ class LoginDatabases(
     private val scopes = mutableMapOf<String, Scope>()
     private val tenantDatabaseNamePattern = Regex("[a-z][a-z0-9_]{0,62}")
 
+    private val serverScope = scope(central, centralDatabase, centralUrl, true)
+    private val tokens = SessionTokenGenerator()
+
     val service = ScopedLoginService(
-        serverScope = scope(central, centralDatabase, centralUrl, true),
+        serverScope = serverScope,
         findActiveDatabase = { code ->
             central.connection.use { connection ->
                 connection.prepareStatement("SELECT database_name FROM companies WHERE code = ? AND is_active = TRUE").use { query ->
@@ -101,6 +106,132 @@ class LoginDatabases(
         val targetOwner = target.businessOwner()?.takeIf { it.isActive } ?: return null
         return target.respond(targetOwner, toCode)
     }
+
+    // Who is behind a session for the company switcher.
+    private sealed interface Switcher {
+        // A server owner: on the server ([fromCode] null) or inside a company they entered.
+        class ServerOwner(val user: ApplicationUser) : Switcher
+        class BusinessOwner : Switcher
+    }
+
+    private fun switcher(fromCode: String?, token: String): Switcher? {
+        if (fromCode == null) return serverScope.sessionOwner(token)?.let { Switcher.ServerOwner(it) }
+        val scope = activeDatabase(fromCode)?.let { tenantScope(it) } ?: return null
+        scope.sessionOwner(token) ?: return null
+        val serverOwnerId = central.connection.use { connection ->
+            connection.prepareStatement(
+                "SELECT server_owner_user_id FROM server_owner_company_sessions WHERE token_hash = ? AND company_code = ? AND expires_at > CURRENT_TIMESTAMP"
+            ).use { query ->
+                query.setString(1, tokens.hash(token))
+                query.setString(2, fromCode)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, java.util.UUID::class.java) else null }
+            }
+        } ?: return Switcher.BusinessOwner()
+        val user = serverScope.users.findById(kotlin.uuid.Uuid.parse(serverOwnerId.toString()))
+            ?.takeIf { it.isActive && serverScope.isOwner(it) } ?: return null
+        return Switcher.ServerOwner(user)
+    }
+
+    /**
+     * Where the session can move from [fromCode] (null: the server). A server owner may go to the
+     * server ([SwitchTargetsResponse.serverName] set) and to any active company; a business owner
+     * to the companies of its owner group. Null when the session cannot switch.
+     */
+    fun switchTargets(fromCode: String?, token: String): SwitchTargetsResponse? = when (switcher(fromCode, token)) {
+        null -> null
+        is Switcher.ServerOwner -> SwitchTargetsResponse(serverName(), fromCode, companies(null))
+        is Switcher.BusinessOwner -> SwitchTargetsResponse(null, fromCode, companies(fromCode))
+    }
+
+    /**
+     * Moves the session to [toCode] (null: back to the server, server owners only) and returns the
+     * new session. A server owner enters a company as its business owner user: the session is
+     * recorded in server_owner_company_sessions and audited, and the session it leaves is closed.
+     */
+    fun switchTo(fromCode: String?, token: String, toCode: String?): LoginSuccessResponse? {
+        if (fromCode == toCode) return null
+        return when (val who = switcher(fromCode, token)) {
+            null -> null
+            is Switcher.BusinessOwner -> toCode?.let { switchCompany(fromCode!!, token, it) }
+            is Switcher.ServerOwner -> {
+                val response = if (toCode == null) {
+                    serverScope.respond(who.user, null)
+                } else {
+                    val target = activeDatabase(toCode)?.let { tenantScope(it) } ?: return null
+                    val owner = target.businessOwner()?.takeIf { it.isActive } ?: return null
+                    target.respond(owner, toCode, serverOwnerAccess = true)?.also { opened ->
+                        central.connection.use { connection ->
+                            connection.prepareStatement(
+                                """
+                                INSERT INTO server_owner_company_sessions (token_hash, server_owner_user_id, company_code, expires_at)
+                                VALUES (?, ?, ?, CURRENT_TIMESTAMP + make_interval(secs => ?))
+                                """.trimIndent()
+                            ).use { insert ->
+                                insert.setString(1, tokens.hash(opened.accessToken))
+                                insert.setObject(2, java.util.UUID.fromString(who.user.id.toString()))
+                                insert.setString(3, toCode)
+                                insert.setLong(4, opened.expiresInSeconds)
+                                insert.executeUpdate()
+                            }
+                            connection.prepareStatement(
+                                """
+                                INSERT INTO provisioning_audit_log (id, actor_role, action, company_code, module_id, details, actor_name, actor_email)
+                                SELECT ?, users.postgres_role, 'server_owner.entered_company', ?, NULL, CAST(? AS jsonb), users.display_name, users.email
+                                FROM application_users users WHERE users.id = ?
+                                """.trimIndent()
+                            ).use { insert ->
+                                insert.setObject(1, java.util.UUID.randomUUID())
+                                insert.setString(2, toCode)
+                                insert.setString(3, """{"businessOwnerUsername":"${owner.postgresRole}"}""")
+                                insert.setObject(4, java.util.UUID.fromString(who.user.id.toString()))
+                                insert.executeUpdate()
+                            }
+                            connection.prepareStatement("DELETE FROM server_owner_company_sessions WHERE expires_at <= CURRENT_TIMESTAMP").use { it.executeUpdate() }
+                        }
+                    }
+                } ?: return null
+                // Leaving a company: that session is not needed any more.
+                if (fromCode != null) {
+                    activeDatabase(fromCode)?.let { tenantScope(it) }?.revoke(token)
+                    central.connection.use { connection ->
+                        connection.prepareStatement("DELETE FROM server_owner_company_sessions WHERE token_hash = ?").use {
+                            it.setString(1, tokens.hash(token))
+                            it.executeUpdate()
+                        }
+                    }
+                }
+                response
+            }
+        }
+    }
+
+    // Active companies (no server workspace): all of them, or those of the owner group of [groupOf].
+    private fun companies(groupOf: String?): List<SwitchTarget> = central.connection.use { connection ->
+        val filter = if (groupOf == null) "" else "AND owner_group = (SELECT owner_group FROM companies WHERE code = ?)"
+        connection.prepareStatement("SELECT code, name FROM companies WHERE is_active AND NOT is_server_workspace $filter ORDER BY name, code").use { query ->
+            groupOf?.let { query.setString(1, it) }
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(SwitchTarget(rows.getString(1), rows.getString(2))) } }
+        }
+    }
+
+    private fun activeDatabase(code: String): String? = central.connection.use { connection ->
+        connection.prepareStatement("SELECT database_name FROM companies WHERE code = ? AND is_active AND NOT is_server_workspace").use { query ->
+            query.setString(1, code)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        }
+    }
+
+    // Name the server owner gave the server (Empresas > Nombre del servidor), or the default.
+    fun serverName(): String = try {
+        central.connection.use { connection ->
+            connection.prepareStatement("SELECT setting_value FROM server_settings WHERE setting_key = ?").use { query ->
+                query.setString(1, ServerNameSetting)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+        }
+    } catch (_: java.sql.SQLException) {
+        null
+    }?.takeIf { it.isNotBlank() } ?: DefaultServerName
 
     @Synchronized
     private fun tenantScope(name: String): Scope? {
@@ -167,11 +298,17 @@ class LoginDatabases(
             return users.findByPostgresRole(role)
         }
 
-        // The business owner behind a valid session of this company.
-        fun ownerBySession(token: String): ApplicationUser? = sessions.validateSession(token)?.takeIf { !server && isOwner(it) }
+        // The owner (server owner or business owner) behind a valid session of this database.
+        fun sessionOwner(token: String): ApplicationUser? = sessions.validateSession(token)?.takeIf { isOwner(it) }
+
+        fun ownerBySession(token: String): ApplicationUser? = sessionOwner(token)?.takeIf { !server }
+
+        fun revoke(token: String) {
+            sessions.revokeSession(token)
+        }
 
         // Opens a session for [user] and describes it as the app expects after signing in.
-        fun respond(user: ApplicationUser, companyCode: String?): LoginSuccessResponse? {
+        fun respond(user: ApplicationUser, companyCode: String?, serverOwnerAccess: Boolean = false): LoginSuccessResponse? {
             val owner = isOwner(user)
             if (server && !owner) return null
             val session = sessions.createSession(user)
@@ -185,7 +322,9 @@ class LoginDatabases(
                 workspaceCompanyCode = workspace?.first,
                 displayName = profile?.first,
                 email = profile?.second,
-                profileComplete = profile == null || UserProfileRules.isComplete(profile.first, profile.second))
+                profileComplete = profile == null || UserProfileRules.isComplete(profile.first, profile.second),
+                serverName = if (server) serverName() else null,
+                serverOwnerAccess = serverOwnerAccess)
         }
     }
 
@@ -262,3 +401,6 @@ class LoginDatabases(
         scopes.clear()
     }
 }
+
+const val ServerNameSetting = "server.name"
+const val DefaultServerName = "Servidor"

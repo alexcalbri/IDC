@@ -1,7 +1,8 @@
 package com.ideasdeveloper.idc.server.company.application
 
 import com.ideasdeveloper.idc.server.modules.CompanyFiles
-import com.ideasdeveloper.idc.server.company.api.OwnedCompanyResponse
+import com.ideasdeveloper.idc.server.company.api.ServerNameResponse
+import com.ideasdeveloper.idc.server.auth.infrastructure.database.ServerNameSetting
 import com.ideasdeveloper.idc.server.company.api.DuplicateOwnerRequest
 import com.ideasdeveloper.idc.server.modules.SettingsCopy
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.TenantDatabaseConfig
@@ -497,20 +498,6 @@ class CompanyProvisioningService(
         )
     }
 
-    /** The active companies of the owner group of [companyCode], the company itself included. */
-    fun ownerCompanies(companyCode: String): List<OwnedCompanyResponse> = central.connection.use { connection ->
-        connection.prepareStatement(
-            """
-            SELECT code, name FROM companies
-            WHERE owner_group = (SELECT owner_group FROM companies WHERE code = ?) AND is_active AND NOT is_server_workspace
-            ORDER BY name, code
-            """.trimIndent()
-        ).use { query ->
-            query.setString(1, companyCode)
-            query.executeQuery().use { rows -> buildList { while (rows.next()) add(OwnedCompanyResponse(rows.getString(1), rows.getString(2))) } }
-        }
-    }
-
     private fun ownerGroup(connection: Connection, companyCode: String): UUID =
         connection.prepareStatement("SELECT owner_group FROM companies WHERE code = ?").use { query ->
             query.setString(1, companyCode)
@@ -876,6 +863,28 @@ class CompanyProvisioningService(
 
     fun serverModuleCatalog(): ServerModuleCatalogResponse =
         ServerModuleCatalogResponse(catalogUrl = moduleCatalogUrl())
+
+    // Name of the server shown to server owners instead of a company name.
+    fun updateServerName(name: String, provisioningRole: String): ServerNameResponse {
+        val normalized = name.trim()
+        if (normalized.isEmpty() || normalized.length > 80) throw CompanyProvisioningException("El nombre del servidor debe tener entre 1 y 80 caracteres.")
+        central.connection.use { connection ->
+            connection.prepareStatement(
+                """
+                INSERT INTO server_settings (setting_key, setting_value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT (setting_key)
+                DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = CURRENT_TIMESTAMP
+                """.trimIndent()
+            ).use { upsert ->
+                upsert.setString(1, ServerNameSetting)
+                upsert.setString(2, normalized)
+                upsert.executeUpdate()
+            }
+            insertAudit(connection, provisioningRole, "server.renamed", null, null, """{"name":"${normalized.escapeJson()}"}""")
+        }
+        return ServerNameResponse(normalized)
+    }
 
     fun updateServerModuleCatalog(catalogUrl: String): ServerModuleCatalogResponse {
         val normalized = catalogUrl.trim()

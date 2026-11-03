@@ -39,9 +39,17 @@ modules.
   the target's owner group; `{"targetCode": null}` takes it out. `GET /companies` returns
   `linkedCompanies` for each company.
 - `GET /companies/me/companies` lists the active companies of the owner group.
-- `POST /auth/switch-company` (`{"companyCode": "..."}`, with the current token and
-  `X-Company-Code`) lets the business owner of a company open a session as the business owner of
-  another company of its group, and answers like `/auth/login`. Only the server owner forms
+- `GET /auth/switch-targets` (current token; `X-Company-Code` when the session is a company's)
+  lists where the session can go: for a business owner the companies of its group; for a server
+  owner `serverName` plus every active company.
+- `POST /auth/switch-company` (`{"companyCode": "..."}`, or `null` to go back to the server, with
+  the current token and `X-Company-Code` when in a company) answers like `/auth/login`. A business
+  owner opens a session as the business owner of another company of its group. A server owner
+  enters any company as its business owner user: the session is recorded in
+  `server_owner_company_sessions` (control V009), audited as `server_owner.entered_company`,
+  flagged `serverOwnerAccess`, and closed when the server owner moves on; changes made inside are
+  recorded with the business owner's name. Server sessions carry `serverName`
+  (`server_settings` key `server.name`, set with `PUT /server/name`). Only the server owner forms
   groups, so a group means "same person" even with a different user per company; it is never
   derived from the email, which users can change themselves.
 - Deleting a company keeps the business owner's role while it still has CONNECT on another
