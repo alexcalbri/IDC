@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.server.company.application
 
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
+import com.ideasdeveloper.idc.server.auth.application.UserProfileRules
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.ApplicationPasswordHasher
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
 import com.ideasdeveloper.idc.server.company.api.CompanyBackupResponse
@@ -201,6 +202,7 @@ class CompanySelfService(
         if (request.password.length < 12) {
             throw CompanySelfException("La contrasena del usuario debe tener al menos 12 caracteres.")
         }
+        UserProfileRules.problem(request.displayName, request.email)?.let { throw CompanySelfException("Usuario: $it") }
 
         val userId = UUID.randomUUID()
         val passwordHash = ApplicationPasswordHasher.hash(request.password)
@@ -212,9 +214,13 @@ class CompanySelfService(
                 if (connection.existsUser(username)) {
                     throw CompanySelfException("Ya existe un usuario con ese nombre.")
                 }
-                connection.prepareStatement("INSERT INTO application_users (id, postgres_role, is_active) VALUES (?, ?, TRUE)").use { insert ->
+                connection.prepareStatement(
+                    "INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES (?, ?, TRUE, ?, ?)"
+                ).use { insert ->
                     insert.setObject(1, userId)
                     insert.setString(2, username)
+                    insert.setString(3, request.displayName.trim())
+                    insert.setString(4, request.email.trim())
                     insert.executeUpdate()
                 }
                 connection.prepareStatement(
@@ -466,7 +472,7 @@ class CompanySelfService(
         }
 
     private fun loadUser(connection: java.sql.Connection, userId: UUID): CompanyUserResponse? =
-        connection.prepareStatement("SELECT id, postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
+        connection.prepareStatement("SELECT id, postgres_role, is_active, display_name, email FROM application_users WHERE id = ?").use { query ->
             query.setObject(1, userId)
             query.executeQuery().use { rows ->
                 if (!rows.next()) return null
@@ -475,6 +481,8 @@ class CompanySelfService(
                     username = rows.getString("postgres_role"),
                     isActive = rows.getBoolean("is_active"),
                     permissions = loadUserPermissions(connection, userId),
+                    displayName = rows.getString("display_name"),
+                    email = rows.getString("email"),
                 )
             }
         }

@@ -58,7 +58,7 @@ class HotspotAccess(private val access: ModuleAccessService) {
                     listOf(UiTableColumn("user", "Usuario"), UiTableColumn("code", "Codigo"), UiTableColumn("kind", "Tipo"), UiTableColumn("state", "Estado")),
                     users.map {
                         mapOf(
-                            "user" to it.username,
+                            "user" to if (it.displayName.isNullOrBlank()) it.username else "${it.name} (${it.username})",
                             "code" to it.code,
                             "kind" to if (it.serverOwner) "Dueno del servidor" else "Usuario",
                             "state" to if (it.active) "Activo" else "Inactivo",
@@ -133,7 +133,7 @@ class HotspotAccess(private val access: ModuleAccessService) {
                     .firstOrNull { it.active && userLabel(it) == values["user"] }
                     ?: return "Elige el usuario." to UiTone.Danger
                 HotspotUserCodes.addGrant(tenant, companyCode, ssid, user.id)
-                "${user.username} puede conectarse a $ssid de $companyCode." to UiTone.Success
+                "${user.name} puede conectarse a $ssid de $companyCode." to UiTone.Success
             }
             "delete" -> {
                 val grantId = id?.let { runCatching { UUID.fromString(it) }.getOrNull() }
@@ -144,7 +144,11 @@ class HotspotAccess(private val access: ModuleAccessService) {
         }
     }
 
-    internal fun userLabel(user: HotspotUser) = if (user.serverOwner) "${user.username} (dueno del servidor)" else user.username
+    // Full name and username, so two people with the same name can be told apart.
+    internal fun userLabel(user: HotspotUser): String {
+        val base = if (user.displayName.isNullOrBlank()) user.username else "${user.name} (${user.username})"
+        return if (user.serverOwner) "$base · dueno del servidor" else base
+    }
 
     // "COMPANY · SSID" of every user-code network of the other active companies.
     internal fun otherCompanyNetworks(): List<String> {

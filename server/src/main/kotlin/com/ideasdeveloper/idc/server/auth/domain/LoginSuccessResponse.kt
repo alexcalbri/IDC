@@ -14,4 +14,8 @@ class LoginSuccessResponse(
     val enabledModules: List<String> = emptyList(),
     // Server owners: company code of the server workspace where they use modules without a company.
     val workspaceCompanyCode: String? = null,
+    val displayName: String? = null,
+    val email: String? = null,
+    // False until the user has a valid name and email; the app asks for them before continuing.
+    val profileComplete: Boolean = true,
 )

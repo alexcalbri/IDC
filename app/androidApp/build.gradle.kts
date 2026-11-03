@@ -5,6 +5,13 @@ plugins {
     alias(libs.plugins.composeCompiler)
 }
 
+// Version of the apps, shared with Xcode: app/Version.xcconfig.
+val appVersionFile = rootProject.layout.projectDirectory.file("app/Version.xcconfig")
+fun appVersionValue(key: String): Provider<String> = providers.fileContents(appVersionFile).asText.map { text ->
+    text.lineSequence().map { it.trim() }.firstOrNull { it.startsWith("$key=") }?.substringAfter('=')?.trim()
+        ?: error("$key no esta en app/Version.xcconfig")
+}
+
 kotlin {
     compilerOptions {
         jvmTarget = JvmTarget.JVM_11
@@ -27,8 +34,8 @@ android {
         applicationId = "com.ideasdeveloper.idc"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 2
-        versionName = "0.1.0"
+        versionCode = appVersionValue("APP_BUILD").get().toInt()
+        versionName = appVersionValue("APP_VERSION").get()
     }
     packaging {
         resources {

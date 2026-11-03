@@ -256,6 +256,10 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V005__create_public_domains.sql.'
     [[ -f database/control/migrations/V006__add_server_workspace.sql ]] ||
         die 'No se encontro database/control/migrations/V006__add_server_workspace.sql.'
+    [[ -f database/control/migrations/V007__add_audit_actor_identity.sql ]] ||
+        die 'No se encontro database/control/migrations/V007__add_audit_actor_identity.sql.'
+    [[ -f database/core/migrations/V003__add_application_user_profile.sql ]] ||
+        die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
 
     source scripts/ubuntu/migrations.sh
     apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
@@ -264,7 +268,11 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V004__create_server_settings_and_module_packages.sql
     apply_migration "$db_name" control database/control/migrations/V005__create_public_domains.sql
     apply_migration "$db_name" control database/control/migrations/V006__add_server_workspace.sql
+    apply_migration "$db_name" control database/control/migrations/V007__add_audit_actor_identity.sql
+    apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
+GRANT UPDATE (display_name, email) ON application_users TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
@@ -288,8 +296,10 @@ SQL
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V004__add_customer_code.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V004__create_application_permissions.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V005__create_application_user_credentials.sql
+        apply_migration "$tenant_db" core database/core/migrations/V003__add_application_user_profile.sql
         runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO :"db_user";
 SQL

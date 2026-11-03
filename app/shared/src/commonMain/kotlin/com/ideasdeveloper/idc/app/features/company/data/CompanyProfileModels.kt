@@ -52,6 +52,8 @@ data class CompanyUserResponse(
     val username: String,
     val isActive: Boolean,
     val permissions: List<String>,
+    val displayName: String? = null,
+    val email: String? = null,
 )
 
 @Serializable
@@ -65,6 +67,8 @@ data class CreateCompanyUserRequest(
     val username: String,
     val password: String,
     val permissions: List<String> = emptyList(),
+    val displayName: String = "",
+    val email: String = "",
 )
 
 @Serializable

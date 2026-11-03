@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
+import com.ideasdeveloper.idc.server.modules.UserIdentity
 import java.math.BigDecimal
 import java.sql.Connection
 import java.sql.PreparedStatement
@@ -162,8 +163,12 @@ object CrmRepository {
         )
     }
 
-    fun actor(tenant: Connection, permissions: ModulePermissions): CrmActor {
-        if (permissions.serverOwner || permissions.userId == null) return CrmActor(null, "Dueno del servidor")
+    // [identity]: ModuleAccessService.userIdentity, so changes show the user's name.
+    fun actor(tenant: Connection, permissions: ModulePermissions, identity: UserIdentity? = null): CrmActor {
+        if (permissions.serverOwner || permissions.userId == null) {
+            return CrmActor(null, identity?.let { "${it.name} (dueno del servidor)" } ?: "Dueno del servidor")
+        }
+        identity?.let { return CrmActor(permissions.userId, it.name) }
         val name = tenant.prepareStatement("SELECT postgres_role FROM application_users WHERE id = ?").use { query ->
             query.setObject(1, permissions.userId)
             query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }

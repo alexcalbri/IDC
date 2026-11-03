@@ -398,10 +398,12 @@ object AgentOAuth {
         val tenant = access.tenantConnectionForCompany(user.companyCode) ?: throw OAuthError("invalid_grant", "La empresa no esta disponible.")
         return tenant.use { connection ->
             val userAccess = access.userAccess(connection, user.companyCode, user.userId, user.serverOwner)
-            if (!AgentTokens.moduleEnabled(connection) || userAccess?.permissions(AgentesModule.id)?.has(AgentesScreens.Connect) != true) {
+            val own = userAccess?.permissions(AgentesModule.id)
+            if (!AgentTokens.moduleEnabled(connection) || own?.has(AgentesScreens.Connect) != true) {
                 throw OAuthError("invalid_grant", "El usuario ya no puede conectar agentes.")
             }
-            val owner = AgentOwner(user.userId, user.serverOwner, if (user.serverOwner) "Dueno del servidor" else user.username)
+            val name = access.userIdentity(connection, own)?.name ?: if (user.serverOwner) "Dueno del servidor" else user.username
+            val owner = AgentOwner(user.userId, user.serverOwner, name)
             AgentTokens.createOAuth(
                 connection, user.companyCode, owner, client.id, client.name,
                 grant.consent.allowedModules, grant.consent.readOnly, grant.consent.expiresAt, AccessLifetime,

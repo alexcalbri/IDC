@@ -285,6 +285,16 @@ override val mcp: ModuleMcp
 
 See `modules/agentes/README.md` for the endpoint and an example.
 
+## Who made a change
+
+Every user (business owner, server owner and staff) has a name and an email
+(`application_users.display_name` and `email`; users created before they were
+required complete them at their next sign-in). To record who made a change,
+use `access.userIdentity(tenant, permissions)`: it returns the name (or the
+username when still missing), the email and the username, reading server
+owners from the central database. Do not read `application_users.postgres_role`
+for display.
+
 ## Module user interface
 
 Modules are independent of the app: the app never contains module-specific

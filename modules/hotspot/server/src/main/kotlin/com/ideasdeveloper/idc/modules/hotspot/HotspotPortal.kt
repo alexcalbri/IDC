@@ -346,7 +346,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         minutesUntilUserReconnect(connection, owner, settings.reconnectMinutes)?.let { remaining ->
             return HotspotPortalPages.wait(settings, remaining, byCode = true)
         }
-        return authorizeByCode(target, guest, settings, owner, FormValues(name = user.username), HotspotNetworks.UserCode, retry)
+        return authorizeByCode(target, guest, settings, owner, FormValues(name = user.name), HotspotNetworks.UserCode, retry)
     }
 
     // A user of the server company with [code] that a server owner authorized for [ssid] of [companyCode].

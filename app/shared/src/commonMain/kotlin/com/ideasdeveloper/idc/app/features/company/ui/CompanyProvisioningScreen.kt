@@ -69,6 +69,8 @@ fun CompanyProvisioningScreen(
     var code by remember { mutableStateOf("") }
     var name by remember { mutableStateOf("") }
     var ownerUsername by remember { mutableStateOf("") }
+    var ownerName by remember { mutableStateOf("") }
+    var ownerEmail by remember { mutableStateOf("") }
     var ownerPassword by remember { mutableStateOf("") }
     var ownerPasswordConfirmation by remember { mutableStateOf("") }
     var isLoading by remember { mutableStateOf(false) }
@@ -90,6 +92,8 @@ fun CompanyProvisioningScreen(
                 (code.isNotBlank() ||
                         name.isNotBlank() ||
                         ownerUsername.isNotBlank() ||
+                        ownerName.isNotBlank() ||
+                        ownerEmail.isNotBlank() ||
                         ownerPassword.isNotBlank() ||
                         ownerPasswordConfirmation.isNotBlank())
     val editingCompany = companies.firstOrNull { it.code == editingCompanyCode }
@@ -242,6 +246,23 @@ fun CompanyProvisioningScreen(
                             modifier = Modifier.fillMaxWidth(),
                         )
                         OutlinedTextField(
+                            value = ownerName,
+                            onValueChange = { ownerName = it },
+                            label = { Text("Nombre completo del business owner") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
+                            value = ownerEmail,
+                            onValueChange = { ownerEmail = it.trim() },
+                            label = { Text("Correo del business owner") },
+                            singleLine = true,
+                            enabled = !isLoading,
+                            keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.None),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        OutlinedTextField(
                             value = ownerPassword,
                             onValueChange = { ownerPassword = it },
                             label = { Text("Contrasena business owner") },
@@ -290,6 +311,8 @@ fun CompanyProvisioningScreen(
                                     code.isNotBlank() &&
                                     name.isNotBlank() &&
                                     ownerUsername.isNotBlank() &&
+                                    ownerName.isNotBlank() &&
+                                    ownerEmail.isNotBlank() &&
                                     ownerPassword.length >= 12 &&
                                     ownerPassword == ownerPasswordConfirmation,
                             onClick = {
@@ -309,6 +332,8 @@ fun CompanyProvisioningScreen(
                                                     name = name,
                                                     businessOwnerUsername = ownerUsername,
                                                     businessOwnerPassword = ownerPassword,
+                                                    businessOwnerName = ownerName,
+                                                    businessOwnerEmail = ownerEmail,
                                                 ),
                                             )
                                         }
@@ -316,6 +341,8 @@ fun CompanyProvisioningScreen(
                                         code = ""
                                         name = ""
                                         ownerUsername = ""
+                                        ownerName = ""
+                                        ownerEmail = ""
                                         ownerPassword = ""
                                         ownerPasswordConfirmation = ""
                                         isCreateCompanyExpanded = false

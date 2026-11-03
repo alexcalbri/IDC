@@ -124,6 +124,29 @@ class ModuleAccessService(
             query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
         }
 
+    /**
+     * Name and email of the user behind [permissions], to record who made a change: a server owner
+     * from the central database, anyone else from [tenant]. Users created before names were required
+     * may lack them until they sign in again; the name then falls back to the username.
+     */
+    fun userIdentity(tenant: Connection, permissions: ModulePermissions): UserIdentity? {
+        val userId = permissions.userId ?: return null
+        fun read(connection: Connection) = connection.prepareStatement(
+            "SELECT postgres_role, display_name, email FROM application_users WHERE id = ?"
+        ).use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows ->
+                if (rows.next()) UserIdentity(userId, rows.getString(2)?.takeIf { it.isNotBlank() } ?: rows.getString(1), rows.getString(3), rows.getString(1)) else null
+            }
+        }
+        return try {
+            if (permissions.serverOwner) central.connection.use(::read) else read(tenant)
+        } catch (_: SQLException) {
+            // Before core migration V003 the profile columns do not exist yet.
+            null
+        }
+    }
+
     // Central control-plane connection for module-owned central tables such as public_domains.
     fun centralConnection(): Connection = central.connection
 
@@ -367,6 +390,9 @@ class ModulePermissions(
 ) {
     fun has(permissionId: String): Boolean = businessOwner || permissionId in granted
 }
+
+// Who a user is, for activity logs: [name] is the display name (or the username when missing).
+data class UserIdentity(val userId: UUID, val name: String, val email: String?, val username: String)
 
 // A user whose password was checked: a tenant user, or a server owner acting in the server workspace.
 data class VerifiedUser(val userId: UUID, val username: String, val companyCode: String, val serverOwner: Boolean)

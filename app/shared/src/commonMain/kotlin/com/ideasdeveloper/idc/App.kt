@@ -17,6 +17,7 @@ import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.core.theme.IdeasCoreTheme
 import com.ideasdeveloper.idc.app.core.theme.ThemeStore
 import com.ideasdeveloper.idc.app.features.auth.ui.LoginScreen
+import com.ideasdeveloper.idc.app.features.auth.ui.ProfileDialog
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyManagementScreen
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyProvisioningScreen
 import com.ideasdeveloper.idc.app.features.company.ui.ServerModuleManagementScreen
@@ -158,6 +159,18 @@ fun App(initialServerUrl: String = "") {
                     },
                 )
             }
+        }
+
+        // Usuarios creados antes de que nombre y correo fueran obligatorios los completan antes de seguir.
+        currentSession?.takeIf { !it.profileComplete }?.let { incomplete ->
+            ProfileDialog(
+                serverUrl = clientConfiguration?.serverUrl,
+                session = incomplete,
+                required = true,
+                onSaved = { profile -> SessionStore.update { it.copy(displayName = profile.displayName, email = profile.email, profileComplete = profile.profileComplete) } },
+                onDismiss = {},
+                onLogout = ::logout,
+            )
         }
     }
 }

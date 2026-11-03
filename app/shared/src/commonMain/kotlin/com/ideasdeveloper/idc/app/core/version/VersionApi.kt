@@ -10,7 +10,7 @@ import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
-const val ClientVersion = "0.1.0"
+// ClientVersion is generated from app/Version.xcconfig (app/shared/build.gradle.kts).
 
 class VersionApi(serverUrl: String) {
     private val baseUrl = serverUrl.trim().trimEnd('/')

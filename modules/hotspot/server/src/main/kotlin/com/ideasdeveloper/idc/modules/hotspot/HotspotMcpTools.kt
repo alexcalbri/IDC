@@ -205,7 +205,7 @@ object HotspotMcpTools {
                 mapOf(
                     "company" to McpSchema.string("Codigo de la empresa (list_access_grants)."),
                     "ssid" to McpSchema.string("Red (SSID) con acceso por codigo de usuario."),
-                    "user" to McpSchema.string("Usuario de la empresa del servidor."),
+                    "user" to McpSchema.string("Usuario de la empresa del servidor: su usuario de login o su nombre completo."),
                 ),
                 required = listOf("company", "ssid", "user"),
             ),
@@ -514,6 +514,7 @@ object HotspotMcpTools {
             put("users", JsonArray(users.map { user ->
                 buildJsonObject {
                     put("user", user.username)
+                    put("name", user.name)
                     put("code", user.code)
                     put("serverOwner", user.serverOwner)
                     put("active", user.active)
@@ -558,7 +559,9 @@ object HotspotMcpTools {
         val access = serverCompanyAccess(call)
         val wanted = call.requiredString("user", 200)
         val user = call.access.centralConnection().use { central -> HotspotUserCodes.users(call.tenant, central) }
-            .firstOrNull { it.active && (it.username.equals(wanted, ignoreCase = true) || access.userLabel(it).equals(wanted, ignoreCase = true)) }
+            .firstOrNull { user ->
+                user.active && listOf(user.username, user.name, access.userLabel(user)).any { it.equals(wanted, ignoreCase = true) }
+            }
             ?: throw McpToolException("'$wanted' no es un usuario activo de la empresa del servidor.")
         val network = "${call.requiredString("company", 63)} · ${call.requiredString("ssid", 64)}"
         return grantResult(access.grantAction(call.tenant, "add", null, mapOf("network" to network, "user" to access.userLabel(user))))

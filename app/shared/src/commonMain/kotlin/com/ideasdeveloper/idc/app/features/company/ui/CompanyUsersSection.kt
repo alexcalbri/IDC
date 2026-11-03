@@ -49,6 +49,8 @@ fun CompanyUsersSection(
     var permissions by remember { mutableStateOf<List<CompanyPermissionResponse>>(emptyList()) }
     var newUsername by remember { mutableStateOf("") }
     var newPassword by remember { mutableStateOf("") }
+    var newDisplayName by remember { mutableStateOf("") }
+    var newEmail by remember { mutableStateOf("") }
     var selectedPermissions by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -77,6 +79,23 @@ fun CompanyUsersSection(
         value = newUsername,
         onValueChange = { newUsername = it },
         label = { Text("Usuario") },
+        singleLine = true,
+        enabled = !isLoading,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    // Obligatorios para todos: los cambios se registran con el nombre y el correo recibe codigos de contrasena.
+    OutlinedTextField(
+        value = newDisplayName,
+        onValueChange = { newDisplayName = it },
+        label = { Text("Nombre completo") },
+        singleLine = true,
+        enabled = !isLoading,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = newEmail,
+        onValueChange = { newEmail = it.trim() },
+        label = { Text("Correo") },
         singleLine = true,
         enabled = !isLoading,
         modifier = Modifier.fillMaxWidth(),
@@ -112,7 +131,8 @@ fun CompanyUsersSection(
         }
     }
     Button(
-        enabled = !isLoading && serverUrl != null && accessToken != null && companyCode != null && newUsername.isNotBlank() && newPassword.isNotBlank(),
+        enabled = !isLoading && serverUrl != null && accessToken != null && companyCode != null && newUsername.isNotBlank() && newPassword.isNotBlank() &&
+            newDisplayName.isNotBlank() && newEmail.isNotBlank(),
         onClick = {
             val activeServerUrl = serverUrl ?: return@Button
             val token = accessToken ?: return@Button
@@ -130,6 +150,8 @@ fun CompanyUsersSection(
                                 username = newUsername,
                                 password = newPassword,
                                 permissions = selectedPermissions.toList(),
+                                displayName = newDisplayName,
+                                email = newEmail,
                             ),
                         )
                         val userData = api.companyUsers(token, code)
@@ -138,6 +160,8 @@ fun CompanyUsersSection(
                     }
                     newUsername = ""
                     newPassword = ""
+                    newDisplayName = ""
+                    newEmail = ""
                     selectedPermissions = emptySet()
                     message = "Usuario creado."
                 } catch (exception: CompanyException) {
@@ -161,7 +185,8 @@ fun CompanyUsersSection(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(user.username, fontWeight = FontWeight.SemiBold, color = primaryColor)
+            Text(user.displayName?.let { "$it (${user.username})" } ?: user.username, fontWeight = FontWeight.SemiBold, color = primaryColor)
+            Text(user.email ?: "Sin correo: lo completa al iniciar sesion", color = AppTheme.colors.muted)
             Text(if (user.isActive) "Activo" else "Inactivo", color = AppTheme.colors.muted)
             Text(
                 "Permisos: ${user.permissions.ifEmpty { listOf("sin permisos") }.joinToString()}",

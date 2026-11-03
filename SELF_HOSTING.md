@@ -420,7 +420,7 @@ Document verified variables in a table here as they are implemented:
 | `MODULE_PACKAGES_ROOT` | No | Server-side directory where downloaded module packages are stored; defaults to `build/server-modules`. |
 | `VERSION_CATALOG_URL` | No | URL of the remote JSON version catalog used by `/version`. Official URL: `https://raw.githubusercontent.com/alexcalbri/IDC/master/version.json`. |
 
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_SECURITY` | No | Server-wide SMTP for modules that send email (hotspot codes). `SMTP_SECURITY` is `starttls` (default), `ssl` or `none`. Empty `SMTP_HOST` disables it; companies can still use their own SMTP. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`, `SMTP_SECURITY` | No | Server-wide SMTP for password reset codes ("¿Olvidaste tu contraseña?" in the login; without it users cannot recover their password by email) and for modules that send email (hotspot codes). `SMTP_SECURITY` is `starttls` (default), `ssl` or `none`. Empty `SMTP_HOST` disables it; companies can still use their own SMTP. |
 | `PUBLIC_SCHEME`, `ACME_EMAIL` | No | Read only by the root helper `ideascore-domains-sync`, which publishes module domains (hotspot portals) in Nginx with Let's Encrypt (`https`) or plain HTTP (`http`). |
 The root `version.json` file exposes:
 

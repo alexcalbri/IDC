@@ -74,7 +74,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.2.0",
+        version = "0.2.1",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,
@@ -322,7 +322,7 @@ object AgentesServerModule : ServerModule {
         try {
             val screen = connection.use { tenant ->
                 withContext(Dispatchers.IO) {
-                    val owner = owner(tenant, permissions)
+                    val owner = owner(tenant, permissions, access)
                     val userAccess = access.userAccess(tenant, permissions.companyCode, owner.userId, owner.serverOwner)
                     val userTools = userAccess?.let { user -> access.mcpTools().filter(user::mayUse) }.orEmpty()
                     block(AgentesScreens.Context(tenant, permissions, owner, userTools, endpoint))
@@ -335,9 +335,11 @@ object AgentesServerModule : ServerModule {
         }
     }
 
-    private fun owner(tenant: Connection, permissions: ModulePermissions): AgentOwner {
+    private fun owner(tenant: Connection, permissions: ModulePermissions, access: ModuleAccessService): AgentOwner {
         val userId = permissions.userId ?: throw SQLException("Session without user")
-        if (permissions.serverOwner) return AgentOwner(userId, serverOwner = true, name = "Dueno del servidor")
+        val identity = access.userIdentity(tenant, permissions)
+        if (permissions.serverOwner) return AgentOwner(userId, serverOwner = true, name = identity?.name ?: "Dueno del servidor")
+        identity?.let { return AgentOwner(userId, serverOwner = false, name = it.name) }
         val name = tenant.prepareStatement("SELECT postgres_role FROM application_users WHERE id = ?").use { query ->
             query.setObject(1, userId)
             query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }

@@ -4,8 +4,24 @@ import java.security.SecureRandom
 import java.sql.Connection
 import java.util.UUID
 
-/** A user with their WiFi code. [serverOwner] users live in the central database. */
-data class HotspotUser(val id: UUID, val username: String, val code: String, val serverOwner: Boolean, val active: Boolean)
+/**
+ * A user with their WiFi code. [serverOwner] users live in the central database. [displayName] is the
+ * user's full name; users created before it was required may not have it until they sign in again.
+ */
+data class HotspotUser(
+    val id: UUID,
+    val username: String,
+    val code: String,
+    val serverOwner: Boolean,
+    val active: Boolean,
+    val displayName: String? = null,
+) {
+    // Full name when there is one, otherwise the username.
+    val name: String get() = displayName?.takeIf { it.isNotBlank() } ?: username
+}
+
+// A row of application_users as the hotspot reads it.
+private data class UserRow(val id: UUID, val username: String, val displayName: String?, val active: Boolean)
 
 /** A network of another company that a user of the server company may join with their code. */
 data class HotspotUserGrant(val id: UUID, val companyCode: String, val ssid: String, val userId: UUID)
@@ -50,14 +66,10 @@ object HotspotUserCodes {
 
     /** Users of this database with their codes; with [central], also the server owners (server company). */
     fun users(tenant: Connection, central: Connection?): List<HotspotUser> {
-        val local = tenant.prepareStatement("SELECT id, postgres_role, is_active FROM application_users ORDER BY postgres_role").use { query ->
-            query.executeQuery().use { rows ->
-                buildList { while (rows.next()) add(Triple(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getBoolean(3))) }
-            }
-        }
+        val local = userRows(tenant, "", "ORDER BY users.postgres_role") {}
         val owners = central?.let(::serverOwners).orEmpty()
-        return local.map { (id, name, active) -> HotspotUser(id, name, codeFor(tenant, id, false), false, active) } +
-            owners.map { (id, name) -> HotspotUser(id, name, codeFor(tenant, id, true), true, true) }
+        return local.map { HotspotUser(it.id, it.username, codeFor(tenant, it.id, false), false, it.active, it.displayName) } +
+            owners.map { HotspotUser(it.id, it.username, codeFor(tenant, it.id, true), true, true, it.displayName) }
     }
 
     /** The user of [code] in this database, checking that the account is still active. */
@@ -68,28 +80,39 @@ object HotspotUserCodes {
             query.setString(1, code)
             query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) to rows.getBoolean(2) else null }
         } ?: return null
-        val username = if (serverOwner) {
-            serverOwners(central).firstOrNull { it.first == userId }?.second
+        val user = if (serverOwner) {
+            serverOwners(central).firstOrNull { it.id == userId }
         } else {
-            tenant.prepareStatement("SELECT postgres_role FROM application_users WHERE id = ? AND is_active").use { query ->
-                query.setObject(1, userId)
-                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
-            }
+            userRows(tenant, "WHERE users.id = ? AND users.is_active", "") { it.setObject(1, userId) }.firstOrNull()
         } ?: return null
-        return HotspotUser(userId, username, code, serverOwner, true)
+        return HotspotUser(userId, user.username, code, serverOwner, true, user.displayName)
     }
 
     // Active server owners from the central database.
-    private fun serverOwners(central: Connection): List<Pair<UUID, String>> = central.prepareStatement(
-        """
-        SELECT users.id, users.postgres_role
-        FROM server_owners owners
-        JOIN application_users users ON users.id = owners.user_id
-        WHERE users.is_active
-        ORDER BY users.postgres_role
-        """.trimIndent()
-    ).use { query ->
-        query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java) to rows.getString(2)) } }
+    private fun serverOwners(central: Connection): List<UserRow> = userRows(
+        central,
+        "JOIN server_owners owners ON owners.user_id = users.id WHERE users.is_active",
+        "ORDER BY users.postgres_role",
+    ) {}
+
+    /**
+     * Users with their full name. Before core migration V003 there is no display_name column; the
+     * statement then fails and the users are read without names.
+     */
+    private fun userRows(connection: Connection, filter: String, order: String, bind: (java.sql.PreparedStatement) -> Unit): List<UserRow> {
+        fun read(name: String) = connection.prepareStatement(
+            "SELECT users.id, users.postgres_role, $name, users.is_active FROM application_users users $filter $order"
+        ).use { query ->
+            bind(query)
+            query.executeQuery().use { rows ->
+                buildList { while (rows.next()) add(UserRow(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3), rows.getBoolean(4))) }
+            }
+        }
+        return try {
+            read("users.display_name")
+        } catch (_: java.sql.SQLException) {
+            read("NULL")
+        }
     }
 
     // ---- Networks of other companies granted to users of the server company ----

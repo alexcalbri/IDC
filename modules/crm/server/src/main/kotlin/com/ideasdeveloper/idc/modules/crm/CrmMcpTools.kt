@@ -210,7 +210,7 @@ object CrmMcpTools {
 
     // The user, marked as acting through an agent in the lead's activity.
     private fun actor(call: McpToolCall): CrmActor {
-        val actor = CrmRepository.actor(call.tenant, call.permissions)
+        val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
         return actor.copy(name = "${actor.name} (agente ${call.agentName})")
     }
 

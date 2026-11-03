@@ -463,14 +463,7 @@ private const val ServerWorkspaceCode = "servidor"
 // Sesion con los modulos activos en el espacio del servidor segun la lista recibida.
 private fun LoginResponse.withServerWorkspace(modules: List<ServerModuleResponse>): LoginResponse {
     val serverModules = modules.filter { it.usedByServer }.map { it.moduleId }
-    return LoginResponse(
-        userId = userId,
-        username = username,
-        accessToken = accessToken,
-        expiresInSeconds = expiresInSeconds,
-        scope = scope,
-        companyCode = companyCode,
-        role = role,
+    return copy(
         enabledModules = serverModules,
         workspaceCompanyCode = if (serverModules.isEmpty()) workspaceCompanyCode else ServerWorkspaceCode,
     )

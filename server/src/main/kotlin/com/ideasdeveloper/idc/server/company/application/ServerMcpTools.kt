@@ -39,7 +39,8 @@ object ServerMcpTools {
             "pasa su codigo en el argumento acting_company; el modulo debe estar activo en esa empresa (servidor_set_company_module). " +
             "Un modulo debe estar instalado en el servidor (servidor_install_module) antes de poder activarlo en una empresa. " +
             "Las contrasenas nunca pasan por aqui: una empresa creada con servidor_create_company no tiene contrasena utilizable " +
-            "hasta que el dueno del servidor la pone desde la app (Empresas > Editar > Contrasena del business owner); avisale."
+            "hasta que el business owner la pone con el codigo que le llega a su correo (\"Olvidaste tu contrasena\" en el login) " +
+            "o el dueno del servidor la pone desde la app (Empresas > Editar > Contrasena del business owner); avisale."
 
     fun mcp(provisioning: CompanyProvisioningService): RegisteredModuleMcp =
         RegisteredModuleMcp(ServerMcpModuleId, Name, Instructions, tools { provisioning }.map { RegisteredMcpTool(ServerMcpModuleId, Name, it) })
@@ -77,20 +78,23 @@ object ServerMcpTools {
             McpTool(
                 name = "create_company",
                 title = "Crear empresa",
-                description = "Crea una empresa con su base de datos y su usuario business owner. El business owner no podra iniciar " +
-                    "sesion hasta que el dueno del servidor le ponga contrasena desde la app; no pidas ni envies contrasenas.",
+                description = "Crea una empresa con su base de datos y su usuario business owner (con nombre y correo). El business owner " +
+                    "pone su contrasena con \"Olvidaste tu contrasena\" en el login (le llega un codigo a su correo), o el dueno del " +
+                    "servidor se la pone desde la app; no pidas ni envies contrasenas.",
                 permission = Permission,
                 inputSchema = McpSchema.obj(
                     mapOf(
                         "code" to McpSchema.string("Codigo unico: minusculas, numeros o guion bajo, iniciando con letra."),
                         "name" to McpSchema.string("Nombre de la empresa."),
                         "business_owner_username" to McpSchema.string("Usuario del business owner: minusculas, numeros o guion bajo."),
+                        "business_owner_name" to McpSchema.string("Nombre completo del business owner."),
+                        "business_owner_email" to McpSchema.string("Correo del business owner; recibe los codigos para poner y recuperar su contrasena."),
                         "logo_url" to McpSchema.string("URL del logo (opcional)."),
                         "primary_color" to color("primario"),
                         "secondary_color" to color("secundario"),
                         "accent_color" to color("de acento"),
                     ),
-                    required = listOf("code", "name", "business_owner_username"),
+                    required = listOf("code", "name", "business_owner_username", "business_owner_name", "business_owner_email"),
                 ),
             ) { call ->
                 val created = run {
@@ -99,6 +103,8 @@ object ServerMcpTools {
                             code = call.requiredString("code", 63),
                             name = call.requiredString("name", 200),
                             businessOwnerUsername = call.requiredString("business_owner_username", 63),
+                            businessOwnerName = call.requiredString("business_owner_name", 120),
+                            businessOwnerEmail = call.requiredString("business_owner_email", 254),
                             // Nobody learns it; the server owner sets the real password in the app.
                             businessOwnerPassword = randomPassword(),
                             logoUrl = call.string("logo_url", 2_000).ifEmpty { null },
@@ -115,8 +121,9 @@ object ServerMcpTools {
                     put("businessOwnerUsername", created.businessOwnerUsername)
                     put(
                         "nextStep",
-                        "El business owner aun no puede iniciar sesion: el dueno del servidor debe ponerle contrasena en la app " +
-                            "(Empresas > Editar > Contrasena del business owner).",
+                        "El business owner aun no tiene contrasena: puede ponerla con \"Olvidaste tu contrasena\" en el login usando el " +
+                            "codigo de empresa ${created.code} (le llega un codigo a su correo, si el servidor tiene SMTP), o el dueno del " +
+                            "servidor se la pone en la app (Empresas > Editar > Contrasena del business owner).",
                     )
                 }
             },

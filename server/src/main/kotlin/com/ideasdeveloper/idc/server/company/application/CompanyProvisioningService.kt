@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.server.company.application
 
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.TenantDatabaseConfig
+import com.ideasdeveloper.idc.server.auth.application.UserProfileRules
 import com.ideasdeveloper.idc.server.company.api.CreateCompanyRequest
 import com.ideasdeveloper.idc.server.company.api.CreateCompanyResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
@@ -63,6 +64,8 @@ class CompanyProvisioningService(
         val companyName = request.name.trim()
         val ownerUsername = request.businessOwnerUsername.trim()
         val ownerPassword = request.businessOwnerPassword
+        val ownerName = request.businessOwnerName.trim()
+        val ownerEmail = request.businessOwnerEmail.trim()
         val databaseName = "idc_$code"
         val companyId = UUID.randomUUID()
 
@@ -70,6 +73,7 @@ class CompanyProvisioningService(
             throw CompanyProvisioningException("El codigo ${ServerWorkspace.Code} esta reservado para el espacio del servidor.")
         }
         validate(code, companyName, ownerUsername, ownerPassword, request)
+        UserProfileRules.problem(ownerName, ownerEmail)?.let { throw CompanyProvisioningException("Business owner: $it") }
 
         central.connection.use { connection ->
             if (connection.exists("companies", "code", code)) {
@@ -104,7 +108,7 @@ class CompanyProvisioningService(
         tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
             applyTenantCoreMigrations(tenant)
             applyBaseModuleMigrations(tenant)
-            seedBusinessOwner(tenant, ownerUsername)
+            seedBusinessOwner(tenant, ownerUsername, ownerName, ownerEmail)
             grantTenantPermissions(tenant, ownerUsername)
         }
 
@@ -389,7 +393,43 @@ class CompanyProvisioningService(
      * server owner does this, from the app: companies created by an AI agent get a random password
      * nobody knows, because credentials never go through the MCP.
      */
-    fun resetBusinessOwnerPassword(companyCode: String, password: String, provisioningRole: String) {
+    fun resetBusinessOwnerPassword(companyCode: String, password: String, provisioningRole: String) =
+        changeBusinessOwnerPassword(companyCode, password, provisioningRole, "company.owner_password_reset")
+
+    /**
+     * New password of a business owner who proved, with a code sent to their email, that they own the
+     * account (AccountService). Runs as the first server owner's role, which can change company roles.
+     */
+    fun setBusinessOwnerPasswordByEmailCode(companyCode: String, password: String) {
+        val role = firstServerOwnerRole() ?: throw CompanyProvisioningException("El servidor no tiene un dueno activo.")
+        changeBusinessOwnerPassword(companyCode, password, role, "company.owner_password_recovered")
+    }
+
+    /** New password of a server owner who proved with an email code that they own the account. */
+    fun setServerOwnerPasswordByEmailCode(userId: UUID, password: String) {
+        val role = serverOwnerRole(userId) ?: throw CompanyProvisioningException("El usuario ya no es dueno del servidor.")
+        if (password.length < 16 || password.any { it !in ' '..'~' }) {
+            throw CompanyProvisioningException("La contrasena del dueno del servidor debe tener al menos 16 caracteres ASCII.")
+        }
+        // Any role may change its own password.
+        adminConnection(role).use { admin ->
+            admin.autoCommit = true
+            admin.createStatement().use { statement ->
+                statement.executeUpdate("ALTER ROLE ${quoteIdentifier(role)} PASSWORD ${quoteLiteral(password)}")
+            }
+        }
+        central.connection.use { connection ->
+            connection.prepareStatement(
+                "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
+            ).use { revoke ->
+                revoke.setObject(1, userId)
+                revoke.executeUpdate()
+            }
+            insertAudit(connection, role, "server_owner.password_recovered", null, null, "{}")
+        }
+    }
+
+    private fun changeBusinessOwnerPassword(companyCode: String, password: String, provisioningRole: String, auditAction: String) {
         val normalizedCompanyCode = companyCode.trim()
         rejectServerWorkspace(normalizedCompanyCode)
         if (password.length < 12) {
@@ -434,7 +474,7 @@ class CompanyProvisioningService(
             }
         }
         central.connection.use { connection ->
-            insertAudit(connection, provisioningRole, "company.owner_password_reset", normalizedCompanyCode, null, """{"businessOwnerUsername":"$ownerRole"}""")
+            insertAudit(connection, provisioningRole, auditAction, normalizedCompanyCode, null, """{"businessOwnerUsername":"$ownerRole"}""")
         }
     }
 
@@ -785,6 +825,11 @@ class CompanyProvisioningService(
             val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: return@forEach
             try {
                 tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+                    try {
+                        applyUserProfileMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("User profile migration failed for company {}", companyCode, failure)
+                    }
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
                     }
@@ -1052,6 +1097,16 @@ class CompanyProvisioningService(
         ).forEach { (relativePath, module) ->
             applyMigration(connection, module, relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
         }
+        applyUserProfileMigration(connection)
+    }
+
+    // Name, email and password reset codes of users (core V003); also brought to existing companies at startup.
+    private fun applyUserProfileMigration(connection: Connection) {
+        val relativePath = "database/core/migrations/V003__add_application_user_profile.sql"
+        applyMigration(connection, "core", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        connection.createStatement().use { statement ->
+            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO ${quoteIdentifier(config.runtimeUser)}")
+        }
     }
 
     private fun applyBaseModuleMigrations(connection: Connection) {
@@ -1140,13 +1195,17 @@ class CompanyProvisioningService(
         }
     }
 
-    private fun seedBusinessOwner(connection: Connection, ownerUsername: String) {
+    private fun seedBusinessOwner(connection: Connection, ownerUsername: String, ownerName: String, ownerEmail: String) {
         val userId = UUID.randomUUID()
         connection.autoCommit = false
         try {
-            connection.prepareStatement("INSERT INTO application_users (id, postgres_role, is_active) VALUES (?, ?, TRUE)").use { insert ->
+            connection.prepareStatement(
+                "INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES (?, ?, TRUE, ?, ?)"
+            ).use { insert ->
                 insert.setObject(1, userId)
                 insert.setString(2, ownerUsername)
+                insert.setString(3, ownerName)
+                insert.setString(4, ownerEmail)
                 insert.executeUpdate()
             }
             connection.prepareStatement("INSERT INTO business_owner (user_id) VALUES (?)").use { insert ->
@@ -1314,8 +1373,10 @@ class CompanyProvisioningService(
     ) {
         connection.prepareStatement(
             """
-            INSERT INTO provisioning_audit_log (id, actor_role, action, company_code, module_id, details)
-            VALUES (?, ?, ?, ?, ?, CAST(? AS jsonb))
+            INSERT INTO provisioning_audit_log (id, actor_role, action, company_code, module_id, details, actor_name, actor_email)
+            SELECT ?, ?, ?, ?, ?, CAST(? AS jsonb), users.display_name, users.email
+            FROM (SELECT 1) AS one
+            LEFT JOIN application_users users ON users.postgres_role = ?
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, UUID.randomUUID())
@@ -1324,6 +1385,8 @@ class CompanyProvisioningService(
             insert.setString(4, companyCode)
             insert.setString(5, moduleId)
             insert.setString(6, details)
+            // Who made the change, by name and email as they are now.
+            insert.setString(7, actorRole)
             insert.executeUpdate()
         }
     }

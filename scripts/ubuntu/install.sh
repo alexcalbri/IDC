@@ -86,12 +86,14 @@ readonly REQUIRED_FILES=(
     scripts/ubuntu/domains-sync.sh
     database/core/migrations/V001__create_application_users.sql
     database/core/migrations/V002__create_application_sessions.sql
+    database/core/migrations/V003__add_application_user_profile.sql
     database/control/migrations/V001__create_server_registry.sql
     database/control/migrations/V002__create_provisioning_audit_log.sql
     database/control/migrations/V003__create_server_modules.sql
     database/control/migrations/V004__create_server_settings_and_module_packages.sql
     database/control/migrations/V005__create_public_domains.sql
     database/control/migrations/V006__add_server_workspace.sql
+    database/control/migrations/V007__add_audit_actor_identity.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -443,6 +445,12 @@ for identifier in "$SERVER_OWNER"; do
         die 'Identificador invalido: usa letras minusculas, numeros y guion bajo.'
 done
 [[ $SERVER_OWNER != "$DB_USER" ]] || die 'La cuenta del propietario debe ser distinta del usuario interno de la aplicación.'
+# Every change is recorded with the owner's name, and the email receives password reset codes.
+ask SERVER_OWNER_NAME 'Nombre completo del propietario del servidor' ''
+SERVER_OWNER_NAME=$(printf '%s' "$SERVER_OWNER_NAME" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+[[ ${#SERVER_OWNER_NAME} -ge 2 && ${#SERVER_OWNER_NAME} -le 120 ]] || die 'Escribe un nombre de 2 a 120 caracteres.'
+ask SERVER_OWNER_EMAIL 'Correo del propietario del servidor (recuperacion de contrasena)' ''
+[[ ${#SERVER_OWNER_EMAIL} -le 254 && $SERVER_OWNER_EMAIL =~ ^[^[:space:]@]+@[^[:space:]@]+\.[^[:space:]@]+$ ]] || die 'Correo invalido.'
 if [[ $CLEAN_INSTALL == si ]]; then
     ask CLEAN_TENANT_DATABASES 'Borrar tambien bases tenant idc_* de intentos anteriores? Escribe si o no' no
     [[ $CLEAN_TENANT_DATABASES == si || $CLEAN_TENANT_DATABASES == no ]] || die 'Responde si o no.'
@@ -605,12 +613,14 @@ unset SCRAM_VERIFIER
 source scripts/ubuntu/migrations.sh
 apply_migration "$DB_NAME" core database/core/migrations/V001__create_application_users.sql
 apply_migration "$DB_NAME" core database/core/migrations/V002__create_application_sessions.sql
+apply_migration "$DB_NAME" core database/core/migrations/V003__add_application_user_profile.sql
 apply_migration "$DB_NAME" control database/control/migrations/V001__create_server_registry.sql
 apply_migration "$DB_NAME" control database/control/migrations/V002__create_provisioning_audit_log.sql
 apply_migration "$DB_NAME" control database/control/migrations/V003__create_server_modules.sql
 apply_migration "$DB_NAME" control database/control/migrations/V004__create_server_settings_and_module_packages.sql
 apply_migration "$DB_NAME" control database/control/migrations/V005__create_public_domains.sql
 apply_migration "$DB_NAME" control database/control/migrations/V006__add_server_workspace.sql
+apply_migration "$DB_NAME" control database/control/migrations/V007__add_audit_actor_identity.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
@@ -619,13 +629,16 @@ GRANT :"login_role" TO :"db_user";
 SQL
 unset verifier
 runuser -u postgres -- psql -X -d "$DB_NAME" -v ON_ERROR_STOP=1 \
-    -v db_user="$DB_USER" -v server_owner="$SERVER_OWNER" <<'SQL'
+    -v db_user="$DB_USER" -v server_owner="$SERVER_OWNER" -v owner_name="$SERVER_OWNER_NAME" -v owner_email="$SERVER_OWNER_EMAIL" <<'SQL'
 BEGIN;
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-INSERT INTO application_users VALUES (gen_random_uuid(), :'server_owner', true);
+INSERT INTO application_users (id, postgres_role, is_active, display_name, email)
+VALUES (gen_random_uuid(), :'server_owner', true, :'owner_name', :'owner_email');
 INSERT INTO server_owners SELECT id FROM application_users WHERE postgres_role = :'server_owner';
 GRANT USAGE ON SCHEMA public TO :"db_user";
 GRANT SELECT ON application_users, server_owners TO :"db_user";
+GRANT UPDATE (display_name, email) ON application_users TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT ON provisioning_audit_log TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_sessions TO :"db_user";

@@ -6,6 +6,7 @@ import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.ModuleJob
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
+import com.ideasdeveloper.idc.server.modules.UserIdentity
 import com.ideasdeveloper.idc.server.modules.ServerModule
 import com.ideasdeveloper.idc.server.modules.ServerModuleProvider
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
@@ -142,7 +143,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.9.0",
+        version = "0.9.1",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -246,7 +247,7 @@ object CrmServerModule : ServerModule {
                 if (!permissions.has(required)) {
                     return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
                 }
-                call.respondScreen(access) { tenant -> action(tenant, permissions, access.serverMail, call.publicBase(), screen, params, values) }
+                call.respondScreen(access) { tenant -> action(tenant, permissions, access.serverMail, call.publicBase(), screen, params, values, access.userIdentity(tenant, permissions)) }
             }
         }
     }
@@ -259,9 +260,10 @@ object CrmServerModule : ServerModule {
         screen: String,
         params: Map<String, String>,
         values: Map<String, String>,
+        identity: UserIdentity?,
     ): UiScreen {
         val context = CrmScreens.Context.load(tenant, permissions, serverMail, publicBase)
-        val actor = CrmRepository.actor(tenant, permissions)
+        val actor = CrmRepository.actor(tenant, permissions, identity)
         fun show(target: String, notice: UiNotice, targetParams: Map<String, String> = params - "op", submitted: Map<String, String>? = null) =
             CrmScreens.build(target, CrmScreens.Context.load(tenant, permissions, serverMail, publicBase), targetParams, notice, submitted)
         fun uuid(key: String) = params[key]?.let { runCatching { UUID.fromString(it) }.getOrNull() }

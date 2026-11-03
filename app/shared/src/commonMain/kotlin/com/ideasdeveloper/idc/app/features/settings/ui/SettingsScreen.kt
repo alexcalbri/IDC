@@ -37,7 +37,9 @@ import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfiguration
 import com.ideasdeveloper.idc.app.core.version.ClientVersion
 import com.ideasdeveloper.idc.app.core.version.VersionApi
+import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.idc.app.features.auth.ui.ProfileDialog
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
@@ -68,10 +70,25 @@ fun SettingsScreen(
     val scope = rememberCoroutineScope()
     var versionStatus by remember { mutableStateOf<String?>(null) }
     var checkingVersion by remember { mutableStateOf(false) }
+    var editingProfile by remember { mutableStateOf(false) }
     val selectedTheme by ThemeStore.selection.collectAsState()
     val moduleThemes by ThemeStore.moduleThemes.collectAsState()
     // Al abrir Ajustes vuelve a pedir los temas por si se instalo o quito un modulo.
     LaunchedEffect(configuration?.serverUrl) { ThemeStore.refresh(configuration?.serverUrl) }
+
+    if (editingProfile && session != null) {
+        ProfileDialog(
+            serverUrl = configuration?.serverUrl,
+            session = session,
+            required = false,
+            onSaved = { profile ->
+                SessionStore.update { it.copy(displayName = profile.displayName, email = profile.email, profileComplete = profile.profileComplete) }
+                editingProfile = false
+            },
+            onDismiss = { editingProfile = false },
+            onLogout = onLogout,
+        )
+    }
 
     Box(
         modifier = modifier
@@ -129,8 +146,16 @@ fun SettingsScreen(
                     Text("Sesion", fontWeight = FontWeight.Bold, color = primaryColor)
                     Spacer(Modifier.height(10.dp))
                     SettingRow("Usuario", session?.username ?: "Sin sesion")
+                    SettingRow("Nombre", session?.displayName ?: "Sin nombre")
+                    SettingRow("Correo", session?.email ?: "Sin correo")
                     SettingRow("Rol", session?.role ?: "Sin rol")
                     SettingRow("Empresa activa", session?.companyCode ?: "Servidor")
+                    if (session != null) {
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(onClick = { editingProfile = true }) {
+                            Text("Editar nombre y correo")
+                        }
+                    }
                 }
 
                 SettingsCard(primaryColor = primaryColor) {

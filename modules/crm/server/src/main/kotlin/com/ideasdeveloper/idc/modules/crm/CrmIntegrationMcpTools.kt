@@ -279,7 +279,7 @@ object CrmIntegrationMcpTools {
     private fun context(call: McpToolCall) = CrmScreens.Context.load(call.tenant, call.permissions, call.access.serverMail)
 
     private fun actor(call: McpToolCall): CrmActor {
-        val actor = CrmRepository.actor(call.tenant, call.permissions)
+        val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
         return actor.copy(name = "${actor.name} (agente ${call.agentName})")
     }
 

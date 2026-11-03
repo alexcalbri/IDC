@@ -217,17 +217,7 @@ fun ServerStaffScreen(
 }
 
 // Sesion con el codigo de la empresa del servidor recien creada.
-private fun LoginResponse.withWorkspace(code: String) = LoginResponse(
-    userId = userId,
-    username = username,
-    accessToken = accessToken,
-    expiresInSeconds = expiresInSeconds,
-    scope = scope,
-    companyCode = companyCode,
-    role = role,
-    enabledModules = enabledModules,
-    workspaceCompanyCode = code,
-)
+private fun LoginResponse.withWorkspace(code: String) = copy(workspaceCompanyCode = code)
 
 private suspend inline fun <T> CompanyApi.use(block: suspend (CompanyApi) -> T): T {
     try {

@@ -70,6 +70,7 @@ fun LoginScreen(
     var versionMessage by remember { mutableStateOf<String?>(null) }
     var administratorClickCount by rememberSaveable { mutableStateOf(0) }
     var administratorToggleVisible by rememberSaveable { mutableStateOf(false) }
+    var recoveringPassword by remember { mutableStateOf(false) }
     val needsServerConfiguration = savedConfiguration == null
 
     val isLoading = state.isLoading
@@ -347,7 +348,24 @@ fun LoginScreen(
                 }
             }
 
+            // Envia un codigo al correo del usuario para poner una nueva contrasena.
+            TextButton(
+                onClick = { recoveringPassword = true },
+                enabled = !isLoading && serverUrl.isNotBlank() && (serverAdministration || companyCode.isNotBlank()),
+            ) {
+                Text("¿Olvidaste tu contraseña?", color = AppTheme.colors.onScreen)
+            }
+
             Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        if (recoveringPassword) {
+            PasswordResetDialog(
+                serverUrl = serverUrl,
+                companyCode = if (serverAdministration) null else companyCode.trim(),
+                initialUsername = username,
+                onDismiss = { recoveringPassword = false },
+            )
         }
 
         // Renderiza el pie con version y acceso oculto a administracion del servidor.

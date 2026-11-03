@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.server.auth.infrastructure.database
 import com.ideasdeveloper.idc.server.auth.application.AuthenticationService
 import com.ideasdeveloper.idc.server.auth.application.SessionService
 import com.ideasdeveloper.idc.server.auth.application.ScopedLoginService
+import com.ideasdeveloper.idc.server.auth.application.UserProfileRules
 import com.ideasdeveloper.idc.server.auth.domain.LoginScope
 import com.ideasdeveloper.idc.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.PostgresCredentialVerifier
@@ -117,13 +118,29 @@ class LoginDatabases(
             if (server && !owner) return@LoginScope null
             val session = sessions.createSession(user)
             val workspace = if (server) serverWorkspace() else null
+            val profile = profile(source, java.util.UUID.fromString(user.id.toString()))
             LoginSuccessResponse(session.userId, session.username, session.accessToken, session.expiresInSeconds,
                 scope = if (server) "server" else "company",
                 companyCode = if (server) null else credentials.companyCode,
                 role = if (server) "server_owner" else if (owner) "business_owner" else "user",
                 enabledModules = if (server) workspace?.second.orEmpty() else visibleModules(source, java.util.UUID.fromString(user.id.toString()), owner),
-                workspaceCompanyCode = workspace?.first)
+                workspaceCompanyCode = workspace?.first,
+                displayName = profile?.first,
+                email = profile?.second,
+                profileComplete = profile == null || UserProfileRules.isComplete(profile.first, profile.second))
         }
+    }
+
+    // Name and email of the user, or null before core migration V003 (sign-in then does not ask for them).
+    private fun profile(source: DataSource, userId: java.util.UUID): Pair<String?, String?>? = try {
+        source.connection.use { connection ->
+            connection.prepareStatement("SELECT display_name, email FROM application_users WHERE id = ?").use { query ->
+                query.setObject(1, userId)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getString(2) else null }
+            }
+        }
+    } catch (_: java.sql.SQLException) {
+        null
     }
 
     // Code and enabled modules of the server workspace, or null when it has not been created.

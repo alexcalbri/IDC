@@ -9,6 +9,8 @@ data class CreateCompanyRequest(
     val name: String,
     val businessOwnerUsername: String,
     val businessOwnerPassword: String,
+    val businessOwnerName: String = "",
+    val businessOwnerEmail: String = "",
     val logoUrl: String? = null,
     val primaryColor: String = "#667EEA",
     val secondaryColor: String = "#764BA2",

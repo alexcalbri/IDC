@@ -7,7 +7,13 @@ import com.ideasdeveloper.idc.server.auth.infrastructure.database.ApplicationSes
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.ApplicationUserRepository
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
+import com.ideasdeveloper.idc.server.auth.api.accountProfileRoutes
+import com.ideasdeveloper.idc.server.auth.api.passwordResetRoutes
+import com.ideasdeveloper.idc.server.auth.application.AccountException
+import com.ideasdeveloper.idc.server.auth.application.AccountPasswords
+import com.ideasdeveloper.idc.server.auth.application.AccountService
 import com.ideasdeveloper.idc.server.company.api.companyRoutes
+import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningException
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.idc.server.company.application.CompanySelfService
@@ -154,6 +160,28 @@ fun Application.module() {
         { listOf(serverMcp) + moduleRegistry.mcp().filterNot { it.moduleId == ServerMcpModuleId } },
         loginDatabases.service::login,
     )
+    // Name and email of each user and password recovery by email code.
+    val accountService = AccountService(
+        central = DatabaseFactory.getDataSource(),
+        loginDatabases = loginDatabases,
+        mail = serverMailSettings().let { settings -> { settings } },
+        passwords = AccountPasswords(
+            serverOwner = { userId, password ->
+                try {
+                    companyProvisioning.setServerOwnerPasswordByEmailCode(userId, password)
+                } catch (failure: CompanyProvisioningException) {
+                    throw AccountException("PASSWORD_NOT_UPDATED", failure.message.orEmpty())
+                }
+            },
+            businessOwner = { companyCode, password ->
+                try {
+                    companyProvisioning.setBusinessOwnerPasswordByEmailCode(companyCode, password)
+                } catch (failure: CompanyProvisioningException) {
+                    throw AccountException("PASSWORD_NOT_UPDATED", failure.message.orEmpty())
+                }
+            },
+        ),
+    )
     // Periodic work declared by modules (ServerModule.jobs), for every company that uses them.
     val moduleJobs = ModuleJobScheduler(moduleRegistry, moduleAccessService).also { it.start() }
     val companySelfService = CompanySelfService(
@@ -191,6 +219,10 @@ fun Application.module() {
             authRoutes(
                 loginService = loginDatabases.service,
             )
+            passwordResetRoutes(accountService)
+        }
+        rateLimit(RateLimitName("admin")) {
+            accountProfileRoutes(accountService)
         }
         rateLimit(RateLimitName("admin")) {
             // Registra rutas de provisioning server_owner y autoservicio business_owner.
