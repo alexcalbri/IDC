@@ -74,7 +74,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.2.1",
+        version = "0.2.2",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,

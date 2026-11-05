@@ -100,7 +100,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente o de usuario segun la red; otros modulos dan acceso con pases.",
-        version = "0.8.0",
+        version = "0.8.1",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
