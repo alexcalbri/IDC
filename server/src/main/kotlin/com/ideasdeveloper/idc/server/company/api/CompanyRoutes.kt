@@ -5,6 +5,8 @@ import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningServ
 import com.ideasdeveloper.idc.server.company.application.CompanySelfException
 import com.ideasdeveloper.idc.server.company.application.CompanySelfService
 import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
+import com.ideasdeveloper.idc.server.app.RecentServerErrors
+import com.ideasdeveloper.idc.server.app.ServerLogsResponse
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.PartData
@@ -263,6 +265,18 @@ fun Route.companyRoutes(
         }
 
         call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.listCompanies() })
+    }
+
+    get("/server/logs") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        if (call.serverOwnerRole(authorizer) == null) {
+            call.respond(
+                HttpStatusCode.Forbidden,
+                CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para consultar los errores."),
+            )
+            return@get
+        }
+        call.respond(HttpStatusCode.OK, ServerLogsResponse(RecentServerErrors.snapshot().asReversed()))
     }
 
     get("/server/modules") {

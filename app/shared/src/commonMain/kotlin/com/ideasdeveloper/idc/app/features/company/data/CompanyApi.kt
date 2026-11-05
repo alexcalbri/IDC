@@ -751,6 +751,12 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    suspend fun serverLogs(accessToken: String): ServerLogsResponse = call("No se pudieron cargar los errores del servidor.") {
+        client.get("$baseUrl/server/logs") {
+            bearerAuth(accessToken)
+        }
+    }
+
     // Respuesta 2xx como [T]; si no, el mensaje del servidor o [failure].
     private suspend inline fun <reified T> call(failure: String, request: () -> HttpResponse): T {
         try {

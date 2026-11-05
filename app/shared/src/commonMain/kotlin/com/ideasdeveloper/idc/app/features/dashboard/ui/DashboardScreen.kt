@@ -238,6 +238,14 @@ fun DashboardScreen(
                     onClick = { onNavigateTo(NavRoute.Module("server-staff")) }
                 )
                 Spacer(modifier = Modifier.height(12.dp))
+                DashboardActionCard(
+                    title = "Errores del servidor",
+                    description = "Consulta los errores recientes del servidor para diagnosticar fallos",
+                    iconText = "!",
+                    primaryColor = primaryColor,
+                    onClick = { onNavigateTo(NavRoute.Module("server-logs")) }
+                )
+                Spacer(modifier = Modifier.height(12.dp))
             }
 
             // Renderiza los modulos activos recibidos desde el servidor.

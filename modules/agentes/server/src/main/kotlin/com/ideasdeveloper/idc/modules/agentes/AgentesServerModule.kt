@@ -330,7 +330,7 @@ object AgentesServerModule : ServerModule {
             }
             respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
         } catch (failure: SQLException) {
-            log.warn("Agentes screen failed: {}", failure.message)
+            log.error("Agentes screen failed for company {}", permissions.companyCode, failure)
             respond(HttpStatusCode.InternalServerError, AgentesErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
         }
     }

@@ -357,10 +357,17 @@ class ModuleApi(serverUrl: String) {
             }
             val text = response.bodyAsText()
             if (response.status.isSuccess()) return text
-            val message = runCatching {
-                Json.parseToJsonElement(text).jsonObject["message"]?.jsonPrimitive?.contentOrNull
+            val error = runCatching {
+                Json.parseToJsonElement(text).jsonObject
             }.getOrNull()
-            throw ModuleException(message ?: "El servidor rechazo la accion (${response.status.value}).")
+            val code = (error?.get("code") as? JsonPrimitive)?.contentOrNull
+            val message = (error?.get("message") as? JsonPrimitive)?.contentOrNull
+            val details = buildList {
+                add("HTTP ${response.status.value}")
+                code?.takeIf { it.isNotBlank() }?.let { add(it) }
+                message?.takeIf { it.isNotBlank() }?.let { add(it) }
+            }.joinToString(" · ")
+            throw ModuleException(details.ifBlank { "El servidor rechazo la accion." })
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: ModuleException) {

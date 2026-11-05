@@ -243,7 +243,12 @@ fun ModuleScreenLayout(
 private fun ModuleSidebar(navigation: UiNavigation, colors: ModuleColors, enabled: Boolean, onAction: (UiAction) -> Unit) {
     Column(
         verticalArrangement = Arrangement.spacedBy(6.dp),
-        modifier = Modifier.width(230.dp).fillMaxHeight().background(colors.surface).padding(horizontal = 16.dp, vertical = 20.dp),
+        modifier = Modifier
+            .width(230.dp)
+            .fillMaxHeight()
+            .background(colors.surface)
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 20.dp),
     ) {
         if (navigation.title.isNotBlank()) {
             Text(navigation.title.uppercase(), color = colors.text, fontWeight = FontWeight.ExtraBold, letterSpacing = 2.sp, modifier = Modifier.padding(bottom = 12.dp))

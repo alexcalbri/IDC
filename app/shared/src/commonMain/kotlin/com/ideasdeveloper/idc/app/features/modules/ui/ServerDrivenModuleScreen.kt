@@ -36,6 +36,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
+import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
+import com.ideasdeveloper.idc.app.features.company.data.CompanyException
+import com.ideasdeveloper.idc.app.features.company.data.CompanySwitch
+import com.ideasdeveloper.idc.app.features.company.data.OwnedCompany
+import com.ideasdeveloper.idc.app.features.company.data.SwitchTargetsResponse
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.modules.data.CreateCustomerFieldRequest
 import com.ideasdeveloper.idc.app.features.modules.data.CreateCustomerRequest
@@ -47,6 +52,7 @@ import com.ideasdeveloper.idc.app.features.modules.data.ModuleDefinition
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleException
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
+import com.ideasdeveloper.idc.app.features.shell.ui.TopBarMenuItem
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
@@ -63,6 +69,7 @@ fun ServerDrivenModuleScreen(
     onSettings: () -> Unit,
     onLogout: () -> Unit,
     onReturnToDashboard: () -> Unit,
+    onCompanySwitched: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val companyIdentity = remember { CompanyIdentityStore.current() }
@@ -71,6 +78,55 @@ fun ServerDrivenModuleScreen(
     var metadata by remember(moduleId) { mutableStateOf<ModuleDefinition?>(null) }
     var error by remember(moduleId) { mutableStateOf<String?>(null) }
     var loading by remember(moduleId) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val switchCompanyCode = session?.companyCode
+    val canSwitchCompany = session?.role == "server_owner" ||
+        (session?.role == "business_owner" && switchCompanyCode != null)
+    var switchTargets by remember(serverUrl, session?.accessToken, switchCompanyCode) {
+        mutableStateOf<SwitchTargetsResponse?>(null)
+    }
+    var switchMessage by remember { mutableStateOf<String?>(null) }
+    var switchingCompany by remember { mutableStateOf(false) }
+
+    LaunchedEffect(serverUrl, session?.accessToken, switchCompanyCode, canSwitchCompany) {
+        switchTargets = null
+        switchMessage = null
+        if (!canSwitchCompany) return@LaunchedEffect
+        val activeServerUrl = serverUrl ?: return@LaunchedEffect
+        val activeSession = session ?: return@LaunchedEffect
+        val api = CompanyApi(activeServerUrl)
+        try {
+            switchTargets = api.switchTargets(activeSession.accessToken, switchCompanyCode)
+        } catch (exception: CompanyException) {
+            switchMessage = exception.message ?: "No se pudieron cargar las empresas."
+        } finally {
+            api.close()
+        }
+    }
+
+    fun switchTo(target: OwnedCompany?) {
+        val activeServerUrl = serverUrl ?: return
+        val activeSession = session ?: return
+        switchingCompany = true
+        switchMessage = "Entrando a ${target?.name ?: switchTargets?.serverName ?: "el servidor"}..."
+        scope.launch {
+            val failure = CompanySwitch.switchTo(activeServerUrl, activeSession, target)
+            switchingCompany = false
+            switchMessage = failure
+            if (failure == null) onCompanySwitched()
+        }
+    }
+
+    val titleMenu = switchTargets?.takeIf { !switchingCompany }?.let { targets ->
+        buildList {
+            targets.serverName?.let { name ->
+                add(TopBarMenuItem(name, caption = "Servidor", current = switchCompanyCode == null) { switchTo(null) })
+            }
+            targets.companies.forEach { company ->
+                add(TopBarMenuItem(company.name, caption = company.code, current = company.code == switchCompanyCode) { switchTo(company) })
+            }
+        }.takeIf { items -> items.any { !it.current } }
+    }.orEmpty()
 
     LaunchedEffect(moduleId, serverUrl) {
         val activeServerUrl = serverUrl
@@ -106,11 +162,12 @@ fun ServerDrivenModuleScreen(
         ) {
             AuthenticatedTopBar(
                 title = definition?.displayName ?: fallbackTitle,
-                subtitle = definition?.description,
+                subtitle = switchMessage ?: definition?.description,
                 primaryColor = primaryColor,
                 onReturnToDashboard = onReturnToDashboard,
                 onSettings = onSettings,
                 onLogout = onLogout,
+                titleMenu = titleMenu,
             )
             // El modulo se muestra como un panel con la X en su esquina superior derecha.
             ClosableView(
@@ -136,12 +193,13 @@ fun ServerDrivenModuleScreen(
     ) {
         AuthenticatedTopBar(
             title = metadata?.displayName ?: fallbackTitle,
-            subtitle = metadata?.views?.firstOrNull()?.title,
+            subtitle = switchMessage ?: metadata?.views?.firstOrNull()?.title,
             primaryColor = primaryColor,
             onReturnToDashboard = onReturnToDashboard,
             onSettings = onSettings,
             onLogout = onLogout,
             modifier = Modifier.align(Alignment.TopCenter),
+            titleMenu = titleMenu,
         )
 
         // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.

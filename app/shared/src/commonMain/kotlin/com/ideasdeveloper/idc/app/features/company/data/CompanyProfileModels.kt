@@ -81,3 +81,14 @@ data class UpdateCompanyUserPermissionsRequest(
 data class ServerWorkspaceResponse(
     val code: String,
 )
+
+@Serializable
+data class ServerErrorLogEntry(
+    val timestamp: String,
+    val logger: String,
+    val message: String,
+    val details: String = "",
+)
+
+@Serializable
+data class ServerLogsResponse(val errors: List<ServerErrorLogEntry>)

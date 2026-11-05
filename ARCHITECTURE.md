@@ -811,11 +811,14 @@ Local code includes `/auth/login`, `GET /companies`, `POST /companies`,
 `GET /companies/me`, `PUT /companies/me`, `GET /companies/me/backups`,
 `POST /companies/me/backups`, `DELETE /companies/me/backups/{fileName}`,
 `GET /companies/me/backups/{fileName}/download`,
-`GET /server/modules`, `POST /server/modules/{moduleId}/install`,
+`GET /server/modules`, `GET /server/logs`, `POST /server/modules/{moduleId}/install`,
 `DELETE /server/modules/{moduleId}`,
 `PUT /companies/{code}/modules/{moduleId}`, `/modules`,
 `/modules/{moduleId}/metadata`, active-user mapping, opaque session issuance,
 session validation/revocation services and IP-based login/admin rate limits.
+`GET /server/logs` is restricted to authenticated server owners and returns the
+latest 100 ERROR-level events held in memory; entries are cleared on restart
+and sensitive values resembling passwords or tokens are redacted.
 Login now selects the proper database and reports server/business ownership;
 company self-management validates a tenant-scoped `business_owner` session
 before reading or updating company profile metadata. Company administration can create,

@@ -4,11 +4,13 @@
             <pattern>%d{YYYY-MM-dd HH:mm:ss.SSS} [%thread] %-5level %logger{36} - %msg%n</pattern>
         </encoder>
     </appender>
+    <appender name="RECENT_ERRORS" class="com.ideasdeveloper.idc.server.app.RecentServerErrorsAppender"/>
     <!-- INFO only: DEBUG/TRACE output of Ktor, its HTTP client and the database drivers includes
          request headers, session tokens and SQL parameters, and journald keeps it.
          ServerLoggingConfigTest fails if this goes below INFO. -->
     <root level="INFO">
         <appender-ref ref="STDOUT"/>
+        <appender-ref ref="RECENT_ERRORS"/>
     </root>
     <logger name="org.eclipse.jetty" level="INFO"/>
     <logger name="io.netty" level="INFO"/>

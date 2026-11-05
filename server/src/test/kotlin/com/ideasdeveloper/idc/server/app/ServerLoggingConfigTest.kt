@@ -20,5 +20,6 @@ class ServerLoggingConfigTest {
             val level = context.getLogger(name).effectiveLevel
             assertTrue(level.isGreaterOrEqual(Level.INFO), "$name logs at $level")
         }
+        assertTrue(context.getLogger(Logger.ROOT_LOGGER_NAME).getAppender("RECENT_ERRORS") != null)
     }
 }

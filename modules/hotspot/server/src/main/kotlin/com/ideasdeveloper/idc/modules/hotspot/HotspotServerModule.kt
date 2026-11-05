@@ -39,12 +39,15 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.SQLException
 import java.time.LocalDate
 import java.util.UUID
 
 object HotspotServerModule : ServerModule {
+    private val log = LoggerFactory.getLogger(HotspotServerModule::class.java)
+
     override val migrationPaths = listOf(
         "modules/hotspot/migrations/V001__create_hotspot.sql",
         "modules/hotspot/migrations/V002__add_networks.sql",
@@ -458,6 +461,7 @@ object HotspotServerModule : ServerModule {
             val screen = connection.use { tenant -> withContext(Dispatchers.IO) { block(tenant) } }
             if (screen != null) respondText(UiJson.encodeToString(UiScreen.serializer(), screen), ContentType.Application.Json)
         } catch (failure: SQLException) {
+            log.error("Hotspot screen failed for company {}", companyCode, failure)
             respond(HttpStatusCode.InternalServerError, HotspotErrorResponse("DATABASE_ERROR", "No se pudo completar la operacion."))
         }
     }
