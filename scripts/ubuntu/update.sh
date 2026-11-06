@@ -305,6 +305,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V009__add_server_owner_company_sessions.sql.'
     [[ -f database/core/migrations/V003__add_application_user_profile.sql ]] ||
         die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
+    [[ -f database/core/migrations/V004__add_application_user_code.sql ]] ||
+        die 'No se encontro database/core/migrations/V004__add_application_user_code.sql.'
 
     source scripts/ubuntu/migrations.sh
     apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
@@ -317,8 +319,10 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V008__add_company_owner_group.sql
     apply_migration "$db_name" control database/control/migrations/V009__add_server_owner_company_sessions.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
+    apply_migration "$db_name" core database/core/migrations/V004__add_application_user_code.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT UPDATE (display_name, email) ON application_users TO :"db_user";
+GRANT SELECT, UPDATE (user_code) ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";

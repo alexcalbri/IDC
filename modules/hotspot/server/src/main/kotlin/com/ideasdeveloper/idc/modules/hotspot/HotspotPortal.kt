@@ -344,6 +344,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         }
         val found = access.centralConnection().use { central ->
             HotspotUserCodes.findActive(connection, central, code)?.let { it to target.companyCode }
+                ?: relatedBusinessOwner(connection, central, target.companyCode, code)?.let { it to target.companyCode }
                 ?: grantedServerUser(central, target.companyCode, network.ssid, code)?.let { it to ServerWorkspace.Code }
         }
         if (found == null) {
@@ -360,6 +361,32 @@ class HotspotPortal(private val access: ModuleAccessService) {
             target, guest, settings.copy(accessMinutes = 0), owner, FormValues(name = user.name),
             HotspotNetworks.UserCode, retry, indefinite = true,
         )
+    }
+
+    // A business owner may use a code from any active company explicitly linked to this company's owner group.
+    private fun relatedBusinessOwner(tenant: Connection, central: Connection, companyCode: String, code: String): HotspotUser? {
+        val relatedCompanies = central.prepareStatement(
+            """
+            SELECT member_company.code
+            FROM companies target_company
+            JOIN companies member_company ON member_company.owner_group = target_company.owner_group
+            WHERE target_company.code = ?
+              AND target_company.is_active AND NOT target_company.is_server_workspace
+              AND member_company.is_active AND NOT member_company.is_server_workspace
+            ORDER BY member_company.code
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, companyCode)
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+        }
+        val codeBelongsToRelatedOwner = relatedCompanies.any { relatedCompany ->
+            if (relatedCompany == companyCode) return@any false
+            val relatedTenant = access.tenantConnectionForCompany(relatedCompany) ?: return@any false
+            relatedTenant.use { HotspotUserCodes.isActiveBusinessOwnerCode(it, code) }
+        }
+        if (!codeBelongsToRelatedOwner) return null
+        return HotspotUserCodes.activeBusinessOwner(tenant)
+            ?.takeIf { it.wifiAccessEnabled }
     }
 
     // A user of the server company with [code] that a server owner authorized for [ssid] of [companyCode].

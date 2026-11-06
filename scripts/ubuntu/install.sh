@@ -87,6 +87,7 @@ readonly REQUIRED_FILES=(
     database/core/migrations/V001__create_application_users.sql
     database/core/migrations/V002__create_application_sessions.sql
     database/core/migrations/V003__add_application_user_profile.sql
+    database/core/migrations/V004__add_application_user_code.sql
     database/control/migrations/V001__create_server_registry.sql
     database/control/migrations/V002__create_provisioning_audit_log.sql
     database/control/migrations/V003__create_server_modules.sql
@@ -618,6 +619,7 @@ source scripts/ubuntu/migrations.sh
 apply_migration "$DB_NAME" core database/core/migrations/V001__create_application_users.sql
 apply_migration "$DB_NAME" core database/core/migrations/V002__create_application_sessions.sql
 apply_migration "$DB_NAME" core database/core/migrations/V003__add_application_user_profile.sql
+apply_migration "$DB_NAME" core database/core/migrations/V004__add_application_user_code.sql
 apply_migration "$DB_NAME" control database/control/migrations/V001__create_server_registry.sql
 apply_migration "$DB_NAME" control database/control/migrations/V002__create_provisioning_audit_log.sql
 apply_migration "$DB_NAME" control database/control/migrations/V003__create_server_modules.sql
@@ -644,6 +646,7 @@ INSERT INTO server_owners SELECT id FROM application_users WHERE postgres_role =
 GRANT USAGE ON SCHEMA public TO :"db_user";
 GRANT SELECT ON application_users, server_owners TO :"db_user";
 GRANT UPDATE (display_name, email) ON application_users TO :"db_user";
+GRANT SELECT, UPDATE (user_code) ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON companies TO :"db_user";
 GRANT SELECT, INSERT ON provisioning_audit_log TO :"db_user";

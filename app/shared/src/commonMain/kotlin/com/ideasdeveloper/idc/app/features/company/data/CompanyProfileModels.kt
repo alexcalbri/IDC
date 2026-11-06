@@ -54,6 +54,7 @@ data class CompanyUserResponse(
     val permissions: List<String>,
     val displayName: String? = null,
     val email: String? = null,
+    val userCode: String = "",
 )
 
 @Serializable

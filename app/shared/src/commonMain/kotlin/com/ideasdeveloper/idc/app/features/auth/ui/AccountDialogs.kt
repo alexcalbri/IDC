@@ -11,6 +11,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,8 +45,18 @@ fun ProfileDialog(
     val scope = rememberCoroutineScope()
     var displayName by remember { mutableStateOf(session.displayName.orEmpty()) }
     var email by remember { mutableStateOf(session.email.orEmpty()) }
+    var userCode by remember { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(serverUrl, session.accessToken, session.companyCode) {
+        val url = serverUrl ?: return@LaunchedEffect
+        try {
+            userCode = AccountApi(url).use { it.profile(session.accessToken, session.companyCode).userCode }
+        } catch (exception: LoginException) {
+            error = exception.message
+        }
+    }
 
     AlertDialog(
         onDismissRequest = { if (!required) onDismiss() },
@@ -72,6 +83,15 @@ fun ProfileDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (userCode.isNotBlank()) {
+                    OutlinedTextField(
+                        value = userCode,
+                        onValueChange = {},
+                        label = { Text("Codigo de usuario") },
+                        readOnly = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 error?.let { Text(it, color = AppTheme.colors.danger) }
             }
         },

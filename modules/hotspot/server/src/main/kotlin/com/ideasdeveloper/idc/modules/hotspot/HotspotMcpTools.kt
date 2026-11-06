@@ -664,7 +664,14 @@ object HotspotMcpTools {
         val userId = call.permissions.userId ?: throw McpToolException("No se pudo identificar al usuario.")
         val usersEnabled = HotspotIntegrations.isEnabled(call.tenant, HotspotIntegrations.Users)
         return buildJsonObject {
-            put("code", HotspotUserCodes.codeFor(call.tenant, userId, call.permissions.serverOwner))
+            val code = if (call.permissions.serverOwner) {
+                call.access.centralConnection().use { central ->
+                    HotspotUserCodes.codeFor(call.tenant, userId, true, central)
+                }
+            } else {
+                HotspotUserCodes.codeFor(call.tenant, userId, false)
+            }
+            put("code", code)
             put(
                 "note",
                 if (usersEnabled) {

@@ -35,7 +35,13 @@ class HotspotAccess(private val access: ModuleAccessService) {
 
     fun accessBody(tenant: Connection, permissions: ModulePermissions): List<UiNode> {
         val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
-        val own = permissions.userId?.let { HotspotUserCodes.codeFor(tenant, it, permissions.serverOwner) }
+        val own = permissions.userId?.let { userId ->
+            if (permissions.serverOwner) {
+                access.centralConnection().use { central -> HotspotUserCodes.codeFor(tenant, userId, true, central) }
+            } else {
+                HotspotUserCodes.codeFor(tenant, userId, false)
+            }
+        }
         val mine = UiCard(
             title = "Mi acceso WiFi",
             children = listOfNotNull(

@@ -6,6 +6,7 @@ import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.bearerAuth
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.put
@@ -20,7 +21,13 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
 @Serializable
-data class AccountProfile(val username: String, val displayName: String? = null, val email: String? = null, val profileComplete: Boolean = false)
+data class AccountProfile(
+    val username: String,
+    val displayName: String? = null,
+    val email: String? = null,
+    val profileComplete: Boolean = false,
+    val userCode: String = "",
+)
 
 @Serializable
 private data class UpdateAccountProfileRequest(val displayName: String, val email: String)
@@ -50,6 +57,13 @@ class AccountApi(serverUrl: String) {
     }
 
     // Sin codigo de empresa la sesion es del dueno del servidor.
+    suspend fun profile(accessToken: String, companyCode: String?): AccountProfile = call {
+        client.get("$baseUrl/auth/profile") {
+            bearerAuth(accessToken)
+            companyCode?.let { header("X-Company-Code", it) }
+        }
+    }
+
     suspend fun updateProfile(accessToken: String, companyCode: String?, displayName: String, email: String): AccountProfile = call {
         client.put("$baseUrl/auth/profile") {
             bearerAuth(accessToken)

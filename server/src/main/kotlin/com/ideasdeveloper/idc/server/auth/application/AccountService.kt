@@ -23,7 +23,13 @@ import javax.sql.DataSource
 class AccountException(val code: String, message: String) : Exception(message)
 
 @Serializable
-data class AccountProfile(val username: String, val displayName: String?, val email: String?, val profileComplete: Boolean)
+data class AccountProfile(
+    val username: String,
+    val displayName: String?,
+    val email: String?,
+    val profileComplete: Boolean,
+    val userCode: String,
+)
 
 /** How a password is set for each kind of user; owners sign in with a database role (CompanyProvisioningService). */
 class AccountPasswords(
@@ -55,13 +61,16 @@ class AccountService(
         const val MaxAttempts = 5
     }
 
-    private class Account(val id: UUID, val username: String, val displayName: String?, val email: String?) {
-        fun profile() = AccountProfile(username, displayName, email, UserProfileRules.isComplete(displayName, email))
+    private class Account(val id: UUID, val username: String, val displayName: String?, val email: String?, val userCode: String?) {
+        fun profile(userCode: String) = AccountProfile(
+            username, displayName, email, UserProfileRules.isComplete(displayName, email), userCode,
+        )
     }
 
     fun profile(accessToken: String, companyCode: String?): AccountProfile = database(companyCode).use { connection ->
-        sessionAccount(connection, accessToken, companyCode == null)?.profile()
+        val account = sessionAccount(connection, accessToken, companyCode == null)
             ?: throw AccountException("INVALID_SESSION", "La sesion no es valida.")
+        account.profile(ApplicationUserCodes.ensure(connection, account.id))
     }
 
     fun updateProfile(accessToken: String, companyCode: String?, displayName: String, email: String): AccountProfile {
@@ -75,7 +84,8 @@ class AccountService(
                 update.setObject(3, account.id)
                 update.executeUpdate()
             }
-            Account(account.id, account.username, displayName.trim(), email.trim()).profile()
+            Account(account.id, account.username, displayName.trim(), email.trim(), account.userCode)
+                .profile(ApplicationUserCodes.ensure(connection, account.id))
         }
     }
 
@@ -231,7 +241,7 @@ class AccountService(
 
     private fun sessionAccount(connection: Connection, accessToken: String, server: Boolean): Account? = connection.prepareStatement(
         """
-        SELECT users.id, users.postgres_role, users.display_name, users.email
+        SELECT users.id, users.postgres_role, users.display_name, users.email, users.user_code
         FROM application_sessions sessions
         JOIN application_users users ON users.id = sessions.user_id
         WHERE sessions.token_hash = ?
@@ -247,7 +257,7 @@ class AccountService(
 
     private fun accountByUsername(connection: Connection, username: String, server: Boolean): Account? = connection.prepareStatement(
         """
-        SELECT users.id, users.postgres_role, users.display_name, users.email
+        SELECT users.id, users.postgres_role, users.display_name, users.email, users.user_code
         FROM application_users users
         WHERE users.postgres_role = ? AND users.is_active
           ${ownerFilter(server)}
@@ -262,5 +272,6 @@ class AccountService(
         username = rows.getString(2),
         displayName = rows.getString(3),
         email = rows.getString(4),
+        userCode = rows.getString(5),
     )
 }

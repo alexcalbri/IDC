@@ -59,6 +59,7 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V005__add_code_sessions.sql",
         "modules/hotspot/migrations/V006__crm_pipeline_and_manual_user_access.sql",
         "modules/hotspot/migrations/V007__prefix_user_codes.sql",
+        "modules/hotspot/migrations/V008__remove_hotspot_user_code.sql",
     )
 
     override val runtimeTables = listOf(

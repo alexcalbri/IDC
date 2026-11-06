@@ -1376,8 +1376,11 @@ class CompanyProvisioningService(
     private fun applyUserProfileMigration(connection: Connection) {
         val relativePath = "database/core/migrations/V003__add_application_user_profile.sql"
         applyMigration(connection, "core", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        val userCodeMigration = "database/core/migrations/V004__add_application_user_code.sql"
+        applyMigration(connection, "core", userCodeMigration, Files.readString(Path.of(config.migrationsRoot).resolve(userCodeMigration)))
         connection.createStatement().use { statement ->
             statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO ${quoteIdentifier(config.runtimeUser)}")
+            statement.executeUpdate("GRANT SELECT, UPDATE (user_code) ON application_users TO ${quoteIdentifier(config.runtimeUser)}")
         }
     }
 

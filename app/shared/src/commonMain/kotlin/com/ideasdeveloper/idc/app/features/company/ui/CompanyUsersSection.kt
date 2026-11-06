@@ -187,6 +187,7 @@ fun CompanyUsersSection(
         ) {
             Text(user.displayName?.let { "$it (${user.username})" } ?: user.username, fontWeight = FontWeight.SemiBold, color = primaryColor)
             Text(user.email ?: "Sin correo: lo completa al iniciar sesion", color = AppTheme.colors.muted)
+            Text("Codigo de usuario: ${user.userCode}", color = AppTheme.colors.text)
             Text(if (user.isActive) "Activo" else "Inactivo", color = AppTheme.colors.muted)
             Text(
                 "Permisos: ${user.permissions.ifEmpty { listOf("sin permisos") }.joinToString()}",

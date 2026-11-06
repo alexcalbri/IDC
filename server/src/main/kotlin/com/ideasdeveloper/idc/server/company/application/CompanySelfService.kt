@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.server.company.application
 
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
 import com.ideasdeveloper.idc.server.auth.application.UserProfileRules
+import com.ideasdeveloper.idc.server.auth.application.ApplicationUserCodes
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.ApplicationPasswordHasher
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
 import com.ideasdeveloper.idc.server.company.api.CompanyBackupResponse
@@ -471,21 +472,26 @@ class CompanySelfService(
             }
         }
 
-    private fun loadUser(connection: java.sql.Connection, userId: UUID): CompanyUserResponse? =
-        connection.prepareStatement("SELECT id, postgres_role, is_active, display_name, email FROM application_users WHERE id = ?").use { query ->
+    private fun loadUser(connection: java.sql.Connection, userId: UUID): CompanyUserResponse? {
+        val user = connection.prepareStatement(
+            "SELECT id, postgres_role, is_active, display_name, email FROM application_users WHERE id = ?"
+        ).use { query ->
             query.setObject(1, userId)
             query.executeQuery().use { rows ->
                 if (!rows.next()) return null
-                CompanyUserResponse(
-                    userId = rows.getObject("id", UUID::class.java).toString(),
-                    username = rows.getString("postgres_role"),
-                    isActive = rows.getBoolean("is_active"),
-                    permissions = loadUserPermissions(connection, userId),
-                    displayName = rows.getString("display_name"),
-                    email = rows.getString("email"),
-                )
+                Triple(rows.getString("postgres_role"), rows.getBoolean("is_active"), rows.getString("display_name") to rows.getString("email"))
             }
         }
+        return CompanyUserResponse(
+            userId = userId.toString(),
+            username = user.first,
+            isActive = user.second,
+            permissions = loadUserPermissions(connection, userId),
+            displayName = user.third.first,
+            email = user.third.second,
+            userCode = ApplicationUserCodes.ensure(connection, userId),
+        )
+    }
 
     private fun loadUserPermissions(connection: java.sql.Connection, userId: UUID): List<String> =
         connection.prepareStatement("SELECT permission_id FROM application_user_permissions WHERE user_id = ? ORDER BY permission_id").use { query ->

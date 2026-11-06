@@ -12,12 +12,14 @@ for UniFi networks managed through the UniFi Site Manager cloud API (`api.ui.com
   sets, per SSID, the access type:
   - **Formulario** (also every SSID not listed): the registration flow below.
   - **Codigo de usuario** (needs the *Usuarios* integration): the user types the
-    code shown with their user details in *Accesos WiFi*. It has the same
-    eight-character body as a guest code, prefixed with lowercase `us`
-    (for example, `us23456789`). Accepted: active users of this company; in the
-    server company also the server owners; and users of the server company that
-    a server owner authorized for that network of this company. Reconnection is
-    counted per user.
+    code shown with their user details in *Empresa → Usuarios* or *Mi perfil*. It has the same
+    eight-character body as a guest code, prefixed with lowercase `us`.
+    Core stores it in `application_users`; Hotspot keeps only revocable WiFi-access state.
+    For example: `us23456789`. Accepted: active users of this company; a
+    business owner may use their code from any active company in the same owner
+    group; in the server company also the server owners; and users of the server
+    company that a server owner authorized for that network. Reconnection is
+    counted per user, and access can be revoked per company.
   - **Codigo de cliente**: available only when the CRM integration is enabled
     and a pipeline stage is selected in *Configuracion*. The guest types the
     `customer_code` shown in Clientes (also visible read-only in the CRM lead).
@@ -54,12 +56,13 @@ for UniFi networks managed through the UniFi Site Manager cloud API (`api.ui.com
     existing companies; MikroTik or others plug in as new implementations.
   - *Usuarios*: enables the "Codigo de usuario" access mode.
 - **Accesos WiFi** (`hotspot.view`): every user sees their own WiFi code; the
-  business owner and server owner can see, revoke, or restore users' codes.
+  business owner and server owner can revoke or restore users' WiFi access.
   User-code sessions do not expire automatically; revoking a code disconnects
   its devices, with failed disconnections retried by the scheduled job. In the
   server company, server owners grant users access to "Codigo de usuario"
-  networks of other companies. Codes live in `hotspot_user_codes`; the core
-  users table is only read.
+  networks of other companies. The code belongs to Core and is stored in
+  `application_users.user_code`; Hotspot stores only whether WiFi access is
+  enabled for that user.
 - *Configuracion* only shows the settings of the enabled network controller:
   with UniFi, the connection card (**Buscar consolas** appears only while no
   console is saved; clearing the console id and saving brings it back). Access
@@ -74,7 +77,7 @@ for UniFi networks managed through the UniFi Site Manager cloud API (`api.ui.com
 
 ## Data
 
-Tenant migrations through `V007__prefix_user_codes.sql`
+Tenant migrations through `V008__remove_hotspot_user_code.sql`
 (customer codes come from the Clientes migration `V004__add_customer_code.sql`):
 
 | Table | Purpose |
@@ -88,7 +91,7 @@ Tenant migrations through `V007__prefix_user_codes.sql`
 | `hotspot_access_passes` | Access passes of customers (V004); written by the source modules, `minutes_balance` spent by the portal. |
 | `hotspot_code_attempts` | Wrong customer/user codes, for the guessing limits; kept one day (V002). |
 | `hotspot_integrations` | Integrations of the module and whether they are enabled (V003). |
-| `hotspot_user_codes` | WiFi code of each user (and of server owners in the server company) (V003; `us` prefix in V007). |
+| `hotspot_user_codes` | Hotspot-specific WiFi access state only; user codes live in Core (V003, V006, V007, V008). |
 | `hotspot_user_network_grants` | Server company only: networks of other companies its users may join (V003). |
 | `hotspot_code_sessions` | One shared session per customer or user code (V005); `hotspot_accesses.session_id` links each device. |
 
