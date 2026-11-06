@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.hotspot
 
 import java.util.UUID
+import java.time.LocalTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -17,6 +18,8 @@ class HotspotNetworksTest {
         accessMinutes = 60, dataLimitMb = 0, rxKbps = 0, txKbps = 0, reconnectMinutes = 1440, codeTtlMinutes = 15,
         smtpMode = "servidor", smtpHost = null, smtpPort = 587, smtpUsername = null, smtpPassword = null,
         smtpFrom = null, smtpSecurity = "starttls", emailSubject = "Codigo",
+        crmAccessEnabled = false, crmStageId = null, crmScheduleMode = "daily",
+        crmCheckIntervalMinutes = 60, crmCheckTime = LocalTime.of(7, 0),
     )
 
     @Test
@@ -85,6 +88,19 @@ class HotspotNetworksTest {
         // 0, O, 1 and I are never generated.
         assertFalse(HotspotNetworks.isCustomerCode("K7M2QX0D"))
         assertFalse(HotspotNetworks.isCustomerCode("K7M2QXID"))
+    }
+
+    @Test
+    fun codeNetworkModesFollowEnabledIntegrations() {
+        assertEquals(listOf("Formulario"), HotspotNetworks.modeOptions(usersIntegration = false, crmIntegration = false))
+        assertEquals(
+            listOf("Formulario", "Codigo de usuario"),
+            HotspotNetworks.modeOptions(usersIntegration = true, crmIntegration = false),
+        )
+        assertEquals(
+            listOf("Formulario", "Codigo de cliente", "Codigo de usuario"),
+            HotspotNetworks.modeOptions(usersIntegration = true, crmIntegration = true),
+        )
     }
 
     @Test

@@ -15,6 +15,7 @@ data class HotspotUser(
     val serverOwner: Boolean,
     val active: Boolean,
     val displayName: String? = null,
+    val wifiAccessEnabled: Boolean = true,
 ) {
     // Full name when there is one, otherwise the username.
     val name: String get() = displayName?.takeIf { it.isNotBlank() } ?: username
@@ -37,8 +38,16 @@ object HotspotUserCodes {
     // Same alphabet as customer codes: no 0/O, 1/I.
     private const val Alphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
     private const val Length = 8
+    private const val Prefix = "us"
 
-    fun generate(): String = buildString(Length) { repeat(Length) { append(Alphabet[random.nextInt(Alphabet.length)]) } }
+    fun generate(): String = Prefix + buildString(Length) { repeat(Length) { append(Alphabet[random.nextInt(Alphabet.length)]) } }
+
+    fun isUserCode(code: String): Boolean {
+        val normalized = code.trim().uppercase()
+        return normalized.length == Prefix.length + Length &&
+            normalized.startsWith(Prefix.uppercase()) &&
+            normalized.drop(Prefix.length).all { it in Alphabet }
+    }
 
     /** Code of [userId], creating it when the user has none yet. */
     fun codeFor(connection: Connection, userId: UUID, serverOwner: Boolean): String {
@@ -68,24 +77,47 @@ object HotspotUserCodes {
     fun users(tenant: Connection, central: Connection?): List<HotspotUser> {
         val local = userRows(tenant, "", "ORDER BY users.postgres_role") {}
         val owners = central?.let(::serverOwners).orEmpty()
-        return local.map { HotspotUser(it.id, it.username, codeFor(tenant, it.id, false), false, it.active, it.displayName) } +
-            owners.map { HotspotUser(it.id, it.username, codeFor(tenant, it.id, true), true, true, it.displayName) }
+        return local.map {
+            HotspotUser(it.id, it.username, codeFor(tenant, it.id, false), false, it.active, it.displayName, accessEnabled(tenant, it.id))
+        } + owners.map {
+            HotspotUser(it.id, it.username, codeFor(tenant, it.id, true), true, true, it.displayName, accessEnabled(tenant, it.id))
+        }
     }
 
     /** The user of [code] in this database, checking that the account is still active. */
     fun findActive(tenant: Connection, central: Connection, code: String): HotspotUser? {
-        val (userId, serverOwner) = tenant.prepareStatement(
-            "SELECT user_id, server_owner FROM hotspot_user_codes WHERE user_code = ?"
+        if (!isUserCode(code)) return null
+        val normalizedCode = Prefix + code.trim().drop(Prefix.length).uppercase()
+        val (userId, serverOwner, enabled) = tenant.prepareStatement(
+            "SELECT user_id, server_owner, access_enabled FROM hotspot_user_codes WHERE user_code = ?"
         ).use { query ->
-            query.setString(1, code)
-            query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) to rows.getBoolean(2) else null }
+            query.setString(1, normalizedCode)
+            query.executeQuery().use { rows ->
+                if (rows.next()) Triple(rows.getObject(1, UUID::class.java), rows.getBoolean(2), rows.getBoolean(3)) else null
+            }
         } ?: return null
+        if (!enabled) return null
         val user = if (serverOwner) {
             serverOwners(central).firstOrNull { it.id == userId }
         } else {
             userRows(tenant, "WHERE users.id = ? AND users.is_active", "") { it.setObject(1, userId) }.firstOrNull()
         } ?: return null
-        return HotspotUser(userId, user.username, code, serverOwner, true, user.displayName)
+        return HotspotUser(userId, user.username, normalizedCode, serverOwner, true, user.displayName)
+    }
+
+    fun accessEnabled(connection: Connection, userId: UUID): Boolean = connection.prepareStatement(
+        "SELECT access_enabled FROM hotspot_user_codes WHERE user_id = ?"
+    ).use { query ->
+        query.setObject(1, userId)
+        query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+    }
+
+    fun setAccessEnabled(connection: Connection, userId: UUID, enabled: Boolean): Boolean = connection.prepareStatement(
+        "UPDATE hotspot_user_codes SET access_enabled = ? WHERE user_id = ?"
+    ).use { update ->
+        update.setBoolean(1, enabled)
+        update.setObject(2, userId)
+        update.executeUpdate() == 1
     }
 
     // Active server owners from the central database.

@@ -43,8 +43,8 @@ object UnifiClient {
                 ?: return GuestAuthorization(false, "El dispositivo $mac no aparece conectado en UniFi.")
             val payload = buildMap<String, JsonPrimitive> {
                 put("action", JsonPrimitive("AUTHORIZE_GUEST_ACCESS"))
-                put("timeLimitMinutes", JsonPrimitive(settings.accessMinutes))
-                // 0 means unlimited; UniFi expects the parameter to be omitted in that case.
+                if (settings.accessMinutes > 0) put("timeLimitMinutes", JsonPrimitive(settings.accessMinutes))
+                // UniFi treats an omitted time limit as unlimited.
                 if (settings.dataLimitMb > 0) put("dataUsageLimitMBytes", JsonPrimitive(settings.dataLimitMb))
                 if (settings.rxKbps > 0) put("rxRateLimitKbps", JsonPrimitive(settings.rxKbps))
                 if (settings.txKbps > 0) put("txRateLimitKbps", JsonPrimitive(settings.txKbps))

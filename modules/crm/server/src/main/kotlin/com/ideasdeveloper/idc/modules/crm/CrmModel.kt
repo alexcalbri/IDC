@@ -71,6 +71,8 @@ data class CrmLead(
     val archivedAt: Instant? = null,
     // Values of the custom fields by key (see CrmFields).
     val customFields: JsonObject = JsonObject(emptyMap()),
+    // Owned by Clientes; CRM only displays the customer's code.
+    val customerCode: String = "",
 )
 
 data class CrmActivity(

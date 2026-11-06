@@ -53,8 +53,14 @@ object HotspotNetworks {
     private const val CodeLength = 8
 
     // "Codigo de usuario" is offered only while the Usuarios integration is enabled.
-    fun modeOptions(usersIntegration: Boolean): List<String> =
-        modeLabels.filterKeys { usersIntegration || it != UserCode }.values.toList()
+    fun modeOptions(usersIntegration: Boolean, crmIntegration: Boolean): List<String> =
+        modeLabels.filterKeys { mode ->
+            when (mode) {
+                UserCode -> usersIntegration
+                CustomerCode -> crmIntegration
+                else -> true
+            }
+        }.values.toList()
 
     fun modeLabel(mode: String): String = modeLabels[mode] ?: mode
 
@@ -72,6 +78,7 @@ object HotspotNetworks {
         values: Map<String, String>,
         usersIntegration: Boolean = true,
         sources: Set<String> = setOf(HotspotPasses.HotspotCustomers),
+        crmIntegration: Boolean = true,
     ): HotspotNetwork {
         val ssid = values["ssid"].orEmpty().trim()
         if (ssid.isEmpty()) throw HotspotValidationException("El nombre de la red (SSID) es obligatorio.")
@@ -83,6 +90,9 @@ object HotspotNetworks {
             ?: throw HotspotValidationException("Elige el tipo de acceso de la red.")
         if (mode == UserCode && !usersIntegration) {
             throw HotspotValidationException("Activa la integracion Usuarios para usar el acceso por codigo de usuario.")
+        }
+        if (mode == CustomerCode && !crmIntegration) {
+            throw HotspotValidationException("Activa la integracion con CRM para usar el acceso por codigo de cliente.")
         }
         val chosen = if (mode == CustomerCode) sources.filter { values[sourceKey(it)] == "true" }.sorted() else emptyList()
         if (mode == CustomerCode && chosen.isEmpty()) {

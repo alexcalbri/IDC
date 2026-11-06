@@ -4,8 +4,10 @@ import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import java.time.LocalTime
 import java.sql.Connection
 import java.sql.ResultSet
+import java.util.UUID
 
 class HotspotValidationException(message: String) : Exception(message)
 
@@ -39,6 +41,11 @@ data class HotspotSettings(
     val smtpFrom: String?,
     val smtpSecurity: String,
     val emailSubject: String,
+    val crmAccessEnabled: Boolean,
+    val crmStageId: UUID?,
+    val crmScheduleMode: String,
+    val crmCheckIntervalMinutes: Int,
+    val crmCheckTime: LocalTime,
 ) {
     // Pages opened after connecting; the setting holds them separated by commas.
     val successUrls: List<String>
@@ -93,6 +100,11 @@ object HotspotSettingsRepository {
             if (value !in range) throw HotspotValidationException("$label debe estar entre ${range.first} y ${range.last}.")
             return value
         }
+        fun boolean(key: String, fallback: Boolean): Boolean {
+            if (!values.containsKey(key)) return fallback
+            return values[key]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull()
+                ?: throw HotspotValidationException("El valor de $key no es valido.")
+        }
         // Empty or the unchanged mask keeps the saved secret.
         fun secret(key: String, fallback: String?): String? =
             text(key)?.takeIf { it.isNotBlank() && it != SecretMask } ?: fallback
@@ -127,7 +139,29 @@ object HotspotSettingsRepository {
             smtpFrom = optional("smtpFrom", current.smtpFrom),
             smtpSecurity = required("smtpSecurity", current.smtpSecurity, "La seguridad SMTP"),
             emailSubject = required("emailSubject", current.emailSubject, "El asunto del correo"),
+            crmAccessEnabled = boolean("crmAccessEnabled", current.crmAccessEnabled),
+            crmStageId = optional("crmStageId", current.crmStageId?.toString())?.let {
+                runCatching { UUID.fromString(it) }.getOrNull()
+                    ?: throw HotspotValidationException("El estado del CRM no es valido.")
+            },
+            crmScheduleMode = when (required("crmScheduleMode", current.crmScheduleMode, "La programacion del CRM")) {
+                "Cada intervalo" -> "interval"
+                "Diario a una hora" -> "daily"
+                "interval", "daily" -> required("crmScheduleMode", current.crmScheduleMode, "La programacion del CRM")
+                else -> throw HotspotValidationException("Elige una programacion del CRM valida.")
+            },
+            crmCheckIntervalMinutes = number("crmCheckIntervalMinutes", current.crmCheckIntervalMinutes, 1..10080, "El intervalo del CRM"),
+            crmCheckTime = if (values.containsKey("crmCheckTime")) {
+                runCatching { LocalTime.parse(text("crmCheckTime").orEmpty()) }.getOrNull()
+                    ?: throw HotspotValidationException("La hora de revision debe tener el formato HH:mm.")
+            } else current.crmCheckTime,
         )
+        if (merged.crmAccessEnabled && merged.crmStageId == null) {
+            throw HotspotValidationException("Selecciona el estado del embudo del CRM que permite el acceso.")
+        }
+        if (merged.crmScheduleMode !in setOf("daily", "interval")) {
+            throw HotspotValidationException("Elige una programacion del CRM valida.")
+        }
         validate(merged)
         return merged
     }
@@ -168,6 +202,8 @@ object HotspotSettingsRepository {
                 access_minutes = ?, data_limit_mb = ?, rx_kbps = ?, tx_kbps = ?, reconnect_minutes = ?,
                 code_ttl_minutes = ?, smtp_mode = ?, smtp_host = ?, smtp_port = ?, smtp_username = ?,
                 smtp_password = ?, smtp_from = ?, smtp_security = ?, email_subject = ?,
+                crm_access_enabled = ?, crm_stage_id = ?, crm_schedule_mode = ?, crm_check_interval_minutes = ?,
+                crm_check_time = ?,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
             """.trimIndent()
@@ -179,6 +215,8 @@ object HotspotSettingsRepository {
                 settings.accessMinutes, settings.dataLimitMb, settings.rxKbps, settings.txKbps, settings.reconnectMinutes,
                 settings.codeTtlMinutes, settings.smtpMode, settings.smtpHost, settings.smtpPort, settings.smtpUsername,
                 settings.smtpPassword, settings.smtpFrom, settings.smtpSecurity, settings.emailSubject,
+                settings.crmAccessEnabled, settings.crmStageId, settings.crmScheduleMode, settings.crmCheckIntervalMinutes,
+                settings.crmCheckTime,
             ).forEachIndexed { index, value -> update.setObject(index + 1, value) }
             update.executeUpdate()
         }
@@ -194,6 +232,7 @@ object HotspotSettingsRepository {
         settings: HotspotSettings,
         domainStatus: String,
         serverMailAvailable: Boolean,
+        crmStageName: String = "",
     ): Map<String, String> {
         fun yesNo(value: Boolean) = if (value) "Si" else "No"
         val values = mapOf(
@@ -229,6 +268,12 @@ object HotspotSettingsRepository {
             "privacyUrl" to settings.privacyUrl.orEmpty(),
             "footerText" to settings.footerText,
             "successUrl" to settings.successUrl.orEmpty(),
+            "crmAccessEnabled" to settings.crmAccessEnabled.toString(),
+            "crmStageId" to settings.crmStageId?.toString().orEmpty(),
+            "crmStage" to crmStageName,
+            "crmScheduleMode" to if (settings.crmScheduleMode == "daily") "Diario a una hora" else "Cada intervalo",
+            "crmCheckIntervalMinutes" to settings.crmCheckIntervalMinutes.toString(),
+            "crmCheckTime" to settings.crmCheckTime.toString(),
         )
         return values
     }
@@ -263,5 +308,10 @@ object HotspotSettingsRepository {
         smtpFrom = getString("smtp_from"),
         smtpSecurity = getString("smtp_security"),
         emailSubject = getString("email_subject"),
+        crmAccessEnabled = getBoolean("crm_access_enabled"),
+        crmStageId = getObject("crm_stage_id", UUID::class.java),
+        crmScheduleMode = getString("crm_schedule_mode"),
+        crmCheckIntervalMinutes = getInt("crm_check_interval_minutes"),
+        crmCheckTime = getObject("crm_check_time", java.time.LocalTime::class.java),
     )
 }

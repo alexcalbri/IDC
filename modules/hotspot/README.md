@@ -1,7 +1,8 @@
 # Hotspot Module
 
-Status: in development (marked with `.development`; not released to `master`). Captive WiFi portal per company for UniFi
-networks managed through the UniFi Site Manager cloud API (`api.ui.com`).
+Status: in development (marked with `.development`; not released to `master`). Captive WiFi portal per company, currently
+for UniFi networks managed through the UniFi Site Manager cloud API (`api.ui.com`). Network operations use the
+`NetworkController` contract so future ecosystems can add an adapter without changing session expiry logic.
 
 ## What it does
 
@@ -11,18 +12,24 @@ networks managed through the UniFi Site Manager cloud API (`api.ui.com`).
   sets, per SSID, the access type:
   - **Formulario** (also every SSID not listed): the registration flow below.
   - **Codigo de usuario** (needs the *Usuarios* integration): the user types the
-    code shown in *Accesos WiFi*. Accepted: active users of this company; in the
+    code shown with their user details in *Accesos WiFi*. It has the same
+    eight-character body as a guest code, prefixed with lowercase `us`
+    (for example, `us23456789`). Accepted: active users of this company; in the
     server company also the server owners; and users of the server company that
     a server owner authorized for that network of this company. Reconnection is
     counted per user.
-  - **Codigo de cliente**: the guest types the `customer_code` shown in Clientes.
-    The customer must belong to the database where the portal runs (the company,
-    or the server workspace when the hotspot is enabled there) and must not be
-    `inactive`/`archived`. The network lists who gets in:
-    - *Clientes tipo hotspot*: customers with `customer_type = 'hotspot'` (the
-      ones the form registered), with the network's access and reconnection times;
-    - any enabled **access pass source** (see [Access passes](#access-passes)):
-      customers with a usable pass of that source, under the pass rules.
+  - **Codigo de cliente**: available only when the CRM integration is enabled
+    and a pipeline stage is selected in *Configuracion*. The guest types the
+    `customer_code` shown in Clientes (also visible read-only in the CRM lead).
+    The customer must belong to the database where the portal runs and have a
+    lead in the selected stage. If that lead has `target_start` and/or
+    `target_end`, access starts one day before `target_start` and ends after
+    `target_end` (using the server time zone). The configurable CRM check runs
+    daily at the selected time (default 07:00) or at the selected interval
+    (default 60 minutes), and disconnects devices when the lead leaves the
+    selected stage or its date window ends. Failed disconnections are retried
+    on the next scheduled run. With CRM disabled, customer-code networks cannot
+    be configured or used.
 
     Ordinary customers never get in. Wrong codes are limited to 5 per device
     every 15 minutes and 30 per company per minute; unknown codes and customers
@@ -47,7 +54,9 @@ networks managed through the UniFi Site Manager cloud API (`api.ui.com`).
     existing companies; MikroTik or others plug in as new implementations.
   - *Usuarios*: enables the "Codigo de usuario" access mode.
 - **Accesos WiFi** (`hotspot.view`): every user sees their own WiFi code; the
-  business owner sees every user's code (server owners also see theirs). In the
+  business owner and server owner can see, revoke, or restore users' codes.
+  User-code sessions do not expire automatically; revoking a code disconnects
+  its devices, with failed disconnections retried by the scheduled job. In the
   server company, server owners grant users access to "Codigo de usuario"
   networks of other companies. Codes live in `hotspot_user_codes`; the core
   users table is only read.
@@ -65,8 +74,7 @@ networks managed through the UniFi Site Manager cloud API (`api.ui.com`).
 
 ## Data
 
-Tenant migrations `migrations/V001__create_hotspot.sql`, `V002__add_networks.sql` and
-`V003__add_integrations_and_user_codes.sql`
+Tenant migrations through `V007__prefix_user_codes.sql`
 (customer codes come from the Clientes migration `V004__add_customer_code.sql`):
 
 | Table | Purpose |
@@ -80,7 +88,7 @@ Tenant migrations `migrations/V001__create_hotspot.sql`, `V002__add_networks.sql
 | `hotspot_access_passes` | Access passes of customers (V004); written by the source modules, `minutes_balance` spent by the portal. |
 | `hotspot_code_attempts` | Wrong customer/user codes, for the guessing limits; kept one day (V002). |
 | `hotspot_integrations` | Integrations of the module and whether they are enabled (V003). |
-| `hotspot_user_codes` | WiFi code of each user (and of server owners in the server company) (V003). |
+| `hotspot_user_codes` | WiFi code of each user (and of server owners in the server company) (V003; `us` prefix in V007). |
 | `hotspot_user_network_grants` | Server company only: networks of other companies its users may join (V003). |
 | `hotspot_code_sessions` | One shared session per customer or user code (V005); `hotspot_accesses.session_id` links each device. |
 
@@ -95,9 +103,12 @@ Access by customer code or user code is one session per code, shared by every de
 - The first device opens the session with the network's access time (or the pass's minutes).
 - Another device that enters the same code while the session is open joins it: it is authorized only
   for the time left, skips the reconnection wait and spends no pass balance (`joined = true`).
-- Every minute the `code-sessions` job finds expired sessions and disconnects each device (MAC) that
+- On each scheduled run, the `code-sessions` job finds expired sessions and disconnects each device (MAC) that
   used the code (`UNAUTHORIZE_GUEST_ACCESS` in UniFi); `hotspot_accesses.disconnected_at` records it.
-  A device that could not be disconnected is retried for a day.
+  The job runs on the CRM schedule configured by the company (daily at a selected time or at an
+  interval). A device that could not be disconnected is retried at the next scheduled run.
+- User-code sessions have no automatic expiry. The business owner or server owner can revoke a
+  user's access from *Accesos WiFi*, which expires the sessions and disconnects their devices.
 - The reconnection wait counts from the access that opened the session, never from devices that
   joined it. Form access (email code) is per device and does not use sessions.
 
@@ -167,6 +178,7 @@ the source module writes them with plain SQL and never needs hotspot code.
 | `GET /modules/hotspot/ui/{screen}` | Native screens: `dashboard`, `visitors`, `reports` (`hotspot.reports.view`), `portal`, `settings` (`hotspot.settings.view`). Sections without permission are hidden. |
 | `POST /modules/hotspot/ui/portal`, `/ui/settings` | `hotspot.settings.manage`; returns the screen with a notice. `/ui/settings?network=save\|delete&id=` saves or deletes WiFi networks; `?unifi=consoles\|console\|site&id=` picks the UniFi console and site (only while UniFi is enabled). |
 | `POST /modules/hotspot/ui/integrations?integration=&enabled=` | Business owner / server owner. |
+| `POST /modules/hotspot/ui/access?usercode=revoke\|restore&id=` | Business owner or server owner; revocation disconnects active user-code sessions. |
 | `POST /modules/hotspot/ui/access?grant=add\|delete&id=` | Server owners in the server company. |
 | `GET /modules/hotspot/report/export?from=&to=` | `hotspot.reports.export` (CSV) |
 
@@ -221,14 +233,17 @@ configuration again retries a domain in `error`.
 
 ## Setup checklist
 
-1. Update the server (`update.sh`) so it has migration V005 and the module builder.
+1. Update the server (`update.sh`) so it has the module builder and current migrations.
 2. Server owner: *Modulos del servidor* → catalog URL
    `https://github.com/alexcalbri/IDC/tree/develop/modules` while Hotspot is in
-   development → install **Hotspot** (the server builds it and restarts) →
-   *Empresa* → enable it for the company.
+   development → install or update **Hotspot** (the server builds it and
+   restarts) → *Empresa* → enable it for the company. Install/update **CRM** and
+   enable it in the same company to validate customer codes against a selected
+   CRM pipeline stage. Cloudbeds is not required for this integration.
 3. Create a DNS A/AAAA record for the portal domain pointing to the server.
 4. Company: *Hotspot → Integraciones* → enable UniFi; *Configuracion* → UniFi
-   API key → Buscar consolas (console and site), times and email; *Portal
+   API key → Buscar consolas (console and site), times, email and CRM review
+   schedule; *Configuracion* → select the CRM stage when CRM is enabled; *Portal
    cautivo* → domain and appearance. Wait for domain status **Activo**.
 5. UniFi Network → Hotspot / guest portal:
    - authentication: **External portal server**, address
@@ -247,8 +262,7 @@ configuration again retries a domain in `error`.
   with the form instead. The UniFi Integration API does not report which SSID a
   client is connected to (clients only carry MAC and uplink device), so it
   cannot be verified with UniFi; other controllers may support it.
-- Other network controllers (MikroTik, ...) and access by employee code (when the
-  HR module exists).
+- Other network controllers (MikroTik, ...).
 - Local UniFi controller API (only the cloud connector).
 - Uploading the logo file (the logo is a URL; the Portal cautivo section shows a
   preview).

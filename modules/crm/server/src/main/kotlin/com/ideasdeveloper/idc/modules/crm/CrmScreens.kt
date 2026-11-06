@@ -389,7 +389,13 @@ object CrmScreens {
     // Route the new lead form asks while the contact is typed, to reuse an existing customer.
     const val CustomerSuggestRoute = "$UiRoute/suggest/customers"
 
-    private fun leadFields(context: Context, readOnly: Boolean, currentInterest: UUID?, suggestCustomers: Boolean = false): List<UiField> = buildList {
+    private fun leadFields(
+        context: Context,
+        readOnly: Boolean,
+        currentInterest: UUID?,
+        suggestCustomers: Boolean = false,
+        showCustomerCode: Boolean = false,
+    ): List<UiField> = buildList {
         val suggest = UiSuggest(CustomerSuggestRoute).takeIf { suggestCustomers }
         add(UiField("name", "Nombre", required = true, readOnly = readOnly, section = "Contacto", suggest = suggest))
         add(
@@ -399,6 +405,7 @@ object CrmScreens {
             ),
         )
         add(UiField("phone", "Telefono", type = "phone", readOnly = readOnly, section = "Contacto", suggest = suggest?.copy(minLength = 3)))
+        if (showCustomerCode) add(UiField("customerCode", "Codigo del cliente", readOnly = true, section = "Contacto"))
         add(UiField("language", "Idioma", readOnly = readOnly, section = "Contacto"))
         add(UiField("stage", "Etapa", type = "dropdown", required = true, readOnly = readOnly, options = context.stages.map { it.name }, section = "Seguimiento"))
         if (context.interestsEnabled) {
@@ -470,6 +477,7 @@ object CrmScreens {
         "name" to lead.name,
         "email" to lead.email,
         "phone" to lead.phone,
+        "customerCode" to lead.customerCode,
         "language" to lead.language,
         "stage" to context.stage(lead.stageId)?.name.orEmpty(),
         "interest" to context.names.interest(lead.interestId),
@@ -535,7 +543,9 @@ object CrmScreens {
         val form = UiCard(
             listOf(
                 UiForm(
-                    "lead", leadFields(context, readOnly = !canEdit, currentInterest = lead.interestId), leadValues(context, lead) + submitted.orEmpty(),
+                    "lead",
+                    leadFields(context, readOnly = !canEdit, currentInterest = lead.interestId, showCustomerCode = true),
+                    leadValues(context, lead) + submitted.orEmpty() + ("customerCode" to lead.customerCode),
                     submit = if (canEdit) UiButton("Guardar cambios", UiRequest(UiRoute + "/lead", params = id + ("op" to "save"), formId = "lead")) else null,
                 ),
             ),

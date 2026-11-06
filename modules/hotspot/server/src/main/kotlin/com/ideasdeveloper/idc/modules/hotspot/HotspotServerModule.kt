@@ -5,6 +5,7 @@ import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.CustomerTimeline
 import com.ideasdeveloper.idc.server.modules.ModuleJob
+import com.ideasdeveloper.idc.server.modules.ModuleJobSchedule
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
@@ -42,6 +43,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.sql.SQLException
+import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.util.UUID
 
@@ -54,6 +57,8 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V003__add_integrations_and_user_codes.sql",
         "modules/hotspot/migrations/V004__add_access_passes.sql",
         "modules/hotspot/migrations/V005__add_code_sessions.sql",
+        "modules/hotspot/migrations/V006__crm_pipeline_and_manual_user_access.sql",
+        "modules/hotspot/migrations/V007__prefix_user_codes.sql",
     )
 
     override val runtimeTables = listOf(
@@ -62,6 +67,7 @@ object HotspotServerModule : ServerModule {
         "hotspot_codes",
         "hotspot_accesses",
         "hotspot_networks",
+        "hotspot_code_sessions",
         "hotspot_code_attempts",
         "hotspot_integrations",
         "hotspot_user_codes",
@@ -99,8 +105,8 @@ object HotspotServerModule : ServerModule {
     override val definition = ModuleDefinition(
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
-        description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente o de usuario segun la red; otros modulos dan acceso con pases.",
-        version = "0.8.1",
+        description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
+        version = "0.8.7",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -117,11 +123,24 @@ object HotspotServerModule : ServerModule {
     override val customerTimeline: CustomerTimeline
         get() = HotspotCustomerTimeline.timeline
 
-    // Disconnects every device of a code when its shared session expires (HotspotCodeSessions).
+    // Checks CRM stage access and handles scheduled or owner-requested disconnects.
     override val jobs = listOf(
-        ModuleJob("code-sessions", java.time.Duration.ofMinutes(1)) { context ->
+        ModuleJob(
+            id = "code-sessions",
+            interval = Duration.ofMinutes(1),
+            scheduleFor = { tenant ->
+                val settings = HotspotSettingsRepository.load(tenant)
+                if (settings.crmScheduleMode == "daily") {
+                    ModuleJobSchedule(dailyAt = settings.crmCheckTime)
+                } else {
+                    ModuleJobSchedule(interval = Duration.ofMinutes(settings.crmCheckIntervalMinutes.toLong()))
+                }
+            },
+        ) { context ->
+            val now = Instant.now()
             val settings = HotspotSettingsRepository.load(context.tenant)
-            HotspotCodeSessions.expire(context.tenant, settings, HotspotIntegrations.controller(context.tenant))
+            HotspotCrmPipeline.enforceAccess(context.tenant, settings, LocalDate.now(), now)
+            HotspotCodeSessions.expire(context.tenant, settings, HotspotIntegrations.controller(context.tenant), now)
         },
     )
 
@@ -159,6 +178,17 @@ object HotspotServerModule : ServerModule {
                     }
                 }
                 if (screen == "access") {
+                    val userCodeStep = call.request.queryParameters["usercode"]
+                    if (userCodeStep != null) {
+                        if (!permissions.businessOwner && !permissions.serverOwner) {
+                            return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "Solo los duenos pueden cambiar accesos WiFi."))
+                        }
+                        val id = call.request.queryParameters["id"]
+                        return@post call.respondScreen(access) { tenant ->
+                            val (message, tone) = userAccess.userCodeAction(tenant, userCodeStep, id, permissions)
+                            render(access, tenant, permissions, screen, emptyMap(), UiNotice(message, tone), customBody = userAccess.accessBody(tenant, permissions))
+                        }
+                    }
                     if (!userAccess.isServerCompanyOwner(permissions)) {
                         return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "Solo los duenos del servidor dan acceso a redes de otras empresas."))
                     }
@@ -259,8 +289,9 @@ object HotspotServerModule : ServerModule {
                 val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
                 try {
                     val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
-                    val sources = HotspotPasses.choosable(tenant).map { it.id }.toSet()
-                    val network = HotspotNetworks.parse(networkId ?: UUID.randomUUID(), submitted, usersEnabled, sources)
+                    val crmEnabled = HotspotSettingsRepository.load(tenant).crmAccessEnabled && HotspotCrmPipeline.isInstalled(tenant)
+                    val sources = if (crmEnabled) HotspotPasses.choosable(tenant).map { it.id }.toSet() else emptySet()
+                    val network = HotspotNetworks.parse(networkId ?: UUID.randomUUID(), submitted, usersEnabled, sources, crmEnabled)
                     HotspotNetworks.save(tenant, network)
                     screen(UiNotice("Red ${network.ssid} guardada.", UiTone.Success))
                 } catch (failure: HotspotValidationException) {
@@ -281,7 +312,24 @@ object HotspotServerModule : ServerModule {
         val current = HotspotSettingsRepository.load(tenant)
         // The UniFi settings are only editable while UniFi is the enabled network controller.
         val unifiKeys = HotspotScreens.unifiFields.map { it.key }.toSet()
-        val values = if (HotspotIntegrations.controller(tenant) == UnifiController) posted else JsonObject(posted.filterKeys { it !in unifiKeys })
+        var values = if (HotspotIntegrations.controller(tenant) == UnifiController) posted else JsonObject(posted.filterKeys { it !in unifiKeys })
+        if ("crmStage" in values) {
+            val name = values["crmStage"]?.jsonPrimitive?.contentOrNull.orEmpty()
+            if (name.isNotBlank() && !HotspotCrmPipeline.isInstalled(tenant)) {
+                return render(
+                    access, tenant, permissions, screen, emptyMap(),
+                    UiNotice("Instala CRM antes de seleccionar una etapa del embudo.", UiTone.Danger),
+                )
+            }
+            val stageId = name.takeIf { it.isNotBlank() }?.let { HotspotCrmPipeline.stageId(tenant, it) }
+            if (name.isNotBlank() && stageId == null) {
+                return render(
+                    access, tenant, permissions, screen, emptyMap(),
+                    UiNotice("El estado seleccionado ya no existe en el CRM.", UiTone.Danger),
+                )
+            }
+            values = JsonObject(values + ("crmStageId" to JsonPrimitive(stageId?.toString().orEmpty())))
+        }
         val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() }
         fun failed(message: String): UiScreen {
             // Keep what the user typed so the error can be corrected without retyping.
@@ -294,10 +342,18 @@ object HotspotServerModule : ServerModule {
         } catch (failure: HotspotValidationException) {
             return failed(failure.message.orEmpty())
         }
+        if (updated.crmAccessEnabled &&
+            (!HotspotCrmPipeline.isInstalled(tenant) || updated.crmStageId !in HotspotCrmPipeline.stages(tenant).map { it.id })
+        ) {
+            return failed("Instala CRM y selecciona un estado valido del embudo antes de activar la integracion.")
+        }
         if (!registerDomain(access, permissions.companyCode, updated.domain)) {
             return failed("Ese dominio ya esta registrado en este servidor.")
         }
         HotspotSettingsRepository.save(tenant, updated)
+        val now = Instant.now()
+        HotspotCrmPipeline.enforceAccess(tenant, updated, LocalDate.now(), now)
+        HotspotCodeSessions.expire(tenant, updated, HotspotIntegrations.controller(tenant), now)
         return render(access, tenant, permissions, screen, emptyMap(), UiNotice("Cambios guardados.", UiTone.Success))
     }
 

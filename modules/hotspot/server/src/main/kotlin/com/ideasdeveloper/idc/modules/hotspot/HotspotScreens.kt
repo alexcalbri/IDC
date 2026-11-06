@@ -87,7 +87,9 @@ object HotspotScreens {
         if (!permissions.has(permissionFor(screen)!!)) {
             return frame(settings, permissions, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
         }
-        val values = submittedValues ?: HotspotSettingsRepository.toFormValues(settings, domainStatus, serverMailAvailable)
+        val values = submittedValues ?: HotspotSettingsRepository.toFormValues(
+            settings, domainStatus, serverMailAvailable, HotspotCrmPipeline.stageName(tenant, settings.crmStageId),
+        )
         val body = customBody ?: when (screen) {
             "dashboard" -> dashboard(tenant, settings, permissions, domainActive)
             "visitors" -> visitors(tenant, params)
@@ -252,6 +254,8 @@ object HotspotScreens {
     ): List<UiNode> {
         val settings = HotspotSettingsRepository.load(tenant)
         val controller = HotspotIntegrations.controller(tenant)
+        val crmInstalled = HotspotCrmPipeline.isInstalled(tenant)
+        val crmStages = HotspotCrmPipeline.stages(tenant)
         // Only the enabled ecosystem's settings are shown; access times and mail work with any of them.
         val controllerCards = when (controller) {
             null -> listOf(
@@ -263,7 +267,39 @@ object HotspotScreens {
             UnifiController -> listOf(unifiCard(settings, permissions, values)) + pickers
             else -> emptyList()
         }
+        val crmFields = listOf(
+            UiField(
+                "crmAccessEnabled", "Validar el codigo de cliente con un estado del CRM", "boolean",
+                help = "Al activarlo, el codigo de cliente solo funciona si su lead esta en el estado seleccionado.",
+            ),
+            UiField(
+                "crmStage", "Estado del embudo que permite el acceso", "dropdown", required = settings.crmAccessEnabled,
+                options = crmStages.map { it.name },
+                help = if (crmInstalled) "Se valida el estado actual del lead y, si tiene fechas, la fecha de inicio y fin." else "Instala CRM para seleccionar un estado.",
+                visibleWhen = UiFieldCondition("crmAccessEnabled", listOf("true")),
+            ),
+            UiField(
+                "crmScheduleMode", "Programacion de la revision", "select", required = true,
+                options = listOf("Diario a una hora", "Cada intervalo"),
+            ),
+            UiField(
+                "crmCheckTime", "Hora diaria de revision (HH:mm)", required = true,
+                visibleWhen = UiFieldCondition("crmScheduleMode", listOf("Diario a una hora")),
+            ),
+            UiField(
+                "crmCheckIntervalMinutes", "Intervalo de revision (minutos)", "number", required = true,
+                visibleWhen = UiFieldCondition("crmScheduleMode", listOf("Cada intervalo")),
+            ),
+        ).map { field -> if (field.key == "crmAccessEnabled" && !crmInstalled) field.copy(readOnly = true) else field }
+        val crmCard = UiCard(
+            title = "Integracion con CRM",
+            children = listOfNotNull(
+                if (crmInstalled) null else UiStatus("CRM no esta instalado en esta empresa; los codigos de cliente permanecen desactivados.", UiTone.Warning),
+                settingsFormNode("settings", "crm", crmFields, permissions, values),
+            ),
+        )
         return controllerCards + networks(tenant, settings, controller, permissions, params, networkValues) +
+            crmCard +
             UiCard(title = "Acceso", children = listOf(settingsFormNode("settings", "times", accessFields, permissions, values))) +
             UiCard(title = "Correo", children = listOf(settingsFormNode("settings", "mail", mailFields, permissions, values)))
     }
@@ -335,7 +371,8 @@ object HotspotScreens {
         if (editing == null && available != null && available.isEmpty()) {
             return listOf(list, UiCard(title = title, children = listOf(UiText("Todas las redes de la consola ya estan configuradas.", UiTextStyle.Caption))))
         }
-        val sources = HotspotPasses.choosable(tenant)
+        val crmAccessEnabled = settings.crmAccessEnabled && HotspotCrmPipeline.isInstalled(tenant)
+        val sources = if (crmAccessEnabled) HotspotPasses.choosable(tenant) else emptyList()
         val usersEnabled = HotspotIntegrations.isEnabled(tenant, HotspotIntegrations.Users)
         val form = UiCard(
             title = title,
@@ -344,7 +381,7 @@ object HotspotScreens {
                 console.problem?.let { UiStatus(it, UiTone.Warning) },
                 UiForm(
                     id = "network",
-                    fields = listOf(ssidField(available, controller)) + networkFields(sources, usersEnabled),
+                    fields = listOf(ssidField(available, controller)) + networkFields(sources, usersEnabled, crmAccessEnabled),
                     values = submitted ?: HotspotNetworks.toFormValues(editing),
                     submit = UiButton("Guardar red", networkAction("save", editing?.id?.toString(), withForm = true)),
                 ),
@@ -411,10 +448,10 @@ object HotspotScreens {
     )
 
     // The access sources only matter on customer-code networks; the form registers customers as type hotspot.
-    private fun networkFields(sources: List<PassSource>, usersEnabled: Boolean): List<UiField> {
+    private fun networkFields(sources: List<PassSource>, usersEnabled: Boolean, crmAccessEnabled: Boolean): List<UiField> {
         val byCustomerCode = UiFieldCondition("accessMode", listOf(HotspotNetworks.modeLabel(HotspotNetworks.CustomerCode)))
         return listOf(
-            UiField("accessMode", "Tipo de acceso", "select", required = true, options = HotspotNetworks.modeOptions(usersEnabled),
+            UiField("accessMode", "Tipo de acceso", "select", required = true, options = HotspotNetworks.modeOptions(usersEnabled, crmAccessEnabled),
                 help = "Formulario: registro y codigo por correo; el visitante queda como cliente tipo hotspot. " +
                     "Codigo de cliente: el codigo de su ficha en Clientes." +
                     if (usersEnabled) " Codigo de usuario: el codigo de Accesos WiFi de cada usuario." else " Activa la integracion Usuarios para el acceso por codigo de usuario."),

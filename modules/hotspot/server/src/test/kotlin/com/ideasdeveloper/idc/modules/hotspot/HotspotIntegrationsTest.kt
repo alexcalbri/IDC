@@ -5,6 +5,7 @@ import kotlinx.serialization.json.jsonObject
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
@@ -19,8 +20,14 @@ class HotspotIntegrationsTest {
 
     @Test
     fun userCodeModeNeedsTheUsersIntegration() {
-        assertEquals(listOf("Formulario", "Codigo de cliente"), HotspotNetworks.modeOptions(usersIntegration = false))
-        assertEquals(listOf("Formulario", "Codigo de cliente", "Codigo de usuario"), HotspotNetworks.modeOptions(usersIntegration = true))
+        assertEquals(
+            listOf("Formulario", "Codigo de cliente"),
+            HotspotNetworks.modeOptions(usersIntegration = false, crmIntegration = true),
+        )
+        assertEquals(
+            listOf("Formulario", "Codigo de cliente", "Codigo de usuario"),
+            HotspotNetworks.modeOptions(usersIntegration = true, crmIntegration = true),
+        )
         val values = mapOf("ssid" to "Personal", "accessMode" to "Codigo de usuario")
         assertFailsWith<HotspotValidationException> { HotspotNetworks.parse(UUID.randomUUID(), values, usersIntegration = false) }
         val network = HotspotNetworks.parse(UUID.randomUUID(), values, usersIntegration = true)
@@ -29,8 +36,17 @@ class HotspotIntegrationsTest {
     }
 
     @Test
-    fun generatedUserCodesUseTheCodeAlphabet() {
-        repeat(200) { assertTrue(HotspotNetworks.isCustomerCode(HotspotUserCodes.generate())) }
+    fun generatedUserCodesHaveTheUserPrefixAndGuestCodeFormat() {
+        repeat(200) {
+            val code = HotspotUserCodes.generate()
+            assertTrue(code.startsWith("us"))
+            assertTrue(HotspotUserCodes.isUserCode(code))
+            assertTrue(HotspotNetworks.isCustomerCode(code.drop(2)))
+        }
+        assertTrue(HotspotUserCodes.isUserCode("US23456789"))
+        assertFalse(HotspotUserCodes.isUserCode("23456789"))
+        assertFalse(HotspotUserCodes.isUserCode("us23456780"))
+        assertTrue(HotspotUserCodes.isUserCode(" us23456789 "))
     }
 
     @Test

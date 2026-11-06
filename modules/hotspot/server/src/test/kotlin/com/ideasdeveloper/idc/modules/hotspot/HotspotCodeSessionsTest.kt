@@ -4,6 +4,7 @@ import java.time.Instant
 import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 
 class HotspotCodeSessionsTest {
     private val now = Instant.parse("2026-11-03T12:00:00Z")
@@ -16,5 +17,6 @@ class HotspotCodeSessionsTest {
         assertEquals(30, CodeSession(UUID.randomUUID(), now.plusSeconds(29 * 60 + 1)).minutesLeft(now))
         // Never zero: UniFi needs at least one minute.
         assertEquals(1, CodeSession(UUID.randomUUID(), now.plusSeconds(5)).minutesLeft(now))
+        assertNull(CodeSession(UUID.randomUUID(), null).minutesLeft(now))
     }
 }

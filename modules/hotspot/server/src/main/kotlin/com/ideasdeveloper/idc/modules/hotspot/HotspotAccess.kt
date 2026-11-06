@@ -44,9 +44,9 @@ class HotspotAccess(private val access: ModuleAccessService) {
                 if (usersEnabled) null else UiStatus("El acceso con codigo de usuario aun no esta activo en esta empresa (Integraciones > Usuarios).", UiTone.Warning),
             ),
         )
-        if (!permissions.businessOwner) return listOf(mine)
+        if (!permissions.businessOwner && !permissions.serverOwner) return listOf(mine)
 
-        val users = if (isServerCompanyOwner(permissions)) {
+        val users = if (permissions.serverOwner) {
             access.centralConnection().use { central -> HotspotUserCodes.users(tenant, central) }
         } else {
             HotspotUserCodes.users(tenant, null)
@@ -66,10 +66,58 @@ class HotspotAccess(private val access: ModuleAccessService) {
                     },
                     "Aun no hay usuarios.",
                 ),
+                UiGrid(
+                    minItemWidth = 260,
+                    children = users.map { user ->
+                        UiCard(
+                            title = user.displayName?.takeIf { it.isNotBlank() } ?: user.username,
+                            children = listOf(
+                                UiText(user.code, UiTextStyle.Subtitle),
+                                UiStatus(
+                                    if (user.wifiAccessEnabled) "Acceso activo" else "Acceso revocado",
+                                    if (user.wifiAccessEnabled) UiTone.Success else UiTone.Warning,
+                                ),
+                                UiButton(
+                                    if (user.wifiAccessEnabled) "Revocar acceso" else "Restaurar acceso",
+                                    UiRequest(
+                                        "${HotspotScreens.UiRoute}/access",
+                                        params = mapOf("usercode" to if (user.wifiAccessEnabled) "revoke" else "restore", "id" to user.id.toString()),
+                                        confirm = if (user.wifiAccessEnabled) "Revocar el acceso WiFi de este usuario y desconectar sus dispositivos?" else null,
+                                    ),
+                                    style = if (user.wifiAccessEnabled) "danger" else "primary",
+                                ),
+                            ),
+                        )
+                    },
+                ),
             ),
         )
         if (!isServerCompanyOwner(permissions)) return listOf(mine, table)
         return listOf(mine, table) + grantsBody(tenant, users)
+    }
+
+    fun userCodeAction(tenant: Connection, step: String, rawId: String?, permissions: ModulePermissions): Pair<String, String> {
+        if (!permissions.businessOwner && !permissions.serverOwner) return "No tienes permiso para cambiar accesos." to UiTone.Danger
+        val userId = rawId?.let { runCatching { UUID.fromString(it) }.getOrNull() }
+            ?: return "El usuario no es valido." to UiTone.Danger
+        val user = if (permissions.serverOwner) {
+            access.centralConnection().use { central -> HotspotUserCodes.users(tenant, central) }
+        } else {
+            HotspotUserCodes.users(tenant, null)
+        }.firstOrNull { it.id == userId } ?: return "Ese usuario no existe." to UiTone.Warning
+        val enabled = when (step) {
+            "revoke" -> false
+            "restore" -> true
+            else -> return "Accion desconocida." to UiTone.Danger
+        }
+        if (!HotspotUserCodes.setAccessEnabled(tenant, userId, enabled)) return "No se pudo actualizar el acceso." to UiTone.Danger
+        if (!enabled) {
+            val settings = HotspotSettingsRepository.load(tenant)
+            val now = java.time.Instant.now()
+            HotspotCodeSessions.revokeUserSessions(tenant, userId, permissions.companyCode, now)
+            HotspotCodeSessions.expire(tenant, settings, HotspotIntegrations.controller(tenant), now)
+        }
+        return (if (enabled) "Acceso WiFi restaurado." else "Acceso WiFi revocado.") to UiTone.Success
     }
 
     private fun grantsBody(tenant: Connection, users: List<HotspotUser>): List<UiNode> {

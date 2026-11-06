@@ -16,7 +16,7 @@ data class CrmActor(val userId: UUID?, val name: String)
 /** Tenant database access of the CRM. Every lead query applies the caller's [CrmScope]. */
 object CrmRepository {
     private const val LeadColumns = """
-        l.id, l.customer_id, c.display_name, c.primary_email, c.primary_phone, l.stage_id, l.interest_id,
+        l.id, l.customer_id, c.display_name, c.primary_email, c.primary_phone, c.customer_code, l.stage_id, l.interest_id,
         l.owner_user_id, l.source, l.language, l.message, l.details, l.target_start, l.target_end,
         l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason, l.archived_at,
         l.custom_fields::text AS custom_fields
@@ -597,6 +597,7 @@ object CrmRepository {
         reviewReason = getString("review_reason"),
         archivedAt = getTimestamp("archived_at")?.toInstant(),
         customFields = CrmFields.parseStored(getString("custom_fields")),
+        customerCode = getString("customer_code").orEmpty(),
     )
 
     // Binds positional parameters; collections become uuid[] (used by "= ANY(?)").

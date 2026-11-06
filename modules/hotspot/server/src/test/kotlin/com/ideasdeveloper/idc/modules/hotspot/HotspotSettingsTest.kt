@@ -3,12 +3,14 @@ package com.ideasdeveloper.idc.modules.hotspot
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.time.LocalTime
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import java.util.UUID
 
 class HotspotSettingsTest {
     private val defaults = HotspotSettings(
@@ -18,6 +20,8 @@ class HotspotSettingsTest {
         accessMinutes = 60, dataLimitMb = 0, rxKbps = 0, txKbps = 0, reconnectMinutes = 1440, codeTtlMinutes = 15,
         smtpMode = "servidor", smtpHost = null, smtpPort = 587, smtpUsername = null, smtpPassword = "smtp-secret",
         smtpFrom = null, smtpSecurity = "starttls", emailSubject = "Codigo",
+        crmAccessEnabled = false, crmStageId = null, crmScheduleMode = "daily",
+        crmCheckIntervalMinutes = 60, crmCheckTime = LocalTime.of(7, 0),
     )
 
     private fun values(vararg pairs: Pair<String, String>) = JsonObject(pairs.associate { it.first to JsonPrimitive(it.second) })
@@ -53,6 +57,31 @@ class HotspotSettingsTest {
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("logoUrl" to "javascript:alert(1)")) }
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("unifiSiteId" to "../../x?y")) }
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("smtpMode" to "otro")) }
+    }
+
+    @Test
+    fun crmStageAndScheduleCanBeConfiguredWithoutReservations() {
+        val stageId = UUID.fromString("6f726000-7e53-4d4b-b97e-21dd9b9d1c4f")
+        val configured = HotspotSettingsRepository.merge(
+            defaults,
+            values(
+                "crmAccessEnabled" to "true",
+                "crmStageId" to stageId.toString(),
+                "crmScheduleMode" to "Cada intervalo",
+                "crmCheckIntervalMinutes" to "45",
+            ),
+        )
+        assertTrue(configured.crmAccessEnabled)
+        assertEquals(stageId, configured.crmStageId)
+        assertEquals("interval", configured.crmScheduleMode)
+        assertEquals(45, configured.crmCheckIntervalMinutes)
+    }
+
+    @Test
+    fun crmAccessRequiresASelectedStage() {
+        assertFailsWith<HotspotValidationException> {
+            HotspotSettingsRepository.merge(defaults, values("crmAccessEnabled" to "true"))
+        }
     }
 
     @Test

@@ -120,8 +120,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
 
     private fun register(target: PortalTarget, guest: GuestContext, values: FormValues, acceptedTerms: Boolean): String {
         val network = HotspotNetworks.findBySsid(target.connection, guest.ssid)
-        // A network that asks for a code cannot be entered through the form.
-        if (network?.byCode == true) return HotspotPortalPages.accessCode(network.applyTo(target.settings), guest, byUser = network.byUserCode)
+        // A network that currently asks for an enabled code integration cannot be entered through the form.
+        codeNetwork(target, guest)?.let { return HotspotPortalPages.accessCode(it.applyTo(target.settings), guest, byUser = it.byUserCode) }
         val settings = network?.applyTo(target.settings) ?: target.settings
         val connection = target.connection
         fun retry(message: String) = HotspotPortalPages.form(settings, guest, values, message)
@@ -264,11 +264,10 @@ class HotspotPortal(private val access: ModuleAccessService) {
 
     /**
      * Access by customer code on networks configured for it: the code must belong to a customer of
-     * this company (or of the server workspace, when the portal runs there) that is not inactive or
-     * archived, and the customer must be either of type hotspot (when the network lets them in; the
-     * hotspot times and reconnection apply) or hold a usable access pass of a source the network lists
-     * and Integraciones has enabled (the rules of [HotspotPasses] apply). Ordinary customers never get
-     * in. Every access is kept as a registration with the customer's contact data.
+     * this company (or of the server workspace, when the portal runs there) and not inactive or
+     * archived. CRM integration must be enabled and the customer must have a lead in the selected
+     * pipeline stage; optional lead dates limit access from the day before the start through the end.
+     * Every access is kept as a registration with the customer's contact data.
      */
     private fun accessByCode(target: PortalTarget, guest: GuestContext, code: String): String {
         val connection = target.connection
@@ -285,32 +284,39 @@ class HotspotPortal(private val access: ModuleAccessService) {
 
         val customer = if (HotspotNetworks.isCustomerCode(code)) findCustomerByCode(connection, code) else null
         val values = customer?.let { FormValues(name = it.name, email = it.email, phone = it.phone) }
-        if (customer != null && values != null && HotspotPasses.HotspotCustomers in network.accessSources && customer.type == HotspotPasses.HotspotCustomers) {
-            joinOpenSession(target, guest, settings, Owner.Customer(customer.id), values, HotspotNetworks.CustomerCode, ::retry)?.let { return it }
-            minutesUntilReconnect(connection, customer.email, settings.reconnectMinutes)?.let { remaining ->
-                return HotspotPortalPages.wait(settings, remaining, byCode = true)
-            }
-            return authorizeByCode(target, guest, settings, Owner.Customer(customer.id), values, HotspotNetworks.CustomerCode, ::retry)
-        }
-
-        val sources = (network.accessSources.toSet() - HotspotPasses.HotspotCustomers) intersect HotspotIntegrations.enabled(connection)
-        val passes = if (customer == null) emptyList() else HotspotPasses.passes(connection, customer.id, sources)
-        if (customer == null || values == null || passes.isEmpty()) {
+        val crmSettings = HotspotSettingsRepository.load(connection)
+        val window = if (crmSettings.crmAccessEnabled && HotspotCrmPipeline.isInstalled(connection)) {
+            customer?.let { crmSettings.crmStageId?.let { stageId -> HotspotCrmPipeline.currentWindow(connection, it.id, stageId) } }
+        } else null
+        if (customer == null || values == null || window == null) {
             // The same answer for unknown codes and for customers the network does not let in.
             recordCodeFailure(connection, guest.mac)
             return retry("El codigo no es valido para esta red. Revisalo e intenta de nuevo.")
         }
-        val notCurrent = "Tu acceso a esta red no esta vigente. Consulta al personal del local."
-        val (pass, minutes) = HotspotPasses.usable(passes, settings.accessMinutes, Instant.now()) ?: return retry(notCurrent)
-        // Another device already uses this code: it shares that session and spends no balance.
-        joinOpenSession(target, guest, settings, Owner.Customer(customer.id), values, HotspotNetworks.CustomerCode, ::retry)?.let { return it }
-        // A balance is spent before authorizing so two devices cannot use the same minutes.
-        val spent = pass.rule == HotspotPasses.Balance
-        if (spent && !HotspotPasses.spend(connection, pass.id, minutes)) return retry(notCurrent)
+        val owner = Owner.Customer(customer.id)
+        val notAfter = window.expiresAt()
+        if (HotspotPasses.HotspotCustomers !in network.accessSources) {
+            val sources = (network.accessSources.toSet() intersect HotspotIntegrations.enabled(connection)) - HotspotPasses.HotspotCustomers
+            val passes = HotspotPasses.passes(connection, customer.id, sources)
+            val notCurrent = "Tu acceso a esta red no esta vigente. Consulta al personal del local."
+            val (pass, minutes) = HotspotPasses.usable(passes, settings.accessMinutes, Instant.now()) ?: return retry(notCurrent)
+            joinOpenSession(target, guest, settings, owner, values, HotspotNetworks.CustomerCode, ::retry, notAfter = notAfter)?.let { return it }
+            val spent = pass.rule == HotspotPasses.Balance
+            if (spent && !HotspotPasses.spend(connection, pass.id, minutes)) return retry(notCurrent)
+            val sessionSettings = settings.copy(accessMinutes = minOf(minutes, minutesUntil(notAfter, settings.accessMinutes)))
+            return authorizeByCode(
+                target, guest, sessionSettings, owner, values, HotspotNetworks.CustomerCode, ::retry,
+                passId = pass.id, notAfter = notAfter,
+                onRejected = { if (spent) HotspotPasses.refund(connection, pass.id, minutes) },
+            )
+        }
+        joinOpenSession(target, guest, settings, owner, values, HotspotNetworks.CustomerCode, ::retry, notAfter = notAfter)?.let { return it }
+        minutesUntilReconnect(connection, customer.email, settings.reconnectMinutes)?.let { remaining ->
+            return HotspotPortalPages.wait(settings, remaining, byCode = true)
+        }
+        val sessionSettings = settings.copy(accessMinutes = minutesUntil(notAfter, settings.accessMinutes))
         return authorizeByCode(
-            target, guest, settings.copy(accessMinutes = minutes), Owner.Customer(customer.id), values, HotspotNetworks.CustomerCode, ::retry,
-            passId = pass.id,
-            onRejected = { if (spent) HotspotPasses.refund(connection, pass.id, minutes) },
+            target, guest, sessionSettings, owner, values, HotspotNetworks.CustomerCode, ::retry, notAfter = notAfter,
         )
     }
 
@@ -332,7 +338,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         if (!HotspotIntegrations.isEnabled(connection, HotspotIntegrations.Users)) {
             return HotspotPortalPages.message(settings, "Red no disponible", "El acceso con codigo de usuario no esta activo. Avisa al personal del local.")
         }
-        if (!HotspotNetworks.isCustomerCode(code)) {
+        if (!HotspotUserCodes.isUserCode(code)) {
             recordCodeFailure(connection, guest.mac)
             return retry(invalid)
         }
@@ -346,11 +352,14 @@ class HotspotPortal(private val access: ModuleAccessService) {
         }
         val (user, userCompany) = found
         val owner = Owner.User(user.id, userCompany)
-        joinOpenSession(target, guest, settings, owner, FormValues(name = user.name), HotspotNetworks.UserCode, retry)?.let { return it }
+        joinOpenSession(target, guest, settings, owner, FormValues(name = user.name), HotspotNetworks.UserCode, retry, indefinite = true)?.let { return it }
         minutesUntilUserReconnect(connection, owner, settings.reconnectMinutes)?.let { remaining ->
             return HotspotPortalPages.wait(settings, remaining, byCode = true)
         }
-        return authorizeByCode(target, guest, settings, owner, FormValues(name = user.name), HotspotNetworks.UserCode, retry)
+        return authorizeByCode(
+            target, guest, settings.copy(accessMinutes = 0), owner, FormValues(name = user.name),
+            HotspotNetworks.UserCode, retry, indefinite = true,
+        )
     }
 
     // A user of the server company with [code] that a server owner authorized for [ssid] of [companyCode].
@@ -379,6 +388,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
         onRejected: () -> Unit = {},
         // An open session of the same code this device joins; null starts a new one.
         joining: CodeSession? = null,
+        notAfter: Instant? = null,
+        indefinite: Boolean = false,
     ): String {
         val connection = target.connection
         val registrationId = UUID.randomUUID()
@@ -388,7 +399,9 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val session = when {
             !result.authorized -> null
             joining != null -> joining
-            else -> HotspotCodeSessions.start(connection, owner.codeOwner(), settings.accessMinutes, passId)
+            else -> HotspotCodeSessions.start(
+                connection, owner.codeOwner(), settings.accessMinutes, passId, notAfter = notAfter, indefinite = indefinite,
+            )
         }
         recordAccess(
             connection, registrationId, owner, values.email.ifBlank { null }, guest.mac, result, settings.accessMinutes, passId,
@@ -414,9 +427,18 @@ class HotspotPortal(private val access: ModuleAccessService) {
         values: FormValues,
         accessMode: String,
         retry: (String) -> String,
+        notAfter: Instant? = null,
+        indefinite: Boolean = false,
     ): String? {
-        val session = HotspotCodeSessions.open(target.connection, owner.codeOwner()) ?: return null
-        return authorizeByCode(target, guest, settings.copy(accessMinutes = session.minutesLeft()), owner, values, accessMode, retry, joining = session)
+        var session = HotspotCodeSessions.open(target.connection, owner.codeOwner()) ?: return null
+        if (notAfter != null) {
+            session = HotspotCodeSessions.limit(target.connection, session.id, notAfter) ?: return null
+        }
+        val minutes = if (indefinite || session.expiresAt == null) 0 else minOf(settings.accessMinutes, session.minutesLeft() ?: settings.accessMinutes)
+        return authorizeByCode(
+            target, guest, settings.copy(accessMinutes = minutes), owner, values, accessMode, retry,
+            joining = session, notAfter = notAfter, indefinite = indefinite || session.expiresAt == null,
+        )
     }
 
     private fun minutesUntilUserReconnect(connection: Connection, owner: Owner.User, reconnectMinutes: Int): Long? {
@@ -434,7 +456,20 @@ class HotspotPortal(private val access: ModuleAccessService) {
 
     // The configured network the guest joined when it asks for a code; null otherwise.
     private fun codeNetwork(target: PortalTarget, guest: GuestContext): HotspotNetwork? =
-        HotspotNetworks.findBySsid(target.connection, guest.ssid)?.takeIf { it.byCode }
+        HotspotNetworks.findBySsid(target.connection, guest.ssid)?.takeIf { network ->
+            when {
+                network.byUserCode -> HotspotIntegrations.isEnabled(target.connection, HotspotIntegrations.Users)
+                network.byCustomerCode -> {
+                    val settings = HotspotSettingsRepository.load(target.connection)
+                    settings.crmAccessEnabled && settings.crmStageId != null && HotspotCrmPipeline.isInstalled(target.connection)
+                }
+                else -> false
+            }
+        }
+
+    private fun minutesUntil(notAfter: Instant?, fallback: Int): Int =
+        notAfter?.let { ((Duration.between(Instant.now(), it).seconds + 59) / 60).toInt().coerceAtLeast(1) }?.let { minOf(it, fallback) }
+            ?: fallback
 
     private fun deviceNotIdentified(settings: HotspotSettings) = HotspotPortalPages.message(
         settings,
