@@ -137,38 +137,107 @@ sent by job `outbox` every minute with up to 5 attempts.
 | `import` | 1 min | Apply 300 rows of running imports. |
 | `attachments-cleanup` | 15 min | Delete stored files of removed attachments, deleted leads and uploads never saved (after a day); move V010 contents out of the database. |
 
-## Meta: WhatsApp, Messenger and Instagram (V003)
+## Meta: WhatsApp, Messenger and Instagram (V003, V013)
 
-**Configuracion > Integraciones** with one Meta app:
+**Configuracion > Integraciones > Meta Business** with one Meta app per company
+(each company's own app and Meta Business portfolio). The screen follows the
+WordPress plugin (CT Leads Extension 4.57):
 
-- **App Secret** (validates `X-Hub-Signature-256` of every call), **verify
-  token** and the **system user token** of Meta Business (the only token typed;
-  needs `whatsapp_business_messaging`, `whatsapp_business_management`,
-  `pages_messaging`, `instagram_manage_messages`). Secrets are masked.
-- **Conectar pagina** reads the page token (`GET /me/accounts`, it does not
-  expire) and the linked Instagram account; with several pages type the page ID.
-- **Conectar WhatsApp** subscribes the app to the WhatsApp Business Account
-  (`POST /{waba}/subscribed_apps`) and lists its numbers; one number is saved,
-  several are offered to pick.
-- Callback URL (one for all): `https://<server>/modules/crm/hooks/<company>/meta`.
-  WhatsApp fields `messages` and `smb_message_echoes`; page fields `messages`
-  and `standby`; Instagram `messages`.
+1. **Guia paso a paso** (accordion, open while Meta is off): business portfolio,
+   app and permissions, system user, webhooks and this screen.
+2. **Configuracion**: the callback URL and the common settings, then one
+   accordion per channel (`UiForm.collapsibleSections`, each with its state in
+   `sectionNotes`):
+   - Common: **App Secret** (validates `X-Hub-Signature-256` of every call of
+     the three channels), **verify token**, **system user token** of Meta
+     Business (needs `whatsapp_business_messaging`, `whatsapp_business_management`
+     and, when shared, `pages_messaging`, `pages_show_list`,
+     `pages_manage_metadata`, `pages_read_engagement`, `instagram_basic`,
+     `instagram_manage_messages`) and **shared tokens**. Secrets are masked.
+   - **WhatsApp**: WhatsApp Business Account ID, Phone Number ID and
+     coexistence echoes.
+   - **Messenger**: the connected page (read only), the page ID when the token
+     manages several pages, or its own page token.
+   - **Instagram**: the linked account (read only) or its own token.
+3. **Registro de eventos** (accordion, closed): the last 30 events.
+
+Messenger and Instagram always work through the page (Facebook login): the
+Instagram route with Instagram login (`graph.instagram.com` and its own app
+secret) is not supported. With **shared tokens** (default) both reply with the
+page token read from the system token (`GET /me/accounts`, it does not expire)
+and the Instagram account linked to the page is taken from it. Off, each uses a
+page token of its own; the Instagram account is read from the page of the
+Instagram token (`GET /me?fields=instagram_business_account`), never typed.
+
+**Guardar y conectar** is the only button and does every connection at once,
+each step reported and logged on its own: page token and Instagram account,
+Instagram subscription (`POST /{ig}/subscribed_apps?subscribed_fields=messages`;
+the callback URL alone does not subscribe Instagram) and the WhatsApp Business
+Account (`POST /{waba}/subscribed_apps`, numbers with their platform; one number
+is saved, several are offered to pick). The agent tools `meta_connect_page`,
+`meta_connect_whatsapp` and `meta_fill_names` remain for agents.
+
+Callback URL (one for all): `https://<server>/modules/crm/hooks/<company>/meta`.
+WhatsApp fields `messages` and `smb_message_echoes`; page fields `messages`
+and `standby`; Instagram `messages`.
+
+### Server app (V014): connect by logging in
+
+Instead of each company creating and reviewing its own Meta app, the server
+owner can offer one app to every company of the server, like the CRM services
+that only ask to log in:
+
+- **Server owner** (server workspace, CRM active there): Integraciones shows
+  **App de Meta del servidor** with a guide and App ID, App Secret, verify
+  token and the two Facebook Login for Business configuration ids (Messenger
+  and Instagram; WhatsApp Embedded Signup). The owner's business portfolio is
+  verified, verified as Tech Provider, and the app goes through App Review once.
+  The app uses one callback URL for the whole server:
+  `https://<server>/modules/crm/meta/webhook`, plus
+  `/modules/crm/meta/deauthorize` and `/modules/crm/meta/data-deletion`.
+- **Company**: **Usar la app del servidor** (`connection_mode = 'server'`) and
+  **Conectar con Meta** create a 30-minute link (`crm_meta_tickets`, hashed)
+  that opens `/modules/crm/meta/connect/<company>` in the browser. The page
+  uses the JS SDK of the server app: Facebook login gives a token whose pages
+  are listed (one is connected directly, several are offered to choose), the
+  page is subscribed (`messages`, `standby`) with its Instagram account; WhatsApp
+  Embedded Signup gives the business token, the WhatsApp Business Account and
+  the number, and the app subscribes to the account. Numbers already on the
+  Cloud API (coexistence included, or used by another system such as the
+  WordPress plugin) are never registered again; a new number is registered
+  with the two-step PIN typed on the page. **Desconectar** forgets the tokens.
+- **Routing** (`crm_meta_routes`, in the server workspace): page, Instagram
+  account and WhatsApp Business Account of each company, unique per asset, and
+  the Meta user who connected. The server webhook checks the signature with the
+  server App Secret, splits the entries by company and hands each part to the
+  company as if it came to its own URL. Deauthorize and data deletion
+  disconnect the companies that person connected.
+- Messages, names, replies and errors work as with the company's own app. The
+  agent tools that change Meta settings only apply to companies with their own app.
 
 Incoming: WhatsApp messages create or update the lead by phone (`+wa_id`,
-profile name); Messenger / Instagram by PSID / IGSID identity with the name read
-from the Graph API. Media, locations and contacts are stored as readable text;
-reactions, page echoes, deleted messages and the company's own Instagram account
-are ignored; repeated deliveries are deduplicated by message id. Coexistence
-echoes (replies from the WhatsApp Business app) are stored as outgoing messages
-of the open lead and never create leads. A message with an encuentra24.com link
-keeps "Encuentra24 (<channel>)" as origin. The answer to Meta is 200 even when
-one message fails (logged); the last 30 events are shown.
+profile name); Messenger / Instagram by PSID / IGSID identity. Their name is
+asked to Meta only while the contact has none: first from the participants of
+the conversation (`/me/conversations`, needs only the messaging permission),
+then from the profile; a contact that wrote before Meta gave its name gets it
+on its next message, and the agent tool `meta_fill_names` fills the contacts
+still named "Contacto de Messenger/Instagram ..." (100 per channel, never
+replacing a name; failures logged as `nombre_error`). Media, locations and
+contacts are stored as readable text; reactions, page echoes, deleted messages
+and the company's own Instagram account are ignored; repeated deliveries are
+deduplicated by message id. Coexistence echoes (replies from the WhatsApp
+Business app) are stored as outgoing messages of the open lead and never create
+leads. The answer to Meta is 200 even when one message fails (logged); the last
+30 events are shown.
 
 Outgoing: WhatsApp, Messenger and Instagram appear as reply channels on the
 lead. WhatsApp errors are explained (131047: outside the 24-hour window, only
-approved templates; 190: token expired). Messenger / Instagram split long texts
-(2000 / 1000 characters) and take thread control once when the Business Suite
-inbox controls the conversation.
+approved templates; 131026 / 131030: number cannot receive; 190: token
+expired). Messenger / Instagram split long texts (2000 / 1000 characters), take
+Messenger thread control once when the Business Suite inbox controls the
+conversation, and explain the 24-hour window (subcodes 2018278 / 2534022),
+unavailable people (551), expired tokens (190) and missing permissions (10, 200,
+230), saying when the first parts were already sent. Send errors are logged.
 
 ## Encuentra24 (V004)
 
@@ -179,8 +248,17 @@ one day before the last sync (7 days the first time), 200 per page following
 goes to the inbox with channel `encuentra24`, origin "Encuentra24", the listing
 title and id, the chat link and the original date; the Encuentra24 lead id is
 the message id, so nothing is imported twice. Contacts without email and phone
-are skipped. **Importar ahora** imports the history from a chosen date. The API
-cannot reply or change states in Encuentra24.
+are skipped. The listing (`adid`, title) joins the lead's interests as an item
+with source `encuentra24`. **Importar ahora** imports the history from a chosen
+date; an advisory lock keeps it and the job from running together. The first
+error of a failed lead is kept in the last result. The API cannot reply or
+change states in Encuentra24.
+
+Listing links: a message of any other channel (WhatsApp, Messenger, Instagram,
+email, form) with a link to an encuentra24.com listing (its WhatsApp button
+adds it) gives a new lead the origin "Encuentra24 (<channel>)" and links the
+listing to the lead (by its numeric id, or by the link when it has none),
+without duplicating it.
 
 ## WordPress / Real Estate 7 (V005)
 
@@ -384,7 +462,8 @@ Integration tools (`CrmIntegrationMcpTools.kt`):
 | Tool | Permission | Does |
 |---|---|---|
 | `crm_get_integrations` | `crm.settings` | Meta, WordPress (with its agents), Encuentra24 and Cloudbeds status; credentials only as "configured". |
-| `crm_update_meta`, `crm_meta_connect_page`, `crm_meta_connect_whatsapp` | `crm.settings` | Enable Meta, page / WhatsApp account / number, record echoes; connect the page and WhatsApp with the stored token. |
+| `crm_update_meta`, `crm_meta_connect_page`, `crm_meta_connect_whatsapp` | `crm.settings` | Enable Meta, shared or own tokens, page / Instagram account / WhatsApp account / number, record echoes; saving connects the page, Instagram and WhatsApp with the stored tokens. |
+| `crm_meta_fill_names` | `crm.settings` | Ask Meta the names of the Messenger and Instagram contacts that have none. |
 | `crm_update_wordpress`, `crm_wordpress_test`, `crm_wordpress_sync_agents`, `crm_wordpress_map_agent` | `crm.settings` | Enable the site and its URL, test the plugin, sync agents and link them to CRM users. |
 | `crm_update_encuentra24`, `crm_encuentra24_sync` | `crm.settings` | Enable, company slug, import now. |
 | `crm_update_cloudbeds`, `crm_cloudbeds_test` | `crm.settings` | Enable, property, payment method, welcome email, archive on checkout; test. |

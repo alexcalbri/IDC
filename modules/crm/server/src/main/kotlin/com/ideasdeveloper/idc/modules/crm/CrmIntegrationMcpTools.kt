@@ -44,12 +44,13 @@ object CrmIntegrationMcpTools {
         McpTool(
             name = "update_meta",
             title = "Cambiar integracion Meta",
-            description = "Activa o desactiva Meta y cambia la pagina, la cuenta de WhatsApp Business, el numero y si se guardan los mensajes enviados desde " +
-                "la app de WhatsApp. Solo cambia lo enviado. Al activarla con token y sin pagina conectada, intenta conectar la pagina.$NoCredentials$Confirm",
+            description = "Activa o desactiva Meta y cambia la pagina, si Messenger e Instagram comparten el token de Meta Business, la cuenta de WhatsApp Business, el numero y si se guardan los mensajes enviados desde la app de WhatsApp. " +
+                "Solo cambia lo enviado. Al guardar con Meta activo conecta la pagina e Instagram y suscribe la cuenta de WhatsApp.$NoCredentials$Confirm",
             permission = CrmScreens.Settings,
             inputSchema = McpSchema.obj(
                 mapOf(
                     "enabled" to McpSchema.boolean("Activar Meta."),
+                    "sharedPageAccess" to McpSchema.boolean("Messenger e Instagram usan el token de la pagina obtenido del token de Meta Business; false: cada uno usa su propio token, que se escribe en la app."),
                     "pageId" to McpSchema.string("ID numerico de la pagina de Facebook; vacio la quita."),
                     "wabaId" to McpSchema.string("WhatsApp Business Account ID numerico; vacio lo quita."),
                     "phoneNumberId" to McpSchema.string("Phone Number ID numerico de WhatsApp; vacio lo quita."),
@@ -60,9 +61,17 @@ object CrmIntegrationMcpTools {
         McpTool(
             name = "meta_connect_page",
             title = "Conectar pagina de Meta",
-            description = "Conecta la pagina de Facebook configurada (y su Instagram) con el token guardado, para recibir y enviar mensajes.",
+            description = "Conecta la pagina de Facebook configurada y su cuenta de Instagram con el token guardado y suscribe Instagram a los mensajes " +
+                "(con tokens propios, lee la cuenta de Instagram de la pagina del token de Instagram), para recibir y enviar mensajes.",
             permission = CrmScreens.Settings,
         ) { call -> metaConnectPage(call) },
+        McpTool(
+            name = "meta_fill_names",
+            title = "Completar nombres desde Meta",
+            description = "Pide a Meta el nombre de los contactos de Messenger e Instagram que llegaron sin nombre (hasta 100 por canal) y lo guarda. " +
+                "Nunca cambia un nombre existente.",
+            permission = CrmScreens.Settings,
+        ) { call -> metaFillNames(call) },
         McpTool(
             name = "meta_connect_whatsapp",
             title = "Conectar WhatsApp",
@@ -335,8 +344,16 @@ object CrmIntegrationMcpTools {
                 put("systemTokenConfigured", configured(meta.systemToken))
                 put("pageId", text(meta.pageId))
                 put("pageName", text(meta.pageName))
-                put("pageConnected", meta.pageReady)
-                put("instagramConnected", meta.instagramAccountId != null)
+                put("sharedPageAccess", meta.sharedTokens)
+                if (!meta.sharedTokens) {
+                    put("messengerTokenConfigured", configured(meta.messengerToken))
+                    put("instagramTokenConfigured", configured(meta.instagramToken))
+                }
+                put("pageConnected", meta.sharedTokens && meta.pageToken != null)
+                put("messengerReady", meta.ready("messenger"))
+                put("instagramAccountId", text(meta.instagramAccountId))
+                put("instagramUsername", text(meta.instagramUsername))
+                put("instagramReady", meta.ready("instagram") && meta.instagramAccountId != null)
                 put("wabaId", text(meta.wabaId))
                 put("phoneNumberId", text(meta.phoneNumberId))
                 put("whatsAppReady", meta.whatsAppReady)
@@ -387,10 +404,11 @@ object CrmIntegrationMcpTools {
     }
 
     private fun updateMeta(call: McpToolCall): JsonElement {
-        val keys = listOf("enabled", "pageId", "wabaId", "phoneNumberId", "recordEchoes")
+        val keys = listOf("enabled", "pageId", "wabaId", "phoneNumberId", "recordEchoes", "sharedPageAccess")
         if (keys.none(call::has)) throw McpToolException("Envia al menos un campo a cambiar.")
         val tenant = call.tenant
         val current = CrmMeta.load(tenant)
+        if (current.serverMode) throw McpToolException("La empresa usa la app de Meta del servidor: se conecta desde Configuracion > Integraciones con Conectar con Meta.")
         // CrmMeta.merge reads the whole form: blank secrets keep the stored ones, the verify token is sent back as stored.
         val values = mutableMapOf(
             "enabled" to current.enabled.toString(),
@@ -402,38 +420,41 @@ object CrmIntegrationMcpTools {
         )
         if (call.has("enabled")) values["enabled"] = call.boolean("enabled").toString()
         if (call.has("recordEchoes")) values["recordEchoes"] = call.boolean("recordEchoes").toString()
+        if (call.has("sharedPageAccess")) values["sharedTokens"] = call.boolean("sharedPageAccess").toString()
         listOf("pageId", "wabaId", "phoneNumberId").forEach { key -> if (call.has(key)) values[key] = call.string(key, 64) }
         val merged = checked { CrmMeta.merge(current, values) }
         CrmMeta.save(tenant, merged)
-        // Same as the screen: with a token and no page token yet, connect the page right away.
-        if (merged.enabled && merged.pageToken == null && merged.systemToken != null) {
-            return try {
-                CrmMeta.save(tenant, CrmMeta.connectPage(merged))
-                result("Meta guardado y pagina conectada.")
-            } catch (failure: CrmMetaException) {
-                result("Meta guardado, pero la pagina no se conecto: ${failure.message}")
-            }
-        }
-        return result("Meta guardado.")
+        // Same as the screen: saving connects the page, Instagram and the WhatsApp account.
+        if (!merged.enabled || merged.systemToken == null) return result("Meta guardado.")
+        return result("Meta guardado. ${CrmMeta.setup(tenant, merged).notice}".trim())
     }
 
     private fun metaConnectPage(call: McpToolCall): JsonElement {
-        val connected = checked { CrmMeta.connectPage(CrmMeta.load(call.tenant)) }
-        CrmMeta.save(call.tenant, connected)
-        CrmMeta.log(call.tenant, "pagina_conectada", connected.pageName.orEmpty())
-        return result("Pagina ${connected.pageName} conectada${if (connected.instagramAccountId != null) " con su cuenta de Instagram" else ""}.")
+        if (CrmMeta.load(call.tenant).serverMode) throw McpToolException("La empresa usa la app de Meta del servidor: se conecta desde Configuracion > Integraciones con Conectar con Meta.")
+        val setup = CrmMeta.setup(call.tenant, CrmMeta.load(call.tenant), whatsApp = false)
+        if (setup.done.isEmpty()) throw McpToolException(setup.notice.ifEmpty { "No hay nada que conectar: revisa el token y la cuenta de Instagram." })
+        return result(setup.notice)
+    }
+
+    private fun metaFillNames(call: McpToolCall): JsonElement {
+        val settings = CrmMeta.load(call.tenant)
+        if (!settings.ready("messenger") && !settings.ready("instagram")) throw McpToolException("Conecta Messenger o Instagram antes de completar los nombres.")
+        val names = CrmMeta.fillNames(call.tenant, settings)
+        return buildJsonObject {
+            put("result", "$names.")
+            put("reviewed", names.reviewed)
+            put("filled", names.filled)
+            put("missing", names.missing)
+        }
     }
 
     private fun metaConnectWhatsApp(call: McpToolCall): JsonElement {
         val settings = CrmMeta.load(call.tenant)
-        val numbers = checked { CrmMeta.connectWhatsApp(settings) }
-        CrmMeta.log(call.tenant, "wa_conectado", "${numbers.size} numero(s)")
-        val chosen = if (numbers.size == 1 && settings.phoneNumberId == null) {
-            CrmMeta.save(call.tenant, settings.copy(phoneNumberId = numbers.single().id))
-            numbers.single().id
-        } else {
-            settings.phoneNumberId
-        }
+        if (settings.wabaId == null) throw McpToolException("Guarda primero el WhatsApp Business Account ID con update_meta (wabaId).")
+        val setup = CrmMeta.setup(call.tenant, settings, page = false)
+        if (setup.problems.isNotEmpty()) throw McpToolException(setup.notice)
+        val numbers = setup.numbers
+        val chosen = setup.settings.phoneNumberId
         return buildJsonObject {
             put("result", if (chosen != null) "WhatsApp conectado." else "App suscrita a la cuenta. Elige el numero con update_meta (phoneNumberId).")
             put("phoneNumberId", text(chosen))
@@ -444,6 +465,7 @@ object CrmIntegrationMcpTools {
                         put("number", number.number)
                         put("name", number.name)
                         put("status", number.status)
+                        put("platform", number.platform)
                     })
                 }
             }

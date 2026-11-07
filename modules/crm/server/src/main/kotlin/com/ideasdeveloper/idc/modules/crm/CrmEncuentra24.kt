@@ -50,7 +50,11 @@ class CrmEncuentra24Exception(message: String) : Exception(message)
 
 /** Encuentra24 Leads API: imports the contacts of the company's listings into the CRM inbox. */
 object CrmEncuentra24 {
+    // Channel of the imported contacts and source of the listings linked to a lead.
+    const val Source = "encuentra24"
     private const val Endpoint = "https://www.encuentra24.com/api.php/v1/crm/index"
+    // Advisory lock of the sync, so the job and "Importar ahora" never run together.
+    private const val LockKey = 0x45323453594E43L
     private const val PageSize = 200
     private const val MaxPages = 25
     private val json = Json { ignoreUnknownKeys = true }
@@ -97,6 +101,35 @@ object CrmEncuentra24 {
             update.setString(3, error.take(500))
             update.executeUpdate()
         }
+    }
+
+    // ---- Listings ----
+
+    data class Ad(val id: String, val url: String)
+
+    private val adLink = Regex("""https?://(?:[a-z0-9-]+\.)*encuentra24\.com/[^\s<>"']*""", RegexOption.IGNORE_CASE)
+    private val adId = Regex("""/(\d{5,})(?:[/?#]|$)""")
+
+    /** The Encuentra24 listing linked in a message (its WhatsApp button adds the link), or null. */
+    fun adFromText(text: String): Ad? {
+        val url = adLink.find(text)?.value?.trimEnd('.', ',', ';', ':', '!', '?', ')', ']') ?: return null
+        val path = runCatching { URI(url).path }.getOrNull().orEmpty()
+        return Ad(adId.find("$path/")?.groupValues?.get(1).orEmpty(), url)
+    }
+
+    /**
+     * Links the listing a lead asked about (by listing id, or by link when it has none). A listing
+     * already linked is left as it is.
+     */
+    fun rememberAd(tenant: Connection, leadId: UUID, id: String, url: String, title: String): Boolean {
+        val key = id.ifEmpty { url.lowercase().removeSuffix("/") }.ifEmpty { return false }.take(200)
+        if (CrmItems.list(tenant, leadId, Source).any { it.externalId == key }) return false
+        return CrmItems.link(
+            tenant, leadId, Source, key,
+            title = title.ifEmpty { if (id.isNotEmpty()) "Anuncio $id" else "Anuncio de Encuentra24" },
+            subtitle = "Encuentra24" + if (id.isNotEmpty() && title.isNotEmpty()) " - anuncio $id" else "",
+            url = url,
+        )
     }
 
     private fun JsonElement?.obj() = this as? JsonObject
@@ -168,17 +201,32 @@ object CrmEncuentra24 {
         return parsePage(response.body())
     }
 
-    data class SyncResult(val imported: Int, val existing: Int, val withoutContact: Int, val spam: Int, val failed: Int) {
-        override fun toString() = "$imported importados, $existing ya existentes, $withoutContact sin contacto, $spam spam, $failed con error"
+    data class SyncResult(val imported: Int, val existing: Int, val withoutContact: Int, val spam: Int, val failed: Int, val firstError: String = "") {
+        override fun toString() = "$imported importados, $existing ya existentes, $withoutContact sin contacto, $spam spam, $failed con error" +
+            if (firstError.isNotEmpty()) " (primer error: $firstError)" else ""
     }
 
     /**
      * Imports the leads created since [fromDate] (default: one day before the last sync, or the
-     * last 7 days the first time), oldest first. Leads already imported are skipped by their id.
+     * last 7 days the first time), oldest first. Leads already imported are skipped by their id; the
+     * listing of each lead is linked to it. Encuentra24 leads never get a suggested responsible.
      */
     fun sync(tenant: Connection, fromDate: LocalDate? = null, onNewLead: (UUID) -> Unit = {}): SyncResult {
         val settings = load(tenant)
         if (settings.apiKey.isNullOrBlank() || settings.slug.isNullOrBlank()) throw CrmEncuentra24Exception("Falta la API key o el slug de Encuentra24.")
+        val locked = tenant.prepareStatement("SELECT pg_try_advisory_lock(?)").use { query ->
+            query.setLong(1, LockKey)
+            query.executeQuery().use { it.next() && it.getBoolean(1) }
+        }
+        if (!locked) throw CrmEncuentra24Exception("Ya hay una importacion de Encuentra24 en curso; intenta en unos minutos.")
+        try {
+            return syncLocked(tenant, settings, fromDate, onNewLead)
+        } finally {
+            tenant.prepareStatement("SELECT pg_advisory_unlock(?)").use { it.setLong(1, LockKey); it.executeQuery().close() }
+        }
+    }
+
+    private fun syncLocked(tenant: Connection, settings: CrmEncuentra24Settings, fromDate: LocalDate?, onNewLead: (UUID) -> Unit): SyncResult {
         val started = Instant.now()
         val from = fromDate ?: settings.lastSync?.atZone(ZoneOffset.UTC)?.toLocalDate()?.minusDays(1) ?: LocalDate.now(ZoneOffset.UTC).minusDays(7)
         var imported = 0
@@ -186,6 +234,7 @@ object CrmEncuentra24 {
         var withoutContact = 0
         var spam = 0
         var failed = 0
+        var firstError = ""
         val params = mutableMapOf("fromdate" to from.toString(), "limit" to PageSize.toString())
         try {
             for (page in 0 until MaxPages) {
@@ -195,13 +244,18 @@ object CrmEncuentra24 {
                         CrmInbox.receive(
                             tenant,
                             CrmInbound(
-                                channel = "encuentra24", name = lead.name, email = lead.email, phone = lead.phone,
+                                channel = Source, name = lead.name, email = lead.email, phone = lead.phone,
                                 message = messageText(lead), messageId = "e24:${lead.id}", source = "Encuentra24", sentAt = lead.createdAt,
                             ),
                             onNewLead,
-                        )
+                        ).also { result ->
+                            val leadId = (result as? CrmIntakeResult.Created)?.leadId ?: (result as? CrmIntakeResult.Updated)?.leadId
+                            // The message is already stored: a listing that fails to link does not fail the lead.
+                            if (leadId != null && lead.adId.isNotEmpty()) runCatching { rememberAd(tenant, leadId, lead.adId, "", lead.title) }
+                        }
                     } catch (failure: Exception) {
                         failed++
+                        if (firstError.isEmpty()) firstError = "lead ${lead.id}: ${failure.message ?: failure.javaClass.simpleName}".take(200)
                         null
                     }
                     when (result) {
@@ -219,6 +273,6 @@ object CrmEncuentra24 {
             record(tenant, null, "", failure.message.orEmpty())
             throw failure
         }
-        return SyncResult(imported, existing, withoutContact, spam, failed).also { record(tenant, started, "Desde $from: $it", "") }
+        return SyncResult(imported, existing, withoutContact, spam, failed, firstError).also { record(tenant, started, "Desde $from: $it", "") }
     }
 }

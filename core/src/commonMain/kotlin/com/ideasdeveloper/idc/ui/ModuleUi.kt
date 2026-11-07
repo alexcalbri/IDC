@@ -276,6 +276,10 @@ data class UiCard(
     val title: String? = null,
     // Pieces shown at the right of the title, typically buttons.
     val actions: List<UiNode> = emptyList(),
+    // Accordion: the title opens and closes the card; [expanded] is how it starts. Needs a title.
+    // Older clients ignore it and show the card open.
+    val collapsible: Boolean = false,
+    val expanded: Boolean = true,
     @EncodeDefault override val type: String = "card",
 ) : UiNode
 
@@ -337,6 +341,11 @@ data class UiForm(
     val values: Map<String, String> = emptyMap(),
     val submit: UiButton? = null,
     val minFieldWidth: Int = 280,
+    // Each named section is an accordion that starts closed (fields without section stay visible);
+    // older clients ignore it and show every section open.
+    val collapsibleSections: Boolean = false,
+    // Short text shown under a section heading, e.g. the state of what the section configures.
+    val sectionNotes: Map<String, String> = emptyMap(),
     @EncodeDefault override val type: String = "form",
 ) : UiNode
 

@@ -45,7 +45,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
+import io.ktor.server.request.receiveParameters
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.sql.Connection
@@ -68,6 +72,8 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V010__custom_fields_and_attachments.sql",
         "modules/crm/migrations/V011__attachments_in_file_storage.sql",
         "modules/crm/migrations/V012__import_fields_and_files.sql",
+        "modules/crm/migrations/V013__meta_channel_tokens.sql",
+        "modules/crm/migrations/V014__meta_server_app.sql",
     )
 
     override val runtimeTables = listOf(
@@ -87,6 +93,9 @@ object CrmServerModule : ServerModule {
         "crm_user_settings",
         "crm_meta_settings",
         "crm_meta_log",
+        "crm_meta_server_app",
+        "crm_meta_routes",
+        "crm_meta_tickets",
         "crm_encuentra24_settings",
         "crm_wordpress_settings",
         "crm_wp_agents",
@@ -180,7 +189,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.12.1",
+        version = "0.14.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -194,6 +203,8 @@ object CrmServerModule : ServerModule {
     )
 
     override fun routes(route: Route, access: ModuleAccessService) {
+        CrmMetaServer.access = access
+        metaServerRoutes(route, access)
         // Public webhooks: the company comes from the URL and every call is authenticated by the integration.
         // The IDC Connector plugin for WordPress, built from the module resources (it holds no secrets).
         route.get(CrmWordPressScreens.PluginPath) {
@@ -529,43 +540,67 @@ object CrmServerModule : ServerModule {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
                     CrmMeta.save(tenant, merged)
-                    // With a token and no page token yet, connect the page right away.
-                    val notice = if (merged.enabled && merged.pageToken == null && merged.systemToken != null) {
-                        try {
-                            CrmMeta.save(tenant, CrmMeta.connectPage(merged))
-                            UiNotice("Meta guardado y pagina conectada.", UiTone.Success)
-                        } catch (failure: CrmMetaException) {
-                            UiNotice("Meta guardado, pero la pagina no se conecto: ${failure.message}", UiTone.Warning)
-                        }
-                    } else UiNotice("Meta guardado.", UiTone.Success)
-                    show("integrations", notice, emptyMap())
+                    // Saving connects everything at once: page token and Instagram, and the WhatsApp account.
+                    if (!merged.enabled || merged.systemToken == null) return show("integrations", UiNotice("Meta guardado.", UiTone.Success), emptyMap())
+                    val setup = CrmMeta.setup(tenant, merged)
+                    show(
+                        "integrations",
+                        UiNotice("Meta guardado. ${setup.notice}".trim(), if (setup.problems.isEmpty()) UiTone.Success else UiTone.Warning),
+                        metaNumbers(setup),
+                    )
                 }
-                "integrations:metaPage" -> {
-                    val notice = try {
-                        val connected = CrmMeta.connectPage(CrmMeta.load(tenant))
-                        CrmMeta.save(tenant, connected)
-                        CrmMeta.log(tenant, "pagina_conectada", connected.pageName.orEmpty())
-                        UiNotice("Pagina ${connected.pageName} conectada${if (connected.instagramAccountId != null) " con su cuenta de Instagram" else ""}.", UiTone.Success)
-                    } catch (failure: CrmMetaException) {
-                        UiNotice(failure.message.orEmpty(), UiTone.Danger)
+                "integrations:metaServerApp" -> {
+                    // Only the server owner, from the server workspace, configures the server app.
+                    if (!permissions.serverOwner || CrmMetaServer.serverWorkspace() != permissions.companyCode) {
+                        return show("integrations", UiNotice("Solo el dueno del servidor configura la app de Meta del servidor, desde el espacio del servidor.", UiTone.Danger), emptyMap())
                     }
-                    show("integrations", notice, emptyMap())
+                    val app = try {
+                        CrmMetaServer.mergeApp(CrmMetaServer.loadApp(tenant), values)
+                    } catch (failure: CrmValidationException) {
+                        return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
+                    }
+                    CrmMetaServer.saveApp(tenant, app)
+                    show("integrations", UiNotice(if (app.enabled) "App de Meta del servidor guardada: las empresas ya pueden conectarse." else "App de Meta del servidor guardada (desactivada).", UiTone.Success), emptyMap())
                 }
-                "integrations:metaWhatsApp" -> {
-                    val settings = CrmMeta.load(tenant)
-                    try {
-                        val numbers = CrmMeta.connectWhatsApp(settings)
-                        CrmMeta.log(tenant, "wa_conectado", "${numbers.size} numero(s)")
-                        if (numbers.size == 1 && settings.phoneNumberId == null) {
-                            CrmMeta.save(tenant, settings.copy(phoneNumberId = numbers.single().id))
-                            show("integrations", UiNotice("WhatsApp conectado con el numero ${numbers.single().number}.", UiTone.Success), emptyMap())
-                        } else {
-                            val list = numbers.joinToString(";") { "${it.id}|${it.number}|${it.name}".replace(";", ",") }
-                            show("integrations", UiNotice("App suscrita a la cuenta. Elige el numero del CRM.", UiTone.Success), mapOf("numbers" to list))
-                        }
-                    } catch (failure: CrmMetaException) {
-                        show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
+                "integrations:metaMode" -> {
+                    val mode = params["mode"].takeIf { it == OwnMode || it == ServerMode }
+                        ?: return show("integrations", UiNotice("Modo invalido.", UiTone.Danger), emptyMap())
+                    val current = CrmMeta.load(tenant)
+                    if (mode == ServerMode && CrmMetaServer.app()?.ready != true) {
+                        return show("integrations", UiNotice("El servidor no tiene una app de Meta activa.", UiTone.Warning), emptyMap())
                     }
+                    if (mode != current.connectionMode) {
+                        // Tokens of one mode are useless in the other: the company connects again.
+                        if (current.serverMode) CrmMetaServer.disconnect(tenant, permissions.companyCode)
+                        CrmMeta.save(
+                            tenant,
+                            CrmMeta.load(tenant).copy(
+                                connectionMode = mode, enabled = false, appSecret = null, verifyToken = null, systemToken = null,
+                                pageId = null, pageName = null, pageToken = null, instagramAccountId = null, instagramUsername = null,
+                                wabaId = null, phoneNumberId = null, messengerToken = null, instagramToken = null, sharedTokens = true,
+                                oauthToken = null, metaUserId = null,
+                            ),
+                        )
+                        CrmMeta.log(tenant, "modo", if (mode == ServerMode) "app del servidor" else "app propia")
+                    }
+                    show("integrations", UiNotice(if (mode == ServerMode) "Ahora conecta la empresa con Meta." else "Configura la app propia de la empresa.", UiTone.Success), emptyMap())
+                }
+                "integrations:metaLink" -> {
+                    if (CrmMetaServer.app()?.ready != true) return show("integrations", UiNotice("El servidor no tiene una app de Meta activa.", UiTone.Warning), emptyMap())
+                    val ticket = CrmMetaServer.newTicket(tenant, actor.name)
+                    show(
+                        "integrations",
+                        UiNotice("Abre la ventana de Meta, inicia sesion y elige la pagina y el numero. El enlace vence en 30 minutos.", UiTone.Info),
+                        mapOf("link" to CrmMetaServer.connectUrl(publicBase, permissions.companyCode, ticket)),
+                    )
+                }
+                "integrations:metaDisconnect" -> {
+                    CrmMetaServer.disconnect(tenant, permissions.companyCode)
+                    show("integrations", UiNotice("Meta desconectado: ya no se reciben ni se envian mensajes por WhatsApp, Messenger ni Instagram.", UiTone.Success), emptyMap())
+                }
+                "integrations:metaServerOptions" -> {
+                    CrmMeta.save(tenant, CrmMeta.load(tenant).copy(recordEchoes = values["recordEchoes"] == "true"))
+                    show("integrations", UiNotice("Opciones de Meta guardadas.", UiTone.Success), emptyMap())
                 }
                 "integrations:e24Save" -> {
                     try {
@@ -882,6 +917,11 @@ object CrmServerModule : ServerModule {
         }
     }
 
+    // Numbers of the WhatsApp account for the screen (id|number|name|platform;...), so the CRM number can be chosen.
+    private fun metaNumbers(setup: CrmMeta.Setup): Map<String, String> =
+        if (setup.numbers.isEmpty()) emptyMap()
+        else mapOf("numbers" to setup.numbers.joinToString(";") { listOf(it.id, it.number, it.name, it.platform).joinToString("|") { part -> part.replace(";", ",").replace("|", "/") } })
+
     // https://host of this server as the client reached it (behind the reverse proxy when there is one).
     private fun ApplicationCall.publicBase(): String {
         val scheme = request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim() ?: request.origin.scheme
@@ -893,6 +933,142 @@ object CrmServerModule : ServerModule {
      * Opens the tenant of a webhook's company and runs [block]; answers 404 (and returns null) when
      * the company is unknown or does not use the CRM. [block] returns what the route answers with.
      */
+    /**
+     * Public routes of the server Meta app: its webhook (one URL for every company), the deauthorize
+     * and data deletion callbacks, and the connection page opened from Integraciones.
+     */
+    private fun metaServerRoutes(route: Route, access: ModuleAccessService) {
+        route.route("/modules/crm/meta") {
+            get("/webhook") {
+                if (!access.isInstalled(CrmModule.id)) return@get call.respond(HttpStatusCode.NotFound)
+                val query = call.request.queryParameters
+                val challenge = withContext(Dispatchers.IO) {
+                    runCatching {
+                        CrmMetaServer.withServerWorkspace { server ->
+                            CrmMetaServer.verify(CrmMetaServer.loadApp(server), query["hub.mode"], query["hub.verify_token"], query["hub.challenge"]).also {
+                                CrmMeta.log(server, if (it != null) "verificacion_ok" else "verificacion_rechazada", "app del servidor")
+                            }
+                        }
+                    }.getOrNull()
+                } ?: return@get call.respond(HttpStatusCode.Forbidden)
+                call.respondText(challenge, ContentType.Text.Plain)
+            }
+            post("/webhook") {
+                if (!access.isInstalled(CrmModule.id)) return@post call.respond(HttpStatusCode.NotFound)
+                val body = call.receive<ByteArray>()
+                val signature = call.request.headers["X-Hub-Signature-256"]
+                val status = withContext(Dispatchers.IO) { runCatching { CrmMetaServer.dispatch(body, signature) }.getOrDefault(500) }
+                call.respond(HttpStatusCode.fromValue(status))
+            }
+            // Meta calls these with a signed_request when a person removes the app or asks to delete their data.
+            post("/deauthorize") {
+                if (!access.isInstalled(CrmModule.id)) return@post call.respond(HttpStatusCode.NotFound)
+                val signed = call.receiveParameters()["signed_request"]
+                val forgotten = withContext(Dispatchers.IO) { runCatching { CrmMetaServer.forgetUser(signed) }.getOrNull() }
+                call.respond(if (forgotten == null) HttpStatusCode.BadRequest else HttpStatusCode.OK)
+            }
+            post("/data-deletion") {
+                if (!access.isInstalled(CrmModule.id)) return@post call.respond(HttpStatusCode.NotFound)
+                val signed = call.receiveParameters()["signed_request"]
+                withContext(Dispatchers.IO) { runCatching { CrmMetaServer.forgetUser(signed) }.getOrNull() }
+                    ?: return@post call.respond(HttpStatusCode.BadRequest)
+                val code = CrmMetaServer.confirmationCode()
+                val answer = buildJsonObject {
+                    put("url", "${call.publicBase()}${CrmMetaServer.DeletionStatusPath}?id=$code")
+                    put("confirmation_code", code)
+                }
+                call.respondText(answer.toString(), ContentType.Application.Json)
+            }
+            get("/deletion") {
+                call.respondText(
+                    "Los tokens y la conexion con Meta de esta persona se eliminaron del CRM. Codigo: " +
+                        call.request.queryParameters["id"].orEmpty().filter { it.isLetterOrDigit() }.take(40),
+                    ContentType.Text.Plain,
+                )
+            }
+            route("/connect/{company}") {
+                get {
+                    val company = call.parameters["company"].orEmpty()
+                    val ticket = call.request.queryParameters["t"].orEmpty()
+                    val page = call.connectTenant(access, company, ticket) { _, app -> CrmMetaServer.connectPage(app, company, ticket) } ?: return@get
+                    call.response.header("Cache-Control", "no-store")
+                    call.respondText(page, ContentType.Text.Html)
+                }
+                post("/{step}") {
+                    val company = call.parameters["company"].orEmpty()
+                    val values = runCatching { UiJson.parseToJsonElement(call.receiveText()).jsonObject.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } }
+                        .getOrNull().orEmpty()
+                    val outcome = call.connectTenant(access, company, values["t"]) { tenant, app ->
+                        try {
+                            when (call.parameters["step"]) {
+                                "pages" -> if (app.pagesConfigId == null) CrmMetaServer.Outcome(false, "Messenger e Instagram no estan habilitados en la app del servidor.")
+                                    else CrmMetaServer.connectLogin(tenant, company, app, values["code"].orEmpty())
+                                "page" -> CrmMetaServer.choosePage(tenant, company, values["pageId"].orEmpty())
+                                "whatsapp" -> if (app.whatsAppConfigId == null) CrmMetaServer.Outcome(false, "WhatsApp no esta habilitado en la app del servidor.")
+                                    else CrmMetaServer.connectWhatsApp(
+                                        tenant, company, app, values["code"].orEmpty(), values["wabaId"].orEmpty(),
+                                        values["phoneNumberId"].orEmpty(), values["pin"],
+                                    )
+                                else -> CrmMetaServer.Outcome(false, "Paso desconocido.")
+                            }
+                        } catch (failure: CrmMetaException) {
+                            CrmMeta.log(tenant, "conexion_error", failure.message.orEmpty())
+                            CrmMetaServer.Outcome(false, failure.message.orEmpty())
+                        }
+                    } ?: return@post
+                    val answer = buildJsonObject {
+                        put("ok", outcome.ok)
+                        put("message", outcome.message)
+                        put("pages", JsonArray(outcome.pages.map { page ->
+                            buildJsonObject {
+                                put("id", page.id)
+                                put("name", page.name)
+                                put("instagram", page.instagram)
+                            }
+                        }))
+                    }
+                    call.respondText(answer.toString(), ContentType.Application.Json)
+                }
+            }
+        }
+    }
+
+    // Tenant of a company for the connection page, after checking its link token and the server app.
+    private suspend fun <T> ApplicationCall.connectTenant(
+        access: ModuleAccessService,
+        company: String,
+        ticket: String?,
+        block: (Connection, CrmMetaServerApp) -> T,
+    ): T? {
+        if (!access.isInstalled(CrmModule.id)) {
+            respond(HttpStatusCode.NotFound)
+            return null
+        }
+        val app = withContext(Dispatchers.IO) { CrmMetaServer.app() }?.takeIf { it.ready }
+        if (app == null) {
+            respondText("La app de Meta del servidor no esta activa.", ContentType.Text.Plain, HttpStatusCode.NotFound)
+            return null
+        }
+        val connection = withContext(Dispatchers.IO) { access.tenantConnectionForWebhook(company, CrmModule.id) }
+        if (connection == null) {
+            respond(HttpStatusCode.NotFound)
+            return null
+        }
+        return try {
+            connection.use { tenant ->
+                withContext(Dispatchers.IO) {
+                    if (!CrmMetaServer.validTicket(tenant, ticket)) null else block(tenant, app)
+                }
+            } ?: run {
+                respondText("El enlace vencio o no es valido: abre otra vez la conexion desde Integraciones.", ContentType.Text.Plain, HttpStatusCode.Forbidden)
+                null
+            }
+        } catch (failure: SQLException) {
+            respond(HttpStatusCode.InternalServerError)
+            null
+        }
+    }
+
     private suspend fun ApplicationCall.webhookTenant(access: ModuleAccessService, company: String, block: (Connection) -> String?): String? {
         val connection = withContext(Dispatchers.IO) { access.tenantConnectionForWebhook(company, CrmModule.id) }
             ?: run {

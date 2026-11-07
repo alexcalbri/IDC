@@ -108,6 +108,11 @@ object CrmInbox {
             if (inbound.message.isNotBlank()) {
                 addMessage(tenant, leadId, "in", inbound.channel, inbound.subject, inbound.message, inbound.messageId, "received", "", null, inbound.name, inbound.sentAt)
             }
+            // The listing button of Encuentra24 adds its link to the message: the listing joins the lead.
+            // (Encuentra24 leads link their listing by id; their text only carries the chat link.)
+            if (inbound.channel != CrmEncuentra24.Source) {
+                CrmEncuentra24.adFromText(inbound.message)?.let { ad -> CrmEncuentra24.rememberAd(tenant, leadId, ad.id, ad.url, "") }
+            }
             if (created) CrmIntakeResult.Created(leadId) else CrmIntakeResult.Updated(leadId)
         }.also { if (it is CrmIntakeResult.Created) onNewLead(it.leadId) }
     }
@@ -117,7 +122,7 @@ object CrmInbox {
         val interest = inbound.interestName?.takeIf { CrmRepository.interestsEnabled(tenant) }?.let { name ->
             CrmRepository.interests(tenant).firstOrNull { it.name.equals(name, ignoreCase = true) }?.id
         }
-        val source = inbound.source.ifBlank { label(inbound.channel) }.take(120)
+        val source = leadSource(inbound)
         val id = UUID.randomUUID()
         tenant.prepareStatement(
             """
@@ -141,9 +146,60 @@ object CrmInbox {
         return id
     }
 
+    /** Origin of a new lead; one that writes with the link of an Encuentra24 listing comes from Encuentra24. */
+    fun leadSource(inbound: CrmInbound): String {
+        val source = inbound.source.ifBlank { label(inbound.channel) }
+        val fromListing = inbound.channel != CrmEncuentra24.Source && !source.startsWith("Encuentra24") && CrmEncuentra24.adFromText(inbound.message) != null
+        return (if (fromListing) "Encuentra24 ($source)" else source).take(120)
+    }
+
+    // Name of a customer that arrived without one, e.g. "Contacto de Messenger 123456".
+    fun placeholderName(channel: String, identity: String) = "Contacto de ${label(channel)} ${identity.takeLast(6)}"
+
+    /** Whether the person of that channel identity is new or still has the placeholder name. */
+    fun needsName(tenant: Connection, channel: String, identity: String): Boolean =
+        tenant.prepareStatement(
+            "SELECT c.display_name FROM crm_identities i JOIN customers c ON c.id = i.customer_id WHERE i.channel = ? AND i.external_id = ?"
+        ).use { query ->
+            query.setString(1, channel)
+            query.setString(2, identity)
+            query.executeQuery().use { rows -> !rows.next() || rows.getString(1) == placeholderName(channel, identity) }
+        }
+
+    /** Gives its name to the customer of that identity when it still has the placeholder; never replaces a name. */
+    fun fillName(tenant: Connection, channel: String, identity: String, name: String): Boolean {
+        val clean = name.trim().take(200).ifEmpty { return false }
+        return tenant.prepareStatement(
+            """
+            UPDATE customers SET display_name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE display_name = ? AND id IN (SELECT customer_id FROM crm_identities WHERE channel = ? AND external_id = ?)
+            """.trimIndent()
+        ).use { update ->
+            update.setString(1, clean)
+            update.setString(2, placeholderName(channel, identity))
+            update.setString(3, channel)
+            update.setString(4, identity)
+            update.executeUpdate() > 0
+        }
+    }
+
+    /** Identities of a channel whose customer still has the placeholder name. */
+    fun unnamedIdentities(tenant: Connection, channel: String, limit: Int): List<String> = tenant.prepareStatement(
+        """
+        SELECT i.external_id FROM crm_identities i JOIN customers c ON c.id = i.customer_id
+        WHERE i.channel = ? AND c.status <> 'archived' AND c.display_name = 'Contacto de ' || ? || ' ' || right(i.external_id, 6)
+        ORDER BY i.created_at DESC LIMIT ?
+        """.trimIndent()
+    ).use { query ->
+        query.setString(1, channel)
+        query.setString(2, label(channel))
+        query.setInt(3, limit)
+        query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+    }
+
     private fun createCustomer(tenant: Connection, name: String, email: String, phone: String, identity: String?, channel: String): UUID {
         val id = UUID.randomUUID()
-        val display = name.trim().ifEmpty { phone.ifEmpty { email.ifEmpty { "Contacto de ${label(channel)} ${identity.orEmpty().takeLast(6)}" } } }.take(200)
+        val display = name.trim().ifEmpty { phone.ifEmpty { email.ifEmpty { placeholderName(channel, identity.orEmpty()) } } }.take(200)
         tenant.prepareStatement(
             "INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type) VALUES (?, ?, ?, ?, 'prospect', 'crm')"
         ).use { insert ->

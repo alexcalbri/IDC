@@ -95,8 +95,51 @@ class CrmMetaTest {
         val parts = CrmMeta.split(text, 1000)
         assertTrue(parts.all { it.length <= 1000 })
         assertEquals(text, parts.joinToString(" "))
-        assertEquals("Encuentra24 (WhatsApp)", CrmMeta.source("Hola, vi https://www.encuentra24.com/nicaragua-es/x", "WhatsApp"))
-        assertEquals("WhatsApp", CrmMeta.source("Hola", "WhatsApp"))
+        fun source(channel: String, message: String, source: String = "") = CrmInbox.leadSource(CrmInbound(channel, "", message = message, source = source))
+        assertEquals("Encuentra24 (WhatsApp)", source("whatsapp", "Hola, vi https://www.encuentra24.com/nicaragua-es/bienes-raices/casa/29123456", "WhatsApp"))
+        assertEquals("Encuentra24 (Messenger)", source("messenger", "info https://encuentra24.com/x/29000001"))
+        assertEquals("WhatsApp", source("whatsapp", "Hola, en encuentra24.com vi algo", "WhatsApp"))
+        assertEquals("Encuentra24", source("encuentra24", "Chat en Encuentra24: https://www.encuentra24.com/chat/1", "Encuentra24"))
+    }
+
+    @Test
+    fun tokensAreSharedOrPerChannel() {
+        val shared = settings.copy(pageToken = "page")
+        assertEquals("page", shared.channelToken("messenger"))
+        assertEquals("page", shared.channelToken("instagram"))
+        assertTrue(shared.ready("instagram"))
+
+        val own = settings.copy(sharedTokens = false, pageToken = "page", messengerToken = "m", instagramAccountId = null)
+        assertEquals("m", own.channelToken("messenger"))
+        assertNull(own.channelToken("instagram"))
+        assertTrue(own.ready("messenger"))
+        assertFalse(own.ready("instagram"))
+        // Instagram replies through the page (Facebook login): its page token is enough.
+        assertTrue(own.copy(instagramToken = "i").ready("instagram"))
+    }
+
+    @Test
+    fun mergeSwitchesTokenModes() {
+        val connected = settings.copy(pageToken = "page", pageName = "Surf", instagramUsername = "surf")
+        val base = mapOf("enabled" to "true", "verifyToken" to "verify-me-123")
+        val own = CrmMeta.merge(connected, base + mapOf("sharedTokens" to "false", "messengerToken" to "m", "instagramToken" to "i"))
+        assertFalse(own.sharedTokens)
+        assertEquals("m", own.messengerToken)
+        assertEquals("i", own.instagramToken)
+        // The Instagram account is read again from the page of the Instagram token; it is never typed.
+        assertNull(own.instagramAccountId)
+        assertNull(own.instagramUsername)
+        val linked = own.copy(instagramAccountId = "1784", instagramUsername = "surf")
+        assertEquals("1784", CrmMeta.merge(linked, base + mapOf("sharedTokens" to "false", "instagramToken" to CrmMail.SecretMask, "instagramAccountId" to "999")).instagramAccountId)
+        assertNull(CrmMeta.merge(linked, base + mapOf("sharedTokens" to "false", "instagramToken" to "other")).instagramAccountId)
+        // Back to shared: the page and its Instagram are read again.
+        val back = CrmMeta.merge(own, base + mapOf("sharedTokens" to "true", "messengerToken" to CrmMail.SecretMask))
+        assertTrue(back.sharedTokens)
+        assertEquals("m", back.messengerToken)
+        assertNull(back.pageToken)
+        assertNull(back.instagramAccountId)
+        // Without the key (agent tools) the mode is kept.
+        assertTrue(CrmMeta.merge(connected, base).sharedTokens)
     }
 
     @Test

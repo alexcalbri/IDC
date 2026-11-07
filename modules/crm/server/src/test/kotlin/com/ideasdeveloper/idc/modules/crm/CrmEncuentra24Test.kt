@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.modules.crm
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class CrmEncuentra24Test {
@@ -28,6 +29,17 @@ class CrmEncuentra24Test {
             CrmEncuentra24.messageText(chat),
         )
         assertEquals("[Encuentra24 - Llamada] Lote (anuncio 29000001)\nLlamada desde el anuncio.", CrmEncuentra24.messageText(leads[0]))
+    }
+
+    @Test
+    fun findsTheListingOfALink() {
+        val ad = CrmEncuentra24.adFromText("Hola, me interesa https://www.encuentra24.com/nicaragua-es/bienes-raices-venta-de-propiedades-casas/casa-en-leon/29123456?q=1).")
+        assertEquals("29123456", ad?.id)
+        assertEquals("https://www.encuentra24.com/nicaragua-es/bienes-raices-venta-de-propiedades-casas/casa-en-leon/29123456?q=1", ad?.url)
+        assertEquals("", CrmEncuentra24.adFromText("ver http://encuentra24.com/nicaragua-es/busqueda")?.id)
+        assertEquals("29000001", CrmEncuentra24.adFromText("HTTPS://M.ENCUENTRA24.COM/x/29000001")?.id)
+        assertNull(CrmEncuentra24.adFromText("lo vi en encuentra24.com"))
+        assertNull(CrmEncuentra24.adFromText("https://notencuentra24.com.evil.io/29123456"))
     }
 
     @Test

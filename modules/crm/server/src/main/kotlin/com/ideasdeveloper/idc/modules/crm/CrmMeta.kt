@@ -35,10 +35,31 @@ data class CrmMetaSettings(
     val wabaId: String?,
     val phoneNumberId: String?,
     val recordEchoes: Boolean,
+    // Messenger and Instagram reply with the page token read from the system token; off, each uses its own token.
+    val sharedTokens: Boolean = true,
+    val messengerToken: String? = null,
+    val instagramToken: String? = null,
+    val instagramUsername: String? = null,
+    // "own": the company's own Meta app; "server": the server owner's app, connected with Facebook login.
+    val connectionMode: String = OwnMode,
+    // Server mode: token of the Facebook login (to choose among several pages) and who connected.
+    val oauthToken: String? = null,
+    val metaUserId: String? = null,
 ) {
+    val serverMode get() = connectionMode == ServerMode
+
     val whatsAppReady get() = enabled && !systemToken.isNullOrBlank() && !phoneNumberId.isNullOrBlank()
-    val pageReady get() = enabled && !pageToken.isNullOrBlank()
+
+    /** Token that replies on "messenger" or "instagram", or null when there is none. */
+    fun channelToken(platform: String): String? =
+        (if (sharedTokens) pageToken else if (platform == "instagram") instagramToken else messengerToken)?.takeIf { it.isNotBlank() }
+
+    // Messenger and Instagram reply through the page (Facebook login): the token is all they need.
+    fun ready(platform: String) = enabled && channelToken(platform) != null
 }
+
+const val OwnMode = "own"
+const val ServerMode = "server"
 
 /** Incoming events of the Meta webhook, already reduced to what the CRM stores. */
 sealed interface MetaEvent {
@@ -52,8 +73,8 @@ sealed interface MetaEvent {
 class CrmMetaException(message: String) : Exception(message)
 
 object CrmMeta {
-    private const val GraphVersion = "v23.0"
-    private const val Graph = "https://graph.facebook.com/$GraphVersion"
+    internal const val GraphVersion = "v23.0"
+    internal const val Graph = "https://graph.facebook.com/$GraphVersion"
     private val numericId = Regex("^[0-9]{1,64}$")
     private val json = Json { ignoreUnknownKeys = true }
     private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
@@ -63,7 +84,8 @@ object CrmMeta {
     fun load(tenant: Connection): CrmMetaSettings = tenant.prepareStatement(
         """
         SELECT enabled, app_secret, verify_token, system_token, page_id, page_name, page_token, instagram_account_id,
-               waba_id, phone_number_id, record_echoes
+               waba_id, phone_number_id, record_echoes, shared_tokens, messenger_token, instagram_token, instagram_username,
+               connection_mode, oauth_token, meta_user_id
         FROM crm_meta_settings WHERE id = 1
         """.trimIndent()
     ).use { query ->
@@ -72,6 +94,8 @@ object CrmMeta {
             CrmMetaSettings(
                 rows.getBoolean(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getString(6),
                 rows.getString(7), rows.getString(8), rows.getString(9), rows.getString(10), rows.getBoolean(11),
+                rows.getBoolean(12), rows.getString(13), rows.getString(14), rows.getString(15),
+                rows.getString(16), rows.getString(17), rows.getString(18),
             )
         }
     }
@@ -80,7 +104,9 @@ object CrmMeta {
         tenant.prepareStatement(
             """
             UPDATE crm_meta_settings SET enabled = ?, app_secret = ?, verify_token = ?, system_token = ?, page_id = ?, page_name = ?,
-                page_token = ?, instagram_account_id = ?, waba_id = ?, phone_number_id = ?, record_echoes = ?, updated_at = CURRENT_TIMESTAMP
+                page_token = ?, instagram_account_id = ?, waba_id = ?, phone_number_id = ?, record_echoes = ?, shared_tokens = ?,
+                messenger_token = ?, instagram_token = ?, instagram_username = ?, connection_mode = ?, oauth_token = ?, meta_user_id = ?,
+                updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
             """.trimIndent()
         ).use { update ->
@@ -95,6 +121,13 @@ object CrmMeta {
             update.setString(9, settings.wabaId)
             update.setString(10, settings.phoneNumberId)
             update.setBoolean(11, settings.recordEchoes)
+            update.setBoolean(12, settings.sharedTokens)
+            update.setString(13, settings.messengerToken)
+            update.setString(14, settings.instagramToken)
+            update.setString(15, settings.instagramUsername)
+            update.setString(16, settings.connectionMode)
+            update.setString(17, settings.oauthToken)
+            update.setString(18, settings.metaUserId)
             update.executeUpdate()
         }
     }
@@ -108,6 +141,12 @@ object CrmMeta {
         "wabaId" to settings.wabaId.orEmpty(),
         "phoneNumberId" to settings.phoneNumberId.orEmpty(),
         "recordEchoes" to settings.recordEchoes.toString(),
+        "sharedTokens" to settings.sharedTokens.toString(),
+        "messengerToken" to mask(settings.messengerToken),
+        "instagramToken" to mask(settings.instagramToken),
+        // Read only: what saving connected.
+        "pageName" to settings.pageName.orEmpty().ifEmpty { if (settings.sharedTokens) "Sin conectar" else "Token propio" },
+        "instagramAccount" to (settings.instagramUsername?.let { "@$it" } ?: settings.instagramAccountId ?: "Sin cuenta vinculada"),
     )
 
     private fun mask(secret: String?) = if (secret.isNullOrBlank()) "" else CrmMail.SecretMask
@@ -126,7 +165,11 @@ object CrmMeta {
         }
         val systemToken = secret("systemToken", current.systemToken)
         val pageId = id("pageId", "El ID de la pagina")
+        val shared = values["sharedTokens"]?.let { it == "true" } ?: current.sharedTokens
         val merged = current.copy(
+            sharedTokens = shared,
+            messengerToken = secret("messengerToken", current.messengerToken),
+            instagramToken = secret("instagramToken", current.instagramToken),
             enabled = values["enabled"] == "true",
             appSecret = secret("appSecret", current.appSecret),
             verifyToken = verify,
@@ -139,8 +182,10 @@ object CrmMeta {
         if (merged.enabled && (merged.appSecret.isNullOrBlank() || merged.verifyToken == null || merged.systemToken.isNullOrBlank())) {
             throw CrmValidationException("Para activar Meta escribe el App Secret, el verify token y el token del usuario del sistema.")
         }
-        // Another token or page needs the page token again.
-        return if (systemToken != current.systemToken || pageId != current.pageId) merged.copy(pageToken = null, pageName = null, instagramAccountId = null) else merged
+        // Another token or page, or switching shared tokens, reads the page and its Instagram account again.
+        val reconnect = systemToken != current.systemToken || pageId != current.pageId || shared != current.sharedTokens ||
+            (!shared && merged.instagramToken != current.instagramToken)
+        return if (reconnect) merged.copy(pageToken = null, pageName = null, instagramAccountId = null, instagramUsername = null) else merged
     }
 
     fun log(tenant: Connection, event: String, detail: String = "") {
@@ -278,10 +323,6 @@ object CrmMeta {
         return MetaEvent.PageMessage(platform, sender, message["mid"].str(), text, event.timestamp("timestamp"))
     }
 
-    // Leads that reach the company from an Encuentra24 listing keep Encuentra24 as their origin.
-    fun source(text: String, channelLabel: String): String =
-        if (Regex("(?i)\\bencuentra24\\.com\\b").containsMatchIn(text)) "Encuentra24 ($channelLabel)" else channelLabel
-
     /** Stores the events of one webhook call. Returns how many messages were stored. */
     fun handle(tenant: Connection, settings: CrmMetaSettings, events: List<MetaEvent>, onNewLead: (UUID) -> Unit): Int {
         var stored = 0
@@ -296,7 +337,7 @@ object CrmMeta {
                         tenant,
                         CrmInbound(
                             channel = "whatsapp", name = event.name, phone = "+${event.from}", message = event.text,
-                            messageId = event.id.ifEmpty { null }, source = source(event.text, "WhatsApp"), sentAt = event.at,
+                            messageId = event.id.ifEmpty { null }, source = "WhatsApp", sentAt = event.at,
                         ),
                         onNewLead,
                     )
@@ -315,16 +356,20 @@ object CrmMeta {
                     stored++
                 }
                 is MetaEvent.PageMessage -> {
-                    val name = senderName(settings, event.senderId, event.platform)
-                    val label = if (event.platform == "instagram") "Instagram" else "Messenger"
+                    // The name is asked to Meta only while the contact has none.
+                    val name = if (CrmInbox.needsName(tenant, event.platform, event.senderId)) senderName(tenant, settings, event.senderId, event.platform) else ""
                     val result = CrmInbox.receive(
                         tenant,
                         CrmInbound(
                             channel = event.platform, name = name, identity = event.senderId, message = event.text,
-                            messageId = event.id.ifEmpty { null }, source = source(event.text, label), sentAt = event.at,
+                            messageId = event.id.ifEmpty { null }, source = CrmInbox.label(event.platform), sentAt = event.at,
                         ),
                         onNewLead,
                     )
+                    // A contact that wrote before Meta gave its name gets it now.
+                    if (name.isNotEmpty() && result is CrmIntakeResult.Updated && CrmInbox.fillName(tenant, event.platform, event.senderId, name)) {
+                        log(tenant, "nombre_guardado", "${event.platform} ${event.senderId}: $name")
+                    }
                     log(tenant, "${event.platform}_${resultName(result)}", event.senderId)
                     if (result is CrmIntakeResult.Created || result is CrmIntakeResult.Updated) stored++
                 }
@@ -358,7 +403,7 @@ object CrmMeta {
 
     // ---- Graph API ----
 
-    private fun request(url: String, token: String, method: String = "GET", body: JsonObject? = null): Pair<Int, JsonObject> {
+    internal fun request(url: String, token: String, method: String = "GET", body: JsonObject? = null): Pair<Int, JsonObject> {
         val builder = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer $token")
         if (body != null) builder.header("Content-Type", "application/json")
         builder.method(method, body?.let { HttpRequest.BodyPublishers.ofString(it.toString()) } ?: HttpRequest.BodyPublishers.noBody())
@@ -371,16 +416,17 @@ object CrmMeta {
         return response.statusCode() to parsed
     }
 
-    private fun errorCode(body: JsonObject) = body["error"].obj()?.get("code").str().toIntOrNull() ?: 0
-    private fun errorMessage(body: JsonObject) = body["error"].obj()?.get("message").str()
+    internal fun errorCode(body: JsonObject) = body["error"].obj()?.get("code").str().toIntOrNull() ?: 0
+    internal fun errorMessage(body: JsonObject) = body["error"].obj()?.get("message").str()
 
     /**
      * Reads the page token (it does not expire) from the system user token: the page with the
      * saved page ID, or the only page the user manages. Also reads the linked Instagram account.
      */
     fun connectPage(settings: CrmMetaSettings): CrmMetaSettings {
+        if (!settings.sharedTokens) throw CrmMetaException("Messenger e Instagram usan sus propios tokens: no hace falta conectar la pagina.")
         val token = settings.systemToken ?: throw CrmMetaException("Guarda primero el token del usuario del sistema.")
-        val (status, body) = request("$Graph/me/accounts?fields=id,name,access_token,instagram_business_account&limit=100", token)
+        val (status, body) = request("$Graph/me/accounts?fields=id,name,access_token,instagram_business_account%7Bid,username%7D&limit=100", token)
         if (status != 200) throw CrmMetaException("Meta rechazo la lista de paginas: ${graphHint(body, status)}")
         val pages = body["data"].arr().mapNotNull { it.obj() }
         val page = when {
@@ -392,15 +438,113 @@ object CrmMeta {
         }
         val pageToken = page["access_token"].str()
         if (pageToken.isEmpty()) throw CrmMetaException("Meta no devolvio el token de la pagina; revisa el permiso pages_messaging.")
+        val instagram = page["instagram_business_account"].obj()
         return settings.copy(
             pageId = page["id"].str(),
             pageName = page["name"].str(),
             pageToken = pageToken,
-            instagramAccountId = page["instagram_business_account"].obj()?.get("id").str().ifEmpty { null },
+            instagramAccountId = instagram?.get("id").str().takeIf { numericId.matches(it) },
+            instagramUsername = instagram?.get("username").str().ifEmpty { null },
         )
     }
 
-    data class WhatsAppNumber(val id: String, val number: String, val name: String, val status: String)
+    /**
+     * With its own tokens, reads the Instagram account linked to the page of the Instagram token (a
+     * page token with instagram_manage_messages, as the Facebook login gives it).
+     */
+    fun connectInstagram(settings: CrmMetaSettings): CrmMetaSettings {
+        val token = settings.channelToken("instagram") ?: throw CrmMetaException("Falta el token de Instagram.")
+        val (status, body) = request("$Graph/me?fields=id,name,instagram_business_account%7Bid,username%7D", token)
+        if (status != 200) throw CrmMetaException("Meta rechazo el token de Instagram: ${graphHint(body, status)}")
+        val instagram = body["instagram_business_account"].obj()
+            ?: throw CrmMetaException("El token de Instagram debe ser el token de la pagina vinculada a la cuenta de Instagram.")
+        return settings.copy(
+            instagramAccountId = instagram["id"].str().takeIf { numericId.matches(it) },
+            instagramUsername = instagram["username"].str().ifEmpty { null },
+        )
+    }
+
+    /**
+     * Subscribes the Instagram account to the message events: configuring the callback URL in the
+     * app is not enough for Instagram.
+     */
+    fun subscribeInstagram(settings: CrmMetaSettings) {
+        val account = settings.instagramAccountId ?: throw CrmMetaException("No hay una cuenta de Instagram vinculada a la pagina.")
+        val token = settings.channelToken("instagram") ?: throw CrmMetaException("Falta el token de Instagram.")
+        val (status, body) = request("$Graph/$account/subscribed_apps?subscribed_fields=messages", token, "POST")
+        if (status !in 200..299 || body["success"].str() != "true") {
+            throw CrmMetaException("Meta no activo los mensajes de Instagram: ${graphHint(body, status)}")
+        }
+    }
+
+    /** What saving and connecting Meta did: the settings as saved, and one line per step. */
+    data class Setup(val settings: CrmMetaSettings, val done: List<String>, val problems: List<String>, val numbers: List<WhatsAppNumber>) {
+        val notice get() = (done + problems).joinToString(". ").let { if (it.isEmpty()) "" else "$it." }
+    }
+
+    /**
+     * Connects what the settings allow, as the plugin does when saving: the page token and its
+     * Instagram account (shared tokens), the Instagram subscription and the WhatsApp Business
+     * Account, choosing its number when it has only one. Saves the result; a failing step does not
+     * stop the others.
+     */
+    fun setup(tenant: Connection, start: CrmMetaSettings, page: Boolean = true, whatsApp: Boolean = true): Setup {
+        var settings = start
+        val done = mutableListOf<String>()
+        val problems = mutableListOf<String>()
+        var numbers = emptyList<WhatsAppNumber>()
+        if (page) {
+            if (settings.sharedTokens) {
+                try {
+                    settings = connectPage(settings)
+                    log(tenant, "pagina_conectada", settings.pageName.orEmpty())
+                    done += "Pagina ${settings.pageName} conectada" + if (settings.instagramAccountId == null) " (sin Instagram vinculado)" else ""
+                } catch (failure: CrmMetaException) {
+                    log(tenant, "pagina_error", failure.message.orEmpty())
+                    problems += "La pagina no se conecto: ${failure.message}"
+                }
+            }
+            if (!settings.sharedTokens && settings.channelToken("instagram") != null && settings.instagramAccountId == null) {
+                try {
+                    settings = connectInstagram(settings)
+                } catch (failure: CrmMetaException) {
+                    log(tenant, "instagram_error", failure.message.orEmpty())
+                    problems += failure.message.orEmpty()
+                }
+            }
+            if (settings.instagramAccountId != null && settings.channelToken("instagram") != null) {
+                try {
+                    subscribeInstagram(settings)
+                    log(tenant, "instagram_suscrito", settings.instagramAccountId.orEmpty())
+                    done += "Instagram ${settings.instagramUsername?.let { "@$it" } ?: settings.instagramAccountId} recibe mensajes"
+                } catch (failure: CrmMetaException) {
+                    log(tenant, "instagram_error", failure.message.orEmpty())
+                    problems += failure.message.orEmpty()
+                }
+            }
+        }
+        if (whatsApp && settings.wabaId != null) {
+            try {
+                numbers = connectWhatsApp(settings)
+                log(tenant, "wa_conectado", "WABA ${settings.wabaId}, ${numbers.size} numero(s)")
+                done += when {
+                    settings.phoneNumberId == null && numbers.size == 1 -> {
+                        settings = settings.copy(phoneNumberId = numbers.single().id)
+                        "WhatsApp conectado con el numero ${numbers.single().number}"
+                    }
+                    settings.phoneNumberId == null -> "App suscrita a la cuenta de WhatsApp: elige el numero del CRM"
+                    else -> "App suscrita a la cuenta de WhatsApp"
+                }
+            } catch (failure: CrmMetaException) {
+                log(tenant, "wa_conexion_error", failure.message.orEmpty())
+                problems += "WhatsApp: ${failure.message}"
+            }
+        }
+        save(tenant, settings)
+        return Setup(settings, done, problems, numbers)
+    }
+
+    data class WhatsAppNumber(val id: String, val number: String, val name: String, val status: String, val platform: String = "")
 
     /** Subscribes the app to the WhatsApp Business Account and lists its numbers. */
     fun connectWhatsApp(settings: CrmMetaSettings): List<WhatsAppNumber> {
@@ -408,30 +552,70 @@ object CrmMeta {
         val token = settings.systemToken ?: throw CrmMetaException("Guarda primero el token del usuario del sistema.")
         val (subStatus, subBody) = request("$Graph/$waba/subscribed_apps", token, "POST")
         if (subStatus !in 200..299 || subBody["success"].str() != "true") throw CrmMetaException("Meta rechazo la suscripcion de la app: ${graphHint(subBody, subStatus)}")
-        val (status, body) = request("$Graph/$waba/phone_numbers?fields=id,display_phone_number,verified_name,status", token)
+        val (status, body) = request("$Graph/$waba/phone_numbers?fields=id,display_phone_number,verified_name,status,platform_type", token)
         if (status != 200) throw CrmMetaException("Meta rechazo la lista de numeros: ${graphHint(body, status)}")
         return body["data"].arr().mapNotNull { it.obj() }.map {
-            WhatsAppNumber(it["id"].str(), it["display_phone_number"].str(), it["verified_name"].str(), it["status"].str())
+            WhatsAppNumber(it["id"].str(), it["display_phone_number"].str(), it["verified_name"].str(), it["status"].str(), it["platform_type"].str())
         }.filter { numericId.matches(it.id) }
     }
 
-    private fun graphHint(body: JsonObject, status: Int) = when (errorCode(body)) {
+    internal fun graphHint(body: JsonObject, status: Int) = when (errorCode(body)) {
         190 -> "el token es invalido o vencio."
-        10, 100, 200 -> "${errorMessage(body)} - revisa que el usuario del sistema tenga la pagina o la cuenta de WhatsApp y sus permisos."
+        10, 100, 200 -> "${errorMessage(body)} - revisa que el usuario del sistema tenga asignados la pagina, Instagram y la cuenta de WhatsApp, " +
+            "con los permisos pages_messaging, instagram_manage_messages, whatsapp_business_management y whatsapp_business_messaging."
         else -> errorMessage(body).ifEmpty { "HTTP $status" }
     }
 
-    // Public name of a Messenger / Instagram sender; "" when the page token cannot read it.
-    private fun senderName(settings: CrmMetaSettings, senderId: String, platform: String): String {
-        val token = settings.pageToken ?: return ""
-        val fields = if (platform == "instagram") "name,username" else "first_name,last_name,name"
+    /**
+     * Public name of a Messenger / Instagram sender ("@user" on Instagram when it has no name); "" when
+     * Meta does not give it. The participants of the conversation only need the messaging permission;
+     * the profile itself also needs Business Asset User Profile Access, so it is the second try.
+     */
+    fun senderName(tenant: Connection, settings: CrmMetaSettings, senderId: String, platform: String): String {
+        val token = settings.channelToken(platform) ?: return ""
         return try {
+            val query = "platform=${if (platform == "instagram") "instagram" else "messenger"}&user_id=$senderId&fields=participants"
+            val (threadStatus, threads) = request("$Graph/me/conversations?$query", token)
+            if (threadStatus == 200) {
+                threads["data"].arr().flatMap { it.obj()?.get("participants").obj()?.get("data").arr() }.mapNotNull { it.obj() }
+                    .firstOrNull { it["id"].str() == senderId }
+                    ?.let { person -> person["name"].str().ifEmpty { person["username"].str().takeIf { it.isNotEmpty() }?.let { "@$it" }.orEmpty() } }
+                    ?.takeIf { it.isNotEmpty() }?.let { return it.take(200) }
+            }
+            val fields = if (platform == "instagram") "name,username" else "first_name,last_name,name"
             val (status, body) = request("$Graph/$senderId?fields=$fields", token)
-            if (status != 200) return ""
-            body["name"].str().ifEmpty { body["username"].str().takeIf { it.isNotEmpty() }?.let { "@$it" } ?: "${body["first_name"].str()} ${body["last_name"].str()}".trim() }
+            if (status != 200) {
+                log(tenant, "nombre_error", "$platform $senderId: HTTP $status codigo ${errorCode(body)} ${errorMessage(body)}")
+                return ""
+            }
+            body["name"].str().ifEmpty { body["username"].str().takeIf { it.isNotEmpty() }?.let { "@$it" } ?: "${body["first_name"].str()} ${body["last_name"].str()}".trim() }.take(200)
         } catch (failure: CrmMetaException) {
             ""
         }
+    }
+
+    data class NameFill(val reviewed: Int, val filled: Int, val missing: Int) {
+        override fun toString() = "$reviewed contactos sin nombre revisados, $filled completados, $missing sin respuesta de Meta"
+    }
+
+    /**
+     * Asks Meta the name of the Messenger and Instagram contacts that still have none (up to [limit]
+     * per platform). Names already set are never replaced.
+     */
+    fun fillNames(tenant: Connection, settings: CrmMetaSettings, limit: Int = 100): NameFill {
+        var reviewed = 0
+        var filled = 0
+        listOf("messenger", "instagram").filter { settings.channelToken(it) != null }.forEach { platform ->
+            CrmInbox.unnamedIdentities(tenant, platform, limit).forEach { senderId ->
+                reviewed++
+                val name = senderName(tenant, settings, senderId, platform)
+                if (name.isNotEmpty() && CrmInbox.fillName(tenant, platform, senderId, name)) {
+                    filled++
+                    log(tenant, "nombre_guardado", "$platform $senderId: $name")
+                }
+            }
+        }
+        return NameFill(reviewed, filled, reviewed - filled)
     }
 
     /** Sends a WhatsApp text; returns the wamid. Meta errors become clear messages for the agent. */
@@ -479,47 +663,57 @@ object CrmMeta {
      * another app (Business Suite inbox) controls the thread, takes control once and retries.
      */
     fun sendPage(settings: CrmMetaSettings, recipient: String, text: String, platform: String): String {
-        val token = settings.pageToken ?: throw CrmMetaException("Conecta la pagina de Facebook en Integraciones.")
-        val label = if (platform == "instagram") "Instagram" else "Messenger"
+        val instagram = platform == "instagram"
+        val label = if (instagram) "Instagram" else "Messenger"
+        val token = settings.channelToken(platform)
+            ?: throw CrmMetaException(if (settings.sharedTokens) "Conecta la pagina de Facebook en Integraciones." else "Escribe el token de $label en Integraciones.")
+        // Both reply as the page (Facebook login); Instagram messages are signed with the same App Secret.
+        val base = "$Graph/me"
         var first = ""
         var tookControl = false
-        split(text, if (platform == "instagram") 1000 else 2000).forEach { part ->
+        split(text, if (instagram) 1000 else 2000).forEachIndexed { index, part ->
             val payload = buildJsonObject {
                 putJsonObject("recipient") { put("id", recipient) }
                 put("messaging_type", "RESPONSE")
                 putJsonObject("message") { put("text", part) }
             }
-            var (status, body) = request("$Graph/me/messages", token, "POST", payload)
-            val controlledElsewhere = errorCode(body) == 10 &&
-                (body["error"].obj()?.get("error_subcode").str() == "2018300" || errorMessage(body).contains("controlling this thread", ignoreCase = true))
-            if (!tookControl && controlledElsewhere) {
+            var (status, body) = request("$base/messages", token, "POST", payload)
+            if (!instagram && !tookControl && controlledElsewhere(body)) {
                 tookControl = true
-                val (takeStatus, takeBody) = request("$Graph/me/take_thread_control", token, "POST", buildJsonObject {
+                val (takeStatus, takeBody) = request("$base/take_thread_control", token, "POST", buildJsonObject {
                     putJsonObject("recipient") { put("id", recipient) }
                     put("metadata", "Respuesta desde el CRM")
                 })
                 if (takeStatus !in 200..299 || takeBody["success"].str() != "true") {
-                    throw CrmMetaException("Otra app (la bandeja de Meta Business Suite) controla esta conversacion y no se pudo tomar el control. Configura esta app como principal de la pagina o responde desde Business Suite.")
+                    throw CrmMetaException("Otra app (la bandeja o las automatizaciones de Meta Business Suite) controla esta conversacion y no se pudo tomar el control. Configura esta app como principal de la pagina en el enrutamiento de conversaciones o responde desde Business Suite.")
                 }
-                val retry = request("$Graph/me/messages", token, "POST", payload)
+                val retry = request("$base/messages", token, "POST", payload)
                 status = retry.first
                 body = retry.second
             }
             val id = body["message_id"].str()
             if (status !in 200..299 || id.isEmpty()) {
-                throw CrmMetaException(
-                    when (errorCode(body)) {
-                        10, 200 -> "$label solo permite responder dentro de las 24 horas desde el ultimo mensaje del cliente."
-                        190 -> "El token de la pagina es invalido o vencio; vuelve a conectar la pagina en Integraciones."
-                        551 -> "Esta persona no esta disponible en $label."
-                        else -> "$label rechazo el mensaje: ${errorMessage(body).ifEmpty { "HTTP $status" }}"
-                    },
-                )
+                val subcode = body["error"].obj()?.get("error_subcode").str().toIntOrNull() ?: 0
+                val detail = errorMessage(body)
+                val reason = when {
+                    subcode == 2018278 || subcode == 2534022 -> "Pasaron mas de 24 horas desde el ultimo mensaje del cliente: $label no permite responder desde el CRM. Contestale desde Meta Business Suite."
+                    errorCode(body) == 551 || subcode == 1545041 -> "Esta persona no esta disponible en $label en este momento."
+                    errorCode(body) == 190 -> if (settings.sharedTokens) "El token de la pagina es invalido o vencio; guarda de nuevo Meta en Integraciones para obtenerlo otra vez." else "El token de $label es invalido o vencio; actualizalo en Integraciones."
+                    controlledElsewhere(body) -> "Otra app de Meta sigue controlando esta conversacion. Responde desde Business Suite o configura esta app como principal de la pagina."
+                    errorCode(body) in setOf(10, 200, 230) -> "Meta no permitio enviar el mensaje${if (detail.isNotEmpty()) ": $detail" else ""}. " +
+                        if (instagram) "Revisa que el token tenga instagram_manage_messages y que Instagram permita el acceso a los mensajes." else "Revisa que el token de la pagina tenga el permiso pages_messaging."
+                    else -> "$label rechazo el mensaje: ${detail.ifEmpty { "HTTP $status" }}"
+                }
+                throw CrmMetaException(if (index > 0) "$reason Las primeras partes del mensaje si se enviaron." else reason)
             }
             if (first.isEmpty()) first = id
         }
         return first
     }
+
+    // Another app (the Business Suite inbox or its automations) controls the Messenger thread.
+    private fun controlledElsewhere(body: JsonObject) = errorCode(body) == 10 &&
+        (body["error"].obj()?.get("error_subcode").str() == "2018300" || errorMessage(body).contains("controlling this thread", ignoreCase = true))
 }
 
 /** Reply channels of Meta. */
@@ -536,22 +730,27 @@ object CrmWhatsAppChannel : CrmChannel {
     override fun send(context: CrmChannelContext, lead: CrmLead, email: CrmEmail): String? = try {
         CrmMeta.sendWhatsApp(CrmMeta.load(context.tenant), CrmContacts.normalizePhone(lead.phone).removePrefix("+"), email.text)
     } catch (failure: CrmMetaException) {
+        CrmMeta.log(context.tenant, "wa_envio_error", failure.message.orEmpty())
         throw CrmChannelException(failure.message.orEmpty())
     }
 }
 
 class CrmPageChannel(override val id: String, override val label: String) : CrmChannel {
-    override fun unavailable(context: CrmChannelContext, lead: CrmLead): String? = when {
-        !CrmMeta.load(context.tenant).pageReady -> "Conecta la pagina de Facebook en Integraciones."
-        CrmInbox.identity(context.tenant, lead.customerId, id) == null -> "El lead no ha escrito por $label."
-        else -> null
+    override fun unavailable(context: CrmChannelContext, lead: CrmLead): String? {
+        val settings = CrmMeta.load(context.tenant)
+        return when {
+            !settings.ready(id) -> if (settings.sharedTokens) "Conecta la pagina de Facebook en Integraciones." else "Configura el token de $label en Integraciones."
+            CrmInbox.identity(context.tenant, lead.customerId, id) == null -> "El lead no ha escrito por $label."
+            else -> null
+        }
     }
 
     override fun send(context: CrmChannelContext, lead: CrmLead, email: CrmEmail): String? {
         val recipient = CrmInbox.identity(context.tenant, lead.customerId, id) ?: throw CrmChannelException("El lead no ha escrito por $label.")
         return try {
-            CrmMeta.sendPage(CrmMeta.load(context.tenant), recipient, email.text, id)
+            CrmMeta.sendPage(CrmMeta.load(context.tenant), recipient, email.text, id).also { CrmMeta.log(context.tenant, "enviado", "$label $recipient") }
         } catch (failure: CrmMetaException) {
+            CrmMeta.log(context.tenant, "envio_error", "$label: ${failure.message}")
             throw CrmChannelException(failure.message.orEmpty())
         }
     }

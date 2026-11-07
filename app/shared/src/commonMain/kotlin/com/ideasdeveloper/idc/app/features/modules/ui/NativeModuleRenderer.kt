@@ -269,6 +269,9 @@ private fun ModuleCard(node: UiCard, context: ModuleRenderContext) {
             .border(1.dp, colors.border, RoundedCornerShape(18.dp))
             .padding(horizontal = 18.dp, vertical = 16.dp),
     ) {
+        // Acordeon: el titulo abre y cierra la tarjeta.
+        val collapsible = node.collapsible && node.title != null
+        var open by remember(node.title, node.expanded) { mutableStateOf(node.expanded) }
         if (node.title != null || node.actions.isNotEmpty()) {
             FlowRow(
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -276,11 +279,16 @@ private fun ModuleCard(node: UiCard, context: ModuleRenderContext) {
                 itemVerticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(node.title.orEmpty().uppercase(), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { node.actions.forEach { ModuleNode(it, context) } }
+                val title = node.title.orEmpty().uppercase()
+                Text(
+                    if (collapsible) "${if (open) "\u25BE" else "\u25B8"}  $title" else title,
+                    color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp,
+                    modifier = if (collapsible) Modifier.clickable { open = !open }.padding(vertical = 4.dp) else Modifier,
+                )
+                if (!collapsible || open) Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { node.actions.forEach { ModuleNode(it, context) } }
             }
         }
-        node.children.forEach { ModuleNode(it, context) }
+        if (!collapsible || open) node.children.forEach { ModuleNode(it, context) }
     }
 }
 
@@ -400,6 +408,7 @@ private fun ModuleButton(node: UiButton, context: ModuleRenderContext) {
 private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
     // Valores que puso una sugerencia elegida en claves que no son campos (p. ej. el id del cliente).
     var chosenExtraKeys by remember(node.id) { mutableStateOf(emptySet<String>()) }
+    val openSections = remember(node.id) { mutableStateMapOf<String, Boolean>() }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
         // Agrupa campos consecutivos de la misma seccion bajo un titulo.
         val groups = mutableListOf<Pair<String, MutableList<UiField>>>()
@@ -411,10 +420,20 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
             groups.last().second += field
         }
         groups.forEach { (section, fields) ->
+            // Con collapsibleSections cada seccion con nombre es un acordeon que empieza cerrado.
+            val collapsible = node.collapsibleSections && section.isNotBlank()
+            val open = !collapsible || openSections[section] == true
             if (section.isNotBlank()) {
-                Text(section, color = context.colors.accent, fontSize = 15.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 4.dp))
+                Text(
+                    if (collapsible) "${if (open) "\u25BE" else "\u25B8"}  $section" else section,
+                    color = context.colors.accent, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(top = 4.dp).then(
+                        if (collapsible) Modifier.clickable { openSections[section] = !open }.padding(vertical = 4.dp) else Modifier,
+                    ),
+                )
+                node.sectionNotes[section]?.takeIf { it.isNotBlank() }?.let { Text(it, color = context.colors.muted, fontSize = 12.sp) }
             }
-            ResponsiveGrid(fields.size, node.minFieldWidth.dp, 12.dp) { index ->
+            if (open) ResponsiveGrid(fields.size, node.minFieldWidth.dp, 12.dp) { index ->
                 val field = fields[index]
                 val suggest = field.suggest
                 if (field.type == "files") {
