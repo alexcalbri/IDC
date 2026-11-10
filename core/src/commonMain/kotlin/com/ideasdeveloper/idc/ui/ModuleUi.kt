@@ -346,6 +346,9 @@ data class UiForm(
     val collapsibleSections: Boolean = false,
     // Short text shown under a section heading, e.g. the state of what the section configures.
     val sectionNotes: Map<String, String> = emptyMap(),
+    // With collapsibleSections: sections that start open (the ones used every time). Clients that
+    // know collapsibleSections but not this start them closed.
+    val openSections: List<String> = emptyList(),
     @EncodeDefault override val type: String = "form",
 ) : UiNode
 

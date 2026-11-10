@@ -240,7 +240,8 @@ object HotspotScreens {
         return listOfNotNull(
             UiCard(title = "Estado del portal", children = listOf(UiStatus(domainStatus, tone))),
             logo?.let { UiCard(title = "Logo actual", children = listOf(UiImage(it, height = 80, description = "Logo del portal"))) },
-            UiCard(listOf(settingsFormNode("portal", "portal", portalFields, permissions, values))),
+            // Apariencia, textos legales, tiempos y dominio: each section opens on its own.
+            UiCard(listOf(settingsFormNode("portal", "portal", portalFields, permissions, values).copy(collapsibleSections = true))),
         )
     }
 
@@ -297,11 +298,14 @@ object HotspotScreens {
                 if (crmInstalled) null else UiStatus("CRM no esta instalado en esta empresa; los codigos de cliente permanecen desactivados.", UiTone.Warning),
                 settingsFormNode("settings", "crm", crmFields, permissions, values),
             ),
+            collapsible = true,
+            expanded = false,
         )
+        // The controller and the networks stay open; the rest is configured once and starts closed.
         return controllerCards + networks(tenant, settings, controller, permissions, params, networkValues) +
             crmCard +
-            UiCard(title = "Acceso", children = listOf(settingsFormNode("settings", "times", accessFields, permissions, values))) +
-            UiCard(title = "Correo", children = listOf(settingsFormNode("settings", "mail", mailFields, permissions, values)))
+            UiCard(title = "Acceso", children = listOf(settingsFormNode("settings", "times", accessFields, permissions, values)), collapsible = true, expanded = false) +
+            UiCard(title = "Correo", children = listOf(settingsFormNode("settings", "mail", mailFields, permissions, values)), collapsible = true, expanded = false)
     }
 
     /**

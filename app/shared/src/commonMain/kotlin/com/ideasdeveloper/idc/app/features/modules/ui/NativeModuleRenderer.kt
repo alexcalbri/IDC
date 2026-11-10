@@ -408,7 +408,7 @@ private fun ModuleButton(node: UiButton, context: ModuleRenderContext) {
 private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
     // Valores que puso una sugerencia elegida en claves que no son campos (p. ej. el id del cliente).
     var chosenExtraKeys by remember(node.id) { mutableStateOf(emptySet<String>()) }
-    val openSections = remember(node.id) { mutableStateMapOf<String, Boolean>() }
+    val openSections = remember(node.id) { mutableStateMapOf<String, Boolean>().apply { node.openSections.forEach { put(it, true) } } }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
         // Agrupa campos consecutivos de la misma seccion bajo un titulo.
         val groups = mutableListOf<Pair<String, MutableList<UiField>>>()
@@ -420,7 +420,7 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
             groups.last().second += field
         }
         groups.forEach { (section, fields) ->
-            // Con collapsibleSections cada seccion con nombre es un acordeon que empieza cerrado.
+            // Con collapsibleSections cada seccion con nombre es un acordeon; empieza cerrado salvo las de openSections.
             val collapsible = node.collapsibleSections && section.isNotBlank()
             val open = !collapsible || openSections[section] == true
             if (section.isNotBlank()) {

@@ -438,6 +438,10 @@ object CrmScreens {
         )
     }
 
+    // Sections of the lead form that start open: the ones used every time, and the custom fields when one is required.
+    private fun openLeadSections(context: Context): List<String> =
+        listOf("Contacto", "Seguimiento") + listOfNotNull(CrmFields.Section.takeIf { context.fields.any { it.required } })
+
     // Where the app uploads and downloads the files of the lead form (see CrmServerModule).
     const val FilesRoute = "$UiRoute/files"
     private val Files = UiFiles(upload = FilesRoute, download = FilesRoute, maxFileBytes = CrmAttachments.MaxFileBytes)
@@ -514,6 +518,8 @@ object CrmScreens {
                     UiForm(
                         "lead", leadFields(context, readOnly = false, currentInterest = null, suggestCustomers = true), defaults + submitted.orEmpty(),
                         submit = UiButton("Crear lead", UiRequest(UiRoute + "/new", params = mapOf("op" to "create"), formId = "lead")),
+                        collapsibleSections = true,
+                        openSections = openLeadSections(context),
                     ),
                 ),
             ),
@@ -548,6 +554,8 @@ object CrmScreens {
                     leadFields(context, readOnly = !canEdit, currentInterest = lead.interestId, showCustomerCode = true),
                     leadValues(context, lead) + submitted.orEmpty() + ("customerCode" to lead.customerCode),
                     submit = if (canEdit) UiButton("Guardar cambios", UiRequest(UiRoute + "/lead", params = id + ("op" to "save"), formId = "lead")) else null,
+                    collapsibleSections = true,
+                    openSections = openLeadSections(context),
                 ),
             ),
             title = "Datos del lead",
@@ -753,6 +761,9 @@ object CrmScreens {
                     listOf(UiText("Marca los intereses de cada usuario. Los usuarios con \"Ver todos los leads\" y el dueno de la empresa ven todo.")) +
                         userForms.ifEmpty { listOf(UiText("Ningun usuario tiene permisos del CRM todavia.", tone = UiTone.Warning)) },
                     title = "Intereses por usuario",
+                    // One form per user: closed so the stages below stay at hand.
+                    collapsible = true,
+                    expanded = false,
                 )
             }
         }

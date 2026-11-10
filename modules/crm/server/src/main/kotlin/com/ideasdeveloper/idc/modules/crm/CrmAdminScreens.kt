@@ -149,6 +149,8 @@ object CrmAdminScreens {
                     UiForm(
                         "mail", fields, CrmMail.toFormValues(settings) + submitted.orEmpty(),
                         submit = UiButton("Guardar", UiRequest(UiRoute + "/mail", params = mapOf("op" to "save"), formId = "mail")),
+                        // Sending (SMTP) and reading the inbox (IMAP) are configured once: each one closed.
+                        collapsibleSections = true,
                     ),
                 ),
             ),

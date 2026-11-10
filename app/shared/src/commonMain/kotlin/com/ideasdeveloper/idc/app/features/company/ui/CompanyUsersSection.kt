@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -82,98 +83,101 @@ fun CompanyUsersSection(
 
     Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = primaryColor)
     Text(description, color = AppTheme.colors.muted)
-    OutlinedTextField(
-        value = newUsername,
-        onValueChange = { newUsername = it },
-        label = { Text("Usuario") },
-        singleLine = true,
-        enabled = !isLoading,
-        modifier = Modifier.fillMaxWidth(),
-    )
-    // Obligatorios para todos: los cambios se registran con el nombre y el correo recibe codigos de contrasena.
-    OutlinedTextField(
-        value = newDisplayName,
-        onValueChange = { newDisplayName = it },
-        label = { Text("Nombre completo") },
-        singleLine = true,
-        enabled = !isLoading,
-        modifier = Modifier.fillMaxWidth(),
-    )
-    OutlinedTextField(
-        value = newEmail,
-        onValueChange = { newEmail = it.trim() },
-        label = { Text("Correo") },
-        singleLine = true,
-        enabled = !isLoading,
-        modifier = Modifier.fillMaxWidth(),
-    )
-    OutlinedTextField(
-        value = newPassword,
-        onValueChange = { newPassword = it },
-        label = { Text("Contrasena inicial") },
-        singleLine = true,
-        enabled = !isLoading,
-        modifier = Modifier.fillMaxWidth(),
-    )
-    permissions.forEach { permission ->
-        PermissionCheckbox(
-            permission = permission,
-            checked = selectedPermissions.contains(permission.permissionId),
+    // El alta es independiente de la lista: empieza cerrada para ver los usuarios primero.
+    CollapsibleSection("Nuevo usuario", primaryColor, subtitle = "Usuario, nombre, correo, contrasena y permisos") {
+        OutlinedTextField(
+            value = newUsername,
+            onValueChange = { newUsername = it },
+            label = { Text("Usuario") },
+            singleLine = true,
             enabled = !isLoading,
-            primaryColor = primaryColor,
-            onCheckedChange = { checked ->
-                selectedPermissions = if (checked) {
-                    selectedPermissions + permission.permissionId
-                } else {
-                    selectedPermissions - permission.permissionId
+            modifier = Modifier.fillMaxWidth(),
+        )
+        // Obligatorios para todos: los cambios se registran con el nombre y el correo recibe codigos de contrasena.
+        OutlinedTextField(
+            value = newDisplayName,
+            onValueChange = { newDisplayName = it },
+            label = { Text("Nombre completo") },
+            singleLine = true,
+            enabled = !isLoading,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = newEmail,
+            onValueChange = { newEmail = it.trim() },
+            label = { Text("Correo") },
+            singleLine = true,
+            enabled = !isLoading,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = newPassword,
+            onValueChange = { newPassword = it },
+            label = { Text("Contrasena inicial") },
+            singleLine = true,
+            enabled = !isLoading,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        permissions.forEach { permission ->
+            PermissionCheckbox(
+                permission = permission,
+                checked = selectedPermissions.contains(permission.permissionId),
+                enabled = !isLoading,
+                primaryColor = primaryColor,
+                onCheckedChange = { checked ->
+                    selectedPermissions = if (checked) {
+                        selectedPermissions + permission.permissionId
+                    } else {
+                        selectedPermissions - permission.permissionId
+                    }
+                },
+            )
+        }
+        Button(
+            enabled = !isLoading && serverUrl != null && accessToken != null && companyCode != null && newUsername.isNotBlank() && newPassword.isNotBlank() &&
+                newDisplayName.isNotBlank() && newEmail.isNotBlank(),
+            onClick = {
+                val activeServerUrl = serverUrl ?: return@Button
+                val token = accessToken ?: return@Button
+                val code = companyCode ?: return@Button
+                isLoading = true
+                error = null
+                message = null
+                scope.launch {
+                    try {
+                        CompanyApi(activeServerUrl).use { api ->
+                            api.createCompanyUser(
+                                token,
+                                code,
+                                CreateCompanyUserRequest(
+                                    username = newUsername,
+                                    password = newPassword,
+                                    permissions = selectedPermissions.toList(),
+                                    displayName = newDisplayName,
+                                    email = newEmail,
+                                ),
+                            )
+                            val userData = api.companyUsers(token, code)
+                            users = userData.users
+                            permissions = userData.permissions
+                        }
+                        newUsername = ""
+                        newPassword = ""
+                        newDisplayName = ""
+                        newEmail = ""
+                        selectedPermissions = emptySet()
+                        message = "Usuario creado."
+                    } catch (exception: CompanyException) {
+                        error = exception.message
+                    } finally {
+                        isLoading = false
+                    }
                 }
             },
-        )
-    }
-    Button(
-        enabled = !isLoading && serverUrl != null && accessToken != null && companyCode != null && newUsername.isNotBlank() && newPassword.isNotBlank() &&
-            newDisplayName.isNotBlank() && newEmail.isNotBlank(),
-        onClick = {
-            val activeServerUrl = serverUrl ?: return@Button
-            val token = accessToken ?: return@Button
-            val code = companyCode ?: return@Button
-            isLoading = true
-            error = null
-            message = null
-            scope.launch {
-                try {
-                    CompanyApi(activeServerUrl).use { api ->
-                        api.createCompanyUser(
-                            token,
-                            code,
-                            CreateCompanyUserRequest(
-                                username = newUsername,
-                                password = newPassword,
-                                permissions = selectedPermissions.toList(),
-                                displayName = newDisplayName,
-                                email = newEmail,
-                            ),
-                        )
-                        val userData = api.companyUsers(token, code)
-                        users = userData.users
-                        permissions = userData.permissions
-                    }
-                    newUsername = ""
-                    newPassword = ""
-                    newDisplayName = ""
-                    newEmail = ""
-                    selectedPermissions = emptySet()
-                    message = "Usuario creado."
-                } catch (exception: CompanyException) {
-                    error = exception.message
-                } finally {
-                    isLoading = false
-                }
-            }
-        },
-        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-    ) {
-        Text("Crear usuario")
+            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+        ) {
+            Text("Crear usuario")
+        }
     }
     message?.let { Text(it, color = AppTheme.colors.success) }
     error?.let { Text(it, color = AppTheme.colors.danger) }

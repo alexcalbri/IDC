@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
+import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -292,6 +293,8 @@ private fun CustomerServerDrivenContent(
     var loading by remember { mutableStateOf(false) }
     // Cliente cuya ficha (notas generales e historial por empresa) esta abierta.
     var profileCustomerId by remember { mutableStateOf(initialProfileId) }
+    // Si el formulario de crear cliente esta abierto (al editar se abre solo).
+    var customerFormOpen by remember { mutableStateOf(false) }
 
     fun activeContext(): Triple<String, String, String>? {
         val activeServerUrl = serverUrl ?: return null
@@ -337,79 +340,88 @@ private fun CustomerServerDrivenContent(
         loadAll()
     }
 
-    Text(if (editingId == null) "Crear cliente" else "Editar cliente", style = MaterialTheme.typography.titleMedium, color = primaryColor)
-    OutlinedTextField(name, { name = it }, label = { Text("Nombre *") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(email, { email = it }, label = { Text("Correo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(phone, { phone = it }, label = { Text("Telefono") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    fields.forEach { field ->
-        OutlinedTextField(
-            value = dynamicValues[field.fieldKey].orEmpty(),
-            onValueChange = { value -> dynamicValues = dynamicValues + (field.fieldKey to value) },
-            label = { Text(field.label + if (field.required) " *" else "") },
-            singleLine = field.fieldType != "textarea",
-            modifier = Modifier.fillMaxWidth(),
-        )
-    }
-    Button(
-        enabled = !loading && name.isNotBlank(),
-        onClick = {
-            val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
-            loading = true
-            message = null
-            error = null
-            scope.launch {
-                try {
-                    ModuleApi(activeServerUrl).use { api ->
-                        val id = editingId
-                        if (id == null) api.createCustomer(token, companyCode, request()) else api.updateCustomer(token, companyCode, id, request())
+    // El formulario empieza cerrado para ver la lista; Editar lo abre con los datos del cliente.
+    CollapsibleSection(
+        title = if (editingId == null) "Crear cliente" else "Editar cliente",
+        color = primaryColor,
+        open = customerFormOpen || editingId != null,
+        onToggle = { if (editingId != null) clearForm() else customerFormOpen = !customerFormOpen },
+    ) {
+        OutlinedTextField(name, { name = it }, label = { Text("Nombre *") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(email, { email = it }, label = { Text("Correo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(phone, { phone = it }, label = { Text("Telefono") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        fields.forEach { field ->
+            OutlinedTextField(
+                value = dynamicValues[field.fieldKey].orEmpty(),
+                onValueChange = { value -> dynamicValues = dynamicValues + (field.fieldKey to value) },
+                label = { Text(field.label + if (field.required) " *" else "") },
+                singleLine = field.fieldType != "textarea",
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        Button(
+            enabled = !loading && name.isNotBlank(),
+            onClick = {
+                val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
+                loading = true
+                message = null
+                error = null
+                scope.launch {
+                    try {
+                        ModuleApi(activeServerUrl).use { api ->
+                            val id = editingId
+                            if (id == null) api.createCustomer(token, companyCode, request()) else api.updateCustomer(token, companyCode, id, request())
+                        }
+                        message = if (editingId == null) "Cliente creado." else "Cliente actualizado."
+                        clearForm()
+                        loadAll()
+                    } catch (exception: ModuleException) {
+                        error = exception.message
+                    } finally {
+                        loading = false
                     }
-                    message = if (editingId == null) "Cliente creado." else "Cliente actualizado."
-                    clearForm()
-                    loadAll()
-                } catch (exception: ModuleException) {
-                    error = exception.message
-                } finally {
-                    loading = false
                 }
-            }
-        },
-        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-    ) { Text(if (editingId == null) "Crear cliente" else "Guardar cambios") }
-    if (editingId != null) {
-        Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) { Text("Cancelar edicion") }
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+        ) { Text(if (editingId == null) "Crear cliente" else "Guardar cambios") }
+        if (editingId != null) {
+            Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) { Text("Cancelar edicion") }
+        }
     }
 
-    Text("Campos dinamicos de Clientes", style = MaterialTheme.typography.titleMedium, color = primaryColor)
-    OutlinedTextField(newFieldKey, { newFieldKey = it }, label = { Text("Clave del campo, ej: direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    OutlinedTextField(newFieldLabel, { newFieldLabel = it }, label = { Text("Etiqueta, ej: Direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-    androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = newFieldRequired, onCheckedChange = { newFieldRequired = it })
-        Text("Requerido")
-    }
-    Button(
-        enabled = !loading && newFieldKey.isNotBlank() && newFieldLabel.isNotBlank(),
-        onClick = {
-            val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
-            loading = true
-            scope.launch {
-                try {
-                    ModuleApi(activeServerUrl).use { api ->
-                        api.createCustomerField(token, companyCode, CreateCustomerFieldRequest(newFieldKey, newFieldLabel, "text", required = newFieldRequired))
+    // Se configuran una vez: empiezan cerrados.
+    CollapsibleSection("Campos dinamicos de Clientes", primaryColor, subtitle = "Campos extra de la ficha de todos los clientes") {
+        OutlinedTextField(newFieldKey, { newFieldKey = it }, label = { Text("Clave del campo, ej: direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        OutlinedTextField(newFieldLabel, { newFieldLabel = it }, label = { Text("Etiqueta, ej: Direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+        androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = newFieldRequired, onCheckedChange = { newFieldRequired = it })
+            Text("Requerido")
+        }
+        Button(
+            enabled = !loading && newFieldKey.isNotBlank() && newFieldLabel.isNotBlank(),
+            onClick = {
+                val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
+                loading = true
+                scope.launch {
+                    try {
+                        ModuleApi(activeServerUrl).use { api ->
+                            api.createCustomerField(token, companyCode, CreateCustomerFieldRequest(newFieldKey, newFieldLabel, "text", required = newFieldRequired))
+                        }
+                        newFieldKey = ""
+                        newFieldLabel = ""
+                        newFieldRequired = false
+                        message = "Campo dinamico creado."
+                        loadAll()
+                    } catch (exception: ModuleException) {
+                        error = exception.message
+                    } finally {
+                        loading = false
                     }
-                    newFieldKey = ""
-                    newFieldLabel = ""
-                    newFieldRequired = false
-                    message = "Campo dinamico creado."
-                    loadAll()
-                } catch (exception: ModuleException) {
-                    error = exception.message
-                } finally {
-                    loading = false
                 }
-            }
-        },
-        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-    ) { Text("Agregar campo") }
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+        ) { Text("Agregar campo") }
+    }
 
     message?.let { Text(it, color = AppTheme.colors.success) }
     error?.let { Text(it, color = AppTheme.colors.danger) }

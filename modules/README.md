@@ -413,10 +413,17 @@ The server builds every screen with the current data; the app only draws it.
 | `UiImage` | Image from an `https://` URL or a module route (`/modules/...`, sent with the session). Web clients need CORS on external hosts. |
 | `UiButton`, `UiDivider`, `UiSpacer` | Actions and spacing. |
 
+Long screens: use accordions for what is not needed every time (forms set up
+once, secondary lists). `UiCard(collapsible = true, expanded = false)` opens and
+closes the whole card from its title; `UiForm(collapsibleSections = true)` makes
+each named section an accordion that starts closed, except the ones listed in
+`openSections`. Keep open what is used every time (the CRM lead keeps Contacto
+and Seguimiento open; the hotspot keeps the controller and the networks open).
+
 Actions: `UiNavigate` (another screen), `UiRequest` (call a route, the response
 is the next `UiScreen`; optional confirmation), `UiDownload` (text file such as
 CSV; saved to Downloads on Android and desktop, to Files > On my iPhone > IDC on
-iOS, downloaded by the browser on web), `UiOpenUrl`. Any action with `formId` carries that form's values.
+iOS, downloaded by the browser on web), `UiOpenUrl`, `UiOpenModule` (a screen of another module). Any action with `formId` carries that form's values.
 `UiScreen.navigation` adds module sections (sidebar on wide screens, top bar on
 phones). Screens carry no colors: see [Colors and themes](#colors-and-themes).
 

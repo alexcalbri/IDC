@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.RadioButton
 import androidx.compose.foundation.selection.selectable
@@ -800,39 +801,46 @@ private fun CompanyModulesRow(
         if (isEditing) {
             // Datos del business owner. Las empresas creadas por un agente IA quedan con una contrasena
             // aleatoria porque las credenciales no pasan por el MCP: aqui se pone la primera.
-            BusinessOwnerFields(
-                companyCode = company.code,
-                enabled = enabled,
-                primaryColor = primaryColor,
-                loadOwner = loadOwner,
-                onSave = onSaveOwner,
-            )
+            CollapsibleSection("Business owner", primaryColor, subtitle = "Usuario, nombre, correo y contrasena") {
+                BusinessOwnerFields(
+                    companyCode = company.code,
+                    enabled = enabled,
+                    primaryColor = primaryColor,
+                    loadOwner = loadOwner,
+                    onSave = onSaveOwner,
+                )
+            }
 
-            Text("Modulos disponibles", style = MaterialTheme.typography.titleMedium, color = primaryColor)
-            Text(
-                "Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa.",
-                color = AppTheme.colors.muted,
-            )
-            company.modules.forEach { module ->
-                // Permite activar o desactivar cada modulo no bloqueado de la empresa.
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "${module.displayName}: ${if (module.enabled) "activo" else "inactivo"}",
-                        color = AppTheme.colors.text,
-                    )
-                    Button(
-                        enabled = enabled && company.isActive && !module.locked,
-                        onClick = { onChangeModule(module.moduleId, !module.enabled) },
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = if (module.enabled) AppTheme.colors.surfaceAlt else primaryColor,
-                            contentColor = if (module.enabled) primaryColor else AppTheme.colors.onAccent,
-                        ),
+            CollapsibleSection(
+                "Modulos disponibles",
+                primaryColor,
+                subtitle = "${company.modules.count { it.enabled }} de ${company.modules.size} activos",
+            ) {
+                Text(
+                    "Solo se listan modulos instalados en este servidor. Los modulos externos deben instalarse antes de poder activarlos por empresa.",
+                    color = AppTheme.colors.muted,
+                )
+                company.modules.forEach { module ->
+                    // Permite activar o desactivar cada modulo no bloqueado de la empresa.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(if (module.enabled) "Desactivar modulo" else "Activar modulo")
+                        Text(
+                            text = "${module.displayName}: ${if (module.enabled) "activo" else "inactivo"}",
+                            color = AppTheme.colors.text,
+                        )
+                        Button(
+                            enabled = enabled && company.isActive && !module.locked,
+                            onClick = { onChangeModule(module.moduleId, !module.enabled) },
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = if (module.enabled) AppTheme.colors.surfaceAlt else primaryColor,
+                                contentColor = if (module.enabled) primaryColor else AppTheme.colors.onAccent,
+                            ),
+                        ) {
+                            Text(if (module.enabled) "Desactivar modulo" else "Activar modulo")
+                        }
                     }
                 }
             }
@@ -875,7 +883,6 @@ private fun BusinessOwnerFields(
         }
     }
 
-    Text("Business owner", style = MaterialTheme.typography.titleMedium, color = primaryColor)
     loadError?.let { Text(it, color = AppTheme.colors.danger) }
     val current = owner ?: return
     val renamed = username.trim() != current.username

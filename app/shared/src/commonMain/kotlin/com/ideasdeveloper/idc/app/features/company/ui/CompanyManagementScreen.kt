@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -286,64 +287,66 @@ fun CompanyManagementScreen(
                         }
                     }
 
-                    Text("Exportar e importar", style = MaterialTheme.typography.titleMedium, color = primaryCompose)
-                    Text(
-                        "Los ZIPs de esta pantalla guardan el perfil de empresa. La restauracion completa de PostgreSQL se realiza fuera de la app con backups operativos del servidor.",
-                        color = AppTheme.colors.muted,
-                    )
-                    Button(
-                        enabled = !isLoading && serverUrl != null && session?.companyCode != null,
-                        onClick = {
-                            val activeServerUrl = serverUrl ?: return@Button
-                            val activeSession = session ?: return@Button
-                            val companyCode = activeSession.companyCode ?: return@Button
-                            isLoading = true
-                            error = null
-                            message = null
-                            scope.launch {
-                                try {
-                                    val created = CompanyApi(activeServerUrl).use { api ->
-                                        api.createBackup(activeSession.accessToken, companyCode)
-                                    }
-                                    message = "Backup ${created.fileName} creado."
-                                    refreshBackups()
-                                } catch (exception: CompanyException) {
-                                    error = exception.message
-                                } finally {
-                                    isLoading = false
-                                }
-                            }
-                        },
-                        colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
-                    ) {
-                        Text("Exportar ZIP")
-                    }
-
-                    backups.forEach { backup ->
-                        BackupRow(
-                            backup = backup,
-                            serverUrl = serverUrl.orEmpty(),
-                            primaryColor = primaryCompose,
-                            enabled = !isLoading && session?.companyCode != null,
-                            onDelete = {
-                                val activeServerUrl = serverUrl
-                                val activeSession = session
-                                val companyCode = activeSession?.companyCode
-                                if (activeServerUrl != null && activeSession != null && companyCode != null) {
-                                    scope.launch {
-                                        try {
-                                            CompanyApi(activeServerUrl).use { api ->
-                                                api.deleteBackup(activeSession.accessToken, companyCode, backup.fileName)
-                                            }
-                                            backups = backups.filterNot { it.fileName == backup.fileName }
-                                            message = "Backup eliminado."
-                                        } catch (exception: CompanyException) {
-                                            error = exception.message
+                    // Copias del perfil: se usan pocas veces, empiezan cerradas.
+                    CollapsibleSection("Exportar e importar", primaryCompose, subtitle = "ZIP del perfil de empresa") {
+                        Text(
+                            "Los ZIPs de esta pantalla guardan el perfil de empresa. La restauracion completa de PostgreSQL se realiza fuera de la app con backups operativos del servidor.",
+                            color = AppTheme.colors.muted,
+                        )
+                        Button(
+                            enabled = !isLoading && serverUrl != null && session?.companyCode != null,
+                            onClick = {
+                                val activeServerUrl = serverUrl ?: return@Button
+                                val activeSession = session ?: return@Button
+                                val companyCode = activeSession.companyCode ?: return@Button
+                                isLoading = true
+                                error = null
+                                message = null
+                                scope.launch {
+                                    try {
+                                        val created = CompanyApi(activeServerUrl).use { api ->
+                                            api.createBackup(activeSession.accessToken, companyCode)
                                         }
+                                        message = "Backup ${created.fileName} creado."
+                                        refreshBackups()
+                                    } catch (exception: CompanyException) {
+                                        error = exception.message
+                                    } finally {
+                                        isLoading = false
                                     }
                                 }
                             },
-                        )
+                            colors = ButtonDefaults.buttonColors(containerColor = primaryCompose),
+                        ) {
+                            Text("Exportar ZIP")
+                        }
+
+                        backups.forEach { backup ->
+                            BackupRow(
+                                backup = backup,
+                                serverUrl = serverUrl.orEmpty(),
+                                primaryColor = primaryCompose,
+                                enabled = !isLoading && session?.companyCode != null,
+                                onDelete = {
+                                    val activeServerUrl = serverUrl
+                                    val activeSession = session
+                                    val companyCode = activeSession?.companyCode
+                                    if (activeServerUrl != null && activeSession != null && companyCode != null) {
+                                        scope.launch {
+                                            try {
+                                                CompanyApi(activeServerUrl).use { api ->
+                                                    api.deleteBackup(activeSession.accessToken, companyCode, backup.fileName)
+                                                }
+                                                backups = backups.filterNot { it.fileName == backup.fileName }
+                                                message = "Backup eliminado."
+                                            } catch (exception: CompanyException) {
+                                                error = exception.message
+                                            }
+                                        }
+                                    }
+                                },
+                            )
+                        }
                     }
 
                     CompanyUsersSection(
