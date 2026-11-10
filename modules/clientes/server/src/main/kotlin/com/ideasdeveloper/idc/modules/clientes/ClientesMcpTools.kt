@@ -136,7 +136,7 @@ object ClientesMcpTools {
         val customers = call.tenant.prepareStatement(
             """
             SELECT $Columns FROM customers
-            WHERE status <> 'archived'
+            WHERE status <> 'archived' AND ${ClientesSharing.Visible}
               AND (? = '' OR lower(display_name) LIKE ? OR lower(primary_email) LIKE ? OR primary_phone LIKE ? OR lower(customer_code) LIKE ?)
             ORDER BY CASE WHEN ? = '' THEN created_at END DESC, lower(display_name)
             LIMIT ?
@@ -187,13 +187,18 @@ object ClientesMcpTools {
         if (ClientesServerModule.emailExists(call.tenant, request.primaryEmail, id)) throw McpToolException("Ya existe otro cliente con ese correo.")
         if (!ClientesServerModule.upsertCustomer(call.tenant, id, request, insert = false)) throw McpToolException("Cliente no encontrado.")
         ClientesServerModule.recordUpdate(call.tenant, id, current, request, author(call))
+        ClientesSharing.propagate(call.access, call.tenant, call.permissions.companyCode, id)
         return Json.encodeToJsonElement(find(call, id, "")!!)
     }
 
     private fun archive(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
+        if (ClientesSharing.visible(call.tenant, id) && !ClientesSharing.isOrigin(call.tenant, id)) {
+            throw McpToolException("Este cliente se archiva desde la empresa donde se creo.")
+        }
         if (!ClientesServerModule.archiveCustomer(call.tenant, id)) throw McpToolException("Cliente no encontrado o ya archivado.")
         ClientesActivity.record(call.tenant, id, "archived", "", author(call))
+        ClientesSharing.propagate(call.access, call.tenant, call.permissions.companyCode, id)
         return buildJsonObject {
             put("id", id.toString())
             put("result", "Cliente archivado.")
@@ -204,7 +209,7 @@ object ClientesMcpTools {
 
     private fun history(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
-        if (!ClientesServerModule.customerExists(call.tenant, id)) throw McpToolException("Cliente no encontrado.")
+        if (!ClientesSharing.visible(call.tenant, id)) throw McpToolException("Cliente no encontrado.")
         return Json.encodeToJsonElement(CustomerHistoryResponse(call.access.customerHistory(call.tenant, call.permissions, id, call.int("limit", 50, 1..200))))
     }
 
@@ -227,7 +232,7 @@ object ClientesMcpTools {
 
     private fun find(call: McpToolCall, id: UUID?, code: String): CustomerResponse? =
         call.tenant.prepareStatement(
-            "SELECT $Columns FROM customers WHERE status <> 'archived' AND ${if (id != null) "id = ?" else "customer_code = ?"}"
+            "SELECT $Columns FROM customers WHERE status <> 'archived' AND ${ClientesSharing.Visible} AND ${if (id != null) "id = ?" else "customer_code = ?"}"
         ).use { query ->
             if (id != null) query.setObject(1, id) else query.setString(1, code)
             query.executeQuery().use { rows -> if (rows.next()) ClientesServerModule.rowCustomer(rows) else null }

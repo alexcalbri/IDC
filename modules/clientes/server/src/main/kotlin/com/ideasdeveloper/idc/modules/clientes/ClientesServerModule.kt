@@ -2,6 +2,9 @@ package com.ideasdeveloper.idc.modules.clientes
 
 import com.ideasdeveloper.idc.server.modules.CustomerHistoryEntry
 import com.ideasdeveloper.idc.server.modules.CustomerTimeline
+import com.ideasdeveloper.idc.server.modules.CustomerHistoryWriter
+import com.ideasdeveloper.idc.server.modules.CustomerChangeListener
+import com.ideasdeveloper.idc.server.modules.CustomerNotesReader
 import com.ideasdeveloper.idc.server.modules.ModuleActionDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
 import com.ideasdeveloper.idc.server.modules.requireModuleAccess
@@ -40,9 +43,10 @@ object ClientesServerModule : ServerModule {
         "modules/clientes/migrations/V004__add_customer_code.sql",
         "modules/clientes/migrations/V005__optional_customer_contact_fields.sql",
         "modules/clientes/migrations/V006__create_customer_activity.sql",
+        "modules/clientes/migrations/V007__customer_profile_sharing.sql",
     )
 
-    override val runtimeTables = listOf("customer_activity")
+    override val runtimeTables = listOf("customer_activity", "customer_notes", "customer_history")
 
     // A duplicated company starts with the same custom customer fields, without customers.
     override val duplicatedSettings = listOf(SettingsTable("customer_field_definitions"))
@@ -51,7 +55,7 @@ object ClientesServerModule : ServerModule {
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.7.0",
+        version = "0.8.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -59,6 +63,7 @@ object ClientesServerModule : ServerModule {
             ModulePermissionDefinition("clientes.edit", "Editar clientes", "Permite modificar clientes existentes."),
             ModulePermissionDefinition("clientes.delete", "Eliminar clientes", "Permite eliminar o desactivar clientes."),
             ModulePermissionDefinition("clientes.fields.manage", "Administrar campos de clientes", "Permite crear, editar, desactivar o eliminar campos dinamicos de clientes."),
+            ModulePermissionDefinition(ClientesSharing.SharePermission, "Compartir clientes entre empresas", "Permite que un cliente creado en esta empresa se vea en las otras empresas del mismo dueno."),
         ),
         views = listOf(
             ModuleViewDefinition(
@@ -90,7 +95,25 @@ object ClientesServerModule : ServerModule {
     override val customerTimeline: CustomerTimeline
         get() = ClientesActivity.timeline
 
+    // Events other modules write in a customer's history (a sale converted in the CRM...).
+    override val customerHistoryWriter: CustomerHistoryWriter
+        get() = ClientesProfile.writer
+
+    // The customer's notes, shown by other modules where the customer is attended (the CRM lead).
+    override val customerNotesReader: CustomerNotesReader
+        get() = CustomerNotesReader { access, tenant, customerId, limit -> ClientesProfile.notesFor(access, tenant, customerId, limit) }
+
+    // A customer changed by another module (the CRM editing a lead's contact) reaches every copy.
+    override val customerChangeListener: CustomerChangeListener
+        get() = CustomerChangeListener { access, tenant, customerId ->
+            if (!ClientesSharing.supportsSharing(tenant)) return@CustomerChangeListener
+            val company = access.companyOf(tenant) ?: return@CustomerChangeListener
+            ClientesSharing.propagate(access, tenant, company.code, customerId)
+        }
+
     override fun routes(route: Route, access: ModuleAccessService) {
+        // The customer's profile with its notes and the history of each company (server-driven).
+        ClientesProfile.routes(route, access)
         route.route("/modules/clientes") {
             get("/fields") {
                 if (!call.requireModulePermission(access, ClientesModule.id, "clientes.view")) return@get
@@ -118,7 +141,7 @@ object ClientesServerModule : ServerModule {
                         """
                         SELECT id, display_name, primary_email, primary_phone, status, customer_type, customer_code, flexible_attributes::text AS flexible_attributes
                         FROM customers
-                        WHERE status <> 'archived'
+                        WHERE status <> 'archived' AND ${ClientesSharing.Visible}
                         ORDER BY lower(display_name), created_at DESC
                         LIMIT 200
                         """.trimIndent()
@@ -160,10 +183,12 @@ object ClientesServerModule : ServerModule {
                     if (emailExists(tenant, request.primaryEmail.trim(), customerId)) {
                         return@put call.respond(HttpStatusCode.Conflict, ClientesErrorResponse("CUSTOMER_DUPLICATE_EMAIL", "Ya existe otro cliente con ese correo."))
                     }
-                    val before = activeCustomer(tenant, customerId)
+                    val before = activeCustomer(tenant, customerId)?.takeIf { ClientesSharing.visible(tenant, customerId) }
                     val updated = before != null && upsertCustomer(tenant, customerId, request, insert = false)
                     if (!updated) return@put call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
                     recordUpdate(tenant, customerId, before!!, request, ClientesActivity.author(tenant, permissions, access))
+                    // One record for the companies it is shared with: the edit reaches every copy.
+                    ClientesSharing.propagate(access, tenant, permissions.companyCode, customerId)
                     call.respond(HttpStatusCode.OK, request.toResponse(customerId, "active", customerCode(tenant, customerId)))
                 }
             }
@@ -174,8 +199,14 @@ object ClientesServerModule : ServerModule {
                     ?: return@delete call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
                 val connection = access.tenantConnection(call) ?: return@delete call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
                 val archived = connection.use { tenant ->
+                    if (ClientesSharing.visible(tenant, customerId) && !ClientesSharing.isOrigin(tenant, customerId)) {
+                        return@delete call.respond(HttpStatusCode.Conflict, ClientesErrorResponse("CUSTOMER_NOT_ORIGIN", "Este cliente se archiva desde la empresa donde se creo."))
+                    }
                     archiveCustomer(tenant, customerId).also { done ->
-                        if (done) ClientesActivity.record(tenant, customerId, "archived", "", ClientesActivity.author(tenant, permissions, access))
+                        if (done) {
+                            ClientesActivity.record(tenant, customerId, "archived", "", ClientesActivity.author(tenant, permissions, access))
+                            ClientesSharing.propagate(access, tenant, permissions.companyCode, customerId)
+                        }
                     }
                 }
                 if (!archived) {
@@ -191,7 +222,7 @@ object ClientesServerModule : ServerModule {
                     ?: return@get call.respond(HttpStatusCode.BadRequest, ClientesErrorResponse("INVALID_CUSTOMER", "Cliente invalido."))
                 val connection = access.tenantConnection(call) ?: return@get call.respond(HttpStatusCode.Forbidden, ClientesErrorResponse("TENANT_UNAVAILABLE", "No se pudo abrir la empresa."))
                 connection.use { tenant ->
-                    if (!customerExists(tenant, customerId)) return@get call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
+                    if (!ClientesSharing.visible(tenant, customerId)) return@get call.respond(HttpStatusCode.NotFound, ClientesErrorResponse("CUSTOMER_NOT_FOUND", "Cliente no encontrado."))
                     call.respond(HttpStatusCode.OK, CustomerHistoryResponse(access.customerHistory(tenant, permissions, customerId)))
                 }
             }

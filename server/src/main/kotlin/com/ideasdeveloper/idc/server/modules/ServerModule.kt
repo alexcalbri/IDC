@@ -30,6 +30,18 @@ interface ServerModule {
     // What the module adds to a customer's history (see CustomerTimeline); override it with a getter.
     val customerTimeline: CustomerTimeline?
         get() = null
+    // Where modules write events of a customer's history (ModuleAccessService.recordCustomerEvent).
+    // Only the module that owns customers (Clientes) provides it.
+    val customerHistoryWriter: CustomerHistoryWriter?
+        get() = null
+    // Copies a customer changed by another module to the companies it is shared with
+    // (ModuleAccessService.customerChanged). Only the module that owns customers provides it.
+    val customerChangeListener: CustomerChangeListener?
+        get() = null
+    // The customer's notes for other modules (ModuleAccessService.customerNotes). Only the module
+    // that owns customers provides it.
+    val customerNotesReader: CustomerNotesReader?
+        get() = null
     // Configuration copied when a company is duplicated (see SettingsTable): parent tables first.
     // Leave out data (customers, leads...) and per-user rows; reset credentials and anything that
     // identifies the original company outside the server (domains, webhook secrets, API keys).
@@ -226,6 +238,33 @@ class ModuleRegistry(
             return@mapNotNull null
         }
         RegisteredCustomerTimeline(moduleId, module.definition.displayName, timeline)
+    }
+
+    // The customer notes reader of the first installed module that has one (Clientes).
+    fun customerNotesReader(): CustomerNotesReader? = installedIds.sorted().firstNotNullOfOrNull { moduleId ->
+        try {
+            modulesById[moduleId]?.customerNotesReader
+        } catch (_: LinkageError) {
+            null
+        }
+    }
+
+    // The customer change listener of the first installed module that has one (Clientes).
+    fun customerChangeListener(): CustomerChangeListener? = installedIds.sorted().firstNotNullOfOrNull { moduleId ->
+        try {
+            modulesById[moduleId]?.customerChangeListener
+        } catch (_: LinkageError) {
+            null
+        }
+    }
+
+    // The customer history writer of the first installed module that has one (Clientes).
+    fun customerHistoryWriter(): CustomerHistoryWriter? = installedIds.sorted().firstNotNullOfOrNull { moduleId ->
+        try {
+            modulesById[moduleId]?.customerHistoryWriter
+        } catch (_: LinkageError) {
+            null
+        }
     }
 
     // Agent tools of every installed module.

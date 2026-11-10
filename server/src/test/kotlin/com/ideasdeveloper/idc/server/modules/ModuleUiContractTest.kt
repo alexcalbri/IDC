@@ -11,6 +11,8 @@ import com.ideasdeveloper.idc.ui.UiList
 import com.ideasdeveloper.idc.ui.UiListItem
 import com.ideasdeveloper.idc.ui.UiMetric
 import com.ideasdeveloper.idc.ui.UiNavigate
+import com.ideasdeveloper.idc.ui.UiAction
+import com.ideasdeveloper.idc.ui.UiOpenModule
 import com.ideasdeveloper.idc.ui.UiRequest
 import com.ideasdeveloper.idc.ui.UiScreen
 import com.ideasdeveloper.idc.ui.UiTimeline
@@ -76,6 +78,17 @@ class ModuleUiContractTest {
         assertIs<UiUnknownNode>(screen.body[0])
         assertIs<UiUnknownAction>((screen.body[1] as UiButton).action)
         assertEquals(3, screen.body.size)
+    }
+
+    @Test
+    fun openModuleLinksRoundTripAlone() {
+        // Customer history stores the link of each entry as JSON on its own (customer_history.link).
+        val link: UiAction = UiOpenModule("crm", "lead", mapOf("id" to "42"))
+        val json = UiJson.encodeToString(UiAction.serializer(), link)
+        assertTrue(json.contains("\"type\":\"openModule\""))
+        assertEquals(link, UiJson.decodeFromString(UiAction.serializer(), json))
+        val item = UiListItem("Venta convertida en Hotel", action = link)
+        assertEquals(item, UiJson.decodeFromString(UiListItem.serializer(), UiJson.encodeToString(UiListItem.serializer(), item)))
     }
 
     @Test

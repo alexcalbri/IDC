@@ -267,11 +267,11 @@ object CrmImportTargets {
             }.toMap()
             if (values.isNotEmpty()) {
                 tenant.prepareStatement(
-                    "UPDATE customers SET flexible_attributes = flexible_attributes || CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT customer_id FROM crm_leads WHERE id = ?)"
+                    "UPDATE customers SET flexible_attributes = flexible_attributes || CAST(? AS jsonb), updated_at = CURRENT_TIMESTAMP WHERE id = (SELECT customer_id FROM crm_leads WHERE id = ?) RETURNING id"
                 ).use { update ->
                     update.setString(1, JsonObject(values).toString())
                     update.setObject(2, leadId)
-                    update.executeUpdate()
+                    update.executeQuery().use { rows -> if (rows.next()) CrmCustomerEvents.changed(tenant, rows.getObject(1, java.util.UUID::class.java)) }
                 }
             }
         }

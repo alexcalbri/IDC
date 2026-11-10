@@ -44,6 +44,12 @@ class ModuleAccessService(
     private val customerTimelines: () -> List<RegisteredCustomerTimeline> = { emptyList() },
     // File storage of the companies (see CompanyFiles); modules reach it through files().
     private val companyFiles: CompanyFiles = CompanyFiles.local(java.nio.file.Path.of("build/company-files")),
+    // Where customer history events are stored (ModuleRegistry.customerHistoryWriter).
+    private val customerHistoryWriter: () -> CustomerHistoryWriter? = { null },
+    // Copies customers changed by modules to the companies they are shared with (ModuleRegistry.customerChangeListener).
+    private val customerChangeListener: () -> CustomerChangeListener? = { null },
+    // The customer's notes for other modules (ModuleRegistry.customerNotesReader).
+    private val customerNotesReader: () -> CustomerNotesReader? = { null },
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(ModuleAccessService::class.java)
     private val tokenGenerator = SessionTokenGenerator()
@@ -175,8 +181,91 @@ class ModuleAccessService(
             .sortedByDescending { it.second.at }
             .take(limit)
             .map { (registered, entry) ->
-                CustomerHistoryEntry(entry.at.toString(), registered.moduleId, registered.moduleName, entry.kind, entry.title, entry.detail, entry.author)
+                CustomerHistoryEntry(entry.at.toString(), registered.moduleId, registered.moduleName, entry.kind, entry.title, entry.detail, entry.author, entry.link)
             }
+    }
+
+    /**
+     * Writes [event] in the customer's history of the company of [tenant] (the company's tab of the
+     * customer in Clientes). Does nothing and returns false when no installed module stores customer
+     * history or the company does not use it. Never breaks the caller: inside a transaction the write
+     * runs in a savepoint, and a failure is logged and rolled back to it.
+     */
+    fun recordCustomerEvent(tenant: Connection, event: CustomerHistoryEvent): Boolean {
+        val writer = customerHistoryWriter() ?: return false
+        val savepoint = if (tenant.autoCommit) null else tenant.setSavepoint()
+        return try {
+            writer.write(tenant, event)
+            savepoint?.let { tenant.releaseSavepoint(it) }
+            true
+        } catch (failure: Exception) {
+            savepoint?.let { runCatching { tenant.rollback(it) } }
+            log.warn("Customer history event of module {} not written: {}", event.moduleId, failure.message)
+            false
+        }
+    }
+
+    /**
+     * The customer's notes (tastes, preferences, general information), newest first, to show them
+     * where the customer is attended (the CRM lead). Null when no installed module keeps customer
+     * notes or they cannot be read; hide the notes then.
+     */
+    fun customerNotes(tenant: Connection, customerId: UUID, limit: Int = 5): List<CustomerNote>? {
+        val reader = customerNotesReader() ?: return null
+        return try {
+            reader.notes(this, tenant, customerId, limit)
+        } catch (failure: Exception) {
+            log.warn("Notes of customer {} not read: {}", customerId, failure.message)
+            null
+        }
+    }
+
+    /**
+     * Call after changing a customer's data (name, email, phone, custom fields) in [tenant]: the
+     * customer is one record for the companies it is shared with, so the change is copied to them now.
+     * Call it once the change is committed. Never throws; a failure is logged.
+     */
+    fun customerChanged(tenant: Connection, customerId: UUID) {
+        val listener = customerChangeListener() ?: return
+        try {
+            listener.changed(this, tenant, customerId)
+        } catch (failure: Exception) {
+            log.warn("Customer {} not copied to the companies it is shared with: {}", customerId, failure.message)
+        }
+    }
+
+    /**
+     * The active companies of the business owner of [companyCode] (its owner group), itself included,
+     * by name. Only the company itself for the server workspace or a company in no group.
+     */
+    fun groupCompanies(companyCode: String): List<GroupCompany> = central.connection.use { connection ->
+        connection.prepareStatement(
+            """
+            SELECT target.code, target.name
+            FROM companies origin
+            JOIN companies target ON target.code = origin.code OR (origin.owner_group IS NOT NULL AND target.owner_group = origin.owner_group)
+            WHERE origin.code = ? AND target.is_active AND NOT target.is_server_workspace
+            ORDER BY CASE WHEN target.code = origin.code THEN 0 ELSE 1 END, lower(target.name)
+            """.trimIndent()
+        ).use { query ->
+            query.setString(1, companyCode)
+            query.executeQuery().use { rows ->
+                buildList { while (rows.next()) add(GroupCompany(rows.getString(1), rows.getString(2))) }
+            }
+        }
+    }
+
+    /** The company whose database [tenant] is connected to, or null for one the server does not know. */
+    fun companyOf(tenant: Connection): GroupCompany? {
+        val database = tenant.createStatement().use { statement ->
+            statement.executeQuery("SELECT current_database()").use { rows -> if (rows.next()) rows.getString(1) else null }
+        } ?: return null
+        return central.connection.use { connection ->
+            connection.prepareStatement("SELECT code, name FROM companies WHERE database_name = ?").use { query ->
+                query.setString(1, database)
+                query.executeQuery().use { rows -> if (rows.next()) GroupCompany(rows.getString(1), rows.getString(2)) else null }
+            }
+        }
     }
 
     // Central control-plane connection for module-owned central tables such as public_domains.

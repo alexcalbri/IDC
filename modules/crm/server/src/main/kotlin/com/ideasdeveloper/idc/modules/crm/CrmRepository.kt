@@ -368,7 +368,8 @@ object CrmRepository {
         names: CrmNames,
         actor: CrmActor,
         fields: List<CrmField> = emptyList(),
-    ) = transaction(tenant) {
+    ) {
+        transaction(tenant) {
         tenant.prepareStatement(
             "UPDATE customers SET display_name = ?, primary_email = ?, primary_phone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
         ).use { update ->
@@ -404,8 +405,11 @@ object CrmRepository {
                 update.executeUpdate()
             }
         }
-        leadChanges(lead, input, fields)?.let { addActivity(tenant, lead.id, "updated", it, actor) }
-        linkFiles(tenant, lead.id, input, fields, actor)
+            leadChanges(lead, input, fields)?.let { addActivity(tenant, lead.id, "updated", it, actor) }
+            linkFiles(tenant, lead.id, input, fields, actor)
+        }
+        // Name, email and phone belong to the customer: they change at once in every company it is shared with.
+        CrmCustomerEvents.changed(tenant, lead.customerId)
     }
 
     /** "Campo: antes -> despues" for each changed value of the lead form, or null when nothing changed. */
@@ -458,6 +462,10 @@ object CrmRepository {
         }
         val from = stages.firstOrNull { it.id == lead.stageId }?.name ?: "otra etapa"
         addActivity(tenant, lead.id, "stage", "$from -> ${stage.name}", actor, fromStage = lead.stageId, toStage = stage.id)
+        // A won lead is a sale: it goes to the customer's history of the company, with a link to the lead.
+        if (stage.kind == StageKind.Won && stages.firstOrNull { it.id == lead.stageId }?.kind != StageKind.Won) {
+            CrmCustomerEvents.won(tenant, lead, actor)
+        }
     }
 
     fun addNote(tenant: Connection, leadId: UUID, body: String, actor: CrmActor) {

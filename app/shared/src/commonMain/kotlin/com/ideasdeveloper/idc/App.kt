@@ -26,6 +26,7 @@ import com.ideasdeveloper.idc.app.features.company.ui.ServerStaffScreen
 import com.ideasdeveloper.idc.app.features.company.ui.ServerLogsScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
+import com.ideasdeveloper.idc.app.features.modules.ui.ModuleDeepLinks
 import com.ideasdeveloper.idc.app.features.settings.ui.SettingsScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.ConfirmDialog
 import com.ideasdeveloper.idc.navigation.NavRoute
@@ -185,6 +186,10 @@ fun App(initialServerUrl: String = "") {
                         onLogout = ::requestLogout,
                         onReturnToDashboard = ::openDashboard,
                         onCompanySwitched = { clientConfiguration = ClientConfigurationStore.load() },
+                        onOpenModule = { action ->
+                            ModuleDeepLinks.open(action)
+                            navController.navigate("module/${action.moduleId}")
+                        },
                     )
                 }
             }

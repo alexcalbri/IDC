@@ -425,6 +425,19 @@ seconds per run so large downloads continue on the next minute.
   with `customFields` in `crm_create_lead` / `crm_update_lead` (by name or key); files are only
   attached from the app.
 
+## Customer history (0.15.0)
+
+When a lead moves to a won stage (from the board, a bulk action, a sold or booked item or an agent)
+the CRM writes "Venta convertida en {empresa}" in the customer's history of the company, with the
+interest, value, dates and items sold or booked, and a link that opens the lead
+(`CrmCustomerEvents`, once per lead). The customer's requirements, documents, notes and stage
+changes stay in the lead; the customer's history only lists the sale and the reservations of its
+leads. Leads imported already won are not written.
+
+The lead shows the customer's notes ("Notas del cliente", from Clientes: tastes and preferences
+that apply to every lead) with a button that opens the customer's profile. The lead's own notes
+("Notas del lead", in its activity) and "Detalles" are about that deal only.
+
 ## Not in this version
 
 Automations (move by rule) and attachments

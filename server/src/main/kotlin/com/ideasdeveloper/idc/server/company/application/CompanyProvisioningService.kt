@@ -4,6 +4,8 @@ import com.ideasdeveloper.idc.server.modules.CompanyFiles
 import com.ideasdeveloper.idc.server.company.api.ServerNameResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.ServerNameSetting
 import com.ideasdeveloper.idc.server.company.api.DuplicateOwnerRequest
+import com.ideasdeveloper.idc.server.company.api.BusinessOwnerResponse
+import com.ideasdeveloper.idc.server.company.api.UpdateBusinessOwnerRequest
 import com.ideasdeveloper.idc.server.modules.SettingsCopy
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.TenantDatabaseConfig
 import com.ideasdeveloper.idc.server.auth.application.UserProfileRules
@@ -727,6 +729,160 @@ class CompanyProvisioningService(
             insertAudit(connection, provisioningRole, auditAction, normalizedCompanyCode, null, """{"businessOwnerUsername":"$ownerRole"}""")
         }
     }
+
+    private class OwnerRef(val id: UUID, val role: String, val displayName: String?, val email: String?)
+
+    /** User, name and email of the business owner of [companyCode]. */
+    fun businessOwner(companyCode: String): BusinessOwnerResponse {
+        val owner = ownerOf(companyCode.trim())
+        return BusinessOwnerResponse(owner.role, owner.displayName.orEmpty(), owner.email.orEmpty())
+    }
+
+    /**
+     * New user, name, email and, when given, password of the business owner of [companyCode], by the
+     * server owner. The owner's PostgreSQL role is shared by every company it owns (duplicated
+     * companies keep it), so the change applies to all of them. Renaming the role clears its password
+     * in PostgreSQL, so a new user needs a new password.
+     */
+    fun updateBusinessOwner(companyCode: String, request: UpdateBusinessOwnerRequest, provisioningRole: String): BusinessOwnerResponse {
+        val code = companyCode.trim()
+        val owner = ownerOf(code)
+        val username = request.username.trim()
+        val displayName = request.displayName.trim()
+        val email = request.email.trim()
+        val password = request.password
+        UserProfileRules.problem(displayName, email)?.let { throw CompanyProvisioningException("Business owner: $it") }
+        if (!postgresRolePattern.matches(username)) {
+            throw CompanyProvisioningException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+        }
+        val renamed = username != owner.role
+        if (renamed && password.isEmpty()) {
+            throw CompanyProvisioningException("Para cambiar el usuario del business owner escribe tambien una contrasena nueva.")
+        }
+        if (password.isNotEmpty() && password.length < 12) {
+            throw CompanyProvisioningException("La contrasena del business owner debe tener al menos 12 caracteres.")
+        }
+        val tenants = companyTenants()
+        val ownerTenants = tenants.filter { tenant -> ownerRoleIn(tenant, owner.role) }
+        if (renamed) {
+            val taken = adminConnection(provisioningRole).use { it.existsRole(username) } ||
+                tenants.any { tenant -> runCatching { tenantRuntimeConnection(tenant).use { it.exists("application_users", "postgres_role", username) } }.getOrDefault(false) }
+            if (taken) throw CompanyProvisioningException("Ya existe un usuario con ese nombre.")
+        }
+
+        adminConnection(provisioningRole).use { admin ->
+            admin.autoCommit = true
+            admin.createStatement().use { statement ->
+                if (renamed) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(owner.role)} RENAME TO ${quoteIdentifier(username)}")
+                if (password.isNotEmpty()) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} PASSWORD ${quoteLiteral(password)}")
+            }
+        }
+        try {
+            ownerTenants.forEach { tenant ->
+                tenantRuntimeConnection(tenant).use { connection ->
+                    val ownerIds = connection.prepareStatement(
+                        """
+                        UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?
+                        WHERE postgres_role = ? AND id IN (SELECT user_id FROM business_owner)
+                        RETURNING id
+                        """.trimIndent()
+                    ).use { update ->
+                        update.setString(1, username)
+                        update.setString(2, displayName)
+                        update.setString(3, email)
+                        update.setString(4, owner.role)
+                        update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
+                    }
+                    if (password.isNotEmpty()) {
+                        ownerIds.forEach { id ->
+                            // Owners sign in with their role; an application password would keep the old one working.
+                            connection.prepareStatement("DELETE FROM application_user_credentials WHERE user_id = ?").use { delete ->
+                                delete.setObject(1, id)
+                                delete.executeUpdate()
+                            }
+                            connection.prepareStatement(
+                                "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
+                            ).use { revoke ->
+                                revoke.setObject(1, id)
+                                revoke.executeUpdate()
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (failure: Exception) {
+            // Without its row the owner could not sign in with the new user: give the role its name back.
+            if (renamed) {
+                runCatching {
+                    adminConnection(provisioningRole).use { admin ->
+                        admin.autoCommit = true
+                        admin.createStatement().use { it.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} RENAME TO ${quoteIdentifier(owner.role)}") }
+                    }
+                }
+            }
+            throw failure
+        }
+        central.connection.use { connection ->
+            insertAudit(
+                connection, provisioningRole, "company.owner_updated", code, null,
+                """{"businessOwnerUsername":"${username.escapeJson()}","previousUsername":"${owner.role.escapeJson()}","passwordChanged":${password.isNotEmpty()}}""",
+            )
+        }
+        return BusinessOwnerResponse(username, displayName, email)
+    }
+
+    /** The business owner edits their own data; runs as the first server owner's role, like password recovery. */
+    fun updateBusinessOwnerBySelf(companyCode: String, request: UpdateBusinessOwnerRequest): BusinessOwnerResponse {
+        val role = firstServerOwnerRole() ?: throw CompanyProvisioningException("El servidor no tiene un dueno activo.")
+        return updateBusinessOwner(companyCode, request, role)
+    }
+
+    private fun ownerOf(companyCode: String): OwnerRef {
+        rejectServerWorkspace(companyCode)
+        val company = central.connection.use { connection -> findCompanyAnyState(connection, companyCode) }
+            ?: throw CompanyProvisioningException("Empresa no encontrada.")
+        val tenant = loginDatabases.tenantConfig(company.databaseName) ?: tenantConfig(company.databaseName)
+        return tenantRuntimeConnection(tenant).use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT users.id, users.postgres_role, users.display_name, users.email
+                FROM business_owner owner
+                JOIN application_users users ON users.id = owner.user_id
+                LIMIT 1
+                """.trimIndent()
+            ).use { query ->
+                query.executeQuery().use { rows ->
+                    if (rows.next()) OwnerRef(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3), rows.getString(4)) else null
+                }
+            }
+        } ?: throw CompanyProvisioningException("La empresa no tiene business owner.")
+    }
+
+    // Tenant databases of every company, active or not, and of the server workspace.
+    private fun companyTenants(): List<TenantDatabaseConfig> = central.connection.use { connection ->
+        connection.prepareStatement("SELECT database_name FROM companies").use { query ->
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) {
+                        val name = rows.getString(1)
+                        add(loginDatabases.tenantConfig(name) ?: tenantConfig(name))
+                    }
+                }
+            }
+        }
+    }
+
+    // Whether [role] is the business owner of [tenant]; a database that cannot be opened counts as no.
+    private fun ownerRoleIn(tenant: TenantDatabaseConfig, role: String): Boolean = runCatching {
+        tenantRuntimeConnection(tenant).use { connection ->
+            connection.prepareStatement(
+                "SELECT 1 FROM business_owner owner JOIN application_users users ON users.id = owner.user_id WHERE users.postgres_role = ?"
+            ).use { query ->
+                query.setString(1, role)
+                query.executeQuery().use { it.next() }
+            }
+        }
+    }.getOrDefault(false)
 
     // Postgres role of an active server owner, the role their changes run as; null when not one.
     fun serverOwnerRole(userId: UUID): String? = central.connection.use { connection ->

@@ -22,6 +22,7 @@ import com.ideasdeveloper.idc.ui.UiListItem
 import com.ideasdeveloper.idc.ui.UiMetric
 import com.ideasdeveloper.idc.ui.UiNavItem
 import com.ideasdeveloper.idc.ui.UiNavigate
+import com.ideasdeveloper.idc.ui.UiOpenModule
 import com.ideasdeveloper.idc.ui.UiNavigation
 import com.ideasdeveloper.idc.ui.UiNode
 import com.ideasdeveloper.idc.ui.UiNotice
@@ -427,7 +428,7 @@ object CrmScreens {
         add(UiField("targetEnd", "Fecha de fin", type = "date", readOnly = readOnly, section = "Lo que busca"))
         add(UiField("estimatedValue", "Valor estimado", type = "number", readOnly = readOnly, section = "Lo que busca"))
         add(UiField("message", "Mensaje del lead", type = "textarea", readOnly = readOnly, section = "Mensaje y detalles"))
-        add(UiField("details", "Detalles", type = "textarea", readOnly = readOnly, help = "Cotizacion, personas, preferencias...", section = "Mensaje y detalles"))
+        add(UiField("details", "Detalles", type = "textarea", readOnly = readOnly, help = "Cotizacion, personas y lo propio de esta oportunidad. Gustos y preferencias que valen siempre van en Notas del cliente.", section = "Mensaje y detalles"))
         context.fields.forEach { field -> add(customField(field, readOnly)) }
         add(
             UiField(
@@ -554,12 +555,31 @@ object CrmScreens {
         val note = UiCard(
             listOf(
                 UiForm(
-                    "note", listOf(UiField("note", "Nota", type = "textarea", required = true, placeholder = "Llamada, respuesta enviada, acuerdos...")),
+                    "note", listOf(UiField("note", "Nota del lead", type = "textarea", required = true, placeholder = "Llamada, respuesta enviada, acuerdos...")),
                     submit = UiButton("Agregar nota", UiRequest(UiRoute + "/lead", params = id + ("op" to "note"), formId = "note")),
                 ),
             ),
-            title = "Agregar nota",
+            title = "Notas del lead",
         )
+        // Tastes and preferences of the customer (Clientes), so whoever attends the lead does not ask them again.
+        val customerNotes = CrmCustomerEvents.access?.customerNotes(context.tenant, lead.customerId)?.let { notes ->
+            UiCard(
+                listOf(
+                    UiTimeline(
+                        notes.map { note ->
+                            UiTimelineEntry(
+                                note.body,
+                                caption = listOf(note.author, note.companyName, note.at.atZone(ZoneId.systemDefault()).toLocalDate().toString())
+                                    .filter { it.isNotBlank() }.joinToString(" - "),
+                            )
+                        },
+                        emptyText = "Sin notas del cliente. Anota en su ficha sus gustos y preferencias para no preguntarlos en cada lead.",
+                    ),
+                ),
+                title = "Notas del cliente",
+                actions = listOf(UiButton("Abrir ficha", UiOpenModule("clientes", "customer", mapOf("id" to lead.customerId.toString())), style = "secondary")),
+            )
+        }
         val timeline = UiCard(
             listOf(UiTimeline(CrmRepository.activity(context.tenant, lead.id, 100).map { entry(it) })),
             title = "Actividad",
@@ -584,13 +604,13 @@ object CrmScreens {
         val conversation = CrmAdminScreens.conversation(context, lead, canEdit, submitted)
         val items = CrmWordPressScreens.items(context, lead, canEdit)
         val reservation = CrmCloudbedsScreens.reservation(context, lead, canEdit)
-        return listOfNotNull(header, actions, review, suggestion, form, items, reservation, conversation, note.takeIf { canEdit }, timeline)
+        return listOfNotNull(header, actions, review, suggestion, customerNotes, form, items, reservation, conversation, note.takeIf { canEdit }, timeline)
     }
 
     private fun entry(activity: CrmActivity): UiTimelineEntry {
         val (title, tone) = when (activity.kind) {
             "created" -> "Lead creado" to UiTone.Info
-            "note" -> "Nota" to UiTone.Neutral
+            "note" -> "Nota del lead" to UiTone.Neutral
             "stage" -> "Cambio de etapa" to UiTone.Success
             "owner" -> "Responsable" to UiTone.Warning
             "interest" -> "Interes" to UiTone.Info

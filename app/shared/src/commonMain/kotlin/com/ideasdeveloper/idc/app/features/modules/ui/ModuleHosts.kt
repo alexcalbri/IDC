@@ -56,6 +56,7 @@ import com.ideasdeveloper.idc.ui.UiNavigation
 import com.ideasdeveloper.idc.ui.UiNode
 import com.ideasdeveloper.idc.ui.UiNotice
 import com.ideasdeveloper.idc.ui.UiOpenUrl
+import com.ideasdeveloper.idc.ui.UiOpenModule
 import com.ideasdeveloper.idc.ui.UiRequest
 import com.ideasdeveloper.idc.ui.UiScreen
 import com.ideasdeveloper.idc.ui.UiTone
@@ -66,9 +67,34 @@ import org.jetbrains.compose.resources.decodeToImageBitmap
 // Datos de sesion necesarios para llamar rutas de un modulo de empresa.
 data class ModuleCallContext(val serverUrl: String, val accessToken: String, val companyCode: String)
 
-/** Dibuja la interfaz nativa de un modulo pidiendo cada pantalla al servidor. */
+/**
+ * Pantalla de otro modulo pedida por una accion UiOpenModule (por ejemplo el lead del CRM desde el
+ * historial de un cliente): la app abre ese modulo y su host la muestra en lugar de su inicio.
+ */
+object ModuleDeepLinks {
+    private var pending: Pair<String, UiNavigate>? = null
+
+    fun open(action: UiOpenModule) {
+        pending = action.moduleId to UiNavigate(action.screen, action.params)
+    }
+
+    // La pantalla pedida para [moduleId], una sola vez.
+    fun take(moduleId: String): UiNavigate? = pending?.takeIf { it.first == moduleId }?.second?.also { pending = null }
+}
+
+/**
+ * Dibuja la interfaz nativa de un modulo pidiendo cada pantalla al servidor. [initial] es la primera
+ * pantalla (por defecto la de inicio del modulo); [onOpenModule] abre una pantalla de otro modulo.
+ */
 @Composable
-fun NativeModuleHost(ui: ModuleUiEntry, context: ModuleCallContext, companyAccent: Color, modifier: Modifier = Modifier) {
+fun NativeModuleHost(
+    ui: ModuleUiEntry,
+    context: ModuleCallContext,
+    companyAccent: Color,
+    modifier: Modifier = Modifier,
+    initial: UiNavigate? = null,
+    onOpenModule: (UiOpenModule) -> Unit = {},
+) {
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     var screen by remember(ui.entry) { mutableStateOf<UiScreen?>(null) }
@@ -77,7 +103,7 @@ fun NativeModuleHost(ui: ModuleUiEntry, context: ModuleCallContext, companyAccen
     var error by remember(ui.entry) { mutableStateOf<String?>(null) }
     var message by remember(ui.entry) { mutableStateOf<UiNotice?>(null) }
     var pendingConfirm by remember(ui.entry) { mutableStateOf<UiRequest?>(null) }
-    var lastNavigation by remember(ui.entry) { mutableStateOf(UiNavigate(ui.home)) }
+    var lastNavigation by remember(ui.entry) { mutableStateOf(initial ?: UiNavigate(ui.home)) }
 
     fun show(next: UiScreen) {
         screen = next
@@ -122,11 +148,12 @@ fun NativeModuleHost(ui: ModuleUiEntry, context: ModuleCallContext, companyAccen
                 message = UiNotice(saveTextFile(action.fileName, text, "text/csv;charset=utf-8"), UiTone.Success)
             }
             is UiOpenUrl -> runCatching { uriHandler.openUri(action.url) }
+            is UiOpenModule -> onOpenModule(action)
             else -> Unit
         }
     }
 
-    LaunchedEffect(ui.entry, context) { execute(UiNavigate(ui.home)) }
+    LaunchedEffect(ui.entry, context) { execute(initial ?: UiNavigate(ui.home)) }
 
     val colors = ModuleColors.from(AppTheme.colors)
     val renderContext = ModuleRenderContext(

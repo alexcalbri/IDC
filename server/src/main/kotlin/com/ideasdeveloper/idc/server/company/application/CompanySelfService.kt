@@ -12,6 +12,9 @@ import com.ideasdeveloper.idc.server.company.api.CompanyUserResponse
 import com.ideasdeveloper.idc.server.company.api.CompanyUsersResponse
 import com.ideasdeveloper.idc.server.company.api.CreateCompanyUserRequest
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyUserPermissionsRequest
+import com.ideasdeveloper.idc.server.company.api.UpdateCompanyUserRequest
+import com.ideasdeveloper.idc.server.company.api.UpdateBusinessOwnerRequest
+import com.ideasdeveloper.idc.server.company.api.BusinessOwnerResponse
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyProfileRequest
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import kotlinx.serialization.Serializable
@@ -46,6 +49,9 @@ class CompanySelfService(
     private val loginDatabases: LoginDatabases,
     private val moduleRegistry: ModuleRegistry,
     private val backupsRoot: Path,
+    // Edits the business owner (a PostgreSQL role shared by the companies it owns); see
+    // CompanyProvisioningService.updateBusinessOwnerBySelf. Null where owners cannot be edited.
+    private val ownerEditor: ((companyCode: String, request: UpdateBusinessOwnerRequest) -> BusinessOwnerResponse)? = null,
 ) {
     // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
     private val tokenGenerator = SessionTokenGenerator()
@@ -215,6 +221,10 @@ class CompanySelfService(
                 if (connection.existsUser(username)) {
                     throw CompanySelfException("Ya existe un usuario con ese nombre.")
                 }
+                // Sign-in also accepts a PostgreSQL role's password for the same name.
+                if (connection.existsRole(username)) {
+                    throw CompanySelfException("Ese nombre de usuario esta reservado; elige otro.")
+                }
                 connection.prepareStatement(
                     "INSERT INTO application_users (id, postgres_role, is_active, display_name, email) VALUES (?, ?, TRUE, ?, ?)"
                 ).use { insert ->
@@ -272,6 +282,100 @@ class CompanySelfService(
                     throw CompanySelfException("Usuario no encontrado.")
                 }
                 replaceUserPermissions(connection, targetUserId, request.permissions)
+                connection.commit()
+            } catch (failure: Exception) {
+                connection.rollback()
+                throw failure
+            } finally {
+                connection.autoCommit = true
+            }
+            return loadUser(connection, targetUserId) ?: throw CompanySelfException("Usuario no encontrado.")
+        }
+    }
+
+    /**
+     * Every field of a user: user, name, email, active, permissions and, when given, a new password.
+     * The business owner edits themself here too (their user and password are a PostgreSQL role, so
+     * that goes through [ownerEditor]); their permissions and active state do not change.
+     */
+    fun updateUser(companyCode: String, accessToken: String, userId: String, request: UpdateCompanyUserRequest): CompanyUserResponse {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        val targetUserId = try {
+            UUID.fromString(userId)
+        } catch (_: IllegalArgumentException) {
+            throw CompanySelfException("Usuario invalido.")
+        }
+        val username = request.username.trim()
+        val displayName = request.displayName.trim()
+        val email = request.email.trim()
+        val password = request.password
+        if (!postgresRolePattern.matches(username)) {
+            throw CompanySelfException("El usuario debe iniciar con una letra minuscula y usar solo letras, numeros o guion bajo.")
+        }
+        UserProfileRules.problem(displayName, email)?.let { throw CompanySelfException("Usuario: $it") }
+        if (password.isNotEmpty() && password.length < 12) {
+            throw CompanySelfException("La contrasena del usuario debe tener al menos 12 caracteres.")
+        }
+        if (targetUserId == context.businessOwnerUserId) {
+            val editor = ownerEditor ?: throw CompanySelfException("El business owner no se puede editar en este servidor.")
+            editor(context.companyCode, UpdateBusinessOwnerRequest(username, displayName, email, password))
+            return tenantConnection(context.tenant).use { connection -> loadUser(connection, targetUserId) }
+                ?: throw CompanySelfException("Usuario no encontrado.")
+        }
+        tenantConnection(context.tenant).use { connection ->
+            syncPermissionCatalog(connection)
+            validatePermissions(connection, request.permissions)
+            connection.autoCommit = false
+            try {
+                val current = connection.prepareStatement("SELECT postgres_role, is_active FROM application_users WHERE id = ?").use { query ->
+                    query.setObject(1, targetUserId)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) to rows.getBoolean(2) else null }
+                } ?: throw CompanySelfException("Usuario no encontrado.")
+                if (connection.isBusinessOwner(targetUserId)) {
+                    throw CompanySelfException("Solo el business owner o el dueno del servidor pueden editar al business owner.")
+                }
+                if (username != current.first) {
+                    if (connection.existsUser(username)) throw CompanySelfException("Ya existe un usuario con ese nombre.")
+                    // Sign-in also accepts a PostgreSQL role's password for the same name.
+                    if (connection.existsRole(username)) throw CompanySelfException("Ese nombre de usuario esta reservado; elige otro.")
+                }
+                connection.prepareStatement(
+                    "UPDATE application_users SET postgres_role = ?, display_name = ?, email = ?, is_active = ? WHERE id = ?"
+                ).use { update ->
+                    update.setString(1, username)
+                    update.setString(2, displayName)
+                    update.setString(3, email)
+                    update.setBoolean(4, request.isActive)
+                    update.setObject(5, targetUserId)
+                    update.executeUpdate()
+                }
+                replaceUserPermissions(connection, targetUserId, request.permissions)
+                if (password.isNotEmpty()) {
+                    val hash = ApplicationPasswordHasher.hash(password)
+                    connection.prepareStatement(
+                        """
+                        INSERT INTO application_user_credentials (user_id, password_salt, password_hash, iterations)
+                        VALUES (?, ?, ?, ?)
+                        ON CONFLICT (user_id) DO UPDATE SET password_salt = EXCLUDED.password_salt,
+                            password_hash = EXCLUDED.password_hash, iterations = EXCLUDED.iterations
+                        """.trimIndent()
+                    ).use { upsert ->
+                        upsert.setObject(1, targetUserId)
+                        upsert.setString(2, hash.salt)
+                        upsert.setString(3, hash.hash)
+                        upsert.setInt(4, hash.iterations)
+                        upsert.executeUpdate()
+                    }
+                }
+                // A new password or a deactivated user closes the user's open sessions.
+                if (password.isNotEmpty() || (current.second && !request.isActive)) {
+                    connection.prepareStatement(
+                        "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL"
+                    ).use { revoke ->
+                        revoke.setObject(1, targetUserId)
+                        revoke.executeUpdate()
+                    }
+                }
                 connection.commit()
             } catch (failure: Exception) {
                 connection.rollback()
@@ -490,6 +594,7 @@ class CompanySelfService(
             displayName = user.third.first,
             email = user.third.second,
             userCode = ApplicationUserCodes.ensure(connection, userId),
+            isBusinessOwner = connection.isBusinessOwner(userId),
         )
     }
 
@@ -528,6 +633,18 @@ class CompanySelfService(
     private fun java.sql.Connection.userExists(userId: UUID): Boolean =
         prepareStatement("SELECT 1 FROM application_users WHERE id = ?").use { query ->
             query.setObject(1, userId)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+
+    private fun java.sql.Connection.isBusinessOwner(userId: UUID): Boolean =
+        prepareStatement("SELECT 1 FROM business_owner WHERE user_id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> rows.next() }
+        }
+
+    private fun java.sql.Connection.existsRole(name: String): Boolean =
+        prepareStatement("SELECT 1 FROM pg_roles WHERE rolname = ?").use { query ->
+            query.setString(1, name)
             query.executeQuery().use { rows -> rows.next() }
         }
 

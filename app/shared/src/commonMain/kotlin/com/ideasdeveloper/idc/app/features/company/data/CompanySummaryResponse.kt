@@ -74,6 +74,22 @@ data class UpdateCompanyStatusRequest(
 )
 
 @Serializable
+data class BusinessOwnerResponse(
+    val username: String,
+    val displayName: String = "",
+    val email: String = "",
+)
+
+// Blank password keeps it; a new username needs a new password.
+@Serializable
+data class UpdateBusinessOwnerRequest(
+    val username: String,
+    val displayName: String,
+    val email: String,
+    val password: String = "",
+)
+
+@Serializable
 data class ResetBusinessOwnerPasswordRequest(
     val password: String,
 )

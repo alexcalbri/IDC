@@ -169,18 +169,21 @@ object CrmInbox {
     /** Gives its name to the customer of that identity when it still has the placeholder; never replaces a name. */
     fun fillName(tenant: Connection, channel: String, identity: String, name: String): Boolean {
         val clean = name.trim().take(200).ifEmpty { return false }
-        return tenant.prepareStatement(
+        val changed = tenant.prepareStatement(
             """
             UPDATE customers SET display_name = ?, updated_at = CURRENT_TIMESTAMP
             WHERE display_name = ? AND id IN (SELECT customer_id FROM crm_identities WHERE channel = ? AND external_id = ?)
+            RETURNING id
             """.trimIndent()
         ).use { update ->
             update.setString(1, clean)
             update.setString(2, placeholderName(channel, identity))
             update.setString(3, channel)
             update.setString(4, identity)
-            update.executeUpdate() > 0
+            update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
         }
+        changed.forEach { CrmCustomerEvents.changed(tenant, it) }
+        return changed.isNotEmpty()
     }
 
     /** Identities of a channel whose customer still has the placeholder name. */
@@ -226,7 +229,7 @@ object CrmInbox {
             update.setObject(3, customer)
             update.setString(4, email)
             update.setString(5, phone)
-            update.executeUpdate()
+            if (update.executeUpdate() > 0) CrmCustomerEvents.changed(tenant, customer)
         }
     }
 

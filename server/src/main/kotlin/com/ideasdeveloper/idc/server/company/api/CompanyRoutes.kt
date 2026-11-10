@@ -162,6 +162,31 @@ fun Route.companyRoutes(
         }
     }
 
+    // Every field of a user (user, name, email, active, permissions, password), by the owner.
+    put("/companies/me/users/{userId}") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val context = call.businessOwnerContext()
+        val service = selfService
+        if (context == null || service == null) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            return@put
+        }
+        val request = runCatching { call.receive<UpdateCompanyUserRequest>() }.getOrNull()
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+        try {
+            call.respond(
+                HttpStatusCode.OK,
+                withContext(Dispatchers.IO) { service.updateUser(context.companyCode, context.token, call.parameters["userId"].orEmpty(), request) },
+            )
+        } catch (exception: CompanySelfException) {
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: "No se pudo actualizar el usuario."))
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: "No se pudo actualizar el usuario."))
+        } catch (exception: SQLException) {
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
+        }
+    }
+
     // Crea un ZIP de backup no destructivo para la empresa actual.
     post("/companies/me/backups") {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
@@ -847,6 +872,43 @@ fun Route.companyRoutes(
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateServerName(request.name, serverOwnerRole) })
         } catch (exception: CompanyProvisioningException) {
             call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("SERVER_NAME_INVALID", exception.message ?: "Nombre invalido."))
+        }
+    }
+
+    // The business owner of a company, for the server owner to edit it.
+    get("/companies/{code}/business-owner") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        call.serverOwnerRole(authorizer)
+            ?: return@get call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+        val service = provisioning
+            ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+        try {
+            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.businessOwner(call.parameters["code"].orEmpty()) })
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(HttpStatusCode.NotFound, CompanyErrorResponse("BUSINESS_OWNER_NOT_FOUND", exception.message ?: "Business owner no encontrado."))
+        } catch (exception: SQLException) {
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
+        }
+    }
+
+    // User, name, email and password of a company's business owner, by the server owner.
+    put("/companies/{code}/business-owner") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+            ?: return@put call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+        val service = provisioning
+            ?: return@put call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+        val request = runCatching { call.receive<UpdateBusinessOwnerRequest>() }.getOrNull()
+            ?: return@put call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+        try {
+            call.respond(
+                HttpStatusCode.OK,
+                withContext(Dispatchers.IO) { service.updateBusinessOwner(call.parameters["code"].orEmpty(), request, serverOwnerRole) },
+            )
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("BUSINESS_OWNER_NOT_UPDATED", exception.message ?: "No se pudo actualizar el business owner."))
+        } catch (exception: SQLException) {
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
         }
     }
 

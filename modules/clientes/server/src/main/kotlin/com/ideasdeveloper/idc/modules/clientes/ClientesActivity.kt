@@ -59,9 +59,18 @@ object ClientesActivity {
         else -> value.toString()
     }
 
-    // Clientes' own part of the customer's history, like any other module's (CustomerTimeline).
+    // Clientes' own part of the customer's history, like any other module's (CustomerTimeline): the
+    // changes of the record and what the customer bought or hired in this company (customer_history,
+    // written by modules or by hand), each with its link to the record that has the details.
     val timeline = CustomerTimeline(permission = "clientes.view") { query ->
-        query.tenant.prepareStatement(
+        val recorded = if (ClientesSharing.supportsSharing(query.tenant)) {
+            ClientesProfile.history(query.tenant, query.customerId, query.limit).map { row ->
+                CustomerTimelineEntry(row.at.toInstant(), row.kind, row.title, row.detail, row.author).apply { link = row.link }
+            }
+        } else {
+            emptyList()
+        }
+        recorded + query.tenant.prepareStatement(
             "SELECT kind, body, author, created_at FROM customer_activity WHERE customer_id = ? ORDER BY created_at DESC LIMIT ?"
         ).use { statement ->
             statement.setObject(1, query.customerId)

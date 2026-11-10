@@ -328,10 +328,50 @@ override val customerTimeline: CustomerTimeline
   for the company and the user holds it (`ModuleRegistryTest` checks the declaration).
 - The function receives `query.customerId`, `query.tenant`, `query.permissions` and `query.limit`;
   it only reads, applies the same visibility rules as the module's screens and returns at most
-  `limit` `CustomerTimelineEntry` (date, kind, title, detail, author), newest first.
-- Clientes shows every module's entries together (`GET /customers/{id}/history`, the app's
-  *Historial* button and `clientes_get_customer_history`) without knowing any module; a module that
-  fails is left out and logged. Use it for reservations, stays, special requests, purchases...
+  `limit` `CustomerTimelineEntry` (date, kind, title, detail, author), newest first. Set
+  `entry.link` (for example `UiOpenModule("ventas", "pedido", mapOf("id" to id))`) so the entry
+  opens the record that has the details.
+- Clientes shows every module's entries together in the company's tab of the customer's profile
+  (and in `GET /customers/{id}/history` and `clientes_get_customer_history`) without knowing any
+  module; a module that fails is left out and logged. Use it for reservations, stays, purchases...
+
+### Writing events in the customer's history
+
+What the customer bought or hired is written when it happens, instead of being computed: call
+`access.recordCustomerEvent(tenant, CustomerHistoryEvent(...))` with the customer id, the module
+id, a `kind` (`[a-z][a-z0-9_]*`), a title, a detail, the author, a `link` to the record (usually
+`UiOpenModule`) and a `sourceRef` that identifies the event in the module ("lead:<id>:won"):
+writing the same `sourceRef` again keeps one entry. Clientes stores it (`customer_history`, its
+`ServerModule.customerHistoryWriter`) in the company of `tenant`. The call never breaks the caller:
+inside a transaction it runs in a savepoint, and without Clientes it does nothing and returns false.
+Keep the details (requirements, documents, notes) in the module's own record; the event only says
+what happened and links to it. The CRM writes "Venta convertida en {empresa}" when a lead is won.
+
+### Changing a customer from another module
+
+A customer is one record for the companies it is shared with. A module that writes the customer's
+name, email, phone or custom fields directly must call `access.customerChanged(tenant, customerId)`
+after committing, so Clientes copies the change to the other companies at once.
+
+### The customer's notes
+
+`access.customerNotes(tenant, customerId, limit)` returns the customer's notes (tastes, preferences,
+general information) newest first, to show them where the customer is attended; the CRM shows them
+in the lead with a button that opens the profile (`UiOpenModule("clientes", "customer", id)`). It
+returns null without Clientes: hide them then. Write notes of a single deal in the module's record.
+
+### Companies of the same business owner
+
+`access.groupCompanies(companyCode)` returns the active companies of the business owner's group
+(the company itself first) and `access.companyOf(tenant)` the company of a database connection,
+with code and name. Use them only for features the business owner shares between their companies,
+like the Clientes profile; each company's data stays in its own database.
+
+### Opening another module
+
+`UiOpenModule(moduleId, screen, params)` is an action that opens a screen of another native module
+of the company (the app goes to that module and shows the screen instead of its home). Older apps
+show the control disabled.
 
 ## Who made a change
 

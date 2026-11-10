@@ -45,7 +45,6 @@ import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.modules.data.CreateCustomerFieldRequest
 import com.ideasdeveloper.idc.app.features.modules.data.CreateCustomerRequest
 import com.ideasdeveloper.idc.app.features.modules.data.CustomerFieldResponse
-import com.ideasdeveloper.idc.app.features.modules.data.CustomerHistoryEntry
 import com.ideasdeveloper.idc.app.features.modules.data.CustomerResponse
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleApi
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleDefinition
@@ -56,6 +55,12 @@ import com.ideasdeveloper.idc.app.features.shell.ui.TopBarMenuItem
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import com.ideasdeveloper.idc.ui.ModuleUiEntry
+import com.ideasdeveloper.idc.ui.UiNavigate
+import com.ideasdeveloper.idc.ui.UiOpenModule
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -71,8 +76,12 @@ fun ServerDrivenModuleScreen(
     onReturnToDashboard: () -> Unit,
     onCompanySwitched: () -> Unit,
     modifier: Modifier = Modifier,
+    // Abre una pantalla de otro modulo (UiOpenModule), por ejemplo el lead del CRM de un cliente.
+    onOpenModule: (UiOpenModule) -> Unit = {},
 ) {
     val companyIdentity = remember { CompanyIdentityStore.current() }
+    // Pantalla pedida por otro modulo al abrir este (ModuleDeepLinks).
+    val deepLink = remember(moduleId) { ModuleDeepLinks.take(moduleId) }
     val colors = AppTheme.colors
     val primaryColor = colors.accent
     var metadata by remember(moduleId) { mutableStateOf<ModuleDefinition?>(null) }
@@ -176,7 +185,7 @@ fun ServerDrivenModuleScreen(
             ) {
                 val panel = Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))
                 if (ui.type == "native") {
-                    NativeModuleHost(ui, callContext, primaryColor, panel)
+                    NativeModuleHost(ui, callContext, primaryColor, panel, initial = deepLink, onOpenModule = onOpenModule)
                 } else {
                     // Los navegadores embebidos se dibujan encima de Compose: se deja aire para que no tapen la X.
                     WebModuleHost(moduleId, callContext, primaryColor, Modifier.padding(top = 20.dp).then(panel))
@@ -229,6 +238,9 @@ fun ServerDrivenModuleScreen(
                             serverUrl = serverUrl,
                             session = session,
                             primaryColor = primaryColor,
+                            onOpenModule = onOpenModule,
+                            // "Abrir ficha" desde otro modulo (el lead del CRM) abre la ficha del cliente.
+                            initialProfileId = deepLink?.takeIf { it.screen == "customer" }?.params?.get("id"),
                         )
                         metadata != null && ui != null && callContext == null -> Text(
                             "Este modulo requiere iniciar sesion en una empresa.",
@@ -261,6 +273,8 @@ private fun CustomerServerDrivenContent(
     serverUrl: String?,
     session: LoginResponse?,
     primaryColor: Color,
+    onOpenModule: (UiOpenModule) -> Unit,
+    initialProfileId: String? = null,
 ) {
     val scope = rememberCoroutineScope()
     var customers by remember { mutableStateOf<List<CustomerResponse>>(emptyList()) }
@@ -276,9 +290,8 @@ private fun CustomerServerDrivenContent(
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
-    // Cliente cuyo historial esta abierto y sus eventos.
-    var historyCustomerId by remember { mutableStateOf<String?>(null) }
-    var history by remember { mutableStateOf<List<CustomerHistoryEntry>>(emptyList()) }
+    // Cliente cuya ficha (notas generales e historial por empresa) esta abierta.
+    var profileCustomerId by remember { mutableStateOf(initialProfileId) }
 
     fun activeContext(): Triple<String, String, String>? {
         val activeServerUrl = serverUrl ?: return null
@@ -434,48 +447,62 @@ private fun CustomerServerDrivenContent(
                             }
                         }
                     }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.danger)) { Text("Eliminar") }
-                    Button(onClick = {
-                        if (historyCustomerId == customer.id) {
-                            historyCustomerId = null
-                            return@Button
-                        }
-                        val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
-                        loading = true
-                        scope.launch {
-                            try {
-                                history = ModuleApi(activeServerUrl).use { api -> api.customerHistory(token, companyCode, customer.id) }
-                                historyCustomerId = customer.id
-                            } catch (exception: ModuleException) {
-                                error = exception.message
-                            } finally {
-                                loading = false
-                            }
-                        }
-                    }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) {
-                        Text(if (historyCustomerId == customer.id) "Ocultar historial" else "Historial")
+                    Button(onClick = { profileCustomerId = customer.id }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) {
+                        Text("Ficha")
                     }
-                }
-                if (historyCustomerId == customer.id) {
-                    CustomerHistory(history, primaryColor)
                 }
             }
         }
     }
+    val profileId = profileCustomerId
+    val context = activeContext()
+    if (profileId != null && context != null) {
+        CustomerProfileDialog(
+            customerId = profileId,
+            context = ModuleCallContext(context.first, context.second, context.third),
+            primaryColor = primaryColor,
+            onOpenModule = { action ->
+                profileCustomerId = null
+                onOpenModule(action)
+            },
+            onDismiss = {
+                profileCustomerId = null
+                loadAll()
+            },
+        )
+    }
 }
-// Historial del cliente, del evento mas reciente al mas antiguo, con el modulo que lo registro.
+
+/**
+ * Ficha del cliente: la dibuja el modulo Clientes desde el servidor (datos, compartir con las
+ * empresas del mismo dueno, notas generales y una pestana de historial por empresa), asi que cambia
+ * sin actualizar la app. Las entradas con detalle abren el registro en su modulo (el lead del CRM).
+ */
 @Composable
-private fun CustomerHistory(entries: List<CustomerHistoryEntry>, primaryColor: Color) {
-    Column(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-        Text("Historial", fontWeight = FontWeight.SemiBold, color = primaryColor)
-        if (entries.isEmpty()) {
-            Text("Aun no hay actividad registrada para este cliente.", color = AppTheme.colors.muted)
-        }
-        entries.forEach { entry ->
-            Column(modifier = Modifier.fillMaxWidth().background(AppTheme.colors.surface, MaterialTheme.shapes.small).padding(8.dp)) {
-                Text(entry.title, color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
-                val author = entry.author.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
-                Text("${entry.at.take(16).replace('T', ' ')} UTC · ${entry.moduleName}$author", color = AppTheme.colors.muted)
-                if (entry.detail.isNotBlank()) Text(entry.detail, color = AppTheme.colors.text)
+private fun CustomerProfileDialog(
+    customerId: String,
+    context: ModuleCallContext,
+    primaryColor: Color,
+    onOpenModule: (UiOpenModule) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth(0.95f)
+                .fillMaxHeight(0.9f)
+                .clip(RoundedCornerShape(18.dp))
+                .background(AppTheme.colors.background),
+        ) {
+            ClosableView(onClose = onDismiss, modifier = Modifier.fillMaxSize()) {
+                NativeModuleHost(
+                    ui = ModuleUiEntry(type = "native", entry = "/modules/clientes/ui", home = "customer"),
+                    context = context,
+                    companyAccent = primaryColor,
+                    modifier = Modifier.fillMaxSize(),
+                    initial = UiNavigate("customer", mapOf("id" to customerId)),
+                    onOpenModule = onOpenModule,
+                )
             }
         }
     }

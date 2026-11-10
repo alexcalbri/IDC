@@ -2,15 +2,16 @@ package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.server.modules.CustomerTimeline
 import com.ideasdeveloper.idc.server.modules.CustomerTimelineEntry
+import com.ideasdeveloper.idc.ui.UiOpenModule
 import java.sql.Connection
 import java.time.LocalDate
 import java.time.OffsetDateTime
 import java.util.UUID
 
 /**
- * What the CRM adds to a customer's history in Clientes: the customer's leads (created, won, lost),
- * reservations, products sold or booked and the notes and changes of the team. Only the leads the
- * user can see in the CRM (interests, assignments) are included.
+ * What the CRM adds to a customer's history in Clientes besides the sales it writes when a lead is
+ * won (CrmCustomerEvents): the reservations of the customer's leads, each linked to its lead. Only
+ * the leads the user can see in the CRM (interests, assignments) are included.
  */
 object CrmCustomerTimeline {
     private class VisibleLead(val id: UUID, val label: String, val createdAt: OffsetDateTime, val closedAt: OffsetDateTime?, val stage: String, val stageKind: String, val source: String)
@@ -20,20 +21,10 @@ object CrmCustomerTimeline {
         val leads = leads(query.tenant, query.customerId).filter { (lead, interestId, ownerId) -> scope.canSee(interestId, ownerId) }.map { it.first }
         if (leads.isEmpty()) return@CustomerTimeline emptyList()
         val byId = leads.associateBy { it.id }
+        // Sales are written when the lead is won (CrmCustomerEvents); notes, stage changes and the rest of
+        // the lead's activity stay in the lead. The reservations of the leads are listed here.
         buildList {
-            leads.forEach { lead ->
-                add(CustomerTimelineEntry(lead.createdAt.toInstant(), "lead", "Lead creado: ${lead.label}", listOfNotNull(
-                    lead.source.takeIf { it.isNotBlank() }?.let { "Origen: $it" },
-                    "Etapa actual: ${lead.stage}",
-                ).joinToString("\n")))
-                if (lead.closedAt != null && lead.stageKind != "open") {
-                    add(CustomerTimelineEntry(lead.closedAt.toInstant(), if (lead.stageKind == "won") "won" else "lost",
-                        "${if (lead.stageKind == "won") "Lead ganado" else "Lead perdido"}: ${lead.label}", "Etapa: ${lead.stage}"))
-                }
-            }
             reservations(query.tenant, byId.keys).forEach { (leadId, entry) -> add(entry(byId.getValue(leadId).label)) }
-            items(query.tenant, byId.keys).forEach { (leadId, entry) -> add(entry(byId.getValue(leadId).label)) }
-            activity(query.tenant, byId.keys).forEach { (leadId, entry) -> add(entry(byId.getValue(leadId).label)) }
         }.sortedByDescending { it.at }.take(query.limit)
     }
 
@@ -99,64 +90,8 @@ object CrmCustomerTimeline {
                     val at = rows.getObject("created_at", OffsetDateTime::class.java).toInstant()
                     add(leadId to { label: String ->
                         CustomerTimelineEntry(at, "reservation", "Reserva $number: $start al $end", (detail + "Lead: $label").joinToString("\n"))
+                            .apply { link = UiOpenModule(CrmModule.id, "lead", mapOf("id" to leadId.toString())) }
                     })
-                }
-            }
-        }
-    }
-
-    // Products (properties, rooms...) sold or booked for the leads.
-    private fun items(tenant: Connection, leadIds: Set<UUID>): List<Pair<UUID, (String) -> CustomerTimelineEntry>> = tenant.prepareStatement(
-        """
-        SELECT lead_id, title, subtitle, status, price, updated_at
-        FROM crm_lead_items WHERE lead_id = ANY (?) AND status IN ('sold', 'booked') ORDER BY updated_at DESC LIMIT 200
-        """.trimIndent()
-    ).use { statement ->
-        statement.setArray(1, tenant.createArrayOf("uuid", leadIds.toTypedArray()))
-        statement.executeQuery().use { rows ->
-            buildList {
-                while (rows.next()) {
-                    val leadId = rows.getObject("lead_id", UUID::class.java)
-                    val sold = rows.getString("status") == "sold"
-                    val title = rows.getString("title")
-                    val detail = listOfNotNull(
-                        rows.getString("subtitle").takeIf { it.isNotBlank() },
-                        rows.getBigDecimal("price")?.let { "Precio: ${it.stripTrailingZeros().toPlainString()}" },
-                    )
-                    val at = rows.getObject("updated_at", OffsetDateTime::class.java).toInstant()
-                    add(leadId to { label: String ->
-                        CustomerTimelineEntry(at, if (sold) "sale" else "booking", "${if (sold) "Vendido" else "Reservado"}: $title", (detail + "Lead: $label").joinToString("\n"))
-                    })
-                }
-            }
-        }
-    }
-
-    // Notes and changes made by the team (creation and closing are reported from the lead itself).
-    private fun activity(tenant: Connection, leadIds: Set<UUID>): List<Pair<UUID, (String) -> CustomerTimelineEntry>> = tenant.prepareStatement(
-        """
-        SELECT lead_id, kind, body, author, created_at
-        FROM crm_activity WHERE lead_id = ANY (?) AND kind IN ('note', 'stage', 'owner', 'interest', 'updated')
-        ORDER BY created_at DESC LIMIT 200
-        """.trimIndent()
-    ).use { statement ->
-        statement.setArray(1, tenant.createArrayOf("uuid", leadIds.toTypedArray()))
-        statement.executeQuery().use { rows ->
-            buildList {
-                while (rows.next()) {
-                    val leadId = rows.getObject("lead_id", UUID::class.java)
-                    val kind = rows.getString("kind")
-                    val body = rows.getString("body")
-                    val author = rows.getString("author")
-                    val at = rows.getObject("created_at", OffsetDateTime::class.java).toInstant()
-                    val title = when (kind) {
-                        "note" -> "Nota en lead"
-                        "stage" -> "Cambio de etapa"
-                        "owner" -> "Cambio de responsable"
-                        "interest" -> "Cambio de interes"
-                        else -> "Lead modificado"
-                    }
-                    add(leadId to { label: String -> CustomerTimelineEntry(at, if (kind == "note") "note" else "lead_change", "$title: $label", body, author) })
                 }
             }
         }

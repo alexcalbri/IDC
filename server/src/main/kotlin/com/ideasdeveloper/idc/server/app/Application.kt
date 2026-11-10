@@ -167,6 +167,9 @@ fun Application.module() {
         loginDatabases.service::login,
         moduleRegistry::customerTimelines,
         companyFiles,
+        moduleRegistry::customerHistoryWriter,
+        moduleRegistry::customerChangeListener,
+        moduleRegistry::customerNotesReader,
     )
     // Name and email of each user and password recovery by email code.
     val accountService = AccountService(
@@ -200,6 +203,7 @@ fun Application.module() {
             environment.config.propertyOrNull("company.backupsRoot")?.getString()
                 ?: "build/company-backups"
         ),
+        ownerEditor = companyProvisioning::updateBusinessOwnerBySelf,
     )
     monitor.subscribe(ApplicationStopped) {
         moduleJobs.stop()

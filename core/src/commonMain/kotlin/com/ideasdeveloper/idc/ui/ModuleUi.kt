@@ -535,6 +535,17 @@ data class UiOpenUrl(
     @EncodeDefault override val type: String = "openUrl",
 ) : UiAction
 
+// Opens a screen of another module of the company, e.g. the CRM lead of a customer's history entry.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiOpenModule(
+    val moduleId: String,
+    val screen: String,
+    val params: Map<String, String> = emptyMap(),
+    override val formId: String? = null,
+    @EncodeDefault override val type: String = "openModule",
+) : UiAction
+
 // Action sent by a newer server; clients disable the control that uses it.
 @Serializable
 data class UiUnknownAction(override val type: String = "unknown", override val formId: String? = null) : UiAction
@@ -546,6 +557,7 @@ object UiActionSerializer : JsonContentPolymorphicSerializer<UiAction>(UiAction:
             "request" -> UiRequest.serializer()
             "download" -> UiDownload.serializer()
             "openUrl" -> UiOpenUrl.serializer()
+            "openModule" -> UiOpenModule.serializer()
             else -> UiUnknownAction.serializer()
         }
 }

@@ -43,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
+import com.ideasdeveloper.idc.app.features.company.data.BusinessOwnerResponse
+import com.ideasdeveloper.idc.app.features.company.data.UpdateBusinessOwnerRequest
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.CompanySummaryResponse
 import com.ideasdeveloper.idc.app.features.company.data.CreateCompanyRequest
@@ -582,7 +584,12 @@ fun CompanyProvisioningScreen(
                                     }
                                 }
                             },
-                            onResetOwnerPassword = { password ->
+                            loadOwner = {
+                                val activeServerUrl = serverUrl ?: throw CompanyException("Configura el servidor.")
+                                val activeSession = session ?: throw CompanyException("Inicia sesion de nuevo.")
+                                CompanyApi(activeServerUrl).use { api -> api.businessOwner(activeSession.accessToken, company.code) }
+                            },
+                            onSaveOwner = { request, onSaved ->
                                 val activeServerUrl = serverUrl
                                 val activeSession = session
                                 if (activeServerUrl != null && activeSession != null) {
@@ -591,10 +598,12 @@ fun CompanyProvisioningScreen(
                                     message = null
                                     scope.launch {
                                         try {
-                                            CompanyApi(activeServerUrl).use { api ->
-                                                api.resetBusinessOwnerPassword(activeSession.accessToken, company.code, password)
+                                            val saved = CompanyApi(activeServerUrl).use { api ->
+                                                api.updateBusinessOwner(activeSession.accessToken, company.code, request)
                                             }
-                                            message = "Contrasena del business owner de ${company.name} actualizada."
+                                            onSaved(saved)
+                                            message = "Business owner de ${company.name} actualizado" +
+                                                if (request.password.isNotEmpty()) ": se cerraron sus sesiones." else "."
                                         } catch (exception: CompanyException) {
                                             error = exception.message
                                         } finally {
@@ -666,7 +675,8 @@ private fun CompanyModulesRow(
     onStartEdit: () -> Unit,
     onCancelEdit: () -> Unit,
     onSaveEdit: () -> Unit,
-    onResetOwnerPassword: (password: String) -> Unit,
+    loadOwner: suspend () -> BusinessOwnerResponse,
+    onSaveOwner: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
     onChangeModule: (moduleId: String, enabled: Boolean) -> Unit,
 ) {
     Column(
@@ -788,50 +798,15 @@ private fun CompanyModulesRow(
         }
 
         if (isEditing) {
-            // Unica forma de poner la contrasena del business owner: las empresas creadas por un
-            // agente IA quedan con una contrasena aleatoria porque las credenciales no pasan por el MCP.
-            var newOwnerPassword by remember(company.code) { mutableStateOf("") }
-            var newOwnerPasswordConfirmation by remember(company.code) { mutableStateOf("") }
-            Text("Contrasena del business owner", style = MaterialTheme.typography.titleMedium, color = primaryColor)
-            OutlinedTextField(
-                value = newOwnerPassword,
-                onValueChange = { newOwnerPassword = it },
-                label = { Text("Nueva contrasena") },
-                singleLine = true,
+            // Datos del business owner. Las empresas creadas por un agente IA quedan con una contrasena
+            // aleatoria porque las credenciales no pasan por el MCP: aqui se pone la primera.
+            BusinessOwnerFields(
+                companyCode = company.code,
                 enabled = enabled,
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
+                primaryColor = primaryColor,
+                loadOwner = loadOwner,
+                onSave = onSaveOwner,
             )
-            OutlinedTextField(
-                value = newOwnerPasswordConfirmation,
-                onValueChange = { newOwnerPasswordConfirmation = it },
-                label = { Text("Confirmar contrasena") },
-                singleLine = true,
-                enabled = enabled,
-                visualTransformation = PasswordVisualTransformation(),
-                isError = newOwnerPasswordConfirmation.isNotEmpty() && newOwnerPassword != newOwnerPasswordConfirmation,
-                supportingText = {
-                    if (newOwnerPasswordConfirmation.isNotEmpty() && newOwnerPassword != newOwnerPasswordConfirmation) {
-                        Text("Las contrasenas no coinciden.")
-                    } else {
-                        Text("Minimo 12 caracteres. Cierra las sesiones abiertas del business owner.")
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                Button(
-                    enabled = enabled && newOwnerPassword.length >= 12 && newOwnerPassword == newOwnerPasswordConfirmation,
-                    onClick = {
-                        onResetOwnerPassword(newOwnerPassword)
-                        newOwnerPassword = ""
-                        newOwnerPasswordConfirmation = ""
-                    },
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
-                ) {
-                    Text("Restablecer contrasena")
-                }
-            }
 
             Text("Modulos disponibles", style = MaterialTheme.typography.titleMedium, color = primaryColor)
             Text(
@@ -861,6 +836,111 @@ private fun CompanyModulesRow(
                     }
                 }
             }
+        }
+    }
+}
+
+/**
+ * Usuario, nombre, correo y contrasena del business owner. Su usuario es un rol de PostgreSQL que
+ * comparten todas sus empresas: el cambio se aplica en todas y cambiar el usuario pide contrasena.
+ */
+@Composable
+private fun BusinessOwnerFields(
+    companyCode: String,
+    enabled: Boolean,
+    primaryColor: Color,
+    loadOwner: suspend () -> BusinessOwnerResponse,
+    onSave: (request: UpdateBusinessOwnerRequest, onSaved: (BusinessOwnerResponse) -> Unit) -> Unit,
+) {
+    var owner by remember(companyCode) { mutableStateOf<BusinessOwnerResponse?>(null) }
+    var loadError by remember(companyCode) { mutableStateOf<String?>(null) }
+    var username by remember(companyCode) { mutableStateOf("") }
+    var displayName by remember(companyCode) { mutableStateOf("") }
+    var email by remember(companyCode) { mutableStateOf("") }
+    var password by remember(companyCode) { mutableStateOf("") }
+    var confirmation by remember(companyCode) { mutableStateOf("") }
+    fun show(loaded: BusinessOwnerResponse) {
+        owner = loaded
+        username = loaded.username
+        displayName = loaded.displayName
+        email = loaded.email
+        password = ""
+        confirmation = ""
+    }
+    LaunchedEffect(companyCode) {
+        try {
+            show(loadOwner())
+        } catch (exception: CompanyException) {
+            loadError = exception.message
+        }
+    }
+
+    Text("Business owner", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+    loadError?.let { Text(it, color = AppTheme.colors.danger) }
+    val current = owner ?: return
+    val renamed = username.trim() != current.username
+    val passwordProblem = when {
+        password.isNotEmpty() && password.length < 12 -> "Minimo 12 caracteres."
+        confirmation.isNotEmpty() && password != confirmation -> "Las contrasenas no coinciden."
+        renamed && password.isEmpty() -> "Para cambiar el usuario escribe una contrasena nueva."
+        else -> null
+    }
+    OutlinedTextField(
+        value = username,
+        onValueChange = { username = it.trim() },
+        label = { Text("Usuario") },
+        singleLine = true,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = displayName,
+        onValueChange = { displayName = it },
+        label = { Text("Nombre completo") },
+        singleLine = true,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = email,
+        onValueChange = { email = it.trim() },
+        label = { Text("Correo") },
+        singleLine = true,
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = password,
+        onValueChange = { password = it },
+        label = { Text("Contrasena nueva") },
+        singleLine = true,
+        enabled = enabled,
+        visualTransformation = PasswordVisualTransformation(),
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = confirmation,
+        onValueChange = { confirmation = it },
+        label = { Text("Confirmar contrasena") },
+        singleLine = true,
+        enabled = enabled,
+        visualTransformation = PasswordVisualTransformation(),
+        isError = passwordProblem != null,
+        supportingText = {
+            Text(passwordProblem ?: "Vacia mantiene la actual. Si la cambias se cierran sus sesiones. Se aplica en todas sus empresas.")
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+        Button(
+            enabled = enabled && username.isNotBlank() && displayName.isNotBlank() && email.isNotBlank() &&
+                passwordProblem == null && (password.isEmpty() || password == confirmation),
+            onClick = {
+                onSave(UpdateBusinessOwnerRequest(username.trim(), displayName.trim(), email.trim(), password)) { saved -> show(saved) }
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+        ) {
+            Text("Guardar business owner")
         }
     }
 }

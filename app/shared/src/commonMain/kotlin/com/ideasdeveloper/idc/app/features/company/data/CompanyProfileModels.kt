@@ -55,6 +55,8 @@ data class CompanyUserResponse(
     val displayName: String? = null,
     val email: String? = null,
     val userCode: String = "",
+    // The company's business owner: no permissions to choose and always active.
+    val isBusinessOwner: Boolean = false,
 )
 
 @Serializable
@@ -70,6 +72,17 @@ data class CreateCompanyUserRequest(
     val permissions: List<String> = emptyList(),
     val displayName: String = "",
     val email: String = "",
+)
+
+@Serializable
+data class UpdateCompanyUserRequest(
+    val username: String,
+    val displayName: String,
+    val email: String,
+    val isActive: Boolean = true,
+    val permissions: List<String> = emptyList(),
+    // Blank keeps the current password.
+    val password: String = "",
 )
 
 @Serializable

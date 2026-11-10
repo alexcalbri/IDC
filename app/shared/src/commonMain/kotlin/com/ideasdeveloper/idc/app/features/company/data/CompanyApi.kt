@@ -601,6 +601,50 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    // Todos los datos de un usuario de la empresa: usuario, nombre, correo, estado, permisos y contrasena.
+    suspend fun updateCompanyUser(
+        accessToken: String,
+        companyCode: String,
+        userId: String,
+        request: UpdateCompanyUserRequest,
+    ): CompanyUserResponse = send {
+        client.put("$baseUrl/companies/me/users/$userId") {
+            bearerAuth(accessToken)
+            header("X-Company-Code", companyCode)
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }
+    }
+
+    // Usuario, nombre y correo del business owner de una empresa (solo el dueno del servidor).
+    suspend fun businessOwner(accessToken: String, companyCode: String): BusinessOwnerResponse = send {
+        client.get("$baseUrl/companies/$companyCode/business-owner") { bearerAuth(accessToken) }
+    }
+
+    suspend fun updateBusinessOwner(accessToken: String, companyCode: String, request: UpdateBusinessOwnerRequest): BusinessOwnerResponse = send {
+        client.put("$baseUrl/companies/$companyCode/business-owner") {
+            bearerAuth(accessToken)
+            contentType(ContentType.Application.Json)
+            setBody(request)
+        }
+    }
+
+    // Respuesta OK como [T]; cualquier otra, el mensaje de error del servidor.
+    private suspend inline fun <reified T> send(request: () -> HttpResponse): T {
+        try {
+            val response = request()
+            if (response.status == HttpStatusCode.OK) return response.body()
+            val message = runCatching { response.body<CompanyErrorResponse>().message }.getOrNull()
+            throw CompanyException(message ?: "El servidor no pudo completar la operacion.")
+        } catch (exception: CancellationException) {
+            throw exception
+        } catch (exception: CompanyException) {
+            throw exception
+        } catch (_: Exception) {
+            throw CompanyException("No se pudo comunicar con el servidor.")
+        }
+    }
+
     // Pone una nueva contrasena al business owner de una empresa y cierra sus sesiones.
     suspend fun resetBusinessOwnerPassword(accessToken: String, companyCode: String, password: String) {
         try {

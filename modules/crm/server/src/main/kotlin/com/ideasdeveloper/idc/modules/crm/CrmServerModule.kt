@@ -189,7 +189,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.14.0",
+        version = "0.15.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -204,6 +204,7 @@ object CrmServerModule : ServerModule {
 
     override fun routes(route: Route, access: ModuleAccessService) {
         CrmMetaServer.access = access
+        CrmCustomerEvents.access = access
         metaServerRoutes(route, access)
         // Public webhooks: the company comes from the URL and every call is authenticated by the integration.
         // The IDC Connector plugin for WordPress, built from the module resources (it holds no secrets).

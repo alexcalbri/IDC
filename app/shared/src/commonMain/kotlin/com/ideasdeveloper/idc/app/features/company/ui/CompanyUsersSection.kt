@@ -11,6 +11,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -24,17 +25,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.CompanyPermissionResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyUserResponse
 import com.ideasdeveloper.idc.app.features.company.data.CreateCompanyUserRequest
+import com.ideasdeveloper.idc.app.features.company.data.UpdateCompanyUserRequest
 import kotlinx.coroutines.launch
 
 /**
- * Usuarios y permisos de una base de empresa. La usa el business_owner para su empresa y el
- * server_owner para el personal del espacio del servidor; los permisos vienen de los modulos activos.
+ * Usuarios y permisos de una base de empresa. La usa el business_owner para su empresa (y para
+ * editarse a si mismo) y el server_owner para el personal del espacio del servidor o al entrar a una
+ * empresa; los permisos vienen de los modulos activos.
  */
 @Composable
 fun CompanyUsersSection(
@@ -55,6 +59,9 @@ fun CompanyUsersSection(
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Usuario que se esta editando.
+    var editingUserId by remember { mutableStateOf<String?>(null) }
+    val permissionTitles = remember(permissions) { permissions.associate { it.permissionId to it.title } }
 
     LaunchedEffect(serverUrl, accessToken, companyCode) {
         val activeServerUrl = serverUrl ?: return@LaunchedEffect
@@ -109,26 +116,19 @@ fun CompanyUsersSection(
         modifier = Modifier.fillMaxWidth(),
     )
     permissions.forEach { permission ->
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Checkbox(
-                checked = selectedPermissions.contains(permission.permissionId),
-                onCheckedChange = { checked ->
-                    selectedPermissions = if (checked) {
-                        selectedPermissions + permission.permissionId
-                    } else {
-                        selectedPermissions - permission.permissionId
-                    }
-                },
-                enabled = !isLoading,
-            )
-            Column {
-                Text(permission.title, fontWeight = FontWeight.SemiBold, color = primaryColor)
-                Text("${permission.moduleId}: ${permission.description}", color = AppTheme.colors.muted)
-            }
-        }
+        PermissionCheckbox(
+            permission = permission,
+            checked = selectedPermissions.contains(permission.permissionId),
+            enabled = !isLoading,
+            primaryColor = primaryColor,
+            onCheckedChange = { checked ->
+                selectedPermissions = if (checked) {
+                    selectedPermissions + permission.permissionId
+                } else {
+                    selectedPermissions - permission.permissionId
+                }
+            },
+        )
     }
     Button(
         enabled = !isLoading && serverUrl != null && accessToken != null && companyCode != null && newUsername.isNotBlank() && newPassword.isNotBlank() &&
@@ -189,10 +189,192 @@ fun CompanyUsersSection(
             Text(user.email ?: "Sin correo: lo completa al iniciar sesion", color = AppTheme.colors.muted)
             Text("Codigo de usuario: ${user.userCode}", color = AppTheme.colors.text)
             Text(if (user.isActive) "Activo" else "Inactivo", color = AppTheme.colors.muted)
+            if (editingUserId == user.userId) {
+                UserEditForm(
+                    user = user,
+                    permissions = permissions,
+                    busy = isLoading,
+                    primaryColor = primaryColor,
+                    onCancel = { editingUserId = null },
+                    onSave = { request ->
+                        val activeServerUrl = serverUrl ?: return@UserEditForm
+                        val token = accessToken ?: return@UserEditForm
+                        val code = companyCode ?: return@UserEditForm
+                        isLoading = true
+                        error = null
+                        message = null
+                        scope.launch {
+                            try {
+                                val updated = CompanyApi(activeServerUrl).use { api ->
+                                    api.updateCompanyUser(token, code, user.userId, request)
+                                }
+                                users = users.map { if (it.userId == updated.userId) updated else it }
+                                editingUserId = null
+                                message = if (user.isBusinessOwner && request.password.isNotEmpty()) {
+                                    "Datos actualizados. Tus sesiones se cerraron: inicia sesion con la contrasena nueva."
+                                } else {
+                                    "Usuario actualizado."
+                                }
+                            } catch (exception: CompanyException) {
+                                error = exception.message
+                            } finally {
+                                isLoading = false
+                            }
+                        }
+                    },
+                )
+            } else {
+                Text(
+                    if (user.isBusinessOwner) {
+                        "Business owner: tiene todos los permisos"
+                    } else {
+                        "Permisos: ${user.permissions.map { id -> permissionTitles[id] ?: id }.ifEmpty { listOf("sin permisos") }.joinToString()}"
+                    },
+                    color = AppTheme.colors.text,
+                )
+                OutlinedButton(
+                    enabled = !isLoading,
+                    onClick = {
+                        editingUserId = user.userId
+                        error = null
+                        message = null
+                    },
+                ) {
+                    Text("Editar")
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Todos los datos de un usuario. Para el business owner no hay permisos ni estado (los tiene todos y
+ * siempre esta activo) y cambiar su usuario exige una contrasena nueva: es su usuario de PostgreSQL.
+ */
+@Composable
+private fun UserEditForm(
+    user: CompanyUserResponse,
+    permissions: List<CompanyPermissionResponse>,
+    busy: Boolean,
+    primaryColor: Color,
+    onCancel: () -> Unit,
+    onSave: (UpdateCompanyUserRequest) -> Unit,
+) {
+    var username by remember(user.userId) { mutableStateOf(user.username) }
+    var displayName by remember(user.userId) { mutableStateOf(user.displayName.orEmpty()) }
+    var email by remember(user.userId) { mutableStateOf(user.email.orEmpty()) }
+    var password by remember(user.userId) { mutableStateOf("") }
+    var active by remember(user.userId) { mutableStateOf(user.isActive) }
+    var selected by remember(user.userId) { mutableStateOf(user.permissions.toSet()) }
+    val renamed = username.trim() != user.username
+    val passwordProblem = when {
+        password.isNotEmpty() && password.length < 12 -> "Minimo 12 caracteres."
+        user.isBusinessOwner && renamed && password.isEmpty() -> "Para cambiar el usuario del business owner escribe una contrasena nueva."
+        else -> null
+    }
+
+    OutlinedTextField(
+        value = username,
+        onValueChange = { username = it.trim() },
+        label = { Text("Usuario") },
+        singleLine = true,
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = displayName,
+        onValueChange = { displayName = it },
+        label = { Text("Nombre completo") },
+        singleLine = true,
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = email,
+        onValueChange = { email = it.trim() },
+        label = { Text("Correo") },
+        singleLine = true,
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth(),
+    )
+    OutlinedTextField(
+        value = password,
+        onValueChange = { password = it },
+        label = { Text("Contrasena nueva") },
+        singleLine = true,
+        enabled = !busy,
+        visualTransformation = PasswordVisualTransformation(),
+        isError = passwordProblem != null,
+        supportingText = {
             Text(
-                "Permisos: ${user.permissions.ifEmpty { listOf("sin permisos") }.joinToString()}",
-                color = AppTheme.colors.text,
+                passwordProblem ?: if (user.isBusinessOwner) {
+                    "Vacia mantiene la actual. Si la cambias se cierran las sesiones del business owner en todas sus empresas."
+                } else {
+                    "Vacia mantiene la actual. Si la cambias se cierran las sesiones del usuario."
+                }
             )
+        },
+        modifier = Modifier.fillMaxWidth(),
+    )
+    if (!user.isBusinessOwner) {
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Checkbox(checked = active, onCheckedChange = { active = it }, enabled = !busy)
+            Text(if (active) "Activo: puede iniciar sesion" else "Inactivo: no puede iniciar sesion", color = AppTheme.colors.text)
+        }
+        Text("Permisos", fontWeight = FontWeight.SemiBold, color = primaryColor)
+        permissions.forEach { permission ->
+            PermissionCheckbox(
+                permission = permission,
+                checked = selected.contains(permission.permissionId),
+                enabled = !busy,
+                primaryColor = primaryColor,
+                onCheckedChange = { checked ->
+                    selected = if (checked) selected + permission.permissionId else selected - permission.permissionId
+                },
+            )
+        }
+    }
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Button(
+            enabled = !busy && username.isNotBlank() && displayName.isNotBlank() && email.isNotBlank() && passwordProblem == null,
+            onClick = {
+                onSave(
+                    UpdateCompanyUserRequest(
+                        username = username.trim(),
+                        displayName = displayName.trim(),
+                        email = email.trim(),
+                        isActive = active,
+                        permissions = selected.toList(),
+                        password = password,
+                    )
+                )
+            },
+            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+        ) {
+            Text("Guardar")
+        }
+        OutlinedButton(enabled = !busy, onClick = onCancel) {
+            Text("Cancelar")
+        }
+    }
+}
+
+@Composable
+private fun PermissionCheckbox(
+    permission: CompanyPermissionResponse,
+    checked: Boolean,
+    enabled: Boolean,
+    primaryColor: Color,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Checkbox(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
+        Column {
+            Text(permission.title, fontWeight = FontWeight.SemiBold, color = primaryColor)
+            Text("${permission.moduleId}: ${permission.description}", color = AppTheme.colors.muted)
         }
     }
 }

@@ -55,6 +55,8 @@ data class CompanyUserResponse(
     val displayName: String? = null,
     val email: String? = null,
     val userCode: String = "",
+    // The company's business owner: edited with its own rules (no permissions, always active).
+    val isBusinessOwner: Boolean = false,
 )
 
 @Serializable
@@ -76,6 +78,20 @@ data class CreateCompanyUserRequest(
 @Serializable
 data class UpdateCompanyUserPermissionsRequest(
     val permissions: List<String>,
+)
+
+/**
+ * Every field of a user, as an owner edits it. [password] blank keeps the current one. For the
+ * business owner [isActive] and [permissions] are ignored and a new [username] needs a [password].
+ */
+@Serializable
+data class UpdateCompanyUserRequest(
+    val username: String,
+    val displayName: String,
+    val email: String,
+    val isActive: Boolean = true,
+    val permissions: List<String> = emptyList(),
+    val password: String = "",
 )
 
 // Empresa del servidor: la empresa que el server_owner administra sin crear una empresa.

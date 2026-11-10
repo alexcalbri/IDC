@@ -68,6 +68,23 @@ data class ResetBusinessOwnerPasswordRequest(
     val password: String,
 )
 
+// The business owner of a company as the server owner sees and edits it.
+@Serializable
+data class BusinessOwnerResponse(
+    val username: String,
+    val displayName: String = "",
+    val email: String = "",
+)
+
+/** New data of a business owner. [password] blank keeps it; renaming the user requires one. */
+@Serializable
+data class UpdateBusinessOwnerRequest(
+    val username: String,
+    val displayName: String,
+    val email: String,
+    val password: String = "",
+)
+
 @Serializable
 data class UpdateCompanyStatusRequest(
     val active: Boolean,

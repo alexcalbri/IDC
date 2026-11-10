@@ -49,11 +49,41 @@ validations as the routes:
 | `clientes_get_customer_history` | `clientes.view` | The customer's history, like `GET /customers/{id}/history`. |
 | `clientes_create_customer_field` | `clientes.fields.manage` | Adds a custom field, like `POST /fields`. |
 
+## Customer profile (ficha) and sharing (V007)
+
+The app's *Ficha* button opens the customer's profile, drawn from the native screens of
+`/modules/clientes/ui/customer?id=...&tab=...` (server-driven: it changes without updating the app):
+
+- **One record for the business owner's companies.** A customer belongs to the company where it was
+  created (`origin_company_code` is `''` there). The business owner, or a user with
+  `clientes.share` in that company, shares it with the other companies of the owner group: the
+  record is copied, with the same id and customer code, to each of them (`origin_company_code` =
+  the origin, `shared = TRUE`) and every edit or archive reaches every copy. Sharing first checks
+  that no company has another customer with the same email or code. Stopping hides the copies
+  (other modules may reference them) and keeps their history. Only the origin archives a customer.
+  Lists, searches and agents only see the company's own customers and the ones shared with it.
+- **Notas del cliente** (`customer_notes`, in the origin company's database): tastes and preferences
+  of frequent customers and general information, seen in every company where the customer is and
+  in its CRM leads (`ServerModule.customerNotesReader`, read with `access.customerNotes`).
+  Users with `clientes.edit` add notes; the author or the business owner deletes them.
+- **One tab per company** with what the customer bought or hired there: the events modules write
+  (`customer_history`, see "Writing events in the customer's history" in `modules/README.md`; the
+  CRM writes "Venta convertida en {empresa}" with a link to the lead), entries added by hand
+  (`clientes.edit`, in the current company), the changes of the record and what other modules
+  report. The business owner sees the tab of every company where the customer is; other users only
+  the tab of the company they are part of.
+
+Other modules that change a customer's data (the CRM editing a lead's name, email or phone, filling
+a name from WhatsApp, Messenger or Instagram, or importing custom fields) call
+`access.customerChanged(tenant, customerId)` once the change is committed, and Clientes copies it at
+once to every company the customer is shared with.
+
 ## Customer history
 
 `GET /modules/clientes/customers/{id}/history` (`clientes.view`) returns what happened with a
 customer, newest first: who created, edited (field by field, before and after) or archived it in
-Clientes (`customer_activity`), plus what every installed module reports through its
-`CustomerTimeline` (CRM leads, reservations, sales and notes; hotspot WiFi connections...). Each
+Clientes (`customer_activity`) and what was written in this company's history (`customer_history`),
+plus what every installed module reports through its `CustomerTimeline` (CRM reservations, hotspot
+WiFi connections...). Each
 module's entries appear only when it is enabled and the user holds its permission. Clientes knows no
 module: see "Customer history" in `modules/README.md`.
