@@ -62,6 +62,7 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V008__remove_hotspot_user_code.sql",
         "modules/hotspot/migrations/V009__shared_networks.sql",
         "modules/hotspot/migrations/V010__portal_templates.sql",
+        "modules/hotspot/migrations/V011__portal_colors.sql",
     )
 
     override val runtimeTables = listOf(
@@ -111,7 +112,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-        version = "0.9.2",
+        version = "0.9.3",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -215,6 +216,11 @@ object HotspotServerModule : ServerModule {
                     return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "No tienes permiso para cambiar la configuracion."))
                 }
                 val body = call.receiveText()
+                if (screen == "design" && call.request.queryParameters["view"] == HotspotScreens.ColorsView) {
+                    val colors = runCatching { UiJson.parseToJsonElement(body).jsonObject }.getOrNull() ?: JsonObject(emptyMap())
+                    fun color(key: String) = colors[key]?.jsonPrimitive?.contentOrNull
+                    return@post call.respondScreen(access) { tenant -> saveColors(access, tenant, permissions, color("primary"), color("secondary"), color("text")) }
+                }
                 if (screen == "design") {
                     val html = runCatching { UiJson.parseToJsonElement(body).jsonObject["html"]?.jsonPrimitive?.contentOrNull }.getOrNull().orEmpty()
                     val viewId = call.request.queryParameters["view"].orEmpty()
@@ -252,6 +258,24 @@ object HotspotServerModule : ServerModule {
                 null
             }
         }
+    }
+
+    // Saves the portal colors of Diseño; an invalid one saves nothing and keeps what was typed.
+    private fun saveColors(
+        access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions,
+        primary: String?, secondary: String?, text: String?,
+    ): UiScreen = try {
+        HotspotSettingsRepository.saveColors(tenant, primary, secondary, text)
+        render(access, tenant, permissions, "design", emptyMap(), UiNotice("Colores del portal guardados.", UiTone.Success))
+    } catch (error: HotspotValidationException) {
+        render(
+            access, tenant, permissions, "design", emptyMap(), UiNotice(error.message.orEmpty(), UiTone.Danger),
+            submittedValues = mapOf(
+                HotspotScreens.colorKey("primary") to primary.orEmpty(),
+                HotspotScreens.colorKey("secondary") to secondary.orEmpty(),
+                HotspotScreens.colorKey("text") to text.orEmpty(),
+            ),
+        )
     }
 
     // Validates the custom HTML of a portal view and saves it; when it fails, nothing is saved and the

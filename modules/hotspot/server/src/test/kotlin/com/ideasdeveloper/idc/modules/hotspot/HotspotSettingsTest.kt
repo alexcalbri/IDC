@@ -138,4 +138,14 @@ class HotspotSettingsTest {
         assertEquals(PortalBrand.Idc, PortalBrand.of(null, "red", " "))
         assertEquals(PortalBrand.Idc, defaults.brand)
     }
+
+    @Test
+    fun ownPortalColorsGoOverTheCompanyOnes() {
+        val company = PortalBrand("#FBB606", "#023047", "#FFFFFF")
+        assertEquals(company, company.with(PortalColors()))
+        assertEquals(PortalBrand("#E4002B", "#023047", "#000000"), company.with(PortalColors(primary = "#E4002B", text = "#000000")))
+        // Merging other settings keeps the colors saved in Diseño.
+        val colored = defaults.copy(portalColors = PortalColors(primary = "#E4002B"))
+        assertEquals(colored.portalColors, HotspotSettingsRepository.merge(colored, JsonObject(mapOf("portalTitle" to JsonPrimitive("Hola")))).portalColors)
+    }
 }

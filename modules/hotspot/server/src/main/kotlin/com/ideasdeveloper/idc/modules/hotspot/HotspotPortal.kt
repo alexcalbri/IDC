@@ -793,7 +793,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
                 val tenant = access.tenantConnectionForCompany(companyCode) ?: return@withContext null
                 tenant.use { connection ->
                     if (!moduleEnabled(connection)) return@withContext null
-                    val settings = HotspotSettingsRepository.load(connection).copy(brand = brand, templates = HotspotTemplates.load(connection))
+                    val settings = HotspotSettingsRepository.load(connection).let { it.copy(brand = brand.with(it.portalColors), templates = HotspotTemplates.load(connection)) }
                     if (settings.domain != host) return@withContext null
                     val controller = HotspotIntegrations.controller(connection)?.takeIf { it.isConfigured(settings) }
                     if (controller == null) {

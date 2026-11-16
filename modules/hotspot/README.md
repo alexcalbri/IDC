@@ -82,7 +82,7 @@ Tenant migrations through `V008__remove_hotspot_user_code.sql`
 
 | Table | Purpose |
 | --- | --- |
-| `hotspot_settings` | Singleton portal configuration (domain, UniFi, limits, SMTP, appearance). The portal's colors are the company's (central `companies` primary, secondary and accent colors, IDC's until changed); the old `primary_color`/`text_color` columns are no longer used. |
+| `hotspot_settings` | Singleton portal configuration (domain, UniFi, limits, SMTP, appearance). The portal's colors are `portal_primary_color`, `portal_secondary_color` and `portal_text_color` (Hotspot > Diseño, V011); a NULL one uses the company's (central `companies` primary, secondary and accent colors, IDC's until changed). The old `primary_color`/`text_color` columns are no longer used. |
 | `hotspot_registrations` | One row per form submission or code access (`access_mode`), linked to `customers`; `roamed_from` (V009) marks a continued access from a linked company. |
 | `hotspot_codes` | One-time codes (SHA-256 only), expiry, attempts, use. |
 | `hotspot_accesses` | Every UniFi authorization attempt; successful rows drive reconnection. |
@@ -282,9 +282,9 @@ configuration again retries a domain in `error`.
    the customer or user code instead of the form.
 7. Test with a phone: connect to the guest SSID, register, enter the code.
 
-## Custom HTML (Diseno HTML)
+## Custom HTML (Diseño)
 
-*Diseno HTML* lets the company replace the entry views of the portal with its own
+*Diseño* lets the company replace the entry views of the portal with its own
 whole HTML page: the registration form and the customer-code and user-code pages
 (table `hotspot_portal_templates`, V010; no row = IDC's design). Saving validates
 the page (`HotspotTemplates.validate`) and keeps nothing until it passes:
@@ -303,7 +303,11 @@ the page (`HotspotTemplates.validate`) and keeps nothing until it passes:
 
 Values are escaped; `{{error}}` renders `<div class="idc-error" role="alert">` or
 nothing. The other pages (emailed code, success, messages) keep IDC's design with
-the company's colors. "Cargar un ejemplo" fills the editor with a valid page.
+the portal colors. "Cargar un ejemplo" fills the editor with a valid page.
+
+The "Colores del portal" card at the top of Diseño sets the primary, secondary and
+text colors (`#RRGGBB`, `HotspotSettingsRepository.saveColors`). Each blank one
+uses the company's color, and IDC's when the company has none (`PortalBrand.with`).
 
 ## Network check before authorizing
 

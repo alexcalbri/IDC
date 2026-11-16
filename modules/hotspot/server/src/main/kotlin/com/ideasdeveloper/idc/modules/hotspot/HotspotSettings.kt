@@ -44,7 +44,9 @@ data class HotspotSettings(
     val crmScheduleMode: String,
     val crmCheckIntervalMinutes: Int,
     val crmCheckTime: LocalTime,
-    // Colors of the company (Empresa), set by the portal for each request; not stored in the hotspot.
+    // Colors set in Hotspot > Diseno; a missing one uses the company's.
+    val portalColors: PortalColors = PortalColors(),
+    // Colors the portal uses (own, else the company's, else IDC's), set by the portal for each request.
     val brand: PortalBrand = PortalBrand.Idc,
     // Custom HTML of the entry views by view id (hotspot_portal_templates), loaded by the portal.
     val templates: Map<String, String> = emptyMap(),
@@ -154,6 +156,7 @@ object HotspotSettingsRepository {
                 runCatching { LocalTime.parse(text("crmCheckTime").orEmpty()) }.getOrNull()
                     ?: throw HotspotValidationException("La hora de revision debe tener el formato HH:mm.")
             } else current.crmCheckTime,
+            portalColors = current.portalColors,
         )
         if (merged.crmAccessEnabled && merged.crmStageId == null) {
             throw HotspotValidationException("Selecciona el estado del embudo del CRM que permite el acceso.")
@@ -305,18 +308,63 @@ object HotspotSettingsRepository {
         crmScheduleMode = getString("crm_schedule_mode"),
         crmCheckIntervalMinutes = getInt("crm_check_interval_minutes"),
         crmCheckTime = getObject("crm_check_time", java.time.LocalTime::class.java),
+        portalColors = PortalColors(
+            primary = getString("portal_primary_color")?.trim(),
+            secondary = getString("portal_secondary_color")?.trim(),
+            text = getString("portal_text_color")?.trim(),
+        ),
     )
+
+    /**
+     * Validates and saves the portal colors of Hotspot > Diseno; a blank one goes back to the
+     * company's color. Values are #RRGGBB.
+     */
+    fun saveColors(connection: Connection, primary: String?, secondary: String?, text: String?): PortalColors {
+        fun color(value: String?, label: String): String? {
+            val trimmed = value?.trim().orEmpty()
+            if (trimmed.isEmpty()) return null
+            val normalized = if (trimmed.startsWith("#")) trimmed else "#$trimmed"
+            if (!PortalBrand.isColor(normalized)) throw HotspotValidationException("$label debe tener el formato #RRGGBB, por ejemplo #667EEA.")
+            return normalized.uppercase()
+        }
+        val colors = PortalColors(
+            primary = color(primary, "El color principal"),
+            secondary = color(secondary, "El color secundario"),
+            text = color(text, "El color del texto"),
+        )
+        connection.prepareStatement(
+            "UPDATE hotspot_settings SET portal_primary_color = ?, portal_secondary_color = ?, portal_text_color = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1"
+        ).use { update ->
+            update.setString(1, colors.primary)
+            update.setString(2, colors.secondary)
+            update.setString(3, colors.text)
+            update.executeUpdate()
+        }
+        return colors
+    }
 }
 
+/** Colors set in Hotspot > Diseno (#RRGGBB); null uses the company's color. */
+data class PortalColors(val primary: String? = null, val secondary: String? = null, val text: String? = null)
+
 /**
- * Colors of the portal: the company's (Empresa > primary, secondary and accent), which are IDC's own
- * colors until the company changes them. The old hotspot_settings color columns are no longer used.
+ * Colors of the portal: the ones set in Hotspot > Diseno, else the company's (Empresa > primary,
+ * secondary and accent), which are IDC's own colors until the company changes them.
  */
 data class PortalBrand(val primary: String, val secondary: String, val onPrimary: String) {
+    /** [own] colors of the hotspot over these (the company's). */
+    fun with(own: PortalColors): PortalBrand = PortalBrand(
+        primary = own.primary?.takeIf(::isColor) ?: primary,
+        secondary = own.secondary?.takeIf(::isColor) ?: secondary,
+        onPrimary = own.text?.takeIf(::isColor) ?: onPrimary,
+    )
+
     companion object {
         // Same defaults as a new company and the app theme.
         val Idc = PortalBrand(primary = "#667EEA", secondary = "#764BA2", onPrimary = "#FFFFFF")
         private val colorPattern = Regex("^#[0-9A-Fa-f]{6}$")
+
+        fun isColor(value: String) = colorPattern.matches(value)
 
         /** The company's colors; any missing or invalid one falls back to IDC's. */
         fun of(primary: String?, secondary: String?, onPrimary: String?): PortalBrand = PortalBrand(

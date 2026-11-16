@@ -37,7 +37,7 @@ object HotspotMcpTools {
         "networkName" to McpSchema.string("Nombre de la red WiFi que muestra el portal."),
         "portalTitle" to McpSchema.string("Titulo del portal."),
         "portalSubtitle" to McpSchema.string("Subtitulo del portal; vacio lo quita."),
-        "logoUrl" to McpSchema.string("URL del logo (https://); vacio lo quita. Los colores del portal son los de la empresa."),
+        "logoUrl" to McpSchema.string("URL del logo (https://); vacio lo quita. Los colores del portal se configuran en la app (Hotspot > Diseño)."),
         "consentText" to McpSchema.string("Texto de consentimiento que acepta el visitante."),
         "termsUrl" to McpSchema.string("URL de terminos; vacio la quita."),
         "privacyUrl" to McpSchema.string("URL de privacidad; vacio la quita."),
@@ -301,7 +301,7 @@ object HotspotMcpTools {
             put("portalTitle", settings.portalTitle)
             put("portalSubtitle", settings.portalSubtitle)
             put("logoUrl", text(settings.logoUrl))
-            put("colors", "Los de la empresa (Empresa); sin colores propios, los de IDC.")
+            put("colors", "Hotspot > Diseño: ${settings.portalColors.primary ?: "empresa"} / ${settings.portalColors.secondary ?: "empresa"} / ${settings.portalColors.text ?: "empresa"}; vacios usan los de la empresa o IDC.")
             put("consentText", settings.consentText)
             put("termsUrl", text(settings.termsUrl))
             put("privacyUrl", text(settings.privacyUrl))

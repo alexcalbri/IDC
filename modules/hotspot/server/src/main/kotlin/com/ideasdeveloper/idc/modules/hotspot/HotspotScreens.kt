@@ -54,7 +54,7 @@ object HotspotScreens {
         Section("reports", "Reportes", ReportsView),
         Section("access", "Accesos WiFi", View),
         Section("portal", "Portal cautivo", SettingsView),
-        Section("design", "Diseno HTML", SettingsView),
+        Section("design", "Diseño", SettingsView),
         Section("settings", "Configuracion", SettingsView),
         Section("integrations", "Integraciones", OwnerOnly),
     )
@@ -250,6 +250,12 @@ object HotspotScreens {
     // Form value key of each view's HTML, kept when saving fails so it can be corrected.
     fun templateKey(viewId: String) = "template_$viewId"
 
+    // The colors form of Diseño, saved through the same route as the templates.
+    const val ColorsView = "colores"
+
+    // Form value key of each color, kept when saving fails.
+    fun colorKey(key: String) = "color_$key"
+
     /**
      * Custom HTML of each entry view (see [HotspotTemplates]): what it must contain, the placeholders
      * it may use and the editor. Saving validates it; an empty editor goes back to the built-in design.
@@ -266,7 +272,7 @@ object HotspotScreens {
                         "Al guardar se valida que conserve lo que el portal necesita; si falta algo no se guarda y se indica que corregir. " +
                         "Deja el editor vacio y guarda para volver al diseno de IDC. No se permiten scripts, eventos (onclick...), " +
                         "iframes ni formularios que envien a otra direccion. Las demas paginas (codigo por correo, exito, mensajes) " +
-                        "usan el diseno de IDC con los colores de la empresa.",
+                        "usan el diseno de IDC con los colores de arriba.",
                     UiTextStyle.Caption,
                 ),
                 UiText(
@@ -274,6 +280,33 @@ object HotspotScreens {
                         "identifica el dispositivo y la red). Opcionales: {{titulo}}, {{subtitulo}}, {{red}}, {{logo_url}}, {{pie}}, " +
                         "{{color_primario}}, {{color_secundario}}, {{color_texto}}.",
                     UiTextStyle.Caption,
+                ),
+            ),
+        )
+        val own = HotspotSettingsRepository.load(tenant).portalColors
+        fun color(key: String, saved: String?) = values[colorKey(key)] ?: saved.orEmpty()
+        val colors = UiCard(
+            title = "Colores del portal",
+            children = listOfNotNull(
+                UiText(
+                    "Colores de todas las paginas del portal (y de {{color_primario}}, {{color_secundario}} y {{color_texto}} en tu HTML). " +
+                        "Deja un color vacio para usar el de la empresa (Empresa); si la empresa no tiene, se usa el de IDC.",
+                    UiTextStyle.Caption,
+                ),
+                UiForm(
+                    id = "colors",
+                    fields = listOf(
+                        UiField("primary", "Color principal (botones y fondo)", "color", readOnly = !canManage, placeholder = "Vacio = color de la empresa"),
+                        UiField("secondary", "Color secundario (degradado del fondo)", "color", readOnly = !canManage, placeholder = "Vacio = color de la empresa"),
+                        UiField("text", "Color del texto sobre los botones", "color", readOnly = !canManage, placeholder = "Vacio = color de la empresa"),
+                    ),
+                    values = mapOf(
+                        "primary" to color("primary", own.primary),
+                        "secondary" to color("secondary", own.secondary),
+                        "text" to color("text", own.text),
+                    ),
+                    submit = if (canManage) UiButton("Guardar colores", UiRequest("$UiRoute/design", params = mapOf("view" to ColorsView), formId = "colors")) else null,
+                    minFieldWidth = 200,
                 ),
             ),
         )
@@ -307,7 +340,7 @@ object HotspotScreens {
                 ),
             )
         }
-        return listOf(intro) + cards
+        return listOf(colors, intro) + cards
     }
 
     private fun settingsForm(
@@ -634,7 +667,7 @@ object HotspotScreens {
         UiField("portalTitle", "Titulo", required = true, section = "Apariencia"),
         UiField("portalSubtitle", "Subtitulo", section = "Apariencia"),
         UiField("logoUrl", "URL del logo", "url", section = "Apariencia",
-            help = "Los colores del portal son los de la empresa (Empresa); sin colores propios usa los de IDC."),
+            help = "Los colores del portal se configuran en Diseño; vacios usan los de la empresa (o los de IDC)."),
         UiField("consentText", "Texto de consentimiento", "textarea", required = true, section = "Textos legales"),
         UiField("termsUrl", "URL de terminos", "url", section = "Textos legales"),
         UiField("privacyUrl", "URL de privacidad", "url", section = "Textos legales"),
