@@ -17,8 +17,6 @@ data class HotspotSettings(
     val portalTitle: String,
     val portalSubtitle: String,
     val logoUrl: String?,
-    val primaryColor: String,
-    val textColor: String,
     val consentText: String,
     val termsUrl: String?,
     val privacyUrl: String?,
@@ -46,6 +44,10 @@ data class HotspotSettings(
     val crmScheduleMode: String,
     val crmCheckIntervalMinutes: Int,
     val crmCheckTime: LocalTime,
+    // Colors of the company (Empresa), set by the portal for each request; not stored in the hotspot.
+    val brand: PortalBrand = PortalBrand.Idc,
+    // Custom HTML of the entry views by view id (hotspot_portal_templates), loaded by the portal.
+    val templates: Map<String, String> = emptyMap(),
 ) {
     // Pages opened after connecting; the setting holds them separated by commas.
     val successUrls: List<String>
@@ -70,7 +72,6 @@ data class HotspotSettings(
 
 object HotspotSettingsRepository {
     private val domainPattern = Regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$")
-    private val colorPattern = Regex("^#[0-9A-Fa-f]{6}$")
     private val unifiIdPattern = Regex("^[A-Za-z0-9:._-]{1,200}$")
     private val emailPattern = Regex("^[^\\s@<>\"]+@[^\\s@<>\"]+\\.[^\\s@<>\"]+$")
 
@@ -115,8 +116,6 @@ object HotspotSettingsRepository {
             portalTitle = required("portalTitle", current.portalTitle, "El titulo del portal"),
             portalSubtitle = if (values.containsKey("portalSubtitle")) text("portalSubtitle").orEmpty() else current.portalSubtitle,
             logoUrl = optional("logoUrl", current.logoUrl),
-            primaryColor = required("primaryColor", current.primaryColor, "El color principal"),
-            textColor = required("textColor", current.textColor, "El color de texto"),
             consentText = required("consentText", current.consentText, "El texto de consentimiento"),
             termsUrl = optional("termsUrl", current.termsUrl),
             privacyUrl = optional("privacyUrl", current.privacyUrl),
@@ -173,9 +172,6 @@ object HotspotSettingsRepository {
         settings.domain?.let {
             if (it.length > 253 || !domainPattern.matches(it)) throw HotspotValidationException("El dominio no es valido. Ejemplo: wifi.miempresa.com")
         }
-        if (!colorPattern.matches(settings.primaryColor) || !colorPattern.matches(settings.textColor)) {
-            throw HotspotValidationException("Los colores deben tener formato #RRGGBB.")
-        }
         (listOfNotNull(settings.logoUrl, settings.termsUrl, settings.privacyUrl) + settings.successUrls).forEach { url ->
             if (!url.startsWith("https://") && !url.startsWith("http://") || url.any { it.isWhitespace() }) {
                 throw HotspotValidationException("Las direcciones web deben iniciar con https:// o http:// y no llevar espacios.")
@@ -197,7 +193,7 @@ object HotspotSettingsRepository {
             """
             UPDATE hotspot_settings SET
                 domain = ?, network_name = ?, portal_title = ?, portal_subtitle = ?, logo_url = ?,
-                primary_color = ?, text_color = ?, consent_text = ?, terms_url = ?, privacy_url = ?,
+                consent_text = ?, terms_url = ?, privacy_url = ?,
                 footer_text = ?, success_url = ?, unifi_console_id = ?, unifi_site_id = ?, unifi_api_key = ?,
                 access_minutes = ?, data_limit_mb = ?, rx_kbps = ?, tx_kbps = ?, reconnect_minutes = ?,
                 code_ttl_minutes = ?, smtp_mode = ?, smtp_host = ?, smtp_port = ?, smtp_username = ?,
@@ -210,7 +206,7 @@ object HotspotSettingsRepository {
         ).use { update ->
             listOf<Any?>(
                 settings.domain, settings.networkName, settings.portalTitle, settings.portalSubtitle, settings.logoUrl,
-                settings.primaryColor, settings.textColor, settings.consentText, settings.termsUrl, settings.privacyUrl,
+                settings.consentText, settings.termsUrl, settings.privacyUrl,
                 settings.footerText, settings.successUrl, settings.unifiConsoleId, settings.unifiSiteId, settings.unifiApiKey,
                 settings.accessMinutes, settings.dataLimitMb, settings.rxKbps, settings.txKbps, settings.reconnectMinutes,
                 settings.codeTtlMinutes, settings.smtpMode, settings.smtpHost, settings.smtpPort, settings.smtpUsername,
@@ -261,8 +257,6 @@ object HotspotSettingsRepository {
             "portalTitle" to settings.portalTitle,
             "portalSubtitle" to settings.portalSubtitle,
             "logoUrl" to settings.logoUrl.orEmpty(),
-            "primaryColor" to settings.primaryColor,
-            "textColor" to settings.textColor,
             "consentText" to settings.consentText,
             "termsUrl" to settings.termsUrl.orEmpty(),
             "privacyUrl" to settings.privacyUrl.orEmpty(),
@@ -284,8 +278,6 @@ object HotspotSettingsRepository {
         portalTitle = getString("portal_title"),
         portalSubtitle = getString("portal_subtitle"),
         logoUrl = getString("logo_url"),
-        primaryColor = getString("primary_color"),
-        textColor = getString("text_color"),
         consentText = getString("consent_text"),
         termsUrl = getString("terms_url"),
         privacyUrl = getString("privacy_url"),
@@ -314,4 +306,23 @@ object HotspotSettingsRepository {
         crmCheckIntervalMinutes = getInt("crm_check_interval_minutes"),
         crmCheckTime = getObject("crm_check_time", java.time.LocalTime::class.java),
     )
+}
+
+/**
+ * Colors of the portal: the company's (Empresa > primary, secondary and accent), which are IDC's own
+ * colors until the company changes them. The old hotspot_settings color columns are no longer used.
+ */
+data class PortalBrand(val primary: String, val secondary: String, val onPrimary: String) {
+    companion object {
+        // Same defaults as a new company and the app theme.
+        val Idc = PortalBrand(primary = "#667EEA", secondary = "#764BA2", onPrimary = "#FFFFFF")
+        private val colorPattern = Regex("^#[0-9A-Fa-f]{6}$")
+
+        /** The company's colors; any missing or invalid one falls back to IDC's. */
+        fun of(primary: String?, secondary: String?, onPrimary: String?): PortalBrand = PortalBrand(
+            primary = primary?.trim()?.takeIf { colorPattern.matches(it) } ?: Idc.primary,
+            secondary = secondary?.trim()?.takeIf { colorPattern.matches(it) } ?: Idc.secondary,
+            onPrimary = onPrimary?.trim()?.takeIf { colorPattern.matches(it) } ?: Idc.onPrimary,
+        )
+    }
 }

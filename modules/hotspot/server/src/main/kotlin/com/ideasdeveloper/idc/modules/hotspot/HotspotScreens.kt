@@ -54,6 +54,7 @@ object HotspotScreens {
         Section("reports", "Reportes", ReportsView),
         Section("access", "Accesos WiFi", View),
         Section("portal", "Portal cautivo", SettingsView),
+        Section("design", "Diseno HTML", SettingsView),
         Section("settings", "Configuracion", SettingsView),
         Section("integrations", "Integraciones", OwnerOnly),
     )
@@ -95,6 +96,7 @@ object HotspotScreens {
             "visitors" -> visitors(tenant, params)
             "reports" -> reports(tenant, permissions, params)
             "portal" -> portal(permissions, values, domainStatus, domainActive)
+            "design" -> design(tenant, permissions, params, values)
             else -> settingsForm(tenant, permissions, values, pickers, params, networkValues)
         }
         return frame(settings, permissions, screen, title, notice, body)
@@ -243,6 +245,69 @@ object HotspotScreens {
             // Apariencia, textos legales, tiempos y dominio: each section opens on its own.
             UiCard(listOf(settingsFormNode("portal", "portal", portalFields, permissions, values).copy(collapsibleSections = true))),
         )
+    }
+
+    // Form value key of each view's HTML, kept when saving fails so it can be corrected.
+    fun templateKey(viewId: String) = "template_$viewId"
+
+    /**
+     * Custom HTML of each entry view (see [HotspotTemplates]): what it must contain, the placeholders
+     * it may use and the editor. Saving validates it; an empty editor goes back to the built-in design.
+     * params "example" fills that view's editor with a starting page, without saving it.
+     */
+    private fun design(tenant: Connection, permissions: ModulePermissions, params: Map<String, String>, values: Map<String, String>): List<UiNode> {
+        val saved = HotspotTemplates.load(tenant)
+        val canManage = permissions.has(SettingsManage)
+        val intro = UiCard(
+            title = "Como funciona",
+            children = listOf(
+                UiText(
+                    "Puedes reemplazar el diseno de las paginas de entrada del portal por tu propio HTML (pagina completa, con su CSS). " +
+                        "Al guardar se valida que conserve lo que el portal necesita; si falta algo no se guarda y se indica que corregir. " +
+                        "Deja el editor vacio y guarda para volver al diseno de IDC. No se permiten scripts, eventos (onclick...), " +
+                        "iframes ni formularios que envien a otra direccion. Las demas paginas (codigo por correo, exito, mensajes) " +
+                        "usan el diseno de IDC con los colores de la empresa.",
+                    UiTextStyle.Caption,
+                ),
+                UiText(
+                    "En todas: {{error}} (obligatorio; muestra los mensajes) y {{campos_ocultos}} (obligatorio, dentro del formulario; " +
+                        "identifica el dispositivo y la red). Opcionales: {{titulo}}, {{subtitulo}}, {{red}}, {{logo_url}}, {{pie}}, " +
+                        "{{color_primario}}, {{color_secundario}}, {{color_texto}}.",
+                    UiTextStyle.Caption,
+                ),
+            ),
+        )
+        val cards = HotspotTemplates.views.map { view ->
+            val requirements = if (view == HotspotTemplates.Form) {
+                "Formulario: <form action=\"${view.action}\" method=\"post\"> con los campos name, email, phone y " +
+                    "<input type=\"checkbox\" name=\"terms\" value=\"si\">; birthday es opcional. Valores: {{nombre}}, {{correo}}, " +
+                    "{{celular}}, {{cumpleanos}} (lo ya escrito si hubo un error), {{consentimiento}}, {{terminos_url}}, {{privacidad_url}}."
+            } else {
+                "Formulario: <form action=\"${view.action}\" method=\"post\"> con el campo name=\"code\". Valor: {{tipo_codigo}} (\"${view.label}\")."
+            }
+            val text = values[templateKey(view.id)]
+                ?: if (params["example"] == view.id) HotspotTemplates.example(view) else saved[view.id].orEmpty()
+            UiCard(
+                title = view.label,
+                collapsible = true,
+                expanded = values.containsKey(templateKey(view.id)) || params["example"] == view.id,
+                children = listOfNotNull(
+                    UiStatus(if (view.id in saved) "Usa tu HTML" else "Usa el diseno de IDC", if (view.id in saved) UiTone.Success else UiTone.Neutral),
+                    UiText(requirements, UiTextStyle.Caption),
+                    UiForm(
+                        id = view.id,
+                        fields = listOf(
+                            UiField("html", "HTML de la pagina", "textarea", readOnly = !canManage,
+                                placeholder = "<!DOCTYPE html> ... (vacio = diseno de IDC)"),
+                        ),
+                        values = mapOf("html" to text),
+                        submit = if (canManage) UiButton("Validar y guardar", UiRequest("$UiRoute/design", params = mapOf("view" to view.id), formId = view.id)) else null,
+                    ),
+                    if (!canManage) null else UiButton("Cargar un ejemplo", UiNavigate("design", mapOf("example" to view.id)), style = "secondary"),
+                ),
+            )
+        }
+        return listOf(intro) + cards
     }
 
     private fun settingsForm(
@@ -568,9 +633,8 @@ object HotspotScreens {
             help = "Se muestra cuando el controlador de red no envia el nombre de la red. El acceso por red se configura en Configuracion > Redes WiFi."),
         UiField("portalTitle", "Titulo", required = true, section = "Apariencia"),
         UiField("portalSubtitle", "Subtitulo", section = "Apariencia"),
-        UiField("logoUrl", "URL del logo", "url", section = "Apariencia"),
-        UiField("primaryColor", "Color principal", "color", required = true, section = "Apariencia"),
-        UiField("textColor", "Color del texto sobre el color principal", "color", required = true, section = "Apariencia"),
+        UiField("logoUrl", "URL del logo", "url", section = "Apariencia",
+            help = "Los colores del portal son los de la empresa (Empresa); sin colores propios usa los de IDC."),
         UiField("consentText", "Texto de consentimiento", "textarea", required = true, section = "Textos legales"),
         UiField("termsUrl", "URL de terminos", "url", section = "Textos legales"),
         UiField("privacyUrl", "URL de privacidad", "url", section = "Textos legales"),

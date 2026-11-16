@@ -13,7 +13,7 @@ class HotspotNetworksTest {
     private val id = UUID.randomUUID()
     private val settings = HotspotSettings(
         domain = null, networkName = "WiFi", portalTitle = "WiFi", portalSubtitle = "", logoUrl = null,
-        primaryColor = "#E4002B", textColor = "#FFFFFF", consentText = "Acepto", termsUrl = null, privacyUrl = null,
+        consentText = "Acepto", termsUrl = null, privacyUrl = null,
         footerText = "", successUrl = null, unifiConsoleId = "console:1", unifiSiteId = "site-1", unifiApiKey = "secret",
         accessMinutes = 60, dataLimitMb = 0, rxKbps = 0, txKbps = 0, reconnectMinutes = 1440, codeTtlMinutes = 15,
         smtpMode = "servidor", smtpHost = null, smtpPort = 587, smtpUsername = null, smtpPassword = null,

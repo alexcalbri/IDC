@@ -412,18 +412,23 @@ class HotspotPortal(private val access: ModuleAccessService) {
     }
 
     /**
-     * On a shared network, a device with live access on the same SSID in this or a linked company
-     * (see [HotspotRoaming]) is let in again for the time it has left, without the form or a code.
+     * A device with live access on this SSID, in this company or (on a shared network) in a linked
+     * one (see [HotspotRoaming]), is let in again for the time it has left, without the form or a
+     * code: it came back after visiting another network, or moved to the other company's gateway.
      * Null when there is none, or the controller did not let it in, so the usual page is shown.
      */
     private fun roamingWelcome(target: PortalTarget, guest: GuestContext): String? {
-        val network = HotspotNetworks.findBySsid(target.connection, guest.ssid)?.takeIf { it.shared } ?: return null
         if (!macPattern.matches(guest.mac)) return null
+        val network = HotspotNetworks.findBySsid(target.connection, guest.ssid)
         val now = Instant.now()
-        val companies = access.centralConnection().use { central -> HotspotRoaming.linkedCompanies(central, target.companyCode) }
+        val companies = if (network?.shared == true) {
+            access.centralConnection().use { central -> HotspotRoaming.linkedCompanies(central, target.companyCode) }
+        } else {
+            listOf(target.companyCode)
+        }
         val found = companies.mapNotNull { company ->
             if (company == target.companyCode) {
-                HotspotRoaming.liveAccess(target.connection, company, guest.mac, guest.ssid, now)
+                HotspotRoaming.liveAccess(target.connection, company, guest.mac, guest.ssid, now, requireShared = false)
             } else {
                 // A linked company without the hotspot (or with it disabled) has nothing to carry over.
                 access.tenantConnectionForCompany(company)?.use { tenant ->
@@ -437,11 +442,13 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val source = HotspotRoaming.best(found) ?: return null
         val minutesLeft = source.minutesLeft(now)
         // 0 = no limit, for accesses that do not expire.
-        val settings = network.applyTo(target.settings).copy(accessMinutes = minutesLeft ?: 0)
+        val settings = (network?.applyTo(target.settings) ?: target.settings).copy(accessMinutes = minutesLeft ?: 0)
         val connection = target.connection
         val user = source.userId?.let { id -> source.userCompany?.let { Owner.User(id, it) } }
-        // A guest of another company is linked to this company's customer with that email, never created here.
-        val owner = user ?: Owner.Customer(source.email?.takeIf { it.isNotBlank() }?.let { findCustomerByEmail(connection, it) })
+        // The same customer here; a guest of another company is linked to this company's customer
+        // with that email, never created here.
+        val customerId = if (source.company == target.companyCode) source.customerId else null
+        val owner = user ?: Owner.Customer(customerId ?: source.email?.takeIf { it.isNotBlank() }?.let { findCustomerByEmail(connection, it) })
         val values = FormValues(name = source.name, email = source.email.orEmpty(), phone = source.phone.orEmpty())
         val registrationId = UUID.randomUUID()
         insertRegistration(connection, registrationId, owner, values, birthday = null, guest = guest, accessMode = source.accessMode, roamedFrom = source.company)
@@ -466,8 +473,10 @@ class HotspotPortal(private val access: ModuleAccessService) {
             log.warn("Hotspot {}: {} rechazo la continuacion de {}: {}", target.companyCode, target.controller.name, guest.mac, result.message)
             return null
         }
+        // Like the first success page, only form access shows how long it lasts.
         return HotspotPortalPages.welcomeBack(
-            settings, source.name, minutesLeft, settings.successUrls.randomOrNull() ?: guest.continueUrl.takeIf { it.isNotBlank() },
+            settings, source.name, minutesLeft.takeIf { source.accessMode == HotspotNetworks.Form },
+            settings.successUrls.randomOrNull() ?: guest.continueUrl.takeIf { it.isNotBlank() },
         )
     }
 
@@ -516,7 +525,9 @@ class HotspotPortal(private val access: ModuleAccessService) {
             if (result.wrongNetwork) return HotspotPortalPages.message(settings, "Red WiFi distinta", wrongNetworkText)
             return retry("No pudimos activar tu acceso en este momento. Intenta de nuevo en unos segundos.")
         }
-        return HotspotPortalPages.success(settings, values.name, settings.successUrls.randomOrNull() ?: guest.continueUrl.takeIf { it.isNotBlank() })
+        return HotspotPortalPages.success(
+            settings, values.name, settings.successUrls.randomOrNull() ?: guest.continueUrl.takeIf { it.isNotBlank() }, showDuration = false,
+        )
     }
 
     /**
@@ -762,19 +773,27 @@ class HotspotPortal(private val access: ModuleAccessService) {
             withContext(Dispatchers.IO) {
                 // The portal stops answering as soon as the server owner removes the module.
                 if (!access.isInstalled(HotspotModule.id)) return@withContext null
-                val companyCode = access.centralConnection().use { central ->
+                // The company of the domain and its colors (Empresa), which the portal uses.
+                val (companyCode, brand) = access.centralConnection().use { central ->
                     central.prepareStatement(
-                        "SELECT company_code FROM public_domains WHERE domain = ? AND module_id = ? AND status <> 'removing'"
+                        """
+                        SELECT domains.company_code, companies.primary_color, companies.secondary_color, companies.accent_color
+                        FROM public_domains domains
+                        LEFT JOIN companies ON companies.code = domains.company_code
+                        WHERE domains.domain = ? AND domains.module_id = ? AND domains.status <> 'removing'
+                        """.trimIndent()
                     ).use { query ->
                         query.setString(1, host)
                         query.setString(2, HotspotModule.id)
-                        query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                        query.executeQuery().use { rows ->
+                            if (!rows.next()) null else rows.getString(1) to PortalBrand.of(rows.getString(2), rows.getString(3), rows.getString(4))
+                        }
                     }
                 } ?: return@withContext null
                 val tenant = access.tenantConnectionForCompany(companyCode) ?: return@withContext null
                 tenant.use { connection ->
                     if (!moduleEnabled(connection)) return@withContext null
-                    val settings = HotspotSettingsRepository.load(connection)
+                    val settings = HotspotSettingsRepository.load(connection).copy(brand = brand, templates = HotspotTemplates.load(connection))
                     if (settings.domain != host) return@withContext null
                     val controller = HotspotIntegrations.controller(connection)?.takeIf { it.isConfigured(settings) }
                     if (controller == null) {

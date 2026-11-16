@@ -13,7 +13,37 @@ object HotspotPortalPages {
         val birthday: String = "",
     )
 
-    fun form(settings: HotspotSettings, guest: GuestContext, values: FormValues = FormValues(), error: String? = null): String = page(
+    fun form(settings: HotspotSettings, guest: GuestContext, values: FormValues = FormValues(), error: String? = null): String =
+        custom(settings, HotspotTemplates.Form, guest, error, mapOf(
+            "nombre" to values.name, "correo" to values.email, "celular" to values.phone, "cumpleanos" to values.birthday,
+            "consentimiento" to settings.consentText, "terminos_url" to settings.termsUrl.orEmpty(), "privacidad_url" to settings.privacyUrl.orEmpty(),
+        )) ?: builtInForm(settings, guest, values, error)
+
+    /**
+     * The company's own HTML for [view] (see [HotspotTemplates]) with its placeholders filled, or null
+     * to use the built-in design.
+     */
+    private fun custom(settings: HotspotSettings, view: HotspotTemplates.View, guest: GuestContext, error: String?, extra: Map<String, String>): String? {
+        val template = settings.templates[view.id] ?: return null
+        val values = mapOf(
+            "titulo" to settings.portalTitle,
+            "subtitulo" to settings.portalSubtitle,
+            "red" to guest.ssid.ifBlank { settings.networkName },
+            "logo_url" to settings.logoUrl.orEmpty(),
+            "pie" to settings.footerText,
+            "color_primario" to settings.brand.primary,
+            "color_secundario" to settings.brand.secondary,
+            "color_texto" to settings.brand.onPrimary,
+            "tipo_codigo" to view.label,
+        ) + extra
+        val raw = mapOf(
+            "campos_ocultos" to guestFields(guest),
+            "error" to error?.let { "<div class=\"idc-error\" role=\"alert\">${esc(it)}</div>" }.orEmpty(),
+        )
+        return HotspotTemplates.render(template, values, raw)
+    }
+
+    private fun builtInForm(settings: HotspotSettings, guest: GuestContext, values: FormValues, error: String?): String = page(
         settings,
         header = networkHeader(settings, guest),
         body = """
@@ -42,6 +72,7 @@ object HotspotPortalPages {
     // Networks configured for access by code ask for the customer code (Clientes) or the user code
     // (Usuarios integration) instead of the form.
     fun accessCode(settings: HotspotSettings, guest: GuestContext, byUser: Boolean = false, error: String? = null): String {
+        custom(settings, if (byUser) HotspotTemplates.UserCode else HotspotTemplates.CustomerCode, guest, error, emptyMap())?.let { return it }
         val label = if (byUser) "Codigo de usuario" else "Codigo de cliente"
         return page(
             settings,
@@ -78,8 +109,12 @@ object HotspotPortalPages {
         """.trimIndent(),
     )
 
-    // [continueUrl] opens automatically after a few seconds; the button lets the guest go right away.
-    fun success(settings: HotspotSettings, name: String, continueUrl: String?): String = page(
+    /**
+     * [continueUrl] opens automatically after a few seconds; the button lets the guest go right away.
+     * [showDuration] is for form access only: code accesses last as long as the customer's stay or
+     * until a user is revoked, so a fixed length would be wrong.
+     */
+    fun success(settings: HotspotSettings, name: String, continueUrl: String?, showDuration: Boolean = true): String = page(
         settings,
         header = "<h1>${esc(settings.portalTitle)}</h1>",
         head = continueUrl?.let { "<meta http-equiv=\"refresh\" content=\"$RedirectSeconds;url=${esc(it)}\">" }.orEmpty(),
@@ -88,7 +123,7 @@ object HotspotPortalPages {
               <div class="check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
               <h2>Estas conectado</h2>
               <p>Bienvenido, ${esc(name)}. Ya puedes navegar.</p>
-              <p class="note">Tu sesion de WiFi dura <strong>${settings.accessMinutes} minutos</strong>.</p>
+              ${if (showDuration && settings.accessMinutes > 0) "<p class=\"note\">Tu sesion de WiFi dura <strong>${settings.accessMinutes} minutos</strong>.</p>" else ""}
               ${continueUrl?.let { "<p class=\"small\">Te llevaremos a la pagina en unos segundos.</p><a class=\"button\" href=\"${esc(it)}\">Continuar</a>" }.orEmpty()}
             </div>
         """.trimIndent(),
@@ -166,8 +201,11 @@ object HotspotPortalPages {
     }
 
     private fun page(settings: HotspotSettings?, header: String, body: String, head: String = ""): String {
-        val primary = settings?.primaryColor ?: "#E4002B"
-        val onPrimary = settings?.textColor ?: "#FFFFFF"
+        // The company's colors (IDC's when it has not set its own or the portal was not found).
+        val brand = settings?.brand ?: PortalBrand.Idc
+        val primary = brand.primary
+        val secondary = brand.secondary
+        val onPrimary = brand.onPrimary
         val logo = settings?.logoUrl?.let { "<img class=\"logo\" src=\"${esc(it)}\" alt=\"\">" }.orEmpty()
         val footer = settings?.footerText?.takeIf { it.isNotBlank() }?.let { "<footer>${esc(it)}</footer>" }.orEmpty()
         return """
@@ -180,9 +218,9 @@ object HotspotPortalPages {
             <title>${esc(settings?.portalTitle ?: "WiFi")}</title>
             $head
             <style>
-            :root { --primary: $primary; --on-primary: $onPrimary; --ink: #1a1815; --muted: #6d6965; --line: #e5e2df; --panel: #f4f2f0; }
+            :root { --primary: $primary; --secondary: $secondary; --on-primary: $onPrimary; --ink: #1a1815; --muted: #6d6965; --line: #e5e2df; --panel: #f4f2f0; }
             * { box-sizing: border-box; }
-            body { margin: 0; min-height: 100vh; background: var(--primary); color: var(--ink);
+            body { margin: 0; min-height: 100vh; background: linear-gradient(135deg, var(--primary), var(--secondary)) fixed; color: var(--ink);
                    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: flex; justify-content: center; }
             .wrap { width: 100%; max-width: 430px; padding: 0 20px 40px; display: flex; flex-direction: column; }
             header { text-align: center; padding: 36px 0 24px; color: var(--on-primary); }

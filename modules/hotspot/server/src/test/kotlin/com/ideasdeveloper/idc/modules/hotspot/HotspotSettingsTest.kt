@@ -15,7 +15,7 @@ import java.util.UUID
 class HotspotSettingsTest {
     private val defaults = HotspotSettings(
         domain = null, networkName = "WiFi", portalTitle = "WiFi", portalSubtitle = "", logoUrl = null,
-        primaryColor = "#E4002B", textColor = "#FFFFFF", consentText = "Acepto", termsUrl = null, privacyUrl = null,
+        consentText = "Acepto", termsUrl = null, privacyUrl = null,
         footerText = "", successUrl = null, unifiConsoleId = "console:1", unifiSiteId = "site-1", unifiApiKey = "secret",
         accessMinutes = 60, dataLimitMb = 0, rxKbps = 0, txKbps = 0, reconnectMinutes = 1440, codeTtlMinutes = 15,
         smtpMode = "servidor", smtpHost = null, smtpPort = 587, smtpUsername = null, smtpPassword = "smtp-secret",
@@ -52,7 +52,6 @@ class HotspotSettingsTest {
     fun rejectsInvalidValues() {
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("domain" to "wifi example.com")) }
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("domain" to "localhost")) }
-        assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("primaryColor" to "red")) }
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("accessMinutes" to "0")) }
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("logoUrl" to "javascript:alert(1)")) }
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("unifiSiteId" to "../../x?y")) }
@@ -131,5 +130,12 @@ class HotspotSettingsTest {
         assertFalse(html.contains("<script>alert(1)</script>"))
         assertFalse(html.contains("<img src=x"))
         assertTrue(html.contains("&lt;script&gt;"))
+    }
+
+    @Test
+    fun portalUsesTheCompanyColorsOrIdcOnes() {
+        assertEquals(PortalBrand("#FBB606", "#023047", "#FFFFFF"), PortalBrand.of("#FBB606", "#023047", "#FFFFFF"))
+        assertEquals(PortalBrand.Idc, PortalBrand.of(null, "red", " "))
+        assertEquals(PortalBrand.Idc, defaults.brand)
     }
 }

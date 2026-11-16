@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
 import com.ideasdeveloper.idc.app.core.theme.AppColors
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -313,7 +314,10 @@ private fun ModuleImage(node: UiImage, context: ModuleRenderContext) {
 private fun ModuleMetric(node: UiMetric, colors: ModuleColors) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(node.label.uppercase(), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-        Text(node.value, color = colors.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+        // Selectable so values such as a WiFi code can be copied.
+        SelectionContainer {
+            Text(node.value, color = colors.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+        }
         if (node.caption.isNotBlank()) Text(node.caption, color = colors.tone(node.captionTone), fontSize = 12.sp)
     }
 }

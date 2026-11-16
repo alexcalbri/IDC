@@ -82,7 +82,7 @@ Tenant migrations through `V008__remove_hotspot_user_code.sql`
 
 | Table | Purpose |
 | --- | --- |
-| `hotspot_settings` | Singleton portal configuration (domain, UniFi, limits, SMTP, appearance). |
+| `hotspot_settings` | Singleton portal configuration (domain, UniFi, limits, SMTP, appearance). The portal's colors are the company's (central `companies` primary, secondary and accent colors, IDC's until changed); the old `primary_color`/`text_color` columns are no longer used. |
 | `hotspot_registrations` | One row per form submission or code access (`access_mode`), linked to `customers`; `roamed_from` (V009) marks a continued access from a linked company. |
 | `hotspot_codes` | One-time codes (SHA-256 only), expiry, attempts, use. |
 | `hotspot_accesses` | Every UniFi authorization attempt; successful rows drive reconnection. |
@@ -282,6 +282,29 @@ configuration again retries a domain in `error`.
    the customer or user code instead of the form.
 7. Test with a phone: connect to the guest SSID, register, enter the code.
 
+## Custom HTML (Diseno HTML)
+
+*Diseno HTML* lets the company replace the entry views of the portal with its own
+whole HTML page: the registration form and the customer-code and user-code pages
+(table `hotspot_portal_templates`, V010; no row = IDC's design). Saving validates
+the page (`HotspotTemplates.validate`) and keeps nothing until it passes:
+
+- One form posting (`method="post"`) to the view's address: `/guest/s/default/register`
+  for the form, `/guest/s/default/code` for the code views. No other form may post elsewhere.
+- Inside it, the fields the backend reads: `name`, `email`, `phone` and
+  `<input type="checkbox" name="terms" value="si">` (form) or `code` (code views),
+  and `{{campos_ocultos}}` (MAC, AP, SSID and destination of the guest).
+- `{{error}}` somewhere, for the portal's messages.
+- No `<script>`, frames, `on*=` handlers, `javascript:` URLs, `formaction` or meta refresh.
+- Only the placeholders of that view: common `{{titulo}}`, `{{subtitulo}}`, `{{red}}`,
+  `{{logo_url}}`, `{{pie}}`, `{{color_primario}}`, `{{color_secundario}}`,
+  `{{color_texto}}`; form `{{nombre}}`, `{{correo}}`, `{{celular}}`, `{{cumpleanos}}`,
+  `{{consentimiento}}`, `{{terminos_url}}`, `{{privacidad_url}}`; code views `{{tipo_codigo}}`.
+
+Values are escaped; `{{error}}` renders `<div class="idc-error" role="alert">` or
+nothing. The other pages (emailed code, success, messages) keep IDC's design with
+the company's colors. "Cargar un ejemplo" fills the editor with a valid page.
+
 ## Network check before authorizing
 
 The SSID in the redirect URL picks the screen, but the redirect is not signed:
@@ -294,7 +317,21 @@ connector (`/proxy/network/api/s/{site reference}/stat/sta/{mac}`, field
 the Integration API does not report a client's SSID. The site reference
 (`default`) is read once from the Integration API sites list. A different
 network shows "Red WiFi distinta" and the access is kept as rejected; when
-UniFi cannot be asked the device is not let in. UniFi's "URL cifrada" option
+UniFi cannot be asked the device is not let in.
+
+UniFi keeps a guest authorized on every SSID of the site, so a device let in on
+one network could switch to another (for example from a customer network to the
+staff one) without the portal. The `network-guard` job (every minute) reads the
+connected guests (`stat/sta`) and removes the authorization of any authorized
+guest whose SSID differs from the SSID of its latest access in the company; the
+new network's portal then asks for its own method. Coming back to the network it
+was let in on, the portal lets it in again without form or code for the time it
+has left ("Bienvenido de nuevo", the same continuation as shared networks). Until
+the next run (up to about a minute) the device may still browse on the new
+network. Devices the company never let in are left alone.
+
+The success pages show the session length only for form access: code accesses
+last for the customer's stay or until a user is revoked. UniFi's "URL cifrada" option
 does not apply to external portals: the redirect keeps `ap`, `id`, `ssid` in
 clear text.
 

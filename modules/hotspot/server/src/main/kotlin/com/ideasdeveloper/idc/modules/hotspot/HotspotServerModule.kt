@@ -61,6 +61,7 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V007__prefix_user_codes.sql",
         "modules/hotspot/migrations/V008__remove_hotspot_user_code.sql",
         "modules/hotspot/migrations/V009__shared_networks.sql",
+        "modules/hotspot/migrations/V010__portal_templates.sql",
     )
 
     override val runtimeTables = listOf(
@@ -77,6 +78,7 @@ object HotspotServerModule : ServerModule {
         "hotspot_pass_sources",
         "hotspot_access_passes",
         "hotspot_code_sessions",
+        "hotspot_portal_templates",
     )
 
     /**
@@ -102,13 +104,14 @@ object HotspotServerModule : ServerModule {
         SettingsTable("hotspot_networks"),
         SettingsTable("hotspot_integrations"),
         SettingsTable("hotspot_pass_sources"),
+        SettingsTable("hotspot_portal_templates"),
     )
 
     override val definition = ModuleDefinition(
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-        version = "0.9.0",
+        version = "0.9.2",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -144,6 +147,11 @@ object HotspotServerModule : ServerModule {
             HotspotCrmPipeline.enforceAccess(context.tenant, settings, LocalDate.now(), now)
             HotspotCodeSessions.expire(context.tenant, settings, HotspotIntegrations.controller(context.tenant), now)
         },
+        // UniFi authorizes guests for every SSID of the site; a device that changes network must log in there.
+        ModuleJob(id = "network-guard", interval = Duration.ofMinutes(1)) { context ->
+            val settings = HotspotSettingsRepository.load(context.tenant)
+            HotspotNetworkGuard.run(context.tenant, context.companyCode, settings, HotspotIntegrations.controller(context.tenant))
+        },
     )
 
     override fun routes(route: Route, access: ModuleAccessService) {
@@ -161,7 +169,7 @@ object HotspotServerModule : ServerModule {
             // Saves the "portal" and "settings" forms and answers with the same screen and a notice.
             post("/{screen}") {
                 val permissions = call.requireModuleAccess(access, HotspotModule.id) ?: return@post
-                val screen = call.screenId(permissions)?.takeIf { it in setOf("portal", "settings", "access", "integrations") }
+                val screen = call.screenId(permissions)?.takeIf { it in setOf("portal", "design", "settings", "access", "integrations") }
                     ?: return@post call.respond(HttpStatusCode.NotFound, HotspotErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada."))
                 if (screen == "integrations") {
                     if (!permissions.businessOwner) {
@@ -207,6 +215,11 @@ object HotspotServerModule : ServerModule {
                     return@post call.respond(HttpStatusCode.Forbidden, HotspotErrorResponse("missing_permission", "No tienes permiso para cambiar la configuracion."))
                 }
                 val body = call.receiveText()
+                if (screen == "design") {
+                    val html = runCatching { UiJson.parseToJsonElement(body).jsonObject["html"]?.jsonPrimitive?.contentOrNull }.getOrNull().orEmpty()
+                    val viewId = call.request.queryParameters["view"].orEmpty()
+                    return@post call.respondScreen(access) { tenant -> saveTemplate(access, tenant, permissions, viewId, html) }
+                }
                 // Network actions: deleting sends no form, so it has no body.
                 val networkStep = call.request.queryParameters["network"]
                 if (screen == "settings" && networkStep != null) {
@@ -239,6 +252,24 @@ object HotspotServerModule : ServerModule {
                 null
             }
         }
+    }
+
+    // Validates the custom HTML of a portal view and saves it; when it fails, nothing is saved and the
+    // editor keeps what was typed together with every problem found.
+    private fun saveTemplate(access: ModuleAccessService, tenant: Connection, permissions: ModulePermissions, viewId: String, html: String): UiScreen {
+        val view = HotspotTemplates.view(viewId)
+            ?: return render(access, tenant, permissions, "design", emptyMap(), UiNotice("Vista desconocida.", UiTone.Danger))
+        val problems = if (html.isBlank()) emptyList() else HotspotTemplates.validate(view, html)
+        if (problems.isNotEmpty()) {
+            return render(
+                access, tenant, permissions, "design", emptyMap(),
+                UiNotice("No se guardo el HTML de ${view.label}: " + problems.joinToString(" "), UiTone.Danger),
+                submittedValues = mapOf(HotspotScreens.templateKey(view.id) to html),
+            )
+        }
+        HotspotTemplates.save(tenant, view, html)
+        val message = if (html.isBlank()) "${view.label} vuelve a usar el diseno de IDC." else "HTML de ${view.label} validado y guardado."
+        return render(access, tenant, permissions, "design", emptyMap(), UiNotice(message, UiTone.Success))
     }
 
     private fun render(

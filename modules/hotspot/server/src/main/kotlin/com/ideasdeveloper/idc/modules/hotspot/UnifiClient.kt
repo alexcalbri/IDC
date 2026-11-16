@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.modules.hotspot
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -219,6 +220,28 @@ object UnifiClient {
             sites(apiKey, consoleId).firstOrNull { it.id == siteId }?.reference?.takeIf { it.isNotBlank() }
                 ?: throw UnifiException("El sitio de UniFi configurado no aparece en la consola.")
             ).also { siteReferences["$consoleId/$siteId"] = it }
+
+    /** Guest devices connected to the site now. Throws [UnifiException] when UniFi cannot be asked. */
+    fun connectedGuests(settings: HotspotSettings): List<ConnectedGuest> {
+        if (!settings.unifiConfigured) throw UnifiException("UniFi no esta configurado.")
+        val reference = siteReference(settings.unifiApiKey!!, settings.unifiConsoleId!!, settings.unifiSiteId!!)
+        val page = getJson(
+            "$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}/proxy/network/api/s/${encode(reference)}/stat/sta",
+            settings.unifiApiKey,
+        )
+        if ((page["meta"] as? JsonObject)?.string("rc") != "ok") throw UnifiException("UniFi no devolvio los dispositivos conectados.")
+        return parseGuests(page)
+    }
+
+    /** Guests of a stat/sta answer with their SSID ("" when wired) and authorization. */
+    fun parseGuests(page: JsonObject): List<ConnectedGuest> = page["data"]?.jsonArray.orEmpty().mapNotNull { element ->
+        val station = element as? JsonObject ?: return@mapNotNull null
+        if (station.boolean("is_guest") != true) return@mapNotNull null
+        val mac = station.string("mac")?.trim()?.lowercase()?.takeIf { stationMacPattern.matches(it) } ?: return@mapNotNull null
+        ConnectedGuest(mac = mac, ssid = station.string("essid").orEmpty(), authorized = station.boolean("authorized") == true)
+    }
+
+    private fun JsonObject.boolean(key: String): Boolean? = (this[key] as? JsonPrimitive)?.booleanOrNull
 
     /** First station of a stat/sta answer; a wired device has no SSID and is reported with "". */
     fun parseStation(page: JsonObject): UnifiStation? {

@@ -35,7 +35,17 @@ interface NetworkController {
 
     /** SSIDs configured in the controller, to pick them in Redes WiFi. Throws [NetworkControllerException]. */
     fun wifiNetworks(settings: HotspotSettings): List<String>
+
+    /**
+     * Guest devices connected now, with the SSID each is on. The controller keeps a guest authorized
+     * on every SSID of the site, so [HotspotNetworkGuard] uses this to catch network changes.
+     * Throws [NetworkControllerException].
+     */
+    fun connectedGuests(settings: HotspotSettings): List<ConnectedGuest>
 }
+
+/** A guest device connected to the controller now; [ssid] is "" for wired guests. */
+data class ConnectedGuest(val mac: String, val ssid: String, val authorized: Boolean)
 
 class NetworkControllerException(message: String) : Exception(message)
 
@@ -49,6 +59,12 @@ object UnifiController : NetworkController {
     override fun authorizeGuest(settings: HotspotSettings, mac: String, ssid: String) = UnifiClient.authorizeGuest(settings, mac, ssid)
 
     override fun disconnectGuest(settings: HotspotSettings, mac: String) = UnifiClient.unauthorizeGuest(settings, mac)
+
+    override fun connectedGuests(settings: HotspotSettings): List<ConnectedGuest> = try {
+        UnifiClient.connectedGuests(settings)
+    } catch (failure: Exception) {
+        throw NetworkControllerException(failure.message.orEmpty())
+    }
 
     // The settings screen lists the SSIDs on every render; a short cache spares a cloud call each time.
     private const val SsidCacheMillis = 60_000L

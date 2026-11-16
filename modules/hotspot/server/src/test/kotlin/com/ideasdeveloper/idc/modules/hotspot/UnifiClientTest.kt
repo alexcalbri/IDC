@@ -59,6 +59,41 @@ class UnifiClientTest {
     }
 
     @Test
+    fun guestListsKeepOnlyGuestsWithTheirNetworkAndAuthorization() {
+        val page = Json.parseToJsonElement(
+            """
+            {"meta": {"rc": "ok"}, "data": [
+              {"mac": "F2:26:E3:82:E6:F1", "essid": "guest", "is_guest": true, "authorized": true},
+              {"mac": "aa:bb:cc:dd:ee:01", "essid": "Staff", "is_guest": true, "authorized": false},
+              {"mac": "aa:bb:cc:dd:ee:02", "is_guest": true, "is_wired": true, "authorized": true},
+              {"mac": "aa:bb:cc:dd:ee:03", "essid": "Oficina", "is_guest": false},
+              {"mac": "invalid", "essid": "guest", "is_guest": true, "authorized": true}
+            ]}
+            """.trimIndent()
+        ).jsonObject
+        assertEquals(
+            listOf(
+                ConnectedGuest("f2:26:e3:82:e6:f1", "guest", true),
+                ConnectedGuest("aa:bb:cc:dd:ee:01", "Staff", false),
+                ConnectedGuest("aa:bb:cc:dd:ee:02", "", true),
+            ),
+            UnifiClient.parseGuests(page),
+        )
+    }
+
+    @Test
+    fun guestsOnAnotherNetworkThanTheirAccessAreCaught() {
+        val onCustomers = ConnectedGuest("aa:bb:cc:dd:ee:01", "Clientes", true)
+        val movedToStaff = ConnectedGuest("aa:bb:cc:dd:ee:02", "Staff", true)
+        val unknown = ConnectedGuest("aa:bb:cc:dd:ee:03", "Staff", true)
+        val lastSsids = mapOf("aa:bb:cc:dd:ee:01" to "Clientes", "aa:bb:cc:dd:ee:02" to "Clientes")
+        assertEquals(
+            listOf(movedToStaff to "Clientes"),
+            HotspotNetworkGuard.mismatches(listOf(onCustomers, movedToStaff, unknown), lastSsids),
+        )
+    }
+
+    @Test
     fun networksMustMatchExactly() {
         assertTrue(UnifiClient.sameNetwork("guest", "guest"))
         assertTrue(UnifiClient.sameNetwork("", " "))

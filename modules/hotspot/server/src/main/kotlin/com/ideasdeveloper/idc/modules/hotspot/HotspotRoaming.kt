@@ -15,6 +15,8 @@ data class RoamingAccess(
     val email: String?,
     val phone: String?,
     val accessMode: String,
+    // Customer of [company]; only meaningful when the access continues in that same company.
+    val customerId: UUID? = null,
     val userId: UUID?,
     val userCompany: String?,
     val expiresAt: Instant?,
@@ -25,6 +27,9 @@ data class RoamingAccess(
 }
 
 /**
+ * Continued access. In the portal's own company, a device that comes back to the SSID it was let in
+ * on (after [HotspotNetworkGuard] removed it for visiting another network) gets the time it has left.
+ *
  * Shared networks: the same SSID on the gateways of linked companies (same owner group), for
  * example through a UniFi Fabric. Each gateway counts guest time from its own authorization, so a
  * device that moves would get a fresh period at every gateway. Instead, the portal of the second
@@ -75,18 +80,25 @@ object HotspotRoaming {
         longest(found.map { it to (it.expiresAt?.let { end -> End.At(end) } ?: End.Never) })?.first
 
     /**
-     * Live access of [mac] on [ssid] in the company of [tenant], or null. The company must have the
-     * same SSID configured as shared; a company without the hotspot tables has nothing to offer.
+     * Live access of [mac] on [ssid] in the company of [tenant], or null. With [requireShared] (a
+     * linked company) the company must have the same SSID configured as shared; in the portal's own
+     * company any SSID counts, so a device sent away by [HotspotNetworkGuard] gets back in.
      */
-    fun liveAccess(tenant: Connection, company: String, mac: String, ssid: String, now: Instant = Instant.now()): RoamingAccess? {
-        val network = runCatching { HotspotNetworks.findBySsid(tenant, ssid) }.getOrNull()
-        if (network?.shared != true) return null
+    fun liveAccess(
+        tenant: Connection,
+        company: String,
+        mac: String,
+        ssid: String,
+        now: Instant = Instant.now(),
+        requireShared: Boolean = true,
+    ): RoamingAccess? {
+        if (requireShared && runCatching { HotspotNetworks.findBySsid(tenant, ssid) }.getOrNull()?.shared != true) return null
         val rows = tenant.prepareStatement(
             """
             SELECT accesses.created_at, accesses.minutes, accesses.session_id, accesses.disconnected_at,
                    sessions.expires_at AS session_expires_at, sessions.ended_at AS session_ended_at,
                    registrations.name, registrations.email, registrations.phone, registrations.access_mode,
-                   registrations.user_id, registrations.user_company
+                   registrations.customer_id, registrations.user_id, registrations.user_company
             FROM hotspot_accesses accesses
             JOIN hotspot_registrations registrations ON registrations.id = accesses.registration_id
             LEFT JOIN hotspot_code_sessions sessions ON sessions.id = accesses.session_id
@@ -117,6 +129,7 @@ object HotspotRoaming {
                                 email = rows.getString("email"),
                                 phone = rows.getString("phone"),
                                 accessMode = rows.getString("access_mode"),
+                                customerId = rows.getObject("customer_id", UUID::class.java),
                                 userId = rows.getObject("user_id", UUID::class.java),
                                 userCompany = rows.getString("user_company"),
                                 expiresAt = (end as? End.At)?.instant,
