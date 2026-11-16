@@ -94,6 +94,37 @@ object HotspotPortalPages {
         """.trimIndent(),
     )
 
+    /**
+     * A device that already had access on a shared network, continued without logging in again.
+     * [minutesLeft] null means the access does not expire.
+     */
+    fun welcomeBack(settings: HotspotSettings, name: String, minutesLeft: Int?, continueUrl: String?): String = page(
+        settings,
+        header = "<h1>${esc(settings.portalTitle)}</h1>",
+        head = continueUrl?.let { "<meta http-equiv=\"refresh\" content=\"$RedirectSeconds;url=${esc(it)}\">" }.orEmpty(),
+        body = """
+            <div class="center">
+              <div class="check"><svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"></polyline></svg></div>
+              <h2>Bienvenido de nuevo</h2>
+              <p>${esc(name.ifBlank { "Hola" })}, ya tenias acceso a esta red. Puedes seguir navegando.</p>
+              ${minutesLeft?.let { "<p class=\"note\">Te quedan <strong>${timeLeft(it.toLong())}</strong> de tu sesion de WiFi.</p>" }.orEmpty()}
+              ${continueUrl?.let { "<p class=\"small\">Te llevaremos a la pagina en unos segundos.</p><a class=\"button\" href=\"${esc(it)}\">Continuar</a>" }.orEmpty()}
+            </div>
+        """.trimIndent(),
+    )
+
+    // Exact time left (formatMinutes rounds up, which would promise more than the guest has).
+    fun timeLeft(minutes: Long): String {
+        val days = minutes / 1440
+        val hours = minutes % 1440 / 60
+        val rest = minutes % 60
+        return listOfNotNull(
+            days.takeIf { it > 0 }?.let { "$it dia${if (it == 1L) "" else "s"}" },
+            hours.takeIf { it > 0 }?.let { "$it h" },
+            rest.takeIf { it > 0 || minutes == 0L }?.let { "$it min" },
+        ).joinToString(" ")
+    }
+
     fun wait(settings: HotspotSettings, minutesRemaining: Long, byCode: Boolean = false): String = message(
         settings,
         title = "Ya usaste tu acceso",

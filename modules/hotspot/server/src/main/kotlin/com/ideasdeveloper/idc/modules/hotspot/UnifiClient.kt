@@ -14,10 +14,14 @@ import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
 import java.time.Duration
+import java.util.concurrent.ConcurrentHashMap
 
 data class UnifiConsole(val id: String, val name: String, val model: String, val state: String)
 
 data class UnifiSite(val id: String, val name: String, val reference: String)
+
+/** A connected device and the SSID it is on ("" when wired). */
+data class UnifiStation(val mac: String, val ssid: String)
 
 class UnifiException(message: String) : Exception(message)
 
@@ -28,17 +32,34 @@ object UnifiClient {
     private const val CloudApi = "https://api.ui.com"
     private const val PageSize = 200
     private const val MaxPages = 25
+    private val stationMacPattern = Regex("^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
+    // Site internal references by "console/site"; they do not change for a site.
+    private val siteReferences = ConcurrentHashMap<String, String>()
     private val http = HttpClient.newBuilder()
         .connectTimeout(Duration.ofSeconds(10))
         .followRedirects(HttpClient.Redirect.NEVER)
         .build()
 
-    fun authorizeGuest(settings: HotspotSettings, mac: String): GuestAuthorization {
+    /**
+     * Authorizes [mac] only while it is connected to [ssid] ("" for a wired guest). The redirect
+     * that brings the guest to the portal is not signed, so the network it claims is checked
+     * against the one UniFi reports before letting the device in.
+     */
+    fun authorizeGuest(settings: HotspotSettings, mac: String, ssid: String): GuestAuthorization {
         if (!settings.unifiConfigured) return GuestAuthorization(false, "UniFi no esta configurado.")
         // Both ids were validated against [A-Za-z0-9:._-]; the console id keeps its ':' as UniFi shows it.
         val base = "$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}" +
             "/proxy/network/integration/v1/sites/${settings.unifiSiteId}"
         return try {
+            val station = station(settings, mac)
+                ?: return GuestAuthorization(false, "El dispositivo $mac no aparece conectado en UniFi.")
+            if (!sameNetwork(station.ssid, ssid)) {
+                return GuestAuthorization(
+                    false,
+                    "El dispositivo $mac esta conectado a '${station.ssid}' y el portal se abrio para '$ssid'.",
+                    wrongNetwork = true,
+                )
+            }
             val clientId = findClientId(base, settings.unifiApiKey!!, mac)
                 ?: return GuestAuthorization(false, "El dispositivo $mac no aparece conectado en UniFi.")
             val payload = buildMap<String, JsonPrimitive> {
@@ -109,8 +130,7 @@ object UnifiClient {
 
     /**
      * SSIDs of the site (Network Integration API "WiFi broadcasts", UniFi Network 10 or newer). The
-     * API does not tell which SSID a client is connected to, so the portal keeps using the SSID that
-     * UniFi puts in the redirect.
+     * SSID a client is on comes from the station API instead (see [station]).
      */
     fun wifiNetworks(apiKey: String, consoleId: String, siteId: String): List<String> {
         val base = "$CloudApi/v1/connector/consoles/$consoleId/proxy/network/integration/v1/sites/$siteId/wifi/broadcasts"
@@ -167,6 +187,52 @@ object UnifiClient {
     }
 
     private fun JsonObject.string(key: String): String? = (this[key] as? JsonPrimitive)?.contentOrNull
+
+    /**
+     * The device as UniFi Network sees it right now, or null when it is not connected. Reads the
+     * Network application's own station API ("stat/sta"), the only one that tells the SSID; the
+     * Integration API does not. Throws when UniFi cannot be asked, so callers fail closed.
+     */
+    private fun station(settings: HotspotSettings, mac: String): UnifiStation? {
+        if (!stationMacPattern.matches(mac)) return null
+        val reference = siteReference(settings.unifiApiKey!!, settings.unifiConsoleId!!, settings.unifiSiteId!!)
+        val response = send(
+            HttpRequest.newBuilder(
+                URI.create("$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}/proxy/network/api/s/${encode(reference)}/stat/sta/$mac")
+            )
+                .header("Accept", "application/json")
+                .header("X-API-Key", settings.unifiApiKey)
+                .GET(),
+        )
+        val page = runCatching { Json.parseToJsonElement(response.body()).jsonObject }.getOrNull()
+        // UniFi answers 400 api.err.UnknownStation for a device that is not connected.
+        if (response.statusCode() == 400 && page?.let(::isUnknownStation) == true) return null
+        if (response.statusCode() != 200 || page == null) {
+            throw IllegalStateException("HTTP ${response.statusCode()} al consultar la red del dispositivo")
+        }
+        return parseStation(page)
+    }
+
+    // The station API addresses a site by its internal reference ("default"), not by the Integration API id.
+    private fun siteReference(apiKey: String, consoleId: String, siteId: String): String =
+        siteReferences["$consoleId/$siteId"] ?: (
+            sites(apiKey, consoleId).firstOrNull { it.id == siteId }?.reference?.takeIf { it.isNotBlank() }
+                ?: throw UnifiException("El sitio de UniFi configurado no aparece en la consola.")
+            ).also { siteReferences["$consoleId/$siteId"] = it }
+
+    /** First station of a stat/sta answer; a wired device has no SSID and is reported with "". */
+    fun parseStation(page: JsonObject): UnifiStation? {
+        if ((page["meta"] as? JsonObject)?.string("rc") != "ok") return null
+        val station = page["data"]?.jsonArray?.firstOrNull() as? JsonObject ?: return null
+        val mac = station.string("mac")?.trim()?.lowercase()?.takeIf { it.isNotBlank() } ?: return null
+        return UnifiStation(mac = mac, ssid = station.string("essid").orEmpty())
+    }
+
+    private fun isUnknownStation(page: JsonObject): Boolean =
+        (page["meta"] as? JsonObject)?.string("msg") == "api.err.UnknownStation"
+
+    /** SSIDs are compared exactly, as WiFi does; only surrounding spaces from the redirect are ignored. */
+    fun sameNetwork(connected: String, claimed: String): Boolean = connected.trim() == claimed.trim()
 
     private fun findClientId(base: String, apiKey: String, mac: String): String? {
         var offset = 0

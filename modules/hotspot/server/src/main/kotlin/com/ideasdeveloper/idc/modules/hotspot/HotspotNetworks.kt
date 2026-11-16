@@ -14,6 +14,8 @@ data class HotspotNetwork(
     // Null uses the access and reconnection times of the general configuration.
     val accessMinutes: Int?,
     val reconnectMinutes: Int?,
+    // Also on the gateways of linked companies: live access there carries over (see [HotspotRoaming]).
+    val shared: Boolean = false,
 ) {
     val byCustomerCode: Boolean
         get() = accessMode == HotspotNetworks.CustomerCode
@@ -112,6 +114,7 @@ object HotspotNetworks {
             accessSources = chosen,
             accessMinutes = minutes("accessMinutes", 1..10080, "El tiempo de acceso de la red"),
             reconnectMinutes = minutes("reconnectMinutes", 0..525600, "El tiempo para reconectar de la red"),
+            shared = values["shared"] == "true",
         )
     }
 
@@ -121,7 +124,8 @@ object HotspotNetworks {
         "accessMode" to modeLabel(network?.accessMode ?: Form),
         "accessMinutes" to network?.accessMinutes?.toString().orEmpty(),
         "reconnectMinutes" to network?.reconnectMinutes?.toString().orEmpty(),
-    ) + (network?.accessSources ?: listOf(HotspotPasses.HotspotCustomers)).associate { sourceKey(it) to "true" }
+        "shared" to (network?.shared == true).toString(),
+    ) +(network?.accessSources ?: listOf(HotspotPasses.HotspotCustomers)).associate { sourceKey(it) to "true" }
 
     fun list(connection: Connection): List<HotspotNetwork> = connection.prepareStatement(
         "SELECT * FROM hotspot_networks ORDER BY lower(ssid)"
@@ -154,14 +158,15 @@ object HotspotNetworks {
         if (taken) throw HotspotValidationException("La red ${network.ssid} ya esta configurada.")
         connection.prepareStatement(
             """
-            INSERT INTO hotspot_networks (id, ssid, access_mode, access_sources, access_minutes, reconnect_minutes)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO hotspot_networks (id, ssid, access_mode, access_sources, access_minutes, reconnect_minutes, shared)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (id) DO UPDATE SET
                 ssid = EXCLUDED.ssid,
                 access_mode = EXCLUDED.access_mode,
                 access_sources = EXCLUDED.access_sources,
                 access_minutes = EXCLUDED.access_minutes,
                 reconnect_minutes = EXCLUDED.reconnect_minutes,
+                shared = EXCLUDED.shared,
                 updated_at = CURRENT_TIMESTAMP
             """.trimIndent()
         ).use { upsert ->
@@ -171,6 +176,7 @@ object HotspotNetworks {
             upsert.setArray(4, connection.createArrayOf("text", network.accessSources.toTypedArray()))
             upsert.setObject(5, network.accessMinutes)
             upsert.setObject(6, network.reconnectMinutes)
+            upsert.setBoolean(7, network.shared)
             upsert.executeUpdate()
         }
     }
@@ -192,6 +198,7 @@ object HotspotNetworks {
             accessSources = sources,
             accessMinutes = getObject("access_minutes") as Int?,
             reconnectMinutes = getObject("reconnect_minutes") as Int?,
+            shared = getBoolean("shared"),
         )
     }
 }

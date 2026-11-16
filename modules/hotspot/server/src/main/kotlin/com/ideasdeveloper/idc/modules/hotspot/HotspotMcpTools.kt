@@ -140,6 +140,10 @@ object HotspotMcpTools {
                     },
                     "accessMinutes" to McpSchema.integer("Tiempo de acceso de esta red; 0 usa el general.", 0, 10080),
                     "reconnectMinutes" to McpSchema.integer("Tiempo para reconectar de esta red; -1 usa el general.", -1, 525600),
+                    "shared" to McpSchema.boolean(
+                        "La red existe tambien en el gateway de una empresa vinculada: el acceso vigente en una sigue en la otra por el tiempo restante. " +
+                            "Debe marcarse en ambas empresas.",
+                    ),
                 ),
             ),
         ) { call -> saveNetwork(call) },
@@ -409,6 +413,7 @@ object HotspotMcpTools {
                             }
                             put("accessMinutes", network.accessMinutes?.let(::JsonPrimitive) ?: JsonNull)
                             put("reconnectMinutes", network.reconnectMinutes?.let(::JsonPrimitive) ?: JsonNull)
+                            put("shared", network.shared)
                         }
                     },
                 ),
@@ -433,6 +438,7 @@ object HotspotMcpTools {
         // 0 / -1 mean "use the general one", which the form expresses with a blank field.
         if (call.has("accessMinutes")) values["accessMinutes"] = call.int("accessMinutes", 0, 0..10080).takeIf { it > 0 }?.toString().orEmpty()
         if (call.has("reconnectMinutes")) values["reconnectMinutes"] = call.int("reconnectMinutes", -1, -1..525600).takeIf { it >= 0 }?.toString().orEmpty()
+        if (call.has("shared")) values["shared"] = call.boolean("shared", false).toString()
         val network = try {
             val usersEnabled = HotspotIntegrations.isEnabled(call.tenant, HotspotIntegrations.Users)
             val sources = HotspotPasses.choosable(call.tenant).map { it.id }.toSet()

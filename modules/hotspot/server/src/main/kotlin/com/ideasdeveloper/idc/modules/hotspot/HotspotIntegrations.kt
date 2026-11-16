@@ -3,8 +3,11 @@ package com.ideasdeveloper.idc.modules.hotspot
 import java.sql.Connection
 import java.util.concurrent.ConcurrentHashMap
 
-/** Result of asking the network controller to let a device in. */
-data class GuestAuthorization(val authorized: Boolean, val message: String)
+/**
+ * Result of asking the network controller to let a device in. [wrongNetwork] marks a refusal
+ * because the device is not on the WiFi network the portal was opened for.
+ */
+data class GuestAuthorization(val authorized: Boolean, val message: String, val wrongNetwork: Boolean = false)
 
 /**
  * A network ecosystem the hotspot can work with (UniFi today; MikroTik or others later). Exactly
@@ -18,7 +21,11 @@ interface NetworkController {
 
     fun isConfigured(settings: HotspotSettings): Boolean
 
-    fun authorizeGuest(settings: HotspotSettings, mac: String): GuestAuthorization
+    /**
+     * Lets [mac] in only if the controller reports it connected to [ssid] ("" for wired guests),
+     * the network the portal chose the access method for. Anything it cannot confirm is refused.
+     */
+    fun authorizeGuest(settings: HotspotSettings, mac: String, ssid: String): GuestAuthorization
 
     /**
      * Ends the guest access of [mac] (its code session expired). authorized = true means the device
@@ -39,7 +46,7 @@ object UnifiController : NetworkController {
 
     override fun isConfigured(settings: HotspotSettings) = settings.unifiConfigured
 
-    override fun authorizeGuest(settings: HotspotSettings, mac: String) = UnifiClient.authorizeGuest(settings, mac)
+    override fun authorizeGuest(settings: HotspotSettings, mac: String, ssid: String) = UnifiClient.authorizeGuest(settings, mac, ssid)
 
     override fun disconnectGuest(settings: HotspotSettings, mac: String) = UnifiClient.unauthorizeGuest(settings, mac)
 

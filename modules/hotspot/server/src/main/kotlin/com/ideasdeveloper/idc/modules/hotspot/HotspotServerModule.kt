@@ -60,6 +60,7 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V006__crm_pipeline_and_manual_user_access.sql",
         "modules/hotspot/migrations/V007__prefix_user_codes.sql",
         "modules/hotspot/migrations/V008__remove_hotspot_user_code.sql",
+        "modules/hotspot/migrations/V009__shared_networks.sql",
     )
 
     override val runtimeTables = listOf(
@@ -107,7 +108,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-        version = "0.8.8",
+        version = "0.9.0",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),

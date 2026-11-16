@@ -83,10 +83,10 @@ Tenant migrations through `V008__remove_hotspot_user_code.sql`
 | Table | Purpose |
 | --- | --- |
 | `hotspot_settings` | Singleton portal configuration (domain, UniFi, limits, SMTP, appearance). |
-| `hotspot_registrations` | One row per form submission or code access (`access_mode`), linked to `customers`. |
+| `hotspot_registrations` | One row per form submission or code access (`access_mode`), linked to `customers`; `roamed_from` (V009) marks a continued access from a linked company. |
 | `hotspot_codes` | One-time codes (SHA-256 only), expiry, attempts, use. |
 | `hotspot_accesses` | Every UniFi authorization attempt; successful rows drive reconnection. |
-| `hotspot_networks` | SSIDs with their access type, access sources (`access_sources`, V004) and optional times (V002). |
+| `hotspot_networks` | SSIDs with their access type, access sources (`access_sources`, V004), optional times (V002) and `shared` (V009). |
 | `hotspot_pass_sources` | Modules that give access passes (V004); written by those modules. |
 | `hotspot_access_passes` | Access passes of customers (V004); written by the source modules, `minutes_balance` spent by the portal. |
 | `hotspot_code_attempts` | Wrong customer/user codes, for the guessing limits; kept one day (V002). |
@@ -114,6 +114,30 @@ Access by customer code or user code is one session per code, shared by every de
   user's access from *Accesos WiFi*, which expires the sessions and disconnects their devices.
 - The reconnection wait counts from the access that opened the session, never from devices that
   joined it. Form access (email code) is per device and does not use sessions.
+
+## Shared networks between linked companies
+
+One SSID can exist on the gateways of two linked companies (same owner group),
+for example created with a UniFi Fabric. Each gateway counts guest time from its
+own authorization, so moving between them would add a fresh period each time.
+Mark the network *Compartida con empresas vinculadas* in *Redes WiFi* of **both**
+companies; then:
+
+- When a device opens the portal on that SSID, the portal looks for live access of
+  its MAC on the same SSID in this company and the linked ones (only original
+  accesses, `roamed_from IS NULL`, and only where the SSID is also shared).
+- With one, it authorizes the device without form or code for the time left of
+  that access (code sessions follow their session; `0` minutes = no expiry) and
+  shows "Bienvenido de nuevo" with the time left. Both gateways end at the same time.
+- The continuation is a registration with `roamed_from` = the source company and
+  an access with `joined = true`: it does not move the reconnection wait, spends no
+  pass balance and is never a source itself, so going back and forth never extends
+  the access. The guest is linked to this company's customer with the same email
+  if there is one; none is created.
+- User codes also open a session here, and revoking that user's WiFi access ends
+  the continued sessions in the linked companies too.
+- Recognition is by MAC: a phone with a rotating private MAC must log in again.
+- The network check above still applies to the continuation.
 
 ## Access passes
 
@@ -258,13 +282,24 @@ configuration again retries a domain in `error`.
    the customer or user code instead of the form.
 7. Test with a phone: connect to the guest SSID, register, enter the code.
 
+## Network check before authorizing
+
+The SSID in the redirect URL picks the screen, but the redirect is not signed:
+a guest could edit it to get the form on a code network, or use a user code
+granted for another SSID. So before authorizing, the controller confirms the
+device is on that SSID (`NetworkController.authorizeGuest(settings, mac, ssid)`).
+UniFi does it with the Network application's station API through the cloud
+connector (`/proxy/network/api/s/{site reference}/stat/sta/{mac}`, field
+`essid`; wired guests have none and must come with an empty `ssid`), because
+the Integration API does not report a client's SSID. The site reference
+(`default`) is read once from the Integration API sites list. A different
+network shows "Red WiFi distinta" and the access is kept as rejected; when
+UniFi cannot be asked the device is not let in. UniFi's "URL cifrada" option
+does not apply to external portals: the redirect keeps `ap`, `id`, `ssid` in
+clear text.
+
 ## Not implemented yet
 
-- The SSID comes from the redirect URL, so it selects the screen but is not a
-  security boundary: a guest on a code network could edit the URL and register
-  with the form instead. The UniFi Integration API does not report which SSID a
-  client is connected to (clients only carry MAC and uplink device), so it
-  cannot be verified with UniFi; other controllers may support it.
 - Other network controllers (MikroTik, ...).
 - Local UniFi controller API (only the cloud connector).
 - Uploading the logo file (the logo is a URL; the Portal cautivo section shows a

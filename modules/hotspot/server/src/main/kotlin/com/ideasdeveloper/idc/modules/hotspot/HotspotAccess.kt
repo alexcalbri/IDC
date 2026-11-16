@@ -122,8 +122,24 @@ class HotspotAccess(private val access: ModuleAccessService) {
             val now = java.time.Instant.now()
             HotspotCodeSessions.revokeUserSessions(tenant, userId, permissions.companyCode, now)
             HotspotCodeSessions.expire(tenant, settings, HotspotIntegrations.controller(tenant), now)
+            revokeContinuations(userId, permissions.companyCode, now)
         }
         return (if (enabled) "Acceso WiFi restaurado." else "Acceso WiFi revocado.") to UiTone.Success
+    }
+
+    // Sessions this user's code continued on the shared networks of linked companies end too.
+    private fun revokeContinuations(userId: UUID, userCompany: String, now: java.time.Instant) {
+        val linked = access.centralConnection().use { central -> HotspotRoaming.linkedCompanies(central, userCompany) } - userCompany
+        linked.forEach { company ->
+            access.tenantConnectionForCompany(company)?.use { other ->
+                runCatching {
+                    if (HotspotCodeSessions.hasOpenUserSessions(other, userId, userCompany)) {
+                        HotspotCodeSessions.revokeUserSessions(other, userId, userCompany, now)
+                        HotspotCodeSessions.expire(other, HotspotSettingsRepository.load(other), HotspotIntegrations.controller(other), now)
+                    }
+                }
+            }
+        }
     }
 
     private fun grantsBody(tenant: Connection, users: List<HotspotUser>): List<UiNode> {

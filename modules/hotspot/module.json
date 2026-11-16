@@ -2,5 +2,5 @@
   "id": "hotspot",
   "displayName": "Hotspot",
   "description": "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-  "version": "0.8.8"
+  "version": "0.9.0"
 }

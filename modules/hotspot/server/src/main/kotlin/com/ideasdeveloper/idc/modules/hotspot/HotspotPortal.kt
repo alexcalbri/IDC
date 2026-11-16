@@ -37,8 +37,9 @@ import java.util.UUID
  * Flow: UniFi redirects the guest to /guest/s/default/?id=<mac>&ssid=<network>. On networks with
  * form access (and SSIDs not configured) the guest registers, receives a one-time code by email and
  * enters it; on networks with customer-code access the guest types the code shown in Clientes. The
- * backend then authorizes the MAC through UniFi. An email can connect again only after the
- * reconnection interval (the network's, or the company's).
+ * backend then authorizes the MAC through UniFi, only after UniFi confirms the device is on the SSID
+ * of the redirect (the redirect is not signed, so a guest could edit it to pick another method). An
+ * email can connect again only after the reconnection interval (the network's, or the company's).
  */
 class HotspotPortal(private val access: ModuleAccessService) {
     private val log = LoggerFactory.getLogger(HotspotPortal::class.java)
@@ -53,6 +54,9 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private val maxCodeFailuresPerDevice = 5
     private val codeFailureWindow = Duration.ofMinutes(15)
     private val maxCodeFailuresPerMinute = 30
+    // The device is on another network than the one the portal link names (edited link or stale tab).
+    private val wrongNetworkText =
+        "Este acceso no corresponde a la red WiFi a la que estas conectado. Cierra esta pagina y abre el navegador de nuevo desde la red WiFi."
 
     private class PortalTarget(
         val companyCode: String,
@@ -72,6 +76,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private suspend fun ApplicationCall.showForm() {
         val guest = guestContext(request.queryParameters)
         val html = withPortal { target ->
+            roamingWelcome(target, guest)?.let { return@withPortal it }
             val network = codeNetwork(target, guest)
             if (network != null) {
                 HotspotPortalPages.accessCode(target.settings, guest, byUser = network.byUserCode)
@@ -247,8 +252,12 @@ class HotspotPortal(private val access: ModuleAccessService) {
         }
         if (!claimed) return HotspotPortalPages.message(settings, "Codigo ya utilizado", "Cada codigo se usa una sola vez.")
 
-        val result = target.controller.authorizeGuest(settings, pending.mac)
+        val result = target.controller.authorizeGuest(settings, pending.mac, pending.ssid)
         recordAccess(connection, pending.registrationId, Owner.Customer(null), pending.email, pending.mac, result, settings.accessMinutes)
+        if (result.wrongNetwork) {
+            log.warn("Hotspot {}: red distinta para {}: {}", target.companyCode, pending.mac, result.message)
+            return HotspotPortalPages.message(settings, "Red WiFi distinta", wrongNetworkText)
+        }
         if (!result.authorized) {
             log.warn("Hotspot {}: UniFi rechazo {}: {}", target.companyCode, pending.mac, result.message)
             // Give the code back so the guest can retry once the problem is fixed.
@@ -402,6 +411,73 @@ class HotspotPortal(private val access: ModuleAccessService) {
         }
     }
 
+    /**
+     * On a shared network, a device with live access on the same SSID in this or a linked company
+     * (see [HotspotRoaming]) is let in again for the time it has left, without the form or a code.
+     * Null when there is none, or the controller did not let it in, so the usual page is shown.
+     */
+    private fun roamingWelcome(target: PortalTarget, guest: GuestContext): String? {
+        val network = HotspotNetworks.findBySsid(target.connection, guest.ssid)?.takeIf { it.shared } ?: return null
+        if (!macPattern.matches(guest.mac)) return null
+        val now = Instant.now()
+        val companies = access.centralConnection().use { central -> HotspotRoaming.linkedCompanies(central, target.companyCode) }
+        val found = companies.mapNotNull { company ->
+            if (company == target.companyCode) {
+                HotspotRoaming.liveAccess(target.connection, company, guest.mac, guest.ssid, now)
+            } else {
+                // A linked company without the hotspot (or with it disabled) has nothing to carry over.
+                access.tenantConnectionForCompany(company)?.use { tenant ->
+                    runCatching {
+                        if (moduleEnabled(tenant)) HotspotRoaming.liveAccess(tenant, company, guest.mac, guest.ssid, now) else null
+                    }.onFailure { log.warn("Hotspot {}: no se pudo revisar el acceso en {}: {}", target.companyCode, company, it.message) }
+                        .getOrNull()
+                }
+            }
+        }
+        val source = HotspotRoaming.best(found) ?: return null
+        val minutesLeft = source.minutesLeft(now)
+        // 0 = no limit, for accesses that do not expire.
+        val settings = network.applyTo(target.settings).copy(accessMinutes = minutesLeft ?: 0)
+        val connection = target.connection
+        val user = source.userId?.let { id -> source.userCompany?.let { Owner.User(id, it) } }
+        // A guest of another company is linked to this company's customer with that email, never created here.
+        val owner = user ?: Owner.Customer(source.email?.takeIf { it.isNotBlank() }?.let { findCustomerByEmail(connection, it) })
+        val values = FormValues(name = source.name, email = source.email.orEmpty(), phone = source.phone.orEmpty())
+        val registrationId = UUID.randomUUID()
+        insertRegistration(connection, registrationId, owner, values, birthday = null, guest = guest, accessMode = source.accessMode, roamedFrom = source.company)
+        val result = target.controller.authorizeGuest(settings, guest.mac, guest.ssid)
+        // A user code keeps a session here too, so revoking that user's WiFi also disconnects this gateway.
+        val session = if (result.authorized && user != null) {
+            HotspotCodeSessions.start(
+                connection, user.codeOwner(), settings.accessMinutes, passId = null,
+                notAfter = source.expiresAt, indefinite = source.expiresAt == null, now = now,
+            )
+        } else null
+        // joined: a continuation does not move the reconnection wait.
+        recordAccess(
+            connection, registrationId, owner, values.email.ifBlank { null }, guest.mac, result, settings.accessMinutes,
+            sessionId = session?.id, joined = true,
+        )
+        if (result.wrongNetwork) {
+            log.warn("Hotspot {}: red distinta para {}: {}", target.companyCode, guest.mac, result.message)
+            return HotspotPortalPages.message(settings, "Red WiFi distinta", wrongNetworkText)
+        }
+        if (!result.authorized) {
+            log.warn("Hotspot {}: {} rechazo la continuacion de {}: {}", target.companyCode, target.controller.name, guest.mac, result.message)
+            return null
+        }
+        return HotspotPortalPages.welcomeBack(
+            settings, source.name, minutesLeft, settings.successUrls.randomOrNull() ?: guest.continueUrl.takeIf { it.isNotBlank() },
+        )
+    }
+
+    private fun findCustomerByEmail(connection: Connection, email: String): UUID? = connection.prepareStatement(
+        "SELECT id FROM customers WHERE lower(primary_email) = lower(?) AND status <> 'archived' ORDER BY created_at LIMIT 1"
+    ).use { query ->
+        query.setString(1, email)
+        query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+    }
+
     // Keeps the access as a registration, asks the network controller and shows the result.
     private fun authorizeByCode(
         target: PortalTarget,
@@ -421,7 +497,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         val connection = target.connection
         val registrationId = UUID.randomUUID()
         insertRegistration(connection, registrationId, owner, values, birthday = null, guest = guest, accessMode = accessMode)
-        val result = target.controller.authorizeGuest(settings, guest.mac)
+        val result = target.controller.authorizeGuest(settings, guest.mac, guest.ssid)
         // Every device of a code shares one session, so they all lose access when it expires.
         val session = when {
             !result.authorized -> null
@@ -437,6 +513,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         if (!result.authorized) {
             onRejected()
             log.warn("Hotspot {}: {} rechazo {}: {}", target.companyCode, target.controller.name, guest.mac, result.message)
+            if (result.wrongNetwork) return HotspotPortalPages.message(settings, "Red WiFi distinta", wrongNetworkText)
             return retry("No pudimos activar tu acceso en este momento. Intenta de nuevo en unos segundos.")
         }
         return HotspotPortalPages.success(settings, values.name, settings.successUrls.randomOrNull() ?: guest.continueUrl.takeIf { it.isNotBlank() })
@@ -562,11 +639,13 @@ class HotspotPortal(private val access: ModuleAccessService) {
         birthday: LocalDate?,
         guest: GuestContext,
         accessMode: String,
+        // The company whose access this device continues here (shared networks).
+        roamedFrom: String? = null,
     ) {
         connection.prepareStatement(
             """
-            INSERT INTO hotspot_registrations (id, customer_id, name, email, phone, birthday, mac, ap_mac, ssid, access_mode, user_id, user_company)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO hotspot_registrations (id, customer_id, name, email, phone, birthday, mac, ap_mac, ssid, access_mode, user_id, user_company, roamed_from)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, id)
@@ -581,6 +660,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
             insert.setString(10, accessMode)
             insert.setObject(11, (owner as? Owner.User)?.id)
             insert.setString(12, (owner as? Owner.User)?.company)
+            insert.setString(13, roamedFrom)
             insert.executeUpdate()
         }
     }

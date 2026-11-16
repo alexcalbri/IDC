@@ -427,6 +427,7 @@ object HotspotScreens {
                 ),
                 UiText("Tiempo de acceso: ${minutes(network.accessMinutes)}", UiTextStyle.Caption),
                 UiText("Tiempo para reconectar: ${minutes(network.reconnectMinutes)}", UiTextStyle.Caption),
+                if (!network.shared) null else UiText("Compartida con empresas vinculadas", UiTextStyle.Caption),
                 if (!canManage) null else UiRow(
                     listOf(
                         UiButton("Editar", UiNavigate("settings", mapOf("networkId" to network.id.toString())), style = "secondary"),
@@ -467,6 +468,9 @@ object HotspotScreens {
                 help = "Vacio usa el de la configuracion general. Con un pase de otro modulo la sesion no pasa del fin del pase ni de su saldo."),
             UiField("reconnectMinutes", "Tiempo para reconectar (minutos)", "number", section = "Tiempos",
                 help = "Vacio usa el de la configuracion general. 0 = sin espera. No aplica a los pases de otros modulos."),
+            UiField("shared", "Compartida con empresas vinculadas", "boolean", section = "Red compartida",
+                help = "La misma red existe en el gateway de una empresa vinculada (por ejemplo, creada con UniFi Fabric) y alli tambien esta marcada como compartida. " +
+                    "Un dispositivo con acceso vigente en una entra a la otra sin volver a registrarse, solo por el tiempo que le queda."),
         )
     }
 
