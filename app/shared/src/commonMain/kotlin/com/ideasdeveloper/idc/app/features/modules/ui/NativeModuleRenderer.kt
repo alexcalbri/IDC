@@ -1,7 +1,10 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
 import com.ideasdeveloper.idc.app.core.theme.AppColors
+import com.ideasdeveloper.idc.app.core.layout.HorizontalScrollArea
+import com.ideasdeveloper.idc.app.core.ui.CopyableCode
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -121,6 +124,9 @@ data class ModuleColors(
     val text: Color,
     val muted: Color,
     val accent: Color,
+    // Acento apto para texto y bordes sobre superficies (4.5:1); el acento puro queda para rellenos.
+    val accentText: Color,
+    val fieldBorder: Color,
     val onAccent: Color,
     val success: Color,
     val warning: Color,
@@ -130,7 +136,7 @@ data class ModuleColors(
         UiTone.Success -> success
         UiTone.Warning -> warning
         UiTone.Danger -> danger
-        UiTone.Info -> accent
+        UiTone.Info -> accentText
         else -> muted
     }
 
@@ -144,6 +150,8 @@ data class ModuleColors(
             text = app.text,
             muted = app.muted,
             accent = app.accent,
+            accentText = app.accentText,
+            fieldBorder = app.fieldBorder,
             onAccent = app.onAccent,
             success = app.success,
             warning = app.warning,
@@ -314,9 +322,20 @@ private fun ModuleImage(node: UiImage, context: ModuleRenderContext) {
 private fun ModuleMetric(node: UiMetric, colors: ModuleColors) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Text(node.label.uppercase(), color = colors.muted, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, letterSpacing = 1.sp)
-        // Selectable so values such as a WiFi code can be copied.
-        SelectionContainer {
-            Text(node.value, color = colors.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+        // UiMetric no tiene un indicador "copiable" (vive en core, fuera de este alcance): solo los valores
+        // cuya etiqueta habla de un codigo (p. ej. "Mi codigo WiFi") llevan boton Copiar; el resto es seleccionable.
+        val isCode = node.value.isNotBlank() && (node.label.contains("codigo", ignoreCase = true) || node.label.contains("código", ignoreCase = true))
+        if (isCode) {
+            CopyableCode(
+                label = "",
+                code = node.value,
+                codeColor = colors.text,
+                codeStyle = TextStyle(fontSize = 28.sp, fontWeight = FontWeight.ExtraBold),
+            )
+        } else {
+            SelectionContainer {
+                Text(node.value, color = colors.text, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
+            }
         }
         if (node.caption.isNotBlank()) Text(node.caption, color = colors.tone(node.captionTone), fontSize = 12.sp)
     }
@@ -367,7 +386,7 @@ private fun ModuleTable(node: UiTable, colors: ModuleColors) {
         return
     }
     val cellWidth = 170.dp
-    Column(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+    HorizontalScrollArea { Column {
         Row {
             node.columns.forEach { column ->
                 Text(column.label.uppercase(), color = colors.muted, fontSize = 11.sp, letterSpacing = 1.sp, modifier = Modifier.width(cellWidth).padding(8.dp))
@@ -381,7 +400,7 @@ private fun ModuleTable(node: UiTable, colors: ModuleColors) {
                 }
             }
         }
-    }
+    } }
 }
 
 @Composable
@@ -392,8 +411,8 @@ private fun ModuleButton(node: UiButton, context: ModuleRenderContext) {
         "secondary" -> OutlinedButton(
             onClick = { context.onAction(node.action) },
             enabled = enabled,
-            border = BorderStroke(1.dp, if (enabled) colors.accent else colors.border),
-            colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.accent, disabledContentColor = colors.muted),
+            border = BorderStroke(1.dp, if (enabled) colors.accentText else colors.border),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = colors.accentText, disabledContentColor = colors.muted),
         ) { Text(node.label) }
         else -> Button(
             onClick = { context.onAction(node.action) },
@@ -430,7 +449,7 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
             if (section.isNotBlank()) {
                 Text(
                     if (collapsible) "${if (open) "\u25BE" else "\u25B8"}  $section" else section,
-                    color = context.colors.accent, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                    color = context.colors.accentText, fontSize = 15.sp, fontWeight = FontWeight.Bold,
                     modifier = Modifier.padding(top = 4.dp).then(
                         if (collapsible) Modifier.clickable { openSections[section] = !open }.padding(vertical = 4.dp) else Modifier,
                     ),
@@ -603,7 +622,7 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
             if (current.isEmpty()) Text("Sin archivos.", color = colors.muted, fontSize = 13.sp)
             current.groupBy { it.path }.entries.sortedBy { it.key }.forEach { (folder, items) ->
                 if (folder.isNotBlank()) {
-                    Text("Carpeta: $folder", color = colors.accent, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
+                    Text("Carpeta: $folder", color = colors.accentText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
                 }
                 items.forEach { file ->
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
@@ -614,7 +633,7 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
                         if (files != null) {
                             Text(
                                 "Descargar",
-                                color = colors.accent,
+                                color = colors.accentText,
                                 fontSize = 13.sp,
                                 modifier = Modifier.clickable(enabled = !uploading) {
                                     scope.launch { status = context.downloadFile(files.download, file) }
@@ -640,12 +659,12 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
             if (picker.supported) {
                 FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     val enabled = !uploading && !context.busy
-                    OutlinedButton(onClick = { picker.pickFiles() }, enabled = enabled, border = BorderStroke(1.dp, if (enabled) colors.accent else colors.border)) {
-                        Text("Adjuntar archivos", color = if (enabled) colors.accent else colors.muted)
+                    OutlinedButton(onClick = { picker.pickFiles() }, enabled = enabled, border = BorderStroke(1.dp, if (enabled) colors.accentText else colors.border)) {
+                        Text("Adjuntar archivos", color = if (enabled) colors.accentText else colors.muted)
                     }
                     if (files?.folders == true && picker.supportsFolders) {
-                        OutlinedButton(onClick = { picker.pickFolder() }, enabled = enabled, border = BorderStroke(1.dp, if (enabled) colors.accent else colors.border)) {
-                            Text("Adjuntar carpeta", color = if (enabled) colors.accent else colors.muted)
+                        OutlinedButton(onClick = { picker.pickFolder() }, enabled = enabled, border = BorderStroke(1.dp, if (enabled) colors.accentText else colors.border)) {
+                            Text("Adjuntar carpeta", color = if (enabled) colors.accentText else colors.muted)
                         }
                     }
                 }
@@ -806,11 +825,11 @@ private fun ModuleField(field: UiField, value: String, enabled: Boolean, colors:
                         focusedTextColor = colors.text,
                         unfocusedTextColor = colors.text,
                         disabledTextColor = colors.muted,
-                        focusedBorderColor = colors.accent,
-                        unfocusedBorderColor = colors.border,
-                        focusedLabelColor = colors.accent,
+                        focusedBorderColor = colors.accentText,
+                        unfocusedBorderColor = colors.fieldBorder,
+                        focusedLabelColor = colors.accentText,
                         unfocusedLabelColor = colors.muted,
-                        cursorColor = colors.accent,
+                        cursorColor = colors.accentText,
                         focusedPlaceholderColor = colors.muted,
                         unfocusedPlaceholderColor = colors.muted,
                     ),
@@ -878,9 +897,10 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
         node.move?.let { move -> context.onAction(move.copy(params = move.params + mapOf("card" to cardId, "column" to columnId))) }
     }
 
-    Row(
+    // Las columnas mantienen su ancho (columnWidth) y el tablero se desplaza con barra visible en escritorio y web.
+    HorizontalScrollArea { Row(
         horizontalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 4.dp),
+        modifier = Modifier.padding(bottom = 4.dp),
     ) {
         node.columns.forEach { column ->
             val hostsDragged = column.cards.any { it.id == dragging }
@@ -965,7 +985,7 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
                             Box {
                                 Text(
                                     "Mover a...",
-                                    color = colors.accent,
+                                    color = colors.accentText,
                                     fontSize = 12.sp,
                                     fontWeight = FontWeight.SemiBold,
                                     modifier = Modifier.clickable { menu = true }.padding(vertical = 2.dp),
@@ -988,7 +1008,7 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
                 column.footer?.let { ModuleButton(it, context) }
             }
         }
-    }
+    } }
 }
 
 @Composable

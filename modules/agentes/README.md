@@ -135,6 +135,13 @@ This module also has its own MCP, like any other, only about itself (`AgentesMcp
 as *Mis agentes* and *Agentes de la empresa*. Creating a connection is not offered: its token is a
 credential and is shown only in the app.
 
+It also exposes the user's notification center (core service, see `modules/README.md`):
+`agentes_list_notifications` (own notifications, newest first, optionally only unread, paginated) and
+`agentes_mark_notifications_read` (one by id, or all with `all=true`). Both act only on the
+signed-in user's own notifications and need the *Conectar agentes IA* permission. Added in 0.3.0,
+which **requires a Core with the notification center** (core migration V005, `access.notifications`
+and `McpToolCall.moduleId`); `module.json` has no minimum-Core field, so update the Core first.
+
 ## Server owners
 
 A server owner's agent manages the whole server:

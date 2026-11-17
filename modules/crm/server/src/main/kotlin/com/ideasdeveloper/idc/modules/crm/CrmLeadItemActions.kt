@@ -35,7 +35,7 @@ object CrmLeadItemActions {
         CrmItems.setStatus(tenant, item, "sold", price ?: item.price)
         CrmRepository.addActivity(tenant, lead.id, "item", "Venta cerrada: ${item.title}${price?.let { " por ${it.toPlainString()}" }.orEmpty()} el $date. Marcada como vendida en el sitio.", actor)
         // The lead is won: first won stage of the pipeline.
-        context.stages.firstOrNull { it.kind == StageKind.Won }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
+        context.stages.firstOrNull { it.kind == StageKind.Won }?.takeIf { lead.archivedAt == null }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
         return "Venta cerrada y propiedad marcada como vendida."
     }
 
@@ -106,7 +106,7 @@ object CrmLeadItemActions {
             CrmItems.setData(tenant, room, room.data + mapOf("adults" to request.adults.toString(), "children" to request.children.toString(), "reservation" to result.reservationId))
         }
         CrmRepository.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor)
-        context.stages.firstOrNull { it.kind == StageKind.Won }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
+        context.stages.firstOrNull { it.kind == StageKind.Won }?.takeIf { lead.archivedAt == null }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
         return if (result.unassigned > 0) {
             Reservation("Reserva ${result.reservationId} creada, pero Cloudbeds dejo ${result.unassigned} habitacion(es) sin asignar (puede que se ocupara o que la propiedad no permita elegir habitacion). Revisala en Cloudbeds.", warning = true)
         } else {

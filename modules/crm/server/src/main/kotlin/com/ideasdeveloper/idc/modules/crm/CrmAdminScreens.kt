@@ -93,24 +93,6 @@ object CrmAdminScreens {
         return channel to email
     }
 
-    // ---- Assignments ----
-
-    fun assignments(context: CrmScreens.Context): List<UiNode> {
-        val pending = CrmRepository.pendingSuggestions(context.tenant, context.scope, 100)
-        val items = pending.map { lead ->
-            UiListItem(
-                title = lead.name,
-                subtitle = "Sugerido: ${context.names.user(lead.suggestedOwnerUserId)} - Origen: ${lead.source}",
-                trailing = lead.createdAt.atZone(ZoneId.systemDefault()).toLocalDate().toString(),
-                action = UiNavigate("lead", mapOf("id" to lead.id.toString())),
-            )
-        }
-        return listOf(
-            UiText("Los leads nuevos no se asignan solos: el origen (por ejemplo el agente de una propiedad) deja una sugerencia que apruebas, descartas o cambias desde la ficha del lead."),
-            UiCard(listOf(UiList(items, emptyText = "No hay asignaciones pendientes.")), title = "${pending.size} pendiente(s)"),
-        )
-    }
-
     // ---- Mail settings ----
 
     fun mail(context: CrmScreens.Context, submitted: Map<String, String>?): List<UiNode> {
@@ -238,11 +220,26 @@ object CrmAdminScreens {
 
     // ---- Team: notification email and options per user, digest hour ----
 
-    fun team(context: CrmScreens.Context): List<UiNode> {
-        val saved = CrmNotify.userSettings(context.tenant)
+    /** Hour of the daily digest: a card of the General tab of Configuracion (action "settings:digest"). */
+    fun digestCard(context: CrmScreens.Context): UiNode {
         val digestHour = context.tenant.prepareStatement("SELECT digest_hour FROM crm_settings WHERE id = 1").use { query ->
             query.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else 7 }
         }
+        return UiCard(
+            listOf(
+                UiForm(
+                    "digest",
+                    listOf(UiField("digestHour", "Hora del resumen diario (0-23)", type = "number")),
+                    mapOf("digestHour" to digestHour.toString()),
+                    submit = UiButton("Guardar", UiRequest(UiRoute + "/settings", params = mapOf("op" to "digest"), formId = "digest"), style = "secondary"),
+                ),
+            ),
+            title = "Resumen diario",
+        )
+    }
+
+    fun team(context: CrmScreens.Context): List<UiNode> {
+        val saved = CrmNotify.userSettings(context.tenant)
         val users = context.users.map { user ->
             val settings = saved[user.id]
             val formId = "team_${user.id}"
@@ -270,17 +267,6 @@ object CrmAdminScreens {
             )
         }
         return listOf(
-            UiCard(
-                listOf(
-                    UiForm(
-                        "digest",
-                        listOf(UiField("digestHour", "Hora del resumen diario (0-23)", type = "number")),
-                        mapOf("digestHour" to digestHour.toString()),
-                        submit = UiButton("Guardar", UiRequest(UiRoute + "/team", params = mapOf("op" to "digest"), formId = "digest"), style = "secondary"),
-                    ),
-                ),
-                title = "Resumen diario",
-            ),
             UiText("Usuarios que pueden tener leads (con algun permiso del CRM o duenos de la empresa).", UiTextStyle.Caption),
         ) + users.ifEmpty { listOf(UiText("Ningun usuario tiene permisos del CRM todavia.", tone = UiTone.Warning)) }
     }

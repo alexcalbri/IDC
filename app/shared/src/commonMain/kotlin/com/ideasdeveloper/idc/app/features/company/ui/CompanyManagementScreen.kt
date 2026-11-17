@@ -1,5 +1,8 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
@@ -200,7 +203,7 @@ fun CompanyManagementScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
-                .fillMaxWidth(0.92f),
+                .contentWidth(ContentWidth.Content, 0.92f),
         ) {
             Surface(
                 modifier = Modifier
@@ -210,7 +213,7 @@ fun CompanyManagementScreen(
                 color = AppTheme.colors.surface,
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Text("Datos de empresa", style = MaterialTheme.typography.titleLarge, color = primaryCompose)
@@ -380,7 +383,7 @@ private fun BackupRow(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(backup.fileName, fontWeight = FontWeight.SemiBold, color = primaryColor)
+        Text(backup.fileName, fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
         Text("Tamano: ${backup.sizeBytes} bytes", color = AppTheme.colors.muted)
         Text("Descarga: ${serverUrl.trimEnd('/')}${backup.downloadUrl}", color = AppTheme.colors.text)
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {

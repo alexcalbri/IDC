@@ -1258,6 +1258,11 @@ class CompanyProvisioningService(
                     } catch (failure: Exception) {
                         log.error("User profile migration failed for company {}", companyCode, failure)
                     }
+                    try {
+                        applyNotificationsMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Notifications migration failed for company {}", companyCode, failure)
+                    }
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
                     }
@@ -1526,6 +1531,16 @@ class CompanyProvisioningService(
             applyMigration(connection, module, relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
         }
         applyUserProfileMigration(connection)
+        applyNotificationsMigration(connection)
+    }
+
+    // Notification center (core V005); also brought to existing companies at startup.
+    private fun applyNotificationsMigration(connection: Connection) {
+        val relativePath = "database/core/migrations/V005__create_notifications.sql"
+        applyMigration(connection, "core", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        connection.createStatement().use { statement ->
+            statement.executeUpdate("GRANT SELECT, INSERT, DELETE, UPDATE (read_at) ON notifications TO ${quoteIdentifier(config.runtimeUser)}")
+        }
     }
 
     // Name, email and password reset codes of users (core V003); also brought to existing companies at startup.

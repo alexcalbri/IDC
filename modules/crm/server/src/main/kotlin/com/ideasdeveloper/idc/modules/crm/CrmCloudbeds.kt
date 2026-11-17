@@ -366,6 +366,7 @@ object CrmCloudbeds {
         if (!settings.ready) return 0
         val open = reservations(tenant, "status IN ('not_confirmed', 'confirmed', 'checked_in') AND start_date <= ?") { it.setObject(1, today.plusDays(60)) }
         var changed = 0
+        val exit = CrmExit.load(tenant)
         try {
             open.forEach { reservation ->
                 val status = get(settings, "getReservation", mapOf("reservationID" to reservation.reservationId))["data"].obj()?.get("status").str()
@@ -380,9 +381,13 @@ object CrmCloudbeds {
                 }
                 val actor = CrmActor(null, "Cloudbeds")
                 CrmRepository.addActivity(tenant, reservation.leadId, "item", "Reserva ${reservation.reservationId}: ${statusLabels[status]}.", actor)
-                if (status == "checked_out" && settings.archiveOnCheckout) {
-                    tenant.prepareStatement("UPDATE crm_leads SET archived_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NULL").use { it.setObject(1, reservation.leadId); it.executeUpdate() }
-                    CrmRepository.addActivity(tenant, reservation.leadId, "updated", "Lead archivado: el huesped hizo check-out.", actor)
+                // With the exit automation on, only leads in its chosen stages are archived (see CrmExit).
+                val lead = if (status == "checked_out" && settings.archiveOnCheckout) CrmRepository.lead(tenant, reservation.leadId) else null
+                if (lead != null && CrmExit.archivesOnCheckout(exit, settings.archiveOnCheckout, lead.stageId, lead.archivedAt != null, lead.restoredAt != null)) {
+                    val archived = tenant.prepareStatement("UPDATE crm_leads SET archived_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NULL").use { it.setObject(1, reservation.leadId); it.executeUpdate() }
+                    if (archived > 0) {
+                        CrmRepository.addActivity(tenant, reservation.leadId, "updated", if (exit.enabled) CrmExit.ActivityText else "Lead archivado: el huesped hizo check-out.", actor)
+                    }
                 }
                 changed++
             }

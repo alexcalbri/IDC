@@ -74,6 +74,8 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V012__import_fields_and_files.sql",
         "modules/crm/migrations/V013__meta_channel_tokens.sql",
         "modules/crm/migrations/V014__meta_server_app.sql",
+        "modules/crm/migrations/V015__exit_automation_and_show_archived.sql",
+        "modules/crm/migrations/V016__leads_view_preference.sql",
     )
 
     override val runtimeTables = listOf(
@@ -142,6 +144,8 @@ object CrmServerModule : ServerModule {
         // Cloudbeds: welcome emails before check-in and reservation statuses (archive after check-out).
         ModuleJob("cloudbeds-welcome", Duration.ofMinutes(15)) { context -> CrmCloudbeds.sendWelcomes(context.tenant, LocalDateTime.now()) },
         ModuleJob("cloudbeds-sync", Duration.ofMinutes(30)) { context -> CrmCloudbeds.syncStatuses(context.tenant, java.time.LocalDate.now()) },
+        // Archive after check-out (without Cloudbeds): leads of the chosen stages whose end date arrived.
+        ModuleJob("exit-archive", Duration.ofMinutes(15)) { context -> CrmExit.archiveDue(context.tenant, java.time.Instant.now()) },
         // Imports: queued monday boards are read, then imports in progress apply 300 rows a minute.
         ModuleJob("import", Duration.ofMinutes(1)) { context ->
             CrmImport.readQueued(context.tenant)
@@ -189,7 +193,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.15.1",
+        version = "0.18.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
@@ -358,7 +362,8 @@ object CrmServerModule : ServerModule {
 
             get("/{screen}") {
                 val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@get
-                val screen = call.screenId(permissions) ?: return@get
+                // The id as asked (old routes like "pipeline" or "bulk" open their own view or tab); build() resolves it.
+                val screen = call.screenId(permissions, canonical = false) ?: return@get
                 val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
                 call.respondScreen(access) { tenant -> CrmScreens.build(screen, CrmScreens.Context.load(tenant, permissions, access.serverMail, call.publicBase()), params) }
             }
@@ -370,11 +375,16 @@ object CrmServerModule : ServerModule {
                 val body = call.receiveText()
                 val values = runCatching { UiJson.parseToJsonElement(body).jsonObject.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } }.getOrNull().orEmpty()
                 val required = when (screen) {
-                    "settings", "mail", "templates", "spam", "team", "integrations", "import", "importjob" -> CrmScreens.Settings
-                    "lead" -> if (params["op"] == "delete") CrmScreens.Delete else CrmScreens.Manage
+                    "settings", "automations", "mail", "templates", "spam", "team", "integrations", "import", "importjob" -> CrmScreens.Settings
+                    // Approving or discarding a suggestion needs canAssign (assign or see-all), checked in action().
+                    "lead" -> when (params["op"]) {
+                        "delete" -> CrmScreens.Delete
+                        "approve", "discard" -> null
+                        else -> CrmScreens.Manage
+                    }
                     else -> CrmScreens.Manage
                 }
-                if (!permissions.has(required)) {
+                if (required != null && !permissions.has(required)) {
                     return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
                 }
                 call.respondScreen(access) { tenant -> action(tenant, permissions, access.serverMail, call.publicBase(), screen, params, values, access.userIdentity(tenant, permissions)) }
@@ -403,11 +413,13 @@ object CrmServerModule : ServerModule {
             when ("$screen:${params["op"]}") {
                 "pipeline:move" -> {
                     val lead = visibleLead("card") ?: return show("pipeline", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), params - setOf("op", "card", "column"))
+                    // The "Archivados" column is not a stage: archived leads stay put.
+                    if (lead.archivedAt != null || params["column"] == "archived") {
+                        return show("pipeline", UiNotice("${lead.name} esta archivado: no se mueve entre etapas.", UiTone.Warning), params - setOf("op", "card", "column"))
+                    }
                     val stage = uuid("column")?.let { context.stage(it) } ?: return show("pipeline", UiNotice("Esa etapa ya no existe.", UiTone.Warning), params - setOf("op", "card", "column"))
                     // With rooms chosen in Cloudbeds the lead is won by confirming the reservation, not by dragging it.
-                    val pendingRooms = CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).any { it.status == "chosen" }
-                    val reserved = CrmCloudbeds.forLead(tenant, lead.id).any { it.status !in setOf("canceled", "no_show") }
-                    if (stage.kind == StageKind.Won && pendingRooms && !reserved) {
+                    if (CrmRepository.wonNeedsReservation(tenant, lead.id, stage)) {
                         return show("pipeline", UiNotice("${lead.name} tiene habitaciones asignadas: confirma la reserva desde su ficha.", UiTone.Warning), params - setOf("op", "card", "column"))
                     }
                     CrmRepository.moveLead(tenant, lead, stage, context.stages, actor)
@@ -443,12 +455,35 @@ object CrmServerModule : ServerModule {
                     if (input.interestId != lead.interestId && !context.scope.canUseInterest(input.interestId)) {
                         return show("lead", UiNotice("No puedes asignar ese interes.", UiTone.Danger), submitted = values)
                     }
-                    CrmRepository.updateLead(tenant, lead, input, context.stages, context.names, actor, context.fields)
+                    try {
+                        CrmRepository.updateLead(tenant, lead, input, context.stages, context.names, actor, context.fields)
+                    } catch (failure: CrmValidationException) {
+                        return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), submitted = values)
+                    }
                     input.ownerUserId?.takeIf { it != lead.ownerUserId && it != context.scope.userId }?.let { CrmNotify.assigned(tenant, lead.id, it) }
                     if (context.scope.canSee(input.interestId, input.ownerUserId)) {
                         show("lead", UiNotice("Cambios guardados.", UiTone.Success))
                     } else {
                         show("leads", UiNotice("Cambios guardados. El lead paso a un interes que no ves.", UiTone.Success), emptyMap())
+                    }
+                }
+                "lead:restore" -> {
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val check = restoreCheck(lead.archivedAt != null, permissions.has(CrmScreens.Manage))
+                    // Back to the view the button was in; "lead" (the detail) when it came from there.
+                    val back = params["from"]?.takeIf { it == "pipeline" || it == "leads" || it == "list" }
+                    fun after(notice: UiNotice) = if (back == "list") show("leads", notice, params - setOf("op", "id", "from") + (CrmScreens.ViewKey to CrmScreens.ViewList))
+                        else if (back != null) show(back, notice, params - setOf("op", "id", "from")) else show("lead", notice, mapOf("id" to lead.id.toString()))
+                    when (check) {
+                        CrmRestoreCheck.Restore ->
+                            // False: someone restored it between the check and the update.
+                            if (CrmRepository.restoreLead(tenant, lead.id, actor)) {
+                                after(UiNotice("${lead.name} se restauro en ${context.stage(lead.stageId)?.name ?: "su etapa"}.", UiTone.Success))
+                            } else {
+                                after(UiNotice("${lead.name} ya estaba abierto.", UiTone.Warning))
+                            }
+                        CrmRestoreCheck.AlreadyOpen -> after(UiNotice("${lead.name} ya estaba abierto.", UiTone.Warning))
+                        CrmRestoreCheck.NoPermission -> after(UiNotice("No tienes permiso para restaurar leads.", UiTone.Danger))
                     }
                 }
                 "lead:note" -> {
@@ -475,11 +510,13 @@ object CrmServerModule : ServerModule {
                 }
                 "lead:approve", "lead:discard" -> {
                     if (!context.canAssign) return show("lead", UiNotice("No tienes permiso para asignar leads.", UiTone.Danger))
-                    val lead = visibleLead("id") ?: return show("assignments", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val lead = visibleLead("id") ?: return show("reception", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
                     val approve = params["op"] == "approve"
                     val owner = CrmRepository.resolveSuggestion(tenant, lead, approve, context.names, actor)
                     owner?.takeIf { it != context.scope.userId }?.let { CrmNotify.assigned(tenant, lead.id, it) }
-                    show("lead", UiNotice(if (approve) "Responsable asignado." else "Sugerencia descartada.", UiTone.Success))
+                    val notice = UiNotice(if (approve) "Responsable asignado." else "Sugerencia descartada.", UiTone.Success)
+                    // From "Sin calificar" the user goes back to the list; from the lead, stays on it.
+                    if (params["from"] == "reception" && CrmScreens.canOpen("reception", permissions)) show("reception", notice, emptyMap()) else show("lead", notice)
                 }
                 "lead:reviewed" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
@@ -528,11 +565,29 @@ object CrmServerModule : ServerModule {
                     )
                     show("team", UiNotice("Avisos de ${user.name} guardados.", UiTone.Success), emptyMap())
                 }
-                "team:digest" -> {
+                "settings:digest", "team:digest" -> {
                     val hour = values["digestHour"].orEmpty().trim().toIntOrNull()?.takeIf { it in 0..23 }
-                        ?: return show("team", UiNotice("La hora debe ser un numero entre 0 y 23.", UiTone.Danger), emptyMap())
+                        ?: return show("settings", UiNotice("La hora debe ser un numero entre 0 y 23.", UiTone.Danger), emptyMap())
                     tenant.prepareStatement("UPDATE crm_settings SET digest_hour = ? WHERE id = 1").use { it.setInt(1, hour); it.executeUpdate() }
-                    show("team", UiNotice("El resumen diario se enviara a las $hour:00.", UiTone.Success), emptyMap())
+                    show("settings", UiNotice("El resumen diario se enviara a las $hour:00.", UiTone.Success), emptyMap())
+                }
+                "settings:exitSave" -> {
+                    val config = try {
+                        CrmExitScreens.parse(context, values)
+                    } catch (failure: CrmValidationException) {
+                        return show("automations", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
+                    }
+                    // Turning it on archives every lead already past its check-out: ask first.
+                    val pending = CrmExit.pendingOnActivation(tenant, CrmExit.load(tenant), config, java.time.Instant.now())
+                    if (pending > 0 && values["exitConfirm"] != "true") {
+                        return show(
+                            "automations",
+                            UiNotice("Al activar se archivaran $pending leads con salida vencida. Marca la confirmacion y guarda de nuevo.", UiTone.Warning),
+                            params - "op", values + ("exitConfirm" to "false"),
+                        )
+                    }
+                    CrmExit.save(tenant, config)
+                    show("automations", UiNotice(if (config.enabled) "Automatizacion de salida guardada." else "Automatizacion de salida desactivada.", UiTone.Success), emptyMap())
                 }
                 "integrations:metaSave" -> {
                     val merged = try {
@@ -808,21 +863,19 @@ object CrmServerModule : ServerModule {
                         }
                     }
                 }
-                "bulk:apply" -> {
-                    val keep = params - setOf("op")
-                    val selected = if (values["all"] == "true") {
-                        values.keys.filter { it.startsWith("lead:") }
-                    } else {
-                        values.filter { it.key.startsWith("lead:") && it.value == "true" }.keys
-                    }.mapNotNull { runCatching { UUID.fromString(it.removePrefix("lead:")) }.getOrNull() }
-                        .mapNotNull { CrmRepository.lead(tenant, it) }
-                        .filter { context.scope.canSee(it.interestId, it.ownerUserId) }
+                "leads:bulk", "leads:apply" -> {
+                    // Back to the list view, with the same filters and page.
+                    val keep = params - setOf("op") + (CrmScreens.ViewKey to CrmScreens.ViewList)
+                    // Only the leads of the page the checkboxes were drawn for (same filters and page), never others.
+                    val pageLeads = CrmScreens.listPage(context, params).leads
+                    val chosen = CrmBulkActions.selectedIds(values, pageLeads.map { it.id }).toSet()
+                    val selected = pageLeads.filter { it.id in chosen }
                     val action = values["action"].orEmpty()
                     val value = if (action == CrmImportScreens.ActionOwner) values["owner"].orEmpty() else values["stage"].orEmpty()
                     try {
-                        show("bulk", UiNotice(CrmBulkActions.apply(context, selected, action, value, actor), UiTone.Success), keep)
+                        show("leads", UiNotice(CrmBulkActions.apply(context, selected, action, value, actor), UiTone.Success), keep)
                     } catch (notice: CrmActionNotice) {
-                        show("bulk", UiNotice(notice.message.orEmpty(), if (notice.warning) UiTone.Warning else UiTone.Danger), keep)
+                        show("leads", UiNotice(notice.message.orEmpty(), if (notice.warning) UiTone.Warning else UiTone.Danger), keep)
                     }
                 }
                 "lead:itemManual" -> {
@@ -1084,9 +1137,9 @@ object CrmServerModule : ServerModule {
         }
     }
 
-    private suspend fun ApplicationCall.screenId(permissions: ModulePermissions): String? {
+    private suspend fun ApplicationCall.screenId(permissions: ModulePermissions, canonical: Boolean = true): String? {
         val requested = parameters["screen"].orEmpty()
-        val screen = if (requested == "home") CrmScreens.home(permissions) else requested.takeIf { CrmScreens.isScreen(it) }
+        val screen = if (requested == "home") CrmScreens.home(permissions) else requested.takeIf { CrmScreens.isScreen(it) }?.let { if (canonical) CrmScreens.canonical(it) else it }
         if (screen == null) respond(HttpStatusCode.NotFound, CrmErrorResponse("UNKNOWN_SCREEN", "Seccion no encontrada o sin permisos."))
         return screen
     }

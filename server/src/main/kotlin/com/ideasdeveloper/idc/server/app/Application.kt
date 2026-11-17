@@ -33,6 +33,7 @@ import com.ideasdeveloper.idc.server.modules.ServerModule
 import com.ideasdeveloper.idc.server.modules.ServerModuleProvider
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import com.ideasdeveloper.idc.server.modules.moduleRoutes
+import com.ideasdeveloper.idc.server.modules.notificationRoutes
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.*
 import io.ktor.server.netty.*
@@ -246,6 +247,8 @@ fun Application.module() {
                 selfService = companySelfService,
             )
         }
+        // Centro de notificaciones del Core: la campana de la app lee y marca las del usuario.
+        notificationRoutes(moduleRegistry, moduleAccessService)
         moduleRoutes(moduleRegistry, moduleAccessService)
     }
 }

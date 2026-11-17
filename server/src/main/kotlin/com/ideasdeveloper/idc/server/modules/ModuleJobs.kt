@@ -43,6 +43,8 @@ class ModuleJobContext(
     val companyCode: String,
     val tenant: Connection,
     val access: ModuleAccessService,
+    // Creates notifications for users with the job's module as their origin.
+    val notifier: ModuleNotifier,
 )
 
 /**
@@ -98,6 +100,7 @@ class ModuleJobScheduler(
     }
 
     internal fun runDueJobs() {
+        runCoreJobs()
         try {
             registry.installedModuleIds().sorted().forEach { moduleId ->
                 val jobs = registry.module(moduleId)?.jobs.orEmpty()
@@ -110,19 +113,50 @@ class ModuleJobScheduler(
         }
     }
 
-    private fun runForCompany(moduleId: String, jobs: List<ModuleJob>, companyCode: String) {
-        jobs.forEach { job ->
-            try {
-                access.tenantConnectionForCompany(companyCode)?.use { tenant ->
-                    val schedule = job.scheduleFor?.invoke(tenant) ?: job.scheduleForDefault()
-                    val now = Instant.now()
-                    if (!clock.isDue(moduleId, job, companyCode, now, schedule)) return@use
-                    clock.ran(moduleId, job, companyCode, now)
-                    job.run(ModuleJobContext(companyCode, tenant, access))
-                }
-            } catch (failure: Exception) {
-                log.error("Job {} of module {} failed for company {}", job.id, moduleId, companyCode, failure)
+    // Work of the Core itself (not of a module), for every active company: it clears notifications
+    // older than 90 days once a day.
+    private fun runCoreJobs() {
+        try {
+            access.activeCompanies().forEach { companyCode ->
+                coreJobs.forEach { job -> runJob(CoreJobsId, job, companyCode) }
             }
+        } catch (failure: Exception) {
+            log.error("Core jobs tick failed", failure)
         }
+    }
+
+    private val coreJobs = listOf(
+        ModuleJob("notifications-cleanup", Duration.ofHours(24)) { context ->
+            // A company whose migration is not applied yet has nothing to clean (and no error to log).
+            if (hasNotificationsTable(context.tenant)) context.access.notifications.purgeExpired(context.tenant)
+        },
+    )
+
+    private fun runForCompany(moduleId: String, jobs: List<ModuleJob>, companyCode: String) {
+        jobs.forEach { job -> runJob(moduleId, job, companyCode) }
+    }
+
+    private fun runJob(moduleId: String, job: ModuleJob, companyCode: String) {
+        try {
+            access.tenantConnectionForCompany(companyCode)?.use { tenant ->
+                val schedule = job.scheduleFor?.invoke(tenant) ?: job.scheduleForDefault()
+                val now = Instant.now()
+                if (!clock.isDue(moduleId, job, companyCode, now, schedule)) return@use
+                clock.ran(moduleId, job, companyCode, now)
+                job.run(ModuleJobContext(companyCode, tenant, access, access.notificationsFor(moduleId)))
+            }
+        } catch (failure: Exception) {
+            log.error("Job {} of module {} failed for company {}", job.id, moduleId, companyCode, failure)
+        }
+    }
+
+    private fun hasNotificationsTable(tenant: Connection): Boolean =
+        tenant.prepareStatement("SELECT to_regclass('notifications') IS NOT NULL").use { query ->
+            query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+        }
+
+    private companion object {
+        // Id under which the Core's own jobs are scheduled; no module may use it.
+        const val CoreJobsId = "core"
     }
 }

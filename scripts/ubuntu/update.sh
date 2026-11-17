@@ -307,6 +307,8 @@ apply_control_migrations() {
         die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
     [[ -f database/core/migrations/V004__add_application_user_code.sql ]] ||
         die 'No se encontro database/core/migrations/V004__add_application_user_code.sql.'
+    [[ -f database/core/migrations/V005__create_notifications.sql ]] ||
+        die 'No se encontro database/core/migrations/V005__create_notifications.sql.'
 
     source scripts/ubuntu/migrations.sh
     apply_migration "$db_name" control database/control/migrations/V001__create_server_registry.sql
@@ -349,11 +351,13 @@ SQL
         apply_migration "$tenant_db" tenant database/tenant/migrations/V004__create_application_permissions.sql
         apply_migration "$tenant_db" tenant database/tenant/migrations/V005__create_application_user_credentials.sql
         apply_migration "$tenant_db" core database/core/migrations/V003__add_application_user_profile.sql
+        apply_migration "$tenant_db" core database/core/migrations/V005__create_notifications.sql
         runuser -u postgres -- psql -X -d "$tenant_db" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
 GRANT SELECT, INSERT, UPDATE ON application_users TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_user_permissions TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO :"db_user";
+GRANT SELECT, INSERT, DELETE, UPDATE (read_at) ON notifications TO :"db_user";
 SQL
     done < <(runuser -u postgres -- psql -X -d "$db_name" -At -c "SELECT database_name FROM companies ORDER BY code")
 }

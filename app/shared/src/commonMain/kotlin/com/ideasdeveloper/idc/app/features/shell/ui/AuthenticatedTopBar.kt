@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.shell.ui
 
+import com.ideasdeveloper.idc.app.core.theme.wcagLuminance
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -31,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
+import com.ideasdeveloper.idc.app.features.notifications.ui.NotificationBell
 
 @Composable
 // Renderiza la barra superior compartida por pantallas autenticadas.
@@ -122,13 +124,24 @@ fun AuthenticatedTopBar(
             }
         }
 
+        // Sobre el degradado, el circulo va del tono opuesto al texto para no restarle contraste.
+        val circleColor = if (colors.brandBackground) {
+            (if (colors.onScreen.wcagLuminance() > 0.5) Color.Black else Color.White).copy(alpha = 0.18f)
+        } else {
+            colors.onScreen.copy(alpha = 0.18f)
+        }
+
+        // Centro de notificaciones: solo aparece con una sesion de empresa o del espacio del servidor.
+        NotificationBell(circleColor = circleColor)
+        Spacer(modifier = Modifier.width(8.dp))
+
         // Agrupa ajustes y cierre de sesion en un menu compacto.
         Box {
             IconButton(
                 onClick = { menuExpanded = !menuExpanded },
                 modifier = Modifier
                     .size(48.dp)
-                    .background(colors.onScreen.copy(alpha = 0.18f), CircleShape)
+                    .background(circleColor, CircleShape)
                     .rotate(menuRotation),
             ) {
                 // Siempre "|||" girado (gira al abrirse) para no confundirse con la X de cerrar.

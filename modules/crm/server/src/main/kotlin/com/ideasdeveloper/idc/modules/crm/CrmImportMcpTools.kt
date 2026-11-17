@@ -16,7 +16,7 @@ import java.util.UUID
 
 /**
  * Agent tools of the CRM imports (crm.settings, like the Importar screens) and bulk actions
- * (crm.leads.manage, like "Acciones en lote"). The monday token is saved only in the app; the tools
+ * (crm.leads.manage, like the bulk bar of the list view of Leads). The monday token is saved only in the app; the tools
  * use the stored one, server side, and never receive or return it.
  */
 object CrmImportMcpTools {
@@ -141,7 +141,7 @@ object CrmImportMcpTools {
         ) { call -> cancelImport(call) },
         McpTool(
             name = "bulk_update_leads",
-            title = "Acciones en lote",
+            title = "Acciones en lote (vista Lista de Leads)",
             description = "Mueve de etapa, asigna responsable o elimina varios leads visibles a la vez (hasta 500). Eliminar necesita el permiso de eliminar leads.$Confirm",
             permission = CrmScreens.Manage,
             destructive = true,
@@ -358,9 +358,9 @@ object CrmImportMcpTools {
             .filter { context.scope.canSee(it.interestId, it.ownerUserId) }
         val (action, value) = when (call.requiredString("action", 20)) {
             "move" -> CrmImportScreens.ActionStage to call.requiredString("stage", 100).let { wanted -> context.stages.firstOrNull { it.name.equals(wanted, ignoreCase = true) }?.name ?: wanted }
-            // An unknown name would leave the leads unassigned: only blank means that.
+            // Only blank leaves the leads unassigned (the "unassigned" option); an unknown name is an error.
             "assign" -> CrmImportScreens.ActionOwner to call.string("owner", 200).let { wanted ->
-                if (wanted.isEmpty()) "" else context.users.firstOrNull { it.name.equals(wanted, ignoreCase = true) }?.name
+                if (wanted.isEmpty()) CrmForms.Unassigned else context.users.firstOrNull { it.name.equals(wanted, ignoreCase = true) }?.name
                     ?: throw McpToolException("'$wanted' no es un usuario con acceso al CRM. Usuarios: ${context.users.joinToString { it.name }}.")
             }
             "delete" -> CrmImportScreens.ActionDelete to ""

@@ -18,7 +18,7 @@ object CrmRepository {
     private const val LeadColumns = """
         l.id, l.customer_id, c.display_name, c.primary_email, c.primary_phone, c.customer_code, l.stage_id, l.interest_id,
         l.owner_user_id, l.source, l.language, l.message, l.details, l.target_start, l.target_end,
-        l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason, l.archived_at,
+        l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason, l.archived_at, l.restored_at,
         l.custom_fields::text AS custom_fields
     """
     private const val LeadFrom = "FROM crm_leads l JOIN customers c ON c.id = l.customer_id"
@@ -82,7 +82,13 @@ object CrmRepository {
     // Only stages without leads can be deleted, so no lead is left without a stage.
     fun deleteStage(tenant: Connection, id: UUID): Boolean {
         if (stageLeadCount(tenant, id) > 0) throw CrmValidationException("Mueve primero los leads de esta etapa a otra.")
-        return tenant.prepareStatement("DELETE FROM crm_stages WHERE id = ?").use { it.setObject(1, id); it.executeUpdate() == 1 }
+        return transaction(tenant) {
+            // The exit automation forgets the stage; without stages left it is switched off.
+            tenant.prepareStatement(
+                "UPDATE crm_settings SET exit_enabled = exit_enabled AND cardinality(array_remove(exit_stage_ids, ?)) > 0, exit_stage_ids = array_remove(exit_stage_ids, ?) WHERE id = 1"
+            ).use { it.setObject(1, id); it.setObject(2, id); it.executeUpdate() }
+            tenant.prepareStatement("DELETE FROM crm_stages WHERE id = ?").use { it.setObject(1, id); it.executeUpdate() == 1 }
+        }
     }
 
     fun leadCount(tenant: Connection): Int =
@@ -92,6 +98,8 @@ object CrmRepository {
     fun applyTemplate(tenant: Connection, template: CrmTemplates.Template) = transaction(tenant) {
         if (leadCount(tenant) > 0) throw CrmValidationException("Las plantillas solo se aplican mientras no hay leads.")
         tenant.prepareStatement("DELETE FROM crm_stages").use { it.executeUpdate() }
+        // The old stages are gone: the exit automation starts over.
+        tenant.prepareStatement("UPDATE crm_settings SET exit_enabled = FALSE, exit_stage_ids = '{}' WHERE id = 1").use { it.executeUpdate() }
         template.stages.forEach { saveStage(tenant, null, it) }
     }
 
@@ -135,6 +143,40 @@ object CrmRepository {
                 insert.addBatch()
             }
             insert.executeBatch()
+        }
+    }
+
+    // "Mostrar archivados" of the lead views, remembered per user.
+    fun showArchived(tenant: Connection, userId: UUID): Boolean =
+        tenant.prepareStatement("SELECT show_archived FROM crm_user_settings WHERE user_id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+        }
+
+    // Last view of "Leads" the user used ("pipeline" or "list"); the pipeline until they choose.
+    fun leadsView(tenant: Connection, userId: UUID): String =
+        tenant.prepareStatement("SELECT leads_view FROM crm_user_settings WHERE user_id = ?").use { query ->
+            query.setObject(1, userId)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else CrmScreens.ViewPipeline }
+        }
+
+    fun setLeadsView(tenant: Connection, userId: UUID, value: String) {
+        tenant.prepareStatement(
+            "INSERT INTO crm_user_settings (user_id, leads_view) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET leads_view = EXCLUDED.leads_view"
+        ).use { upsert ->
+            upsert.setObject(1, userId)
+            upsert.setString(2, value)
+            upsert.executeUpdate()
+        }
+    }
+
+    fun setShowArchived(tenant: Connection, userId: UUID, value: Boolean) {
+        tenant.prepareStatement(
+            "INSERT INTO crm_user_settings (user_id, show_archived) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET show_archived = EXCLUDED.show_archived"
+        ).use { upsert ->
+            upsert.setObject(1, userId)
+            upsert.setBoolean(2, value)
+            upsert.executeUpdate()
         }
     }
 
@@ -182,12 +224,14 @@ object CrmRepository {
 
     private fun where(scope: CrmScope, filter: CrmLeadFilter): Pair<String, List<Any>> {
         val (visible, params) = scope.sqlCondition()
-        val parts = mutableListOf(visible, if (filter.archived) "l.archived_at IS NOT NULL" else "l.archived_at IS NULL")
+        val parts = mutableListOf(visible)
+        archivedSql(filter)?.let { parts += it }
         val values = params.toMutableList()
         if (scope.interestsEnabled) {
             if (filter.withoutInterest) parts += "l.interest_id IS NULL"
             filter.interestId?.let { parts += "l.interest_id = ?"; values += it }
         }
+        if (filter.unqualified) parts += unqualifiedSql(scope.interestsEnabled)
         filter.ownerUserId?.let { parts += "l.owner_user_id = ?"; values += it }
         if (filter.unassigned) parts += "l.owner_user_id IS NULL"
         filter.stageId?.let { parts += "l.stage_id = ?"; values += it }
@@ -203,7 +247,9 @@ object CrmRepository {
 
     fun leads(tenant: Connection, scope: CrmScope, filter: CrmLeadFilter, limit: Int, offset: Int): List<CrmLead> {
         val (condition, params) = where(scope, filter)
-        return tenant.prepareStatement("SELECT $LeadColumns $LeadFrom WHERE $condition ORDER BY l.created_at DESC LIMIT ? OFFSET ?").use { query ->
+        // Archived leads: the most recently archived first (crm_leads_archived_idx).
+        val order = if (filter.archived) "l.updated_at DESC" else "l.created_at DESC"
+        return tenant.prepareStatement("SELECT $LeadColumns $LeadFrom WHERE $condition ORDER BY $order LIMIT ? OFFSET ?").use { query ->
             query.bind(tenant, params + limit + offset)
             query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.lead()) } }
         }
@@ -392,6 +438,10 @@ object CrmRepository {
         if (input.stageId != lead.stageId) {
             stages.firstOrNull { it.id == input.stageId }?.let { moveLead(tenant, lead, it, stages, actor) }
         }
+        // A changed end date puts a restored lead back under the exit automation (a stage change does it in moveLead).
+        if (!CrmExit.restoreSurvives(lead.stageId, input.stageId, lead.targetEnd, input.targetEnd)) {
+            tenant.prepareStatement("UPDATE crm_leads SET restored_at = NULL WHERE id = ?").use { it.setObject(1, lead.id); it.executeUpdate() }
+        }
         if (input.ownerUserId != lead.ownerUserId) {
             addActivity(tenant, lead.id, "owner", "Responsable: ${names.user(input.ownerUserId)}.", actor)
         }
@@ -446,11 +496,24 @@ object CrmRepository {
     }
 
     // Moves a lead to another stage, records the stage history and keeps closed_at in line with the stage kind.
+    /**
+     * With rooms chosen in Cloudbeds a lead is won by confirming the reservation, not by moving it: true when moving
+     * [leadId] to [stage] must be refused for that reason. Shared by the pipeline drag and the bulk move.
+     */
+    fun wonNeedsReservation(tenant: Connection, leadId: UUID, stage: CrmStage): Boolean {
+        if (stage.kind != StageKind.Won) return false
+        val pendingRooms = CrmItems.list(tenant, leadId, CrmCloudbeds.Source).any { it.status == "chosen" }
+        val reserved = CrmCloudbeds.forLead(tenant, leadId).any { it.status !in setOf("canceled", "no_show") }
+        return pendingRooms && !reserved
+    }
+
     fun moveLead(tenant: Connection, lead: CrmLead, stage: CrmStage, stages: List<CrmStage>, actor: CrmActor) {
+        // Archived leads sit outside the stages (a stage change would mix them back into the pipeline).
+        if (lead.archivedAt != null) throw CrmValidationException("Restaura el lead antes de moverlo.")
         if (stage.id == lead.stageId && lead.closedAt == null == (stage.kind == StageKind.Open)) return
         tenant.prepareStatement(
             """
-            UPDATE crm_leads SET stage_id = ?, stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP,
+            UPDATE crm_leads SET stage_id = ?, stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, restored_at = NULL,
                 closed_at = CASE WHEN ? THEN NULL ELSE COALESCE(closed_at, CURRENT_TIMESTAMP) END
             WHERE id = ?
             """.trimIndent()
@@ -466,6 +529,27 @@ object CrmRepository {
         if (stage.kind == StageKind.Won && stages.firstOrNull { it.id == lead.stageId }?.kind != StageKind.Won) {
             CrmCustomerEvents.won(tenant, lead, actor)
         }
+    }
+
+    /**
+     * Brings an archived lead back: it keeps the stage it had and its closed_at. Idempotent: returns false
+     * (and writes nothing) when the lead was not archived. Cloudbeds and imports never call this.
+     */
+    fun restoreLead(tenant: Connection, leadId: UUID, actor: CrmActor): Boolean = transaction(tenant) {
+        val restored = tenant.prepareStatement(
+            "UPDATE crm_leads SET archived_at = NULL, restored_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NOT NULL"
+        ).use { update -> update.setObject(1, leadId); update.executeUpdate() } > 0
+        if (restored) addActivity(tenant, leadId, "updated", "Lead restaurado.", actor)
+        restored
+    }
+
+    /** Archives an open lead by hand (bulk actions). Idempotent: false when it was already archived. */
+    fun archiveLead(tenant: Connection, leadId: UUID, actor: CrmActor): Boolean = transaction(tenant) {
+        val archived = tenant.prepareStatement(
+            "UPDATE crm_leads SET archived_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND archived_at IS NULL"
+        ).use { update -> update.setObject(1, leadId); update.executeUpdate() } > 0
+        if (archived) addActivity(tenant, leadId, "updated", "Lead archivado.", actor)
+        archived
     }
 
     fun addNote(tenant: Connection, leadId: UUID, body: String, actor: CrmActor) {
@@ -604,6 +688,7 @@ object CrmRepository {
         suggestedOwnerUserId = getObject("suggested_owner_user_id", UUID::class.java),
         reviewReason = getString("review_reason"),
         archivedAt = getTimestamp("archived_at")?.toInstant(),
+        restoredAt = getTimestamp("restored_at")?.toInstant(),
         customFields = CrmFields.parseStored(getString("custom_fields")),
         customerCode = getString("customer_code").orEmpty(),
     )
@@ -623,7 +708,7 @@ object CrmRepository {
         }
     }
 
-    private fun <T> transaction(tenant: Connection, block: () -> T): T {
+    internal fun <T> transaction(tenant: Connection, block: () -> T): T {
         val previous = tenant.autoCommit
         tenant.autoCommit = false
         try {

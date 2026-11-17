@@ -74,7 +74,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.2.3",
+        version = "0.3.0",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,
@@ -259,7 +259,7 @@ object AgentesServerModule : ServerModule {
         arguments: JsonObject,
         logName: String,
     ): ToolOutcome {
-        val call = McpToolCall(arguments, permissions, tenant, access, token.name)
+        val call = McpToolCall(arguments, permissions, tenant, access, token.name, tool.registered.moduleId)
         return try {
             val result: JsonElement = tool.registered.tool.handler(call)
             AgentTokens.log(logTenant, token.id, logName, "ok")

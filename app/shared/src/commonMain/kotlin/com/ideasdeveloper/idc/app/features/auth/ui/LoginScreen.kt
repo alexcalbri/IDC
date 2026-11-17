@@ -2,6 +2,11 @@ package com.ideasdeveloper.idc.app.features.auth.ui
 
 import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
+import com.ideasdeveloper.idc.app.core.theme.appFieldColors
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
+import com.ideasdeveloper.idc.app.features.shell.ui.AppIcons
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -23,7 +28,6 @@ import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -54,7 +58,6 @@ fun LoginScreen(
     val savedConfiguration = remember { ClientConfigurationStore.load() }
     val companyIdentity = remember { CompanyIdentityStore.current() }
     val colors = AppTheme.colors
-    val primaryColor = colors.accent
 
     var serverUrl by rememberSaveable {
         mutableStateOf(savedConfiguration?.serverUrl ?: initialServerUrl)
@@ -133,7 +136,7 @@ fun LoginScreen(
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth(0.9f)
+                .contentWidth(ContentWidth.Card, 0.9f)
                 .align(Alignment.Center)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = CenterHorizontally
@@ -177,6 +180,18 @@ fun LoginScreen(
                 )
             }
             Spacer(Modifier.height(16.dp))
+            // Tarjeta del formulario: superficie del tema sobre el fondo de marca, de ancho acotado.
+            Surface(
+                color = AppTheme.colors.surface,
+                contentColor = AppTheme.colors.text,
+                shape = MaterialTheme.shapes.large,
+                shadowElevation = 6.dp,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier.padding(if (AdaptiveLayout.roomy) 24.dp else 20.dp),
+                    horizontalAlignment = CenterHorizontally,
+                ) {
             if (!editingServer) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -185,22 +200,18 @@ fun LoginScreen(
                 ) {
                     Text(
                         text = "Servidor: $serverUrl",
-                        color = AppTheme.colors.onScreenMuted,
+                        color = AppTheme.colors.muted,
                         fontSize = 13.sp,
                         modifier = Modifier.weight(1f),
                     )
                     TextButton(onClick = { editingServer = true }, enabled = !isLoading) {
-                        Text("Cambiar servidor", color = AppTheme.colors.onScreen)
+                        Text("Cambiar servidor", color = AppTheme.colors.text)
                     }
                 }
                 Spacer(Modifier.height(8.dp))
             }
             if (editingServer) {
                 // Solicita la URL la primera vez o cuando el usuario quiere cambiar de servidor.
-                Box(
-                    modifier = Modifier
-                        .background(AppTheme.colors.fieldOnScreen.copy(alpha = 0.5f), MaterialTheme.shapes.medium)
-                ) {
                     OutlinedTextField(
                         value = serverUrl,
                         onValueChange = { serverUrl = it },
@@ -211,26 +222,13 @@ fun LoginScreen(
                         keyboardActions = submitKeyboardActions,
                         modifier = Modifier.fillMaxWidth().then(submitOnEnter),
                         shape = MaterialTheme.shapes.medium,
-                        textStyle = LocalTextStyle.current.copy(color = AppTheme.colors.onScreen),
                         enabled = !isLoading,
-                        colors = TextFieldDefaults.colors(
-                            focusedLabelColor = AppTheme.colors.onScreen,
-                            unfocusedLabelColor = AppTheme.colors.onScreenMuted,
-                            cursorColor = AppTheme.colors.onScreen,
-                            focusedContainerColor = AppTheme.colors.fieldOnScreenFocused,
-                            unfocusedContainerColor = AppTheme.colors.fieldOnScreen,
-                        ),
+                        colors = appFieldColors(),
                     )
-                }
-
                 Spacer(Modifier.height(16.dp))
             }
                 if (!serverAdministration) {
                     // Solicita codigo de empresa solo para sesiones tenant.
-                    Box(
-                        modifier = Modifier
-                            .background(AppTheme.colors.fieldOnScreen.copy(alpha = 0.5f), MaterialTheme.shapes.medium)
-                    ) {
                         OutlinedTextField(
                             value = companyCode,
                             onValueChange = { companyCode = it },
@@ -240,84 +238,50 @@ fun LoginScreen(
                             keyboardActions = submitKeyboardActions,
                             modifier = Modifier.fillMaxWidth().then(submitOnEnter),
                             shape = MaterialTheme.shapes.medium,
-                            textStyle = LocalTextStyle.current.copy(color = AppTheme.colors.onScreen),
                             enabled = !isLoading,
-                            colors = TextFieldDefaults.colors(
-                                focusedLabelColor = AppTheme.colors.onScreen,
-                                unfocusedLabelColor = AppTheme.colors.onScreenMuted,
-                                cursorColor = AppTheme.colors.onScreen,
-                                focusedContainerColor = AppTheme.colors.fieldOnScreenFocused,
-                                unfocusedContainerColor = AppTheme.colors.fieldOnScreen,
-                            ),
+                            colors = appFieldColors(),
                         )
-                    }
                 }
                 Spacer(Modifier.height(16.dp))
 
             // Captura el usuario con el que se autenticara contra el servidor.
-            Box(
-                modifier = Modifier
-                    .background(AppTheme.colors.fieldOnScreen.copy(alpha = 0.5f), MaterialTheme.shapes.medium)
-            ) {
                 OutlinedTextField(
                     value = username,
                     onValueChange = { username = it },
-                    label = { Text("Usuario", color = AppTheme.colors.onScreen) },
+                    label = { Text("Usuario") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text, imeAction = ImeAction.Go),
                     keyboardActions = submitKeyboardActions,
                     modifier = Modifier.fillMaxWidth().then(submitOnEnter),
                     shape = MaterialTheme.shapes.medium,
-                    textStyle = LocalTextStyle.current.copy(color = AppTheme.colors.onScreen),
                     enabled = !isLoading,
-                    colors = TextFieldDefaults.colors(
-                        focusedLabelColor = AppTheme.colors.onScreen,
-                        unfocusedLabelColor = AppTheme.colors.onScreenMuted,
-                        cursorColor = AppTheme.colors.onScreen,
-                        focusedContainerColor = AppTheme.colors.fieldOnScreenFocused,
-                        unfocusedContainerColor = AppTheme.colors.fieldOnScreen,
-                    ),
+                    colors = appFieldColors(),
                 )
-            }
-
             Spacer(modifier = Modifier.height(16.dp))
 
             // Captura la contrasena y permite alternar su visibilidad.
-            Box(
-                modifier = Modifier
-                    .background(AppTheme.colors.fieldOnScreen.copy(alpha = 0.5f), MaterialTheme.shapes.medium)
-            ) {
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    label = { Text("Contraseña", color = AppTheme.colors.onScreen) },
+                    label = { Text("Contraseña") },
                     singleLine = true,
                     visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password, imeAction = ImeAction.Go),
                     keyboardActions = submitKeyboardActions,
                     enabled = !isLoading,
                     trailingIcon = {
-                        val iconText = if (showPassword) "👁️" else "👁️‍🗨️"
-                        TextButton(onClick = { showPassword = !showPassword }) {
-                            Text(iconText, color = AppTheme.colors.onScreen)
+                        IconButton(onClick = { showPassword = !showPassword }) {
+                            Icon(
+                                imageVector = if (showPassword) AppIcons.VisibilityOff else AppIcons.Visibility,
+                                contentDescription = if (showPassword) "Ocultar contraseña" else "Mostrar contraseña",
+                            )
                         }
                     },
                     modifier = Modifier.fillMaxWidth().then(submitOnEnter),
                     shape = MaterialTheme.shapes.medium,
 
-                    textStyle = LocalTextStyle.current.copy(color = AppTheme.colors.onScreen),
-
-                    colors = TextFieldDefaults.colors(
-                        focusedLabelColor = AppTheme.colors.onScreen,
-                        unfocusedLabelColor = AppTheme.colors.onScreenMuted,
-                        cursorColor = AppTheme.colors.onScreen,
-                        focusedContainerColor = AppTheme.colors.fieldOnScreenFocused,
-                        unfocusedContainerColor = AppTheme.colors.fieldOnScreen,
-                    ),
+                    colors = appFieldColors(),
                 )
-            }
-
-
             Spacer(modifier = Modifier.height(16.dp))
 
             // Permite persistir la sesion para que la app abra directo al dashboard.
@@ -330,7 +294,7 @@ fun LoginScreen(
                     onCheckedChange = { keepSignedIn = it },
                     enabled = !isLoading,
                 )
-                Text("Mantener sesión iniciada", color = AppTheme.colors.onScreen)
+                Text("Mantener sesión iniciada", color = AppTheme.colors.text)
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -339,14 +303,14 @@ fun LoginScreen(
             state.error?.let { message ->
                 Text(
                     text = message,
-                    color = AppTheme.colors.onScreen,
+                    color = AppTheme.colors.danger,
                     modifier = Modifier.padding(vertical = 8.dp),
                 )
             }
             versionMessage?.let { message ->
                 Text(
                     text = message,
-                    color = AppTheme.colors.onScreen,
+                    color = AppTheme.colors.text,
                     modifier = Modifier.padding(vertical = 8.dp),
                 )
             }
@@ -360,13 +324,13 @@ fun LoginScreen(
                     .height(50.dp),
                 shape = MaterialTheme.shapes.medium,
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = AppTheme.colors.surface,
-                    contentColor = primaryColor,
+                    containerColor = AppTheme.colors.accent,
+                    contentColor = AppTheme.colors.onAccent,
                 )
             ) {
                 if (isLoading) {
                     CircularProgressIndicator(
-                        color = primaryColor,
+                        color = AppTheme.colors.onAccent,
                         strokeWidth = 2.dp,
                         modifier = Modifier.size(20.dp)
                     )
@@ -384,7 +348,9 @@ fun LoginScreen(
                 onClick = { recoveringPassword = true },
                 enabled = !isLoading && serverUrl.isNotBlank() && (serverAdministration || companyCode.isNotBlank()),
             ) {
-                Text("¿Olvidaste tu contraseña?", color = AppTheme.colors.onScreen)
+                Text("¿Olvidaste tu contraseña?", color = AppTheme.colors.text)
+            }
+                }
             }
 
             Spacer(modifier = Modifier.height(16.dp))
@@ -437,23 +403,17 @@ fun LoginScreen(
             ) {
                 Text(
                     text = "IdeasCore v$ClientVersion",
-                    color = AppTheme.colors.onScreen.copy(alpha = 0.7f),
+                    color = AppTheme.colors.onScreenMuted,
                     fontSize = 12.sp
                 )
                 Text(
                     text = "Flow Tier",
-                    color = AppTheme.colors.onScreen.copy(alpha = 0.5f),
+                    color = AppTheme.colors.onScreenMuted,
                     fontSize = 10.sp
                 )
             }
         }
     }
-}
-
-private fun String.toComposeColor(fallback: Color): Color {
-    val hex = trim().removePrefix("#")
-    if (hex.length != 6) return fallback
-    return hex.toLongOrNull(16)?.let { Color((0xFF000000L or it).toInt()) } ?: fallback
 }
 
 private suspend inline fun <T> VersionApi.use(block: suspend (VersionApi) -> T): T {

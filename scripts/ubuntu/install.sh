@@ -88,6 +88,7 @@ readonly REQUIRED_FILES=(
     database/core/migrations/V002__create_application_sessions.sql
     database/core/migrations/V003__add_application_user_profile.sql
     database/core/migrations/V004__add_application_user_code.sql
+    database/core/migrations/V005__create_notifications.sql
     database/control/migrations/V001__create_server_registry.sql
     database/control/migrations/V002__create_provisioning_audit_log.sql
     database/control/migrations/V003__create_server_modules.sql

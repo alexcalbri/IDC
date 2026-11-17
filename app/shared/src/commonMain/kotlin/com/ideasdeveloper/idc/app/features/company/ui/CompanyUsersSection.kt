@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
 import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import com.ideasdeveloper.idc.app.core.ui.CopyableCode
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -81,7 +83,7 @@ fun CompanyUsersSection(
         }
     }
 
-    Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+    Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
     Text(description, color = AppTheme.colors.muted)
     // El alta es independiente de la lista: empieza cerrada para ver los usuarios primero.
     CollapsibleSection("Nuevo usuario", primaryColor, subtitle = "Usuario, nombre, correo, contrasena y permisos") {
@@ -174,7 +176,7 @@ fun CompanyUsersSection(
                     }
                 }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+            colors = accentButtonColors(),
         ) {
             Text("Crear usuario")
         }
@@ -189,9 +191,9 @@ fun CompanyUsersSection(
                 .padding(12.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(user.displayName?.let { "$it (${user.username})" } ?: user.username, fontWeight = FontWeight.SemiBold, color = primaryColor)
+            Text(user.displayName?.let { "$it (${user.username})" } ?: user.username, fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
             Text(user.email ?: "Sin correo: lo completa al iniciar sesion", color = AppTheme.colors.muted)
-            Text("Codigo de usuario: ${user.userCode}", color = AppTheme.colors.text)
+            if (user.userCode.isNotBlank()) CopyableCode(label = "Codigo de usuario", code = user.userCode)
             Text(if (user.isActive) "Activo" else "Inactivo", color = AppTheme.colors.muted)
             if (editingUserId == user.userId) {
                 UserEditForm(
@@ -325,7 +327,7 @@ private fun UserEditForm(
             Checkbox(checked = active, onCheckedChange = { active = it }, enabled = !busy)
             Text(if (active) "Activo: puede iniciar sesion" else "Inactivo: no puede iniciar sesion", color = AppTheme.colors.text)
         }
-        Text("Permisos", fontWeight = FontWeight.SemiBold, color = primaryColor)
+        Text("Permisos", fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
         permissions.forEach { permission ->
             PermissionCheckbox(
                 permission = permission,
@@ -353,7 +355,7 @@ private fun UserEditForm(
                     )
                 )
             },
-            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+            colors = accentButtonColors(),
         ) {
             Text("Guardar")
         }
@@ -377,7 +379,7 @@ private fun PermissionCheckbox(
     ) {
         Checkbox(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
         Column {
-            Text(permission.title, fontWeight = FontWeight.SemiBold, color = primaryColor)
+            Text(permission.title, fontWeight = FontWeight.SemiBold, color = AppTheme.colors.accentText)
             Text("${permission.moduleId}: ${permission.description}", color = AppTheme.colors.muted)
         }
     }

@@ -37,8 +37,9 @@ split by line of business (Surf, Yoga, Eventos...) or by property type.
 - A user sees the leads of their interests and the leads they own.
 - Users with **Ver todos los leads** (and the business owner) see every lead
   and use the interest as a filter.
-- Leads without interest wait in **Recepcion**, visible to users with
-  **Recepcion de leads**, who categorize them.
+- Leads without interest (or without a responsible user) wait in **Sin
+  calificar**, visible to users with **Recepcion de leads** (reception is a
+  role), who categorize them.
 - Deleting an interest sends its leads back to Recepcion.
 - With interests off, every CRM user sees every lead and no interest is shown.
 
@@ -47,19 +48,43 @@ The visibility rule lives in `CrmScope` (`canSee` and its SQL twin
 
 ## Screens (native pieces)
 
+Menu (0.18.0): **Nuevo lead - Leads - Sin calificar - Seguimientos - Configuracion**.
+
 | Screen | Permission | Content |
 | --- | --- | --- |
-| `pipeline` | `crm.view` | Metrics, filters and a kanban board (`UiBoard`); dragging a card or "Mover a..." changes its stage. |
-| `leads` | `crm.view` | Searchable, filterable list (`UiList`) with pages of 50. |
-| `reception` | `crm.reception` | Leads without interest (only with interests on). |
+| `new` | `crm.leads.manage` | New lead (first in the menu). Email and phone are optional (Clientes V005). While name, email or phone are typed the form suggests existing customers (`GET /modules/crm/ui/suggest/customers`, same permission); choosing one fills the contact and links that customer. Otherwise an existing customer with the same email, or else the same phone (compared by digits, at least 7), is reused; only an email or phone it lacked is added. Without a match a `prospect` customer of type `crm` is created. |
+| `leads` | `crm.view` | **Leads** (0.18.0): one item with a **Pipeline / Lista** selector. Both views share the filters (interest, "Mis leads" in the responsible dropdown, search and **Mostrar archivados**); the selector buttons send the filter form along. The last view of each user is remembered in `crm_user_settings.leads_view` (V016; the server owner has no user row, so it only lasts while `view` is sent). **Pipeline**: metrics and a kanban board (`UiBoard`; dragging a card changes its stage); with **Mostrar archivados** an **Archivados** column follows the last stage. **Lista**: searchable list (`UiList`, pages of 50, stage filter) with archived leads mixed in; with `crm.leads.manage` an accordion **Acciones en lote** (one checkbox per lead of the page, plus mover, asignar, archivar, restaurar and eliminar; `CrmBulkActions`). |
+| `reception` | `crm.reception` or `crm.assign` | **Sin calificar** (0.16.0): leads without interest (only with interests on) or without a responsible user; a lead leaves as soon as it has both. Pending responsible-user suggestions show as "Sugerido: <name>" with Aprobar / Descartar buttons (`crm.assign`). |
 | `followups` | `crm.view` | Open leads with follow-up overdue, today or in the next 7 days. |
-| `new` | `crm.leads.manage` | New lead. Email and phone are optional (Clientes V005). While name, email or phone are typed the form suggests existing customers (`GET /modules/crm/ui/suggest/customers`, same permission); choosing one fills the contact and links that customer. Otherwise an existing customer with the same email, or else the same phone (compared by digits, at least 7), is reused; only an email or phone it lacked is added. Without a match a `prospect` customer of type `crm` is created. |
+| `settings` | `crm.settings` | **Configuracion**: a row of tabs (buttons; each tab is its own screen id, so the old routes open their tab). A tab with its own permission hides without it (today all use `crm.settings`). |
 | `lead` | `crm.view` | Detail form, notes and activity timeline (`UiTimeline`). Editing contact data updates the shared customer. The form also shows the custom fields and the **Documentos** attachments (see below). |
-| `settings` | `crm.settings` | Interests switch, interest catalog, interests per user, custom fields, stages and templates. |
+
+Tabs of **Configuracion**:
+
+| Tab | Screen id | Content |
+| --- | --- | --- |
+| General | `settings` | Interests switch, interest catalog, interests per user, custom fields, **Resumen diario** hour (action `settings:digest`), stages and stage templates. |
+| Automatizaciones | `automations` | **Automatizacion de salida** (`CrmExitScreens.card`, action `settings:exitSave`) and the rules that come next. |
+| Equipo | `team` | Notification email and options per user. |
+| Correo | `mail` | SMTP and IMAP. |
+| Plantillas | `templates` | Message templates. |
+| Anti-spam | `spam` | Anti-spam rules. |
+| Integraciones | `integrations` | Meta, WordPress, Encuentra24, Cloudbeds. |
+| Importar | `import` (and `importjob`) | monday, CSV, LeadsPro, URL and the import history. |
+
+Old routes that still open (`CrmScreens.canonical`, `forcedView`, `settingsTabOf`):
+
+| Route | Opens |
+| --- | --- |
+| `pipeline` | `leads`, Pipeline view (the user's remembered view does not change). |
+| `bulk` (Acciones en lote) | `leads`, Lista view. |
+| `assignments` | `reception` (Sin calificar). |
+| `mail`, `templates`, `spam`, `team`, `integrations`, `import`, `importjob` | Their tab of Configuracion. |
+| `leads` | The view the user used last (it is also the new unified item). |
 
 Routes: `GET /modules/crm/ui/{screen}` and `POST /modules/crm/ui/{screen}?op=...`
-(`move`, `create`, `save`, `note`, `delete`, `interests`, `interestSave`,
-`interestDelete`, `userInterests`, `stageSave`, `stageDelete`, `template`).
+(`move`, `create`, `save`, `restore`, `note`, `delete`, `bulk` on `leads`, `interests`, `interestSave`,
+`interestDelete`, `userInterests`, `stageSave`, `stageDelete`, `template`, `digest`, `exitSave`).
 
 ## Permissions
 
@@ -68,7 +93,7 @@ Routes: `GET /modules/crm/ui/{screen}` and `POST /modules/crm/ui/{screen}?op=...
 | `crm.view` | Use the CRM within the user's scope. |
 | `crm.leads.manage` | Create and edit leads, move stages, add notes, send messages. |
 | `crm.leads.delete` | Delete leads (the customer stays). |
-| `crm.reception` | See and categorize leads without interest. |
+| `crm.reception` | See and qualify leads without interest or without a responsible user. |
 | `crm.leads.all` | See leads of every interest. |
 | `crm.assign` | Choose a lead's responsible user; approve or discard suggestions. |
 | `crm.settings` | Configure stages, interests, mail, templates, anti-spam and team notifications. |
@@ -96,7 +121,7 @@ Every channel (forms, email, and the channel integrations) hands contacts to
    messages create nothing and are kept in the last-50 log.
 4. The message joins the customer's open lead, or a new lead is created in the
    first open stage with its origin (`source`, e.g. "WhatsApp") and, when the
-   source suggests one, a responsible user waiting in **Asignaciones**.
+   source suggests one, a responsible user waiting in **Sin calificar**.
    Nothing is assigned automatically.
 
 The lead detail shows the **Conversacion** (`crm_messages`, deduplicated by the
@@ -134,6 +159,7 @@ sent by job `outbox` every minute with up to 5 attempts.
 | `encuentra24` | 5 min | Import Encuentra24 leads. |
 | `cloudbeds-welcome` | 15 min | Welcome emails before check-in. |
 | `cloudbeds-sync` | 30 min | Reservation statuses; archive after check-out. |
+| `exit-archive` | 15 min | Automatizacion de salida without Cloudbeds: archive the leads of the chosen stages whose end date arrived, once the hour passed (see below). |
 | `import` | 1 min | Apply 300 rows of running imports. |
 | `attachments-cleanup` | 15 min | Delete stored files of removed attachments, deleted leads and uploads never saved (after a day); move V010 contents out of the database. |
 
@@ -299,6 +325,44 @@ detail searches the site (**Buscar propiedades**), links several properties and
 **Cerrar venta** marks the property sold on the site and moves the lead to the
 first won stage.
 
+## Archive after check-out and archived leads (V015, 0.17.0)
+
+**Automatizacion de salida** (Configuracion, `crm.settings`) is stored in `crm_settings`
+(`exit_enabled`, `exit_hour` default 14, `exit_time_zone`, `exit_stage_ids`). It only touches leads
+in the chosen origin stages. The rules are pure functions in `CrmExit` (tested in `CrmExitTest`):
+
+- **Without active Cloudbeds** the job `exit-archive` (15 min) archives the open leads whose end date
+  (`target_end`, the check-out) is before today (at once) or today once the configured hour has passed,
+  in the company's time zone. It is one atomic `UPDATE ... RETURNING` that repeats the conditions, with
+  the activity "Archivado automaticamente al hacer check-out." of each lead in the same transaction;
+  archived leads are never selected again (idempotent). The configuration is read on every run.
+- **With active Cloudbeds** the hour never archives. The job archives the leads of the chosen stages whose
+  reservation is `checked_out` (and has no open reservation), which also covers leads that reached the
+  stage after the check-out or were already checked out before the automation was turned on; `cloudbeds-sync`
+  archives at the moment of the check-out. Both need "archivar al hacer check-out" on in Integraciones; with
+  it off nothing is archived (the card says so). A lead without a Cloudbeds reservation is never archived.
+- **Turning it on** archives every lead already past its check-out, so the card shows how many per stage
+  and asks for a confirmation (`exitConfirm`) before saving; the agent tool needs `confirmArchiveOverdue`.
+- **Stages:** deleting a stage removes it from `exit_stage_ids` (the automation turns off if none is left),
+  applying a stage template resets it, and `CrmExit.load` ignores ids of stages that no longer exist.
+- **Restaurar** (`lead:restore`, `crm.leads.manage` and the lead inside the user's scope): sets `archived_at` to NULL
+  in a transaction, keeps the stage and `closed_at`, and leaves the activity "Lead restaurado."; an open lead is
+  left alone (a notice says so). Buttons: the lead detail (instead of moving) and a "Restaurar archivados" card
+  under the pipeline and the list (cards and rows only open the lead). Agents: `crm_restore_lead`. A restored lead
+  (`crm_leads.restored_at`, V015) stays out of the exit automation, by hour and by Cloudbeds check-out, until its
+  stage (`moveLead`) or end date (`updateLead`) changes; imports changing the date do not clear it. Neither
+  Cloudbeds nor imports restore: a lead archived at check-out with a new open reservation stays archived.
+- **Archived leads do not move:** `CrmRepository.moveLead` refuses them ("Restaura el lead antes de moverlo"),
+  which covers the lead form, bulk actions and `crm_move_lead`/`crm_update_lead` (use Restaurar first).
+- **Time zone:** the project has no time zone per company, so the card has its own IANA zone
+  (empty uses the server's, as the daily digest does).
+
+**Mostrar archivados** (pipeline and leads): a checkbox in the filters, remembered per user in
+`crm_user_settings.show_archived`. `CrmLeadFilter.archived` (only archived, the pipeline column) and
+`includeArchived` (mixed in, the list) feed `archivedSql`; by default archived leads stay hidden.
+Bulk actions, follow-ups and Sin calificar never show them. The Archivados column lists the most
+recently archived first. V015 adds the partial indexes `crm_leads_exit_due_idx` and `crm_leads_archived_idx`.
+
 ## Cloudbeds (V006)
 
 **Integraciones > Cloudbeds**: API key of the property (scopes `read:room`,
@@ -326,7 +390,8 @@ hour) and archiving after check-out.
   also added to the conversation.
 - **Status** (job `cloudbeds-sync`, 30 min): `getReservation` of open
   reservations; changes go to the activity and `checked_out` archives the lead
-  (`crm_leads.archived_at`): archived leads leave the pipeline, lists and counts.
+  (`crm_leads.archived_at`): archived leads leave the pipeline, lists and counts
+  unless **Mostrar archivados** is on (with the exit automation on, only leads in its stages).
 
 ### Pending Cloudbeds work and scope question
 
@@ -396,9 +461,11 @@ file is attached once per lead (`crm_attachments.source_ref`); files over 25 MB
 or that fail are reported with the row. The `import` job stops after about 50
 seconds per run so large downloads continue on the next minute.
 
-**Acciones en lote**: the filtered leads (50 per page) with a checkbox each,
+**Acciones en lote** (0.18.0, no longer a section): an accordion in the Lista view of
+Leads, only with `crm.leads.manage`. One checkbox per lead of the current page,
 "select all visible", and move to a stage, assign a responsible user (with
-`crm.assign`) or delete (with `crm.leads.delete`).
+`crm.assign` or see-all), archive, restore or delete (with `crm.leads.delete`).
+The renderer has no row selection, so it is a form with one checkbox field per lead.
 
 ## Custom fields and attachments (V010)
 
@@ -462,13 +529,15 @@ settings screens; edits change only what is sent:
 
 | Tool | Does |
 |---|---|
-| `crm_get_settings` | Interests and who sees each, stages (with lead counts), stage templates, mail (no passwords), template variables, anti-spam, team notifications, digest hour. |
+| `crm_get_settings` | Interests and who sees each, stages (with lead counts), stage templates, mail (no passwords), template variables, anti-spam, team notifications, digest hour, exit automation (`exitAutomation`). |
 | `crm_set_interests_enabled`, `crm_save_interest`, `crm_delete_interest`, `crm_set_user_interests` | Interests and per-user visibility. |
 | `crm_save_stage`, `crm_delete_stage`, `crm_apply_pipeline_template` | Pipeline stages (templates only while there are no leads; marked destructive). |
 | `crm_update_mail_settings` | SMTP and IMAP, except passwords. |
 | `crm_save_message_template`, `crm_delete_message_template` | Message templates. |
 | `crm_update_spam_rules` | Anti-spam rules (lists sent replace the current ones). |
 | `crm_update_user_notifications`, `crm_set_digest_hour` | Team email notifications and daily digest hour. |
+| `crm_restore_lead` | `crm.leads.manage` | Restore an archived visible lead (keeps its stage; no-op error if it is open). |
+| `crm_set_exit_automation` | Turn the exit automation on or off and change its hour, time zone and origin stages (only what is sent); activating it over leads already past their check-out needs `confirmArchiveOverdue`. |
 
 Integration tools (`CrmIntegrationMcpTools.kt`):
 
@@ -496,7 +565,7 @@ Import and bulk tools (`CrmImportMcpTools.kt`):
 | `crm_import_csv`, `crm_import_from_url`, `crm_import_leadspro` | `crm.settings` | Read a source into an import waiting for its mapping. |
 | `crm_list_monday_boards`, `crm_import_monday` | `crm.settings` | monday.com boards with the token saved in the app (the token is never offered). |
 | `crm_map_import`, `crm_apply_import_preset`, `crm_start_import`, `crm_cancel_import` | `crm.settings` | Column and value mapping (optionally saved), start and cancel. |
-| `crm_bulk_update_leads` | `crm.leads.manage` (+ assign / delete permissions) | Move, assign or delete up to 500 visible leads, with `CrmBulkActions` (the same code as *Acciones en lote*). |
+| `crm_bulk_update_leads` | `crm.leads.manage` (+ assign / delete permissions) | Move, assign or delete up to 500 visible leads, with `CrmBulkActions` (the same code as the bulk bar of the Lista view). |
 
 The module's own agent instructions are in `CrmMcpTools.kt` (`CrmMcpTools.mcp` joins every tool
 file).

@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -27,6 +28,8 @@ import com.ideasdeveloper.idc.app.features.company.ui.ServerLogsScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ModuleDeepLinks
+import com.ideasdeveloper.idc.app.features.notifications.ui.LocalNotificationNavigator
+import com.ideasdeveloper.idc.app.features.notifications.ui.NotificationCenter
 import com.ideasdeveloper.idc.app.features.settings.ui.SettingsScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.ConfirmDialog
 import com.ideasdeveloper.idc.navigation.NavRoute
@@ -96,116 +99,138 @@ fun App(initialServerUrl: String = "") {
             }
         }
 
-        // Define las rutas activas de la app y decide la pantalla inicial.
-        NavHost(
-            navController = navController,
-            startDestination = if (restoredSession == null) "login" else "dashboard"
+        // Sin sesion no queda nada del centro de notificaciones (la campana deja de actualizarse sola).
+        LaunchedEffect(session == null) {
+            if (session == null) {
+                NotificationCenter.clear()
+                ModuleDeepLinks.clear()
+            }
+        }
+
+        // Define las rutas activas de la app y decide la pantalla inicial. Los clics en las
+        // notificaciones abren la pantalla de su modulo con la misma navegacion de los enlaces entre modulos.
+        CompositionLocalProvider(
+            LocalNotificationNavigator provides { action ->
+                ModuleDeepLinks.open(action)
+                // Desde otra pantalla de modulo la reemplaza (se vuelve a crear para tomar el enlace pendiente);
+                // desde cualquier otra no apila dos veces el mismo destino.
+                val onModule = navController.currentDestination?.route == "module/{moduleId}"
+                navController.navigate("module/${action.moduleId}") {
+                    launchSingleTop = !onModule
+                    if (onModule) popUpTo("module/{moduleId}") { inclusive = true }
+                }
+            },
         ) {
-            composable("login") {
-                LoginScreen(
-                    initialServerUrl = initialServerUrl,
-                    onLoginSuccess = {
-                        // Recarga la configuracion guardada por el login antes de entrar al dashboard.
-                        clientConfiguration = ClientConfigurationStore.load()
-                        navController.navigate("dashboard") {
-                            popUpTo("login") {
-                                inclusive = true
+            NavHost(
+                navController = navController,
+                startDestination = if (restoredSession == null) "login" else "dashboard"
+            ) {
+                composable("login") {
+                    LoginScreen(
+                        initialServerUrl = initialServerUrl,
+                        onLoginSuccess = {
+                            // Recarga la configuracion guardada por el login antes de entrar al dashboard.
+                            clientConfiguration = ClientConfigurationStore.load()
+                            navController.navigate("dashboard") {
+                                popUpTo("login") {
+                                    inclusive = true
+                                }
+                                launchSingleTop = true
                             }
-                            launchSingleTop = true
-                        }
-                    },
-                )
-            }
-            composable("dashboard") {
-                // Muestra el punto de entrada autenticado con los modulos disponibles.
-                DashboardScreen(
-                    session = currentSession,
-                    serverUrl = clientConfiguration?.serverUrl,
-                    onNavigateTo = { route -> navController.navigate(route.routeName()) },
-                    onLogout = ::requestLogout,
-                    // La configuracion guardada ahora apunta a la otra empresa.
-                    onCompanySwitched = { clientConfiguration = ClientConfigurationStore.load() },
-                )
-            }
-            composable("module/{moduleId}") { backStackEntry ->
-                val moduleId = backStackEntry.arguments?.read {
-                    getStringOrNull("moduleId")
-                }.orEmpty()
-                val moduleName = moduleId.toModuleTitle()
-                // La administracion de Empresa usa pantallas propias para dueno del servidor y dueno del negocio.
-                if (moduleId == "server-modules" && currentSession?.role == "server_owner") {
-                    ServerModuleManagementScreen(
-                        serverUrl = clientConfiguration?.serverUrl,
-                        session = currentSession,
-                        onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                        onLogout = ::requestLogout,
-                        onReturnToDashboard = ::openDashboard,
-                    )
-                } else if (moduleId == "server-staff" && currentSession?.role == "server_owner") {
-                    ServerStaffScreen(
-                        serverUrl = clientConfiguration?.serverUrl,
-                        session = currentSession,
-                        onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                        onLogout = ::requestLogout,
-                        onReturnToDashboard = ::openDashboard,
-                    )
-                } else if (moduleId == "server-logs" && currentSession?.role == "server_owner") {
-                    ServerLogsScreen(
-                        serverUrl = clientConfiguration?.serverUrl,
-                        session = currentSession,
-                        onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                        onLogout = ::requestLogout,
-                        onReturnToDashboard = ::openDashboard,
-                    )
-                } else if (moduleId == "empresa") {
-                    if (currentSession?.role == "server_owner") {
-                        CompanyProvisioningScreen(
-                            serverUrl = clientConfiguration?.serverUrl,
-                            session = currentSession,
-                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                            onLogout = ::requestLogout,
-                            onReturnToDashboard = ::openDashboard,
-                        )
-                    } else {
-                        CompanyManagementScreen(
-                            serverUrl = clientConfiguration?.serverUrl,
-                            session = currentSession,
-                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                            onLogout = ::requestLogout,
-                            onReturnToDashboard = ::openDashboard,
-                        )
-                    }
-                } else {
-                    // Los demas modulos se renderizan desde metadata recibida del servidor.
-                    ServerDrivenModuleScreen(
-                        moduleId = moduleId,
-                        serverUrl = clientConfiguration?.serverUrl,
-                        session = currentSession,
-                        fallbackTitle = moduleName,
-                        onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
-                        onLogout = ::requestLogout,
-                        onReturnToDashboard = ::openDashboard,
-                        onCompanySwitched = { clientConfiguration = ClientConfigurationStore.load() },
-                        onOpenModule = { action ->
-                            ModuleDeepLinks.open(action)
-                            navController.navigate("module/${action.moduleId}")
                         },
                     )
                 }
-            }
-            composable("settings") {
-                SettingsScreen(
-                    configuration = clientConfiguration,
-                    session = currentSession,
-                    onLogout = ::requestLogout,
-                    onReturnToDashboard = ::openDashboard,
-                    onClearLocalConfiguration = {
-                        ClientConfigurationStore.clear()
-                        CompanyIdentityStore.clear()
-                        clientConfiguration = null
-                        logout()
-                    },
-                )
+                composable("dashboard") {
+                    // Muestra el punto de entrada autenticado con los modulos disponibles.
+                    DashboardScreen(
+                        session = currentSession,
+                        serverUrl = clientConfiguration?.serverUrl,
+                        onNavigateTo = { route -> navController.navigate(route.routeName()) },
+                        onLogout = ::requestLogout,
+                        // La configuracion guardada ahora apunta a la otra empresa.
+                        onCompanySwitched = { clientConfiguration = ClientConfigurationStore.load() },
+                    )
+                }
+                composable("module/{moduleId}") { backStackEntry ->
+                    val moduleId = backStackEntry.arguments?.read {
+                        getStringOrNull("moduleId")
+                    }.orEmpty()
+                    val moduleName = moduleId.toModuleTitle()
+                    // La administracion de Empresa usa pantallas propias para dueno del servidor y dueno del negocio.
+                    if (moduleId == "server-modules" && currentSession?.role == "server_owner") {
+                        ServerModuleManagementScreen(
+                            serverUrl = clientConfiguration?.serverUrl,
+                            session = currentSession,
+                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                            onLogout = ::requestLogout,
+                            onReturnToDashboard = ::openDashboard,
+                        )
+                    } else if (moduleId == "server-staff" && currentSession?.role == "server_owner") {
+                        ServerStaffScreen(
+                            serverUrl = clientConfiguration?.serverUrl,
+                            session = currentSession,
+                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                            onLogout = ::requestLogout,
+                            onReturnToDashboard = ::openDashboard,
+                        )
+                    } else if (moduleId == "server-logs" && currentSession?.role == "server_owner") {
+                        ServerLogsScreen(
+                            serverUrl = clientConfiguration?.serverUrl,
+                            session = currentSession,
+                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                            onLogout = ::requestLogout,
+                            onReturnToDashboard = ::openDashboard,
+                        )
+                    } else if (moduleId == "empresa") {
+                        if (currentSession?.role == "server_owner") {
+                            CompanyProvisioningScreen(
+                                serverUrl = clientConfiguration?.serverUrl,
+                                session = currentSession,
+                                onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                                onLogout = ::requestLogout,
+                                onReturnToDashboard = ::openDashboard,
+                            )
+                        } else {
+                            CompanyManagementScreen(
+                                serverUrl = clientConfiguration?.serverUrl,
+                                session = currentSession,
+                                onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                                onLogout = ::requestLogout,
+                                onReturnToDashboard = ::openDashboard,
+                            )
+                        }
+                    } else {
+                        // Los demas modulos se renderizan desde metadata recibida del servidor.
+                        ServerDrivenModuleScreen(
+                            moduleId = moduleId,
+                            serverUrl = clientConfiguration?.serverUrl,
+                            session = currentSession,
+                            fallbackTitle = moduleName,
+                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                            onLogout = ::requestLogout,
+                            onReturnToDashboard = ::openDashboard,
+                            onCompanySwitched = { clientConfiguration = ClientConfigurationStore.load() },
+                            onOpenModule = { action ->
+                                ModuleDeepLinks.open(action)
+                                navController.navigate("module/${action.moduleId}")
+                            },
+                        )
+                    }
+                }
+                composable("settings") {
+                    SettingsScreen(
+                        configuration = clientConfiguration,
+                        session = currentSession,
+                        onLogout = ::requestLogout,
+                        onReturnToDashboard = ::openDashboard,
+                        onClearLocalConfiguration = {
+                            ClientConfigurationStore.clear()
+                            CompanyIdentityStore.clear()
+                            clientConfiguration = null
+                            logout()
+                        },
+                    )
+                }
             }
         }
 

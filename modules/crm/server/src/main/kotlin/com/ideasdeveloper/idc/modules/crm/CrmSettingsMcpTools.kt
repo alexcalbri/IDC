@@ -71,7 +71,7 @@ object CrmSettingsMcpTools {
             name = "get_settings",
             title = "Configuracion del CRM",
             description = "Devuelve la configuracion del CRM: intereses y quien ve cada uno, etapas, plantillas de etapas, correo (sin contrasenas), " +
-                "variables de las plantillas de mensajes, reglas anti-spam, avisos del equipo y hora del resumen diario.",
+                "variables de las plantillas de mensajes, reglas anti-spam, avisos del equipo, hora del resumen diario y la automatizacion de salida (archivar al hacer check-out).",
             permission = CrmScreens.Settings,
             readOnly = true,
         ) { call -> settings(call) },
@@ -193,6 +193,23 @@ object CrmSettingsMcpTools {
             permission = CrmScreens.Settings,
             inputSchema = McpSchema.obj(mapOf("hour" to McpSchema.integer("Hora del dia.", 0, 23)), required = listOf("hour")),
         ) { call -> setDigestHour(call) },
+        McpTool(
+            name = "set_exit_automation",
+            title = "Automatizacion de salida",
+            description = "Activa o desactiva el archivado automatico de leads al hacer check-out y cambia su hora, zona horaria y etapas de origen " +
+                "(solo cambia lo enviado). Sin Cloudbeds archiva los leads de esas etapas cuya fecha de fin llego, pasada la hora; con Cloudbeds " +
+                "los archiva cuando Cloudbeds marca el check-out. El estado actual esta en get_settings (exitAutomation).",
+            permission = CrmScreens.Settings,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "enabled" to McpSchema.boolean("Activar la automatizacion."),
+                    "hour" to McpSchema.integer("Hora del dia (0 a 23) en la zona horaria elegida; por defecto 14.", 0, 23),
+                    "timeZone" to McpSchema.string("Zona horaria IANA, por ejemplo America/Panama; vacio usa la del servidor."),
+                    "stages" to list("Nombres o ids de las etapas de origen (reemplaza las actuales)."),
+                    "confirmArchiveOverdue" to McpSchema.boolean("Confirma archivar de una vez los leads que ya pasaron su salida al activar; sin esto la activacion se rechaza y dice cuantos son."),
+                ),
+            ),
+        ) { call -> setExitAutomation(call) },
     )
 
     private fun context(call: McpToolCall) = CrmScreens.Context.load(call.tenant, call.permissions)
@@ -273,6 +290,16 @@ object CrmSettingsMcpTools {
                 }
             }
             put("digestHour", digestHour(tenant))
+            put(
+                "exitAutomation",
+                buildJsonObject {
+                    val exit = CrmExit.load(tenant)
+                    put("enabled", exit.enabled)
+                    put("hour", exit.hour)
+                    put("timeZone", exit.timeZone)
+                    put("stages", JsonArray(context.stages.filter { it.id in exit.stageIds }.map { JsonPrimitive(it.name) }))
+                },
+            )
             put(
                 "mail",
                 buildJsonObject {
@@ -494,5 +521,34 @@ object CrmSettingsMcpTools {
         val hour = call.int("hour", 7, 0..23)
         call.tenant.prepareStatement("UPDATE crm_settings SET digest_hour = ? WHERE id = 1").use { it.setInt(1, hour); it.executeUpdate() }
         return result("El resumen diario se enviara a las $hour:00.")
+    }
+
+    private fun setExitAutomation(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val saved = CrmExit.load(call.tenant)
+        val chosen = if (call.has("stages")) {
+            strings(call, "stages").map { wanted ->
+                context.stages.firstOrNull { it.id.toString() == wanted || it.name.equals(wanted, ignoreCase = true) }?.id
+                    ?: throw McpToolException("No existe la etapa '$wanted'. Etapas: ${context.stages.joinToString { it.name }}.")
+            }.toSet()
+        } else {
+            saved.stageIds
+        }
+        val config = validated {
+            CrmExit.parse(
+                enabled = if (call.has("enabled")) call.boolean("enabled") else saved.enabled,
+                hourText = if (call.has("hour")) call.int("hour", CrmExit.DefaultHour, 0..23).toString() else saved.hour.toString(),
+                // Not cut short: a long name must fail the validation instead of becoming another zone.
+                timeZone = if (call.has("timeZone")) call.string("timeZone", 200) else saved.timeZone,
+                chosenStageIds = chosen,
+                stages = context.stages,
+            )
+        }
+        val pending = CrmExit.pendingOnActivation(call.tenant, saved, config, java.time.Instant.now())
+        if (pending > 0 && !(call.has("confirmArchiveOverdue") && call.boolean("confirmArchiveOverdue"))) {
+            throw McpToolException("Al activar se archivarian $pending leads con salida vencida. Repite con confirmArchiveOverdue=true si es lo que se quiere.")
+        }
+        CrmExit.save(call.tenant, config)
+        return result(if (config.enabled) "Automatizacion de salida activa a las ${config.hour}:00." else "Automatizacion de salida desactivada.")
     }
 }

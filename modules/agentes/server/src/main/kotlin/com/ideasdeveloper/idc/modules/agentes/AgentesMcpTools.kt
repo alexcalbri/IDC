@@ -5,6 +5,7 @@ import com.ideasdeveloper.idc.server.modules.McpTool
 import com.ideasdeveloper.idc.server.modules.McpToolCall
 import com.ideasdeveloper.idc.server.modules.McpToolException
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
+import com.ideasdeveloper.idc.server.modules.NotificationService
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -23,7 +24,8 @@ object AgentesMcpTools {
 
     private const val Instructions =
         "Agentes IA administra las conexiones de agentes como tu: cada una pertenece a un usuario y nunca tiene mas permisos que el. " +
-            "Puedes ver las conexiones, su actividad y revocarlas; las conexiones nuevas solo se crean en la app, porque su token es una credencial."
+            "Puedes ver las conexiones, su actividad y revocarlas; las conexiones nuevas solo se crean en la app, porque su token es una credencial. " +
+            "Tambien puedes leer las notificaciones del usuario (list_notifications) y marcarlas como leidas (mark_notifications_read)."
 
     private val tools = listOf(
         McpTool(
@@ -54,7 +56,76 @@ object AgentesMcpTools {
             destructive = true,
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id de la conexion (list_agents).")), required = listOf("id")),
         ) { call -> revoke(call) },
+        McpTool(
+            name = "list_notifications",
+            title = "Notificaciones",
+            description = "Lista las notificaciones del centro de notificaciones del usuario (las que ve en la campana de la app), las mas nuevas primero. " +
+                "Solo las del propio usuario; con unread=true solo las no leidas.",
+            permission = AgentesScreens.Connect,
+            readOnly = true,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "unread" to McpSchema.boolean("Solo las no leidas."),
+                    "limit" to McpSchema.integer("Cantidad maxima (30 por defecto).", 1, 100),
+                    "offset" to McpSchema.integer("Cuantas saltar, para la pagina siguiente.", 0, 100_000),
+                ),
+            ),
+        ) { call -> notifications(call) },
+        McpTool(
+            name = "mark_notifications_read",
+            title = "Marcar notificaciones como leidas",
+            description = "Marca como leida una notificacion del usuario (id) o todas (all=true). Solo cambia el estado de lectura; no borra nada.",
+            permission = AgentesScreens.Connect,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "id" to McpSchema.uuid("Id de la notificacion (list_notifications)."),
+                    "all" to McpSchema.boolean("Marcar todas las del usuario."),
+                ),
+            ),
+        ) { call -> markRead(call) },
     )
+
+    private fun notifications(call: McpToolCall): JsonElement {
+        val userId = call.permissions.userId ?: throw McpToolException("No se pudo identificar al usuario.")
+        val page = call.access.notifications.list(
+            call.tenant, userId,
+            limit = call.int("limit", NotificationService.DefaultPageSize, 1..NotificationService.MaxPageSize),
+            offset = call.int("offset", 0, 0..100_000),
+            unreadOnly = call.boolean("unread"),
+        )
+        return buildJsonObject {
+            put("unread", page.unread)
+            put("hasMore", page.hasMore)
+            put("notifications", JsonArray(page.items.map { item ->
+                buildJsonObject {
+                    put("id", item.id.toString())
+                    put("module", item.moduleId)
+                    put("title", item.title)
+                    put("text", item.text)
+                    item.target?.let { target ->
+                        put("screen", target.screen)
+                        if (target.params.isNotEmpty()) put("params", buildJsonObject { target.params.forEach { (key, value) -> put(key, value) } })
+                    }
+                    put("createdAt", item.createdAt.toString())
+                    put("read", item.readAt != null)
+                }
+            }))
+        }
+    }
+
+    private fun markRead(call: McpToolCall): JsonElement {
+        val userId = call.permissions.userId ?: throw McpToolException("No se pudo identificar al usuario.")
+        val notifications = call.access.notifications
+        val changed = when {
+            call.boolean("all") -> notifications.markAllRead(call.tenant, userId)
+            call.has("id") -> if (notifications.markRead(call.tenant, userId, call.requiredUuid("id"))) 1 else 0
+            else -> throw McpToolException("Indica el id de una notificacion o all=true.")
+        }
+        return buildJsonObject {
+            put("marked", changed)
+            put("unread", notifications.unreadCount(call.tenant, userId))
+        }
+    }
 
     private fun owns(call: McpToolCall, token: AgentToken) =
         token.userId == call.permissions.userId && token.serverOwner == call.permissions.serverOwner

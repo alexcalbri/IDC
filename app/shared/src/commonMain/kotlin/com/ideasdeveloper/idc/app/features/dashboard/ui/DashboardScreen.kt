@@ -1,5 +1,16 @@
 package com.ideasdeveloper.idc.app.features.dashboard.ui
 
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import com.ideasdeveloper.idc.app.core.theme.accentTextOn
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -166,7 +177,7 @@ fun DashboardScreen(
 
         Column(
             modifier = Modifier
-                .fillMaxWidth(0.9f)
+                .contentWidth(ContentWidth.Content, 0.9f)
                 .align(Alignment.Center)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -209,59 +220,46 @@ fun DashboardScreen(
                 )
             }
 
-            // Renderiza la tarjeta de Empresa para roles autorizados.
-            if (canSeeEmpresa) {
-                DashboardActionCard(
-                    title = "Empresa",
-                    description = "Administra la configuracion base de la empresa",
-                    iconText = "E",
-                    primaryColor = primaryColor,
-                    onClick = { onNavigateTo(NavRoute.Module("empresa")) }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            if (canManageServerModules) {
-                DashboardActionCard(
-                    title = "Modulos del servidor",
-                    description = "Administra los modulos instalados en este servidor",
-                    iconText = "M",
-                    primaryColor = primaryColor,
-                    onClick = { onNavigateTo(NavRoute.Module("server-modules")) }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                DashboardActionCard(
-                    title = "Empresa del servidor",
-                    description = "Configura la empresa del servidor y su personal sin crear una empresa",
-                    iconText = "S",
-                    primaryColor = primaryColor,
-                    onClick = { onNavigateTo(NavRoute.Module("server-staff")) }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-                DashboardActionCard(
-                    title = "Errores del servidor",
-                    description = "Consulta los errores recientes del servidor para diagnosticar fallos",
-                    iconText = "!",
-                    primaryColor = primaryColor,
-                    onClick = { onNavigateTo(NavRoute.Module("server-logs")) }
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-            }
-
-            // Renderiza los modulos activos recibidos desde el servidor.
-            enabledModules
-                .filter { it != "empresa" && it != "server-modules" && it != "server-staff" }
-                .forEach { moduleId ->
-                    val module = moduleId.toDashboardModule()
-                    DashboardActionCard(
-                        title = module.title,
-                        description = module.description,
-                        iconText = module.iconText,
-                        primaryColor = primaryColor,
-                        onClick = { onNavigateTo(NavRoute.Module(moduleId)) }
-                    )
-                    Spacer(modifier = Modifier.height(12.dp))
+            // Reune las tarjetas de acceso y las reparte en una o dos columnas segun el ancho de la ventana.
+            val cards = buildList {
+                if (canSeeEmpresa) {
+                    add(DashboardCardData("Empresa", "Administra la configuracion base de la empresa", "E", "empresa"))
                 }
+                if (canManageServerModules) {
+                    add(DashboardCardData("Modulos del servidor", "Administra los modulos instalados en este servidor", "M", "server-modules"))
+                    add(DashboardCardData("Empresa del servidor", "Configura la empresa del servidor y su personal sin crear una empresa", "S", "server-staff"))
+                    add(DashboardCardData("Errores del servidor", "Consulta los errores recientes del servidor para diagnosticar fallos", "!", "server-logs"))
+                }
+                // Modulos activos recibidos desde el servidor.
+                enabledModules
+                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" }
+                    .forEach { moduleId ->
+                        val module = moduleId.toDashboardModule()
+                        add(DashboardCardData(module.title, module.description, module.iconText, moduleId))
+                    }
+            }
+            val columns = if (AdaptiveLayout.roomy) 2 else 1
+            val gap = if (AdaptiveLayout.roomy) AdaptiveLayout.gap else 12.dp
+            cards.chunked(columns).forEach { row ->
+                Row(
+                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+                    horizontalArrangement = Arrangement.spacedBy(gap),
+                ) {
+                    row.forEach { card ->
+                        DashboardActionCard(
+                            title = card.title,
+                            description = card.description,
+                            iconText = card.iconText,
+                            primaryColor = primaryColor,
+                            onClick = { onNavigateTo(NavRoute.Module(card.moduleId)) },
+                            modifier = Modifier.weight(1f).fillMaxHeight(),
+                        )
+                    }
+                    // Completa la ultima fila para que la tarjeta suelta no se estire.
+                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+                }
+                Spacer(modifier = Modifier.height(gap))
+            }
 
             Spacer(modifier = Modifier.height(40.dp))
         }
@@ -292,6 +290,14 @@ private fun String.toDisplayName(): String = split('-', '_')
     .joinToString(" ") { word -> word.replaceFirstChar { char -> char.uppercase() } }
     .ifBlank { "Modulo" }
 
+// Tarjeta de acceso del dashboard con la ruta del modulo que abre.
+private data class DashboardCardData(
+    val title: String,
+    val description: String,
+    val iconText: String,
+    val moduleId: String,
+)
+
 // Representa la informacion visual minima de una tarjeta de modulo.
 private data class DashboardModule(
     val title: String,
@@ -308,19 +314,22 @@ private fun DashboardActionCard(
     iconText: String,
     primaryColor: Color,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
+    // El acento solo se usa como texto si da 4.5:1 sobre la tarjeta; si no, el circulo conserva el color de marca.
+    val accentText = AppTheme.colors.accentTextOn(AppTheme.colors.surface, primaryColor)
     // Crea la tarjeta visual y ejecuta la navegacion al hacer click.
     Card(
         onClick = onClick,
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier.fillMaxWidth(),
         shape = MaterialTheme.shapes.medium,
         colors = CardDefaults.cardColors(
             containerColor = AppTheme.colors.surface,
-            contentColor = primaryColor,
+            contentColor = AppTheme.colors.text,
         ),
     ) {
         Row(
-            modifier = Modifier.padding(16.dp),
+            modifier = Modifier.padding(if (AdaptiveLayout.roomy) 12.dp else 16.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(14.dp),
         ) {
@@ -328,12 +337,12 @@ private fun DashboardActionCard(
             Box(
                 modifier = Modifier
                     .size(42.dp)
-                    .background(primaryColor.copy(alpha = 0.12f), CircleShape),
+                    .background(accentText.copy(alpha = 0.12f), CircleShape),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     text = iconText,
-                    color = primaryColor,
+                    color = accentText,
                     fontSize = 20.sp,
                     fontWeight = FontWeight.Bold,
                 )

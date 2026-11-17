@@ -1,5 +1,9 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -94,10 +98,10 @@ fun ServerLogsScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
-                .fillMaxWidth(0.94f),
+                .contentWidth(ContentWidth.Wide, 0.94f),
         ) {
             Column(
-                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(18.dp),
+                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(AdaptiveLayout.screenPadding - 2.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 Text(
@@ -107,7 +111,7 @@ fun ServerLogsScreen(
                 Button(
                     onClick = ::load,
                     enabled = !loading,
-                    colors = ButtonDefaults.buttonColors(containerColor = colors.accent),
+                    colors = accentButtonColors(),
                 ) {
                     Text(if (loading) "Cargando..." else "Actualizar")
                 }

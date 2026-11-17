@@ -275,15 +275,21 @@ object CrmImportScreens {
 
     const val ActionStage = "Mover a etapa"
     const val ActionOwner = "Asignar responsable"
+    const val ActionArchive = "Archivar"
+    const val ActionRestore = "Restaurar"
     const val ActionDelete = "Eliminar"
 
-    fun bulk(context: CrmScreens.Context, params: Map<String, String>): List<UiNode> {
-        val filter = CrmScreens.filter(context, params)
-        val page = (params["page"]?.toIntOrNull() ?: 1).coerceAtLeast(1)
-        val leads = CrmRepository.leads(context.tenant, context.scope, filter, 50, (page - 1) * 50)
-        val total = CrmRepository.count(context.tenant, context.scope, filter)
-        val actions = listOfNotNull(ActionStage, ActionOwner.takeIf { context.canAssign }, ActionDelete.takeIf { context.permissions.has(CrmScreens.Delete) })
-        val keep = params.filterKeys { it in setOf("fInterest", "fOwner", "fStage", "q") }
+    /**
+     * Bulk actions of the list view of "Leads": one checkbox per lead of the current page and the action to
+     * apply (the renderer has no selection mode, so this is a form). Null without crm.leads.manage.
+     * [keep] are the filters of the view, sent back so the list stays as it was.
+     */
+    fun bulkCard(context: CrmScreens.Context, leads: List<CrmLead>, page: Int, total: Int, keep: Map<String, String>): UiNode? {
+        if (!context.permissions.has(CrmScreens.Manage) || leads.isEmpty()) return null
+        val actions = listOfNotNull(
+            ActionStage, ActionOwner.takeIf { context.canAssign }, ActionArchive, ActionRestore,
+            ActionDelete.takeIf { context.permissions.has(CrmScreens.Delete) },
+        )
         val selection = leads.map { lead ->
             UiField("lead:${lead.id}", "${lead.name} - ${context.stage(lead.stageId)?.name.orEmpty()} - ${context.names.user(lead.ownerUserId)}", type = "boolean", section = "Leads (pagina $page, $total en total)")
         }
@@ -294,24 +300,21 @@ object CrmImportScreens {
             UiField("stage", "Etapa", type = "dropdown", options = context.stages.map { it.name }, section = "Accion", visibleWhen = com.ideasdeveloper.idc.ui.UiFieldCondition("action", listOf(ActionStage))),
             UiField("owner", "Responsable", type = "dropdown", options = listOf(CrmForms.Unassigned) + context.users.map { it.name }, section = "Accion", visibleWhen = com.ideasdeveloper.idc.ui.UiFieldCondition("action", listOf(ActionOwner))),
         )
-        return listOf(
-            CrmScreens.filterCard(context, "bulk", params),
-            UiCard(
-                listOf(
-                    UiForm(
-                        "bulk", fields, mapOf("action" to actions.first()),
-                        submit = UiButton("Aplicar a los seleccionados", UiRequest(UiRoute + "/bulk", params = keep + ("op" to "apply") + ("page" to page.toString()), formId = "bulk",
-                            confirm = "Se aplica la accion a los leads marcados. Continuar?")),
-                        minFieldWidth = 320,
+        return UiCard(
+            listOf(
+                UiText("Marca los leads de esta pagina y elige la accion. Los filtros de arriba se mantienen.", UiTextStyle.Caption),
+                UiForm(
+                    "bulk", fields, mapOf("action" to actions.first()),
+                    submit = UiButton(
+                        "Aplicar a los seleccionados",
+                        UiRequest(UiRoute + "/leads", params = keep + ("op" to "bulk") + ("page" to page.toString()), formId = "bulk", confirm = "Se aplica la accion a los leads marcados. Continuar?"),
                     ),
+                    minFieldWidth = 320,
                 ),
             ),
-            UiRow(
-                listOfNotNull(
-                    UiButton("Anterior", UiNavigate("bulk", keep + ("page" to (page - 1).toString())), style = "secondary").takeIf { page > 1 },
-                    UiButton("Siguiente", UiNavigate("bulk", keep + ("page" to (page + 1).toString())), style = "secondary").takeIf { page * 50 < total },
-                ),
-            ),
+            title = "Acciones en lote",
+            collapsible = true,
+            expanded = false,
         )
     }
 }

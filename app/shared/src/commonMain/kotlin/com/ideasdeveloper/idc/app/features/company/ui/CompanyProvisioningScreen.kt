@@ -1,5 +1,9 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.RadioButton
@@ -262,7 +266,7 @@ fun CompanyProvisioningScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
-                .fillMaxWidth(0.92f),
+                .contentWidth(ContentWidth.Content, 0.92f),
         ) {
             Surface(
                 modifier = Modifier
@@ -272,7 +276,7 @@ fun CompanyProvisioningScreen(
                 color = AppTheme.colors.surface,
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Row(
@@ -280,12 +284,12 @@ fun CompanyProvisioningScreen(
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text("Nueva empresa", style = MaterialTheme.typography.titleLarge, color = primaryColor)
+                        Text("Nueva empresa", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
                         if (companies.isNotEmpty()) {
                             Button(
                                 enabled = !isLoading,
                                 onClick = { isCreateCompanyExpanded = !isCreateCompanyExpanded },
-                                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                                colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                             ) {
                                 Text(if (isCreateCompanyExpanded) "Ocultar" else "Crear nueva")
                             }
@@ -375,7 +379,7 @@ fun CompanyProvisioningScreen(
                         Button(
                             onClick = ::requestReturnToDashboard,
                             enabled = !isLoading,
-                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                         ) {
                             Text("Cancelar")
                         }
@@ -429,7 +433,7 @@ fun CompanyProvisioningScreen(
                                     }
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                            colors = accentButtonColors(),
                         ) {
                             if (isLoading) {
                                 CircularProgressIndicator(color = AppTheme.colors.onAccent, strokeWidth = 2.dp, modifier = Modifier.height(18.dp))
@@ -439,7 +443,7 @@ fun CompanyProvisioningScreen(
                         }
                     }
 
-                    Text("Empresas", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+                    Text("Empresas", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
 
                     if (isRefreshing) {
                         Text("Cargando empresas...", color = AppTheme.colors.muted)
@@ -702,7 +706,7 @@ private fun CompanyModulesRow(
                 onAccentColorChange = onEditAccentColorChange,
             )
         } else {
-            Text(company.name, style = MaterialTheme.typography.titleSmall, color = primaryColor)
+            Text(company.name, style = MaterialTheme.typography.titleSmall, color = AppTheme.colors.accentText)
         }
         Text("Codigo: ${company.code}", style = MaterialTheme.typography.bodySmall, color = AppTheme.colors.muted)
         Text(
@@ -717,7 +721,7 @@ private fun CompanyModulesRow(
         )
         if (!isEditing) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                TextButton(enabled = enabled, onClick = onLink) { Text("Vincular", color = primaryColor) }
+                TextButton(enabled = enabled, onClick = onLink) { Text("Vincular", color = AppTheme.colors.accentText) }
                 if (linkedNames.isNotEmpty()) {
                     TextButton(enabled = enabled, onClick = onUnlink) { Text("Desvincular", color = AppTheme.colors.danger) }
                 }
@@ -733,14 +737,14 @@ private fun CompanyModulesRow(
                 Button(
                     enabled = enabled && editingName.isNotBlank(),
                     onClick = onSaveEdit,
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                    colors = accentButtonColors(),
                 ) {
                     Text("Guardar")
                 }
                 Button(
                     enabled = enabled,
                     onClick = onCancelEdit,
-                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                 ) {
                     Text("Cancelar")
                 }
@@ -748,7 +752,7 @@ private fun CompanyModulesRow(
                 Button(
                     enabled = enabled,
                     onClick = onStartEdit,
-                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                 ) {
                     Text("Editar")
                 }
@@ -758,7 +762,7 @@ private fun CompanyModulesRow(
                 Button(
                     enabled = enabled,
                     onClick = onDuplicate,
-                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                 ) {
                     Text("Duplicar")
                 }
@@ -769,7 +773,7 @@ private fun CompanyModulesRow(
                 onClick = { onChangeStatus(!company.isActive) },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = if (company.isActive) AppTheme.colors.surfaceAlt else primaryColor,
-                    contentColor = if (company.isActive) primaryColor else AppTheme.colors.onAccent,
+                    contentColor = if (company.isActive) AppTheme.colors.accentText else AppTheme.colors.onAccent,
                 ),
             ) {
                 Text(if (company.isActive) "Desactivar empresa" else "Reactivar empresa")
@@ -790,7 +794,7 @@ private fun CompanyModulesRow(
                     Button(
                         enabled = enabled,
                         onClick = onCancelDelete,
-                        colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                        colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                     ) {
                         Text("Cancelar")
                     }
@@ -836,7 +840,7 @@ private fun CompanyModulesRow(
                             onClick = { onChangeModule(module.moduleId, !module.enabled) },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = if (module.enabled) AppTheme.colors.surfaceAlt else primaryColor,
-                                contentColor = if (module.enabled) primaryColor else AppTheme.colors.onAccent,
+                                contentColor = if (module.enabled) AppTheme.colors.accentText else AppTheme.colors.onAccent,
                             ),
                         ) {
                             Text(if (module.enabled) "Desactivar modulo" else "Activar modulo")
@@ -945,7 +949,7 @@ private fun BusinessOwnerFields(
             onClick = {
                 onSave(UpdateBusinessOwnerRequest(username.trim(), displayName.trim(), email.trim(), password)) { saved -> show(saved) }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+            colors = accentButtonColors(),
         ) {
             Text("Guardar business owner")
         }

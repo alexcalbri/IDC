@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import com.ideasdeveloper.idc.app.core.theme.webThemeQuery
 import androidx.compose.foundation.background
@@ -76,6 +77,11 @@ object ModuleDeepLinks {
 
     fun open(action: UiOpenModule) {
         pending = action.moduleId to UiNavigate(action.screen, action.params)
+    }
+
+    // Al cerrar sesion no debe quedar una pantalla pedida por el usuario anterior.
+    fun clear() {
+        pending = null
     }
 
     // La pantalla pedida para [moduleId], una sola vez.
@@ -243,7 +249,7 @@ fun ModuleScreenLayout(
                 error?.let { failure ->
                     ModuleNoticeBanner(UiNotice(failure, UiTone.Danger), colors)
                     if (screen == null) {
-                        Button(onClick = onRetry, colors = ButtonDefaults.buttonColors(containerColor = colors.accent)) { Text("Reintentar") }
+                        Button(onClick = onRetry, colors = accentButtonColors()) { Text("Reintentar") }
                     }
                 }
                 when (screen) {

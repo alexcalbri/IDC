@@ -60,33 +60,90 @@ object CrmScreens {
     private const val MineOption = "Mis leads"
     private val timeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
-    private data class Section(val id: String, val label: String, val permission: String, val needsInterests: Boolean = false)
+    // [alsoPermission] opens the section too (assigners reach the suggestions in "Sin calificar").
+    private data class Section(val id: String, val label: String, val permission: String, val alsoPermission: String? = null) {
+        fun allows(permissions: ModulePermissions) = permissions.has(permission) || alsoPermission != null && permissions.has(alsoPermission)
+    }
 
+    // The menu: Nuevo lead, Leads (pipeline and list), Sin calificar, Seguimientos and Configuracion (tabs).
     private val sections = listOf(
-        Section("pipeline", "Pipeline", View),
-        Section("leads", "Leads", View),
-        Section("reception", "Recepcion", Reception, needsInterests = true),
-        Section("followups", "Seguimientos", View),
-        Section("assignments", "Asignaciones", Assign),
-        Section("bulk", "Acciones en lote", Manage),
         Section("new", "Nuevo lead", Manage),
+        Section("leads", "Leads", View),
+        // Id "reception" and the Reception permission stay: "Recepcion" is a role.
+        Section("reception", "Sin calificar", Reception, alsoPermission = Assign),
+        Section("followups", "Seguimientos", View),
         Section("settings", "Configuracion", Settings),
-        Section("mail", "Correo", Settings),
-        Section("templates", "Plantillas", Settings),
-        Section("spam", "Anti-spam", Settings),
-        Section("team", "Equipo", Settings),
-        Section("integrations", "Integraciones", Settings),
-        Section("import", "Importar", Settings),
     )
 
-    // Screens outside the navigation.
-    private val hidden = mapOf("lead" to View, "properties" to Manage, "rooms" to Manage, "importjob" to Settings)
+    /** A tab of "Configuracion": [screen] is the id that opens it (the old section ids), [permission] who sees the tab. */
+    class SettingsTab(val screen: String, val label: String, val permission: String)
 
-    fun isScreen(id: String) = sections.any { it.id == id } || id in hidden
+    private val settingsTabs = listOf(
+        SettingsTab("settings", "General", Settings),
+        SettingsTab("automations", "Automatizaciones", Settings),
+        SettingsTab("team", "Equipo", Settings),
+        SettingsTab("mail", "Correo", Settings),
+        SettingsTab("templates", "Plantillas", Settings),
+        SettingsTab("spam", "Anti-spam", Settings),
+        SettingsTab("integrations", "Integraciones", Settings),
+        SettingsTab("import", "Importar", Settings),
+    )
 
-    fun permissionFor(screen: String): String? = sections.firstOrNull { it.id == screen }?.permission ?: hidden[screen]
+    // Screens outside the menu: the lead detail, the "pipeline" view of Leads, the other tabs of Configuracion
+    // (their old section ids) and the screens opened from a lead or an import.
+    private val hidden = mapOf("lead" to View, "pipeline" to View, "properties" to Manage, "rooms" to Manage, "importjob" to Settings) +
+        settingsTabs.filter { it.screen != "settings" }.associate { it.screen to it.permission }
 
-    fun home(permissions: ModulePermissions): String? = sections.firstOrNull { permissions.has(it.permission) }?.id
+    // Old screen ids that still open: "Asignaciones" now lives in "Sin calificar" and "Acciones en lote" in the list of Leads.
+    private val aliases = mapOf("assignments" to "reception", "bulk" to "leads")
+
+    fun canonical(id: String) = aliases[id] ?: id
+
+    // View of Leads an old route opens ("pipeline", "bulk"); null: the one the user used last.
+    private val forcedViews = mapOf("pipeline" to "pipeline", "bulk" to "list")
+
+    fun forcedView(id: String): String? = forcedViews[id]
+
+    const val ViewKey = "view"
+    const val ViewPipeline = "pipeline"
+    const val ViewList = "list"
+    private val leadViewIds = setOf(ViewPipeline, ViewList)
+
+    /** The view sent with the request wins over the remembered one; none (or an unknown one) keeps the remembered one. */
+    fun resolveLeadsView(param: String?, stored: String): String = param?.takeIf { it in leadViewIds } ?: stored.takeIf { it in leadViewIds } ?: ViewPipeline
+
+    // The tab of Configuracion a screen belongs to (null: it is not in Configuracion).
+    fun settingsTabOf(id: String): String? = canonical(id).let { screen -> if (screen == "importjob") "import" else screen.takeIf { s -> settingsTabs.any { it.screen == s } } }
+
+    /** Screens of the tabs of Configuracion the user sees (a tab with its own permission hides without it). */
+    fun visibleTabs(permissions: ModulePermissions): List<String> = settingsTabs.filter { permissions.has(it.permission) }.map { it.screen }
+
+    // Menu item a screen belongs to.
+    private fun menuItemOf(screen: String): String = when {
+        screen in setOf("pipeline", "leads", "lead", "rooms", "properties") -> "leads"
+        settingsTabOf(screen) != null -> "settings"
+        else -> screen
+    }
+
+    fun isScreen(id: String) = canonical(id).let { screen -> sections.any { it.id == screen } || screen in hidden }
+
+    fun permissionFor(screen: String): String? = canonical(screen).let { id -> sections.firstOrNull { it.id == id }?.permission ?: hidden[id] }
+
+    // First screen a user opens: the leads, then what is waiting for them, then the rest.
+    private val homeOrder = listOf("leads", "reception", "followups", "new", "settings")
+
+    fun home(permissions: ModulePermissions): String? = homeOrder.firstOrNull { canOpen(it, permissions) }
+
+    // Whether the user may open the screen [id] (a section with an alternative permission counts both).
+    fun canOpen(id: String, permissions: ModulePermissions): Boolean {
+        val screen = canonical(id)
+        sections.firstOrNull { it.id == screen }?.let { return it.allows(permissions) }
+        return hidden[screen]?.let { permissions.has(it) } ?: false
+    }
+
+    // Ids of the sections the user sees in the menu ([interestsEnabled]: no section depends on it today).
+    fun menu(permissions: ModulePermissions, interestsEnabled: Boolean): List<String> =
+        sections.filter { it.allows(permissions) }.map { it.id }
 
     /** Everything a screen needs, loaded once per request. */
     class Context(
@@ -124,16 +181,25 @@ object CrmScreens {
     }
 
     fun build(
-        screen: String,
+        requested: String,
         context: Context,
         params: Map<String, String>,
         notice: UiNotice? = null,
         submitted: Map<String, String>? = null,
     ): UiScreen {
+        val screen = canonical(requested)
         val permission = permissionFor(screen)!!
         val section = sections.firstOrNull { it.id == screen }
-        val title = section?.label ?: if (screen == "importjob") "Importacion" else "Lead"
-        if (!context.permissions.has(permission) || section?.needsInterests == true && !context.interestsEnabled) {
+        val title = when {
+            section != null -> section.label
+            screen == "pipeline" -> "Leads"
+            settingsTabOf(screen) != null -> "Configuracion"
+            else -> "Lead"
+        }
+        val allowed = section?.allows(context.permissions) ?: context.permissions.has(permission)
+        // Old routes: "pipeline" and "bulk" open their own view of Leads; the other screens ignore it.
+        val forced = forcedView(requested)
+        if (!allowed) {
             return frame(context, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
         }
         if (screen == "rooms") {
@@ -151,25 +217,23 @@ object CrmScreens {
         if (screen == "lead") {
             val lead = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
                 ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserId) }
-                ?: return frame(context, "leads", "Lead", notice ?: UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), leads(context, emptyMap()))
+                ?: return frame(context, "leads", "Lead", notice ?: UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), leadViews(context, null, emptyMap()))
             return frame(context, "leads", lead.name, notice, leadDetail(context, lead, submitted), showTitle = false)
         }
         val body = when (screen) {
-            "pipeline" -> pipeline(context, params)
-            "leads" -> leads(context, params)
+            "pipeline", "leads" -> leadViews(context, forced, params)
             "reception" -> reception(context, params)
             "followups" -> followUps(context, params)
             "new" -> newLead(context, submitted)
-            "assignments" -> CrmAdminScreens.assignments(context)
-            "mail" -> CrmAdminScreens.mail(context, submitted)
-            "templates" -> CrmAdminScreens.templates(context, params, submitted)
-            "spam" -> CrmAdminScreens.spam(context, submitted)
-            "team" -> CrmAdminScreens.team(context)
-            "integrations" -> CrmIntegrationScreens.integrations(context, params, submitted)
-            "import" -> CrmImportScreens.imports(context, params)
-            "importjob" -> CrmImportScreens.job(context, params)
-            "bulk" -> CrmImportScreens.bulk(context, params)
-            else -> settings(context, params, submitted)
+            "mail" -> tabBar(context, screen) + CrmAdminScreens.mail(context, submitted)
+            "templates" -> tabBar(context, screen) + CrmAdminScreens.templates(context, params, submitted)
+            "spam" -> tabBar(context, screen) + CrmAdminScreens.spam(context, submitted)
+            "team" -> tabBar(context, screen) + CrmAdminScreens.team(context)
+            "integrations" -> tabBar(context, screen) + CrmIntegrationScreens.integrations(context, params, submitted)
+            "import" -> tabBar(context, screen) + CrmImportScreens.imports(context, params)
+            "importjob" -> tabBar(context, screen) + CrmImportScreens.job(context, params)
+            "automations" -> tabBar(context, screen) + automations(context, submitted)
+            else -> tabBar(context, screen) + settings(context, params, submitted)
         }
         return frame(context, screen, title, notice, body)
     }
@@ -179,12 +243,25 @@ object CrmScreens {
         navigation = UiNavigation(
             title = CrmModule.displayName,
             items = sections
-                .filter { context.permissions.has(it.permission) && (!it.needsInterests || context.interestsEnabled) }
+                .filter { it.id in menu(context.permissions, context.interestsEnabled) }
                 .map { UiNavItem(it.id, it.label, UiNavigate(it.id)) },
-            selected = selected,
+            selected = menuItemOf(selected),
         ),
         notice = notice,
         body = (if (showTitle) listOf<UiNode>(UiText(title, UiTextStyle.Title)) else emptyList()) + body,
+    )
+
+    // Tabs of Configuracion: a row of buttons (the module navigation has one level), the current one in primary.
+    private fun tabBar(context: Context, current: String): List<UiNode> {
+        val selected = settingsTabOf(current)
+        val tabs = settingsTabs.filter { context.permissions.has(it.permission) }
+        return listOf(UiRow(tabs.map { UiButton(it.label, UiNavigate(it.screen), style = if (it.screen == selected) "primary" else "secondary") }))
+    }
+
+    // Tab Automatizaciones: the exit rule and the ones that come next.
+    private fun automations(context: Context, submitted: Map<String, String>?): List<UiNode> = listOf(
+        UiText("Reglas que el CRM aplica solo.", UiTextStyle.Caption),
+        CrmExitScreens.card(context, submitted),
     )
 
     // ---- Filters ----
@@ -203,11 +280,58 @@ object CrmScreens {
         )
     }
 
-    private fun filterParams(params: Map<String, String>) = params.filterKeys { it in setOf("fInterest", "fOwner", "fStage", "q") }.filterValues { it.isNotBlank() }
+    private const val ShowArchivedKey = "showArchived"
+    private const val ArchivedColumn = "archived"
 
-    fun filterCard(context: Context, screen: String, params: Map<String, String>) = filterForm(context, screen, params, withStage = true, withSearch = true)
+    // [keep]: the filters and page of the view, so the user comes back to the same place.
+    private fun restoreRequest(lead: CrmLead, from: String?, keep: Map<String, String> = emptyMap()) =
+        UiRequest(UiRoute + "/lead", params = keep + mapOf("id" to lead.id.toString(), "op" to "restore") + listOfNotNull(from?.let { "from" to it }))
 
-    private fun filterForm(context: Context, screen: String, params: Map<String, String>, withStage: Boolean, withSearch: Boolean): UiNode {
+    /**
+     * Cards and list rows only open the lead, so the archived ones of a view get their "Restaurar" buttons
+     * in a card of their own below it (null when there is nothing to restore or the user cannot).
+     */
+    private fun restoreCard(context: Context, archived: List<CrmLead>, from: String, keep: Map<String, String>): UiNode? {
+        if (!context.permissions.has(Manage) || archived.isEmpty()) return null
+        return UiCard(
+            archived.map { lead ->
+                UiRow(listOf(UiText(lead.name), UiButton("Restaurar", restoreRequest(lead, from, keep), style = "secondary")))
+            },
+            title = "Restaurar archivados (${archived.size})",
+            collapsible = true,
+            expanded = false,
+        )
+    }
+
+    private fun filterParams(params: Map<String, String>) = params.filterKeys { it in setOf("fInterest", "fOwner", "fStage", "q", ShowArchivedKey) }.filterValues { it.isNotBlank() }
+
+    /** The checkbox sent with the filters wins over the remembered one; none sent keeps the remembered one. */
+    fun resolveShowArchived(param: String?, stored: Boolean): Boolean = param?.let { it == "true" } ?: stored
+
+    /**
+     * "Mostrar archivados" of the lead views. Remembered per user in crm_user_settings; the server owner
+     * has no user row, so it only lasts while the filter is sent.
+     */
+    private fun showArchived(context: Context, params: Map<String, String>): Boolean {
+        val userId = context.scope.userId
+        val stored = userId?.let { CrmRepository.showArchived(context.tenant, it) } ?: false
+        val chosen = resolveShowArchived(params[ShowArchivedKey], stored)
+        if (userId != null && chosen != stored) CrmRepository.setShowArchived(context.tenant, userId, chosen)
+        return chosen
+    }
+
+
+    private fun filterForm(
+        context: Context,
+        screen: String,
+        params: Map<String, String>,
+        withStage: Boolean,
+        withSearch: Boolean,
+        // Pipeline and list: the "Mostrar archivados" checkbox, with the state [archivedShown].
+        archivedShown: Boolean? = null,
+        // Sent along with the form values by "Filtrar" (the view of Leads).
+        submitParams: Map<String, String> = emptyMap(),
+    ): UiNode {
         val fields = buildList {
             if (withSearch) add(UiField("q", "Buscar", placeholder = "Nombre, correo, telefono, origen o mensaje"))
             if (context.interestsEnabled) {
@@ -217,13 +341,19 @@ object CrmScreens {
             val owners = listOf(AllOption) + listOfNotNull(MineOption.takeIf { context.scope.userId != null }) + CrmForms.Unassigned + context.users.map { it.name }
             add(UiField("fOwner", "Responsable", type = "dropdown", options = owners))
             if (withStage) add(UiField("fStage", "Etapa", type = "dropdown", options = listOf(AllOption) + context.stages.map { it.name }))
+            if (archivedShown != null) add(UiField(ShowArchivedKey, "Mostrar archivados", type = "boolean"))
         }
-        val values = fields.associate { it.key to (params[it.key] ?: if (it.type == "dropdown") AllOption else "") }
+        val values = fields.associate {
+            it.key to when {
+                it.key == ShowArchivedKey -> archivedShown.toString()
+                else -> params[it.key] ?: if (it.type == "dropdown") AllOption else ""
+            }
+        }
         return UiCard(
             listOf(
                 UiForm(
                     "filters", fields, values,
-                    submit = UiButton("Filtrar", UiNavigate(screen, formId = "filters"), style = "secondary"),
+                    submit = UiButton("Filtrar", UiNavigate(screen, submitParams, formId = "filters"), style = "secondary"),
                     minFieldWidth = 200,
                 ),
             ),
@@ -232,12 +362,51 @@ object CrmScreens {
 
     // ---- Pipeline ----
 
-    private fun pipeline(context: Context, params: Map<String, String>): List<UiNode> {
-        val filter = filter(context, params)
+    /**
+     * "Leads": the pipeline and the list share the filters (interest, "Mis leads", search and "Mostrar archivados")
+     * and a selector. [forced] is the view an old route asks for; otherwise the one sent with the request, or
+     * the last one the user chose.
+     */
+    private fun leadViews(context: Context, forced: String?, params: Map<String, String>): List<UiNode> {
+        val view = leadsView(context, forced, params)
+        val showArchived = showArchived(context, params)
+        val canManage = context.permissions.has(Manage)
+        val selector = UiRow(
+            listOfNotNull(
+                // The filter form travels with the switch, so both views show the same filters.
+                UiButton("Pipeline", UiNavigate("leads", mapOf(ViewKey to ViewPipeline), formId = "filters"), style = if (view == ViewPipeline) "primary" else "secondary"),
+                UiButton("Lista", UiNavigate("leads", mapOf(ViewKey to ViewList), formId = "filters"), style = if (view == ViewList) "primary" else "secondary"),
+                UiButton("Nuevo lead", UiNavigate("new")).takeIf { canManage },
+            ),
+        )
+        val filters = filterForm(context, "leads", params, withStage = view == ViewList, withSearch = true, archivedShown = showArchived, submitParams = mapOf(ViewKey to view))
+        return if (view == ViewPipeline) {
+            listOf(summary(context), selector, filters) + pipelineBody(context, params, showArchived)
+        } else {
+            listOf(selector, filters) + listBody(context, params, showArchived)
+        }
+    }
+
+    /**
+     * The view to show. The user's choice is remembered in crm_user_settings; the server owner has no user
+     * row, so it only lasts while the view is sent. An old route that forces a view does not change the choice.
+     */
+    private fun leadsView(context: Context, forced: String?, params: Map<String, String>): String {
+        if (forced != null) return forced
+        val userId = context.scope.userId
+        val stored = userId?.let { CrmRepository.leadsView(context.tenant, it) } ?: ViewPipeline
+        val chosen = resolveLeadsView(params[ViewKey], stored)
+        if (userId != null && chosen != stored) CrmRepository.setLeadsView(context.tenant, userId, chosen)
+        return chosen
+    }
+
+    private fun pipelineBody(context: Context, params: Map<String, String>, showArchived: Boolean): List<UiNode> {
+        // The stage filter is the list's: the board always shows every stage.
+        val filter = filter(context, params - "fStage")
         val (byStage, totals) = CrmRepository.board(context.tenant, context.scope, filter, BoardPerStage)
         val canMove = context.permissions.has(Manage)
-        val keep = filterParams(params)
-        val columns = context.stages.map { stage ->
+        val keep = filterParams(params) - "fStage" + (ShowArchivedKey to showArchived.toString())
+        val stageColumns = context.stages.map { stage ->
             val cards = byStage[stage.id].orEmpty()
             val total = totals[stage.id] ?: 0
             UiBoardColumn(
@@ -246,23 +415,36 @@ object CrmScreens {
                 tone = stage.tone.id,
                 caption = if (total > cards.size) "Mostrando ${cards.size} de $total" else "",
                 cards = cards.map { card(context, it, stage) },
-                footer = if (total > cards.size) UiButton("Ver todos", UiNavigate("leads", keep + ("fStage" to stage.name)), style = "secondary") else null,
+                footer = if (total > cards.size) UiButton("Ver todos", UiNavigate("bulk", keep + ("fStage" to stage.name)), style = "secondary") else null,
             )
         }
-        return listOf(
-            summary(context),
-            UiRow(
-                listOfNotNull(
-                    UiButton("Nuevo lead", UiNavigate("new")).takeIf { canMove },
-                    UiButton("Ver como lista", UiNavigate("leads", keep), style = "secondary"),
+        // After the last stage: leads archived (they are left out of the stage columns above).
+        var archivedShownLeads = emptyList<CrmLead>()
+        val archivedColumn = if (showArchived) {
+            val archivedFilter = filter.copy(archived = true)
+            val archivedTotal = CrmRepository.count(context.tenant, context.scope, archivedFilter)
+            val archived = CrmRepository.leads(context.tenant, context.scope, archivedFilter, BoardPerStage, 0)
+            archivedShownLeads = archived
+            listOf(
+                UiBoardColumn(
+                    id = ArchivedColumn,
+                    title = "Archivados",
+                    tone = StageTone.Neutral.id,
+                    caption = if (archivedTotal > archived.size) "Mostrando ${archived.size} de $archivedTotal" else "",
+                    cards = archived.map { card(context, it, context.stage(it.stageId)) },
+                    footer = if (archivedTotal > archived.size) UiButton("Ver todos", UiNavigate("bulk", keep), style = "secondary") else null,
                 ),
-            ),
-            filterForm(context, "pipeline", params, withStage = false, withSearch = true),
+            )
+        } else {
+            emptyList()
+        }
+        return listOfNotNull(
             UiBoard(
-                columns = columns,
+                columns = stageColumns + archivedColumn,
                 move = if (canMove) UiRequest(UiRoute + "/pipeline", params = keep + ("op" to "move")) else null,
                 emptyText = "Crea etapas en Configuracion.",
             ),
+            restoreCard(context, archivedShownLeads, "pipeline", keep),
         )
     }
 
@@ -294,14 +476,17 @@ object CrmScreens {
         if (stage?.kind == StageKind.Open) followUpState(lead.followUpOn, context.today)?.let { (label, tone) -> add(UiBadge(label, tone)) }
         lead.suggestedOwnerUserId?.let { add(UiBadge("Sugerido: ${context.names.user(it)}", UiTone.Info)) }
         if (lead.reviewReason.isNotEmpty()) add(UiBadge("Por revisar", UiTone.Danger))
+        if (lead.archivedAt != null) add(UiBadge("Archivado", UiTone.Neutral))
     }
 
-    private fun card(context: Context, lead: CrmLead, stage: CrmStage) = UiBoardCard(
+    private fun card(context: Context, lead: CrmLead, stage: CrmStage?) = UiBoardCard(
         id = lead.id.toString(),
         title = lead.name,
         subtitle = lead.message.ifBlank { lead.source }.replace('\n', ' ').let { if (it.length > 90) it.take(87) + "..." else it },
         details = listOfNotNull(
             "Responsable: ${context.names.user(lead.ownerUserId)}",
+            // Archived leads sit outside the stages: say where they were.
+            stage?.takeIf { lead.archivedAt != null }?.let { "Etapa: ${it.name}" },
             dates(lead)?.let { "Fechas: $it" },
             lead.estimatedValue?.let { "Valor: ${it.toPlainString()}" },
         ),
@@ -316,19 +501,21 @@ object CrmScreens {
 
     // ---- Lists ----
 
-    private fun listItem(context: Context, lead: CrmLead) = UiListItem(
+    private fun listItem(context: Context, lead: CrmLead, suggestion: Boolean = false) = UiListItem(
         title = lead.name,
-        subtitle = listOf(context.stage(lead.stageId)?.name.orEmpty(), lead.email, lead.phone, context.names.user(lead.ownerUserId))
-            .filter { it.isNotBlank() }.joinToString(" - "),
+        subtitle = listOf(
+            context.stage(lead.stageId)?.name.orEmpty(), lead.email, lead.phone, context.names.user(lead.ownerUserId),
+            lead.suggestedOwnerUserId.takeIf { suggestion }?.let { "Sugerido: ${context.names.user(it)}" }.orEmpty(),
+        ).filter { it.isNotBlank() }.joinToString(" - "),
         trailing = lead.createdAt.atZone(ZoneId.systemDefault()).toLocalDate().toString(),
         badges = badges(context, lead, context.stage(lead.stageId)),
         action = UiNavigate("lead", mapOf("id" to lead.id.toString())),
     )
 
-    private fun pager(screen: String, params: Map<String, String>, page: Int, total: Int): UiNode? {
+    private fun pager(screen: String, params: Map<String, String>, page: Int, total: Int, extra: Map<String, String> = emptyMap()): UiNode? {
         val pages = (total + PageSize - 1) / PageSize
         if (pages <= 1) return null
-        val keep = filterParams(params)
+        val keep = filterParams(params) + extra
         return UiRow(
             listOfNotNull(
                 UiButton("Anterior", UiNavigate(screen, keep + ("page" to (page - 1).toString())), style = "secondary").takeIf { page > 1 },
@@ -338,31 +525,61 @@ object CrmScreens {
         )
     }
 
-    private fun leads(context: Context, params: Map<String, String>): List<UiNode> {
-        val filter = filter(context, params)
+    /** The page of the list view the filters and page of [params] show. */
+    class ListPage(val leads: List<CrmLead>, val total: Int, val page: Int)
+
+    /** What the list view shows for [params]; the bulk bar uses it to know which leads the checkboxes were drawn for. */
+    fun listPage(context: Context, params: Map<String, String>, showArchived: Boolean = showArchived(context, params)): ListPage {
+        // Archived leads come mixed in, marked "Archivado".
+        val filter = filter(context, params).copy(includeArchived = showArchived)
         val total = CrmRepository.count(context.tenant, context.scope, filter)
         val page = (params["page"]?.toIntOrNull() ?: 1).coerceIn(1, maxOf(1, (total + PageSize - 1) / PageSize))
-        val leads = CrmRepository.leads(context.tenant, context.scope, filter, PageSize, (page - 1) * PageSize)
+        return ListPage(CrmRepository.leads(context.tenant, context.scope, filter, PageSize, (page - 1) * PageSize), total, page)
+    }
+
+    private fun listBody(context: Context, params: Map<String, String>, showArchived: Boolean): List<UiNode> {
+        val (leads, total, page) = listPage(context, params, showArchived).let { Triple(it.leads, it.total, it.page) }
+        val keep = filterParams(params) + (ShowArchivedKey to showArchived.toString()) + ("page" to page.toString())
         return listOfNotNull(
-            filterForm(context, "leads", params, withStage = true, withSearch = true),
             UiCard(
-                listOfNotNull(UiList(leads.map { listItem(context, it) }, emptyText = "No hay leads con estos filtros."), pager("leads", params, page, total)),
+                listOfNotNull(
+                    UiList(leads.map { listItem(context, it) }, emptyText = "No hay leads con estos filtros."),
+                    pager("leads", params, page, total, mapOf(ViewKey to ViewList)),
+                ),
                 title = "$total lead(s)",
-                actions = listOfNotNull(UiButton("Nuevo lead", UiNavigate("new")).takeIf { context.permissions.has(Manage) }),
             ),
+            // Only with crm.leads.manage: one checkbox per lead of this page and the action.
+            CrmImportScreens.bulkCard(context, leads, page, total, keep - "page" + (ViewKey to ViewList)),
+            restoreCard(context, leads.filter { it.archivedAt != null }, "list", keep),
         )
     }
 
     private fun reception(context: Context, params: Map<String, String>): List<UiNode> {
-        val filter = CrmLeadFilter(withoutInterest = true)
+        val filter = CrmLeadFilter(unqualified = true)
         val total = CrmRepository.count(context.tenant, context.scope, filter)
         val page = (params["page"]?.toIntOrNull() ?: 1).coerceIn(1, maxOf(1, (total + PageSize - 1) / PageSize))
         val leads = CrmRepository.leads(context.tenant, context.scope, filter, PageSize, (page - 1) * PageSize)
-        return listOf(
-            UiText("Leads que todavia no tienen interes. Abre cada uno, elige su interes y quedara visible para los usuarios de ese interes."),
+        // Every pending suggestion in the user's scope, even for leads already qualified or on another page.
+        val suggested = if (context.canAssign) CrmRepository.pendingSuggestions(context.tenant, context.scope, 100) else emptyList()
+        val suggestions = UiCard(
+            suggested.map { lead ->
+                val id = mapOf("id" to lead.id.toString(), "from" to "reception")
+                UiRow(
+                    listOfNotNull(
+                        UiText("${lead.name} - Sugerido: ${context.names.user(lead.suggestedOwnerUserId)}"),
+                        UiButton("Aprobar", UiRequest(UiRoute + "/lead", params = id + ("op" to "approve"))),
+                        UiButton("Descartar", UiRequest(UiRoute + "/lead", params = id + ("op" to "discard")), style = "secondary"),
+                    ),
+                )
+            },
+            title = "Sugerencias de responsable (${suggested.size})",
+        ).takeIf { suggested.isNotEmpty() }
+        return listOfNotNull(
+            UiText("Leads sin interes o sin usuario asignado. Abre cada uno, elige su interes y asignalo: saldra de esta lista en cuanto tenga ambos. El responsable que sugiere el origen del lead se aprueba o descarta aqui."),
+            suggestions,
             UiCard(
-                listOfNotNull(UiList(leads.map { listItem(context, it) }, emptyText = "No hay leads por categorizar."), pager("reception", params, page, total)),
-                title = "$total por categorizar",
+                listOfNotNull(UiList(leads.map { listItem(context, it, suggestion = context.canAssign) }, emptyText = "No hay leads por calificar."), pager("reception", params, page, total)),
+                title = "$total sin calificar",
             ),
         )
     }
@@ -540,7 +757,9 @@ object CrmScreens {
         )
         val actions = UiRow(
             listOfNotNull(
-                UiButton("Volver al pipeline", UiNavigate("pipeline"), style = "secondary"),
+                // An archived lead does not move: it comes back first, to the stage it had.
+                UiButton("Restaurar", restoreRequest(lead, null)).takeIf { lead.archivedAt != null && canEdit },
+                UiButton("Volver a Leads", UiNavigate("leads"), style = "secondary"),
                 UiButton(
                     "Eliminar lead", UiRequest(UiRoute + "/lead", params = id + ("op" to "delete"), confirm = "Se elimina el lead y su actividad; el cliente queda en Clientes. Continuar?"),
                     style = "danger",
@@ -769,6 +988,7 @@ object CrmScreens {
         }
 
         nodes += customFieldsCard(context, params, submitted)
+        nodes += CrmAdminScreens.digestCard(context)
 
         val stageRows = context.stages.map { stage ->
             UiRow(

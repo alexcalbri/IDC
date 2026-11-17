@@ -16,10 +16,14 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
+import kotlin.math.pow
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentity
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.company.ServerOwnerIdentity
+import com.ideasdeveloper.idc.app.core.layout.ProvideWidthClass
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import com.ideasdeveloper.idc.ui.UiAppTheme
 import com.ideasdeveloper.idc.ui.UiTheme
@@ -46,23 +50,95 @@ data class AppColors(
     // Fondo de pantalla con el degradado de marca (tema Claro) en lugar de [background].
     val brandBackground: Boolean,
 ) {
-    val screenBrush: Brush
-        get() = if (brandBackground) Brush.horizontalGradient(listOf(accent, accentSecondary)) else SolidColor(background)
+    // Valores derivados: se calculan una sola vez al crear el AppColors (tambien con copy), no en cada lectura.
+    // Texto sobre el degradado completo: sirve para los dos extremos del color de marca.
+    val onBrandBackground: Color = readableOver(listOf(accent, accentSecondary))
+
+    // El degradado conserva el color de marca, pero si ningun texto llega a 4.5:1 sobre alguno de sus
+    // extremos se oscurece (o aclara) lo minimo necesario para que el texto sobre el fondo sea legible.
+    val screenBrush: Brush = if (brandBackground) {
+        Brush.horizontalGradient(listOf(accent.legibleWith(onBrandBackground), accentSecondary.legibleWith(onBrandBackground)))
+    } else {
+        SolidColor(background)
+    }
 
     // Texto pintado directamente sobre el fondo de pantalla, fuera de tarjetas.
-    val onScreen: Color
-        get() = if (brandBackground) onAccent else text
+    val onScreen: Color = if (brandBackground) onBrandBackground else text
 
-    val onScreenMuted: Color
-        get() = onScreen.copy(alpha = 0.76f)
+    // Secundario sobre el fondo: se atenua solo hasta quedar justo por encima de 4.5:1 sobre el degradado ajustado.
+    val onScreenMuted: Color = if (brandBackground) {
+        mutedOver(onScreen, listOf(accent.legibleWith(onScreen), accentSecondary.legibleWith(onScreen)))
+    } else {
+        muted
+    }
 
-    // Campos pintados sobre el fondo de pantalla (login): translucidos sobre el degradado,
-    // superficies del tema sobre un fondo solido.
-    val fieldOnScreen: Color
-        get() = if (brandBackground) onAccent.copy(alpha = 0.3f) else surface
+    // Campos pintados sobre el fondo de pantalla: ya no son translucidos, usan superficies del tema.
+    val fieldOnScreen: Color get() = surface
+    val fieldOnScreenFocused: Color get() = surfaceAlt
 
-    val fieldOnScreenFocused: Color
-        get() = if (brandBackground) onAccent.copy(alpha = 0.5f) else surfaceAlt
+    // Acento para texto, iconos y bordes sobre surface y surfaceAlt (4.5:1) o, si no llega, el texto del tema.
+    val accentText: Color =
+        if (contrastRatio(accent, surface) >= 4.5 && contrastRatio(accent, surfaceAlt) >= 4.5) accent else text
+
+    // Borde de campo con al menos 3:1 sobre la superficie (WCAG 1.4.11) y borde con foco.
+    val fieldBorder: Color = strongEnough(border, surface, text, 3.0)
+    val fieldBorderFocused: Color = if (contrastRatio(accent, surface) >= 3.0) accent else text
+}
+
+// Luminancia relativa WCAG de un color.
+fun Color.wcagLuminance(): Double {
+    fun channel(v: Float): Double {
+        val c = v.toDouble()
+        return if (c <= 0.04045) c / 12.92 else ((c + 0.055) / 1.055).pow(2.4)
+    }
+    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+}
+
+// Relacion de contraste WCAG entre dos colores opacos (de 1 a 21).
+fun contrastRatio(a: Color, b: Color): Double {
+    val la = a.wcagLuminance()
+    val lb = b.wcagLuminance()
+    return (maxOf(la, lb) + 0.05) / (minOf(la, lb) + 0.05)
+}
+
+private val InkDark = Color.Black
+private val InkLight = Color.White
+
+// Elige texto oscuro o claro: el que da mejor contraste en el peor de los fondos dados.
+fun readableOver(backgrounds: List<Color>): Color {
+    val dark = backgrounds.minOf { contrastRatio(InkDark, it) }
+    val light = backgrounds.minOf { contrastRatio(InkLight, it) }
+    return if (dark >= light) InkDark else InkLight  // Negro o blanco: el mejor da al menos 4.58:1 sobre un solo fondo
+}
+
+// Mueve [this] hacia negro o blanco (el opuesto de [ink]) hasta que [ink] sea legible (4.5:1) sobre el.
+fun Color.legibleWith(ink: Color): Color {
+    val toward = if (ink.wcagLuminance() > 0.5) Color.Black else Color.White
+    for (step in 0..20) {
+        val candidate = lerp(this, toward, step / 20f)
+        if (contrastRatio(ink, candidate) >= 4.5) return candidate
+    }
+    return toward
+}
+
+// Acerca [base] al color [toward] hasta que, sobre [over], el contraste llegue a [ratio]:1.
+internal fun strongEnough(base: Color, over: Color, toward: Color, ratio: Double): Color {
+    for (step in 0..10) {
+        val color = lerp(base, toward, step / 10f).compositeOver(over)
+        if (contrastRatio(color, over) >= ratio) return color
+    }
+    return toward
+}
+
+// Version atenuada de [base] que aun cumple 4.5:1 sobre todos los fondos.
+internal fun mutedOver(base: Color, backgrounds: List<Color>): Color {
+    var best = base
+    for (step in 1..6) {
+        val candidate = base.copy(alpha = 1f - step * 0.04f)
+        val ok = backgrounds.all { bg -> contrastRatio(candidate.compositeOver(bg), bg) >= 4.5 }
+        if (ok) best = candidate else break
+    }
+    return best
 }
 
 // Parametros que recibe la primera pagina de un modulo web para pintarse con el tema de la app.
@@ -84,7 +160,7 @@ private val LightPalette = UiTheme(
     text = "#1A1A1A",
     muted = "#666666",
     success = "#176B3A",
-    warning = "#B26A00",
+    warning = "#975700",
     danger = "#B00020",
 )
 
@@ -123,6 +199,8 @@ fun appColors(theme: UiAppTheme, identity: CompanyIdentity): AppColors {
     val base = if (theme.dark) DarkPalette else LightPalette
     fun pick(value: String?, fallback: String?) = (value ?: fallback).orEmpty().toComposeColor(Color.Magenta)
     val colors = theme.colors
+    val primary = identity.primaryColor.toComposeColor(Color(0xFF667EEA))
+    val secondary = identity.secondaryColor.toComposeColor(Color(0xFF764BA2))
     return AppColors(
         dark = theme.dark,
         background = pick(colors.background, base.background),
@@ -131,9 +209,13 @@ fun appColors(theme: UiAppTheme, identity: CompanyIdentity): AppColors {
         border = pick(colors.border, base.border),
         text = pick(colors.text, base.text),
         muted = pick(colors.muted, base.muted),
-        accent = identity.primaryColor.toComposeColor(Color(0xFF667EEA)),
-        accentSecondary = identity.secondaryColor.toComposeColor(Color(0xFF764BA2)),
-        onAccent = identity.accentColor.toComposeColor(Color.White),
+        accent = primary,
+        accentSecondary = secondary,
+        // El color de texto de la empresa solo se respeta si cumple 4.5:1 sobre el acento (botones);
+        // si no, se elige negro o blanco, que sobre un color solo alcanza al menos 4.58:1.
+        onAccent = identity.accentColor.toComposeColor(Color.White).let { preferred ->
+            if (contrastRatio(preferred, primary) >= 4.5) preferred else readableOver(listOf(primary))
+        },
         success = pick(colors.success, base.success),
         warning = pick(colors.warning, base.warning),
         danger = pick(colors.danger, base.danger),
@@ -143,11 +225,15 @@ fun appColors(theme: UiAppTheme, identity: CompanyIdentity): AppColors {
 
 private fun AppColors.toColorScheme(): ColorScheme {
     val scheme = if (dark) darkColorScheme() else lightColorScheme()
+    // Acento apto para texto (TextButton, enlaces, foco): si el color de marca no llega a 4.5:1 sobre las
+    // superficies, el esquema usa el color de texto del tema y los botones rellenos con el acento puro
+    // siguen usando [onAccent].
+    val primary = accentText
     return scheme.copy(
-        primary = accent,
-        onPrimary = onAccent,
+        primary = primary,
+        onPrimary = if (primary == accent) onAccent else readableOver(listOf(primary)),
         secondary = accentSecondary,
-        onSecondary = onAccent,
+        onSecondary = readableOver(listOf(accentSecondary)),
         background = background,
         onBackground = text,
         surface = surface,
@@ -159,7 +245,7 @@ private fun AppColors.toColorScheme(): ColorScheme {
         surfaceContainer = surface,
         surfaceContainerHigh = surfaceAlt,
         surfaceContainerHighest = surfaceAlt,
-        outline = border,
+        outline = fieldBorder,
         outlineVariant = border,
         error = danger,
     )
@@ -184,7 +270,8 @@ fun IdeasCoreTheme(content: @Composable () -> Unit) {
     val colors = remember(selection, moduleThemes, identity, systemDark) {
         appColors(resolveTheme(selection, moduleThemes, systemDark), identity ?: ServerOwnerIdentity)
     }
+    val scheme = remember(colors) { colors.toColorScheme() }
     CompositionLocalProvider(LocalAppColors provides colors) {
-        MaterialTheme(colorScheme = colors.toColorScheme(), content = content)
+        MaterialTheme(colorScheme = scheme) { ProvideWidthClass(content) }
     }
 }

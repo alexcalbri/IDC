@@ -1,5 +1,9 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -107,18 +111,18 @@ fun ServerStaffScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
-                .fillMaxWidth(0.92f),
+                .contentWidth(ContentWidth.Content, 0.92f),
         ) {
             Surface(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
                 color = AppTheme.colors.surface,
                 shape = MaterialTheme.shapes.medium,
             ) {
-                Column(modifier = Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Column(modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                     error?.let { Text(it, color = AppTheme.colors.danger) }
                     message?.let { Text(it, color = AppTheme.colors.success) }
                     if (workspaceCode == null) {
-                        Text("La empresa del servidor aun no existe", fontWeight = FontWeight.Bold, color = primaryColor)
+                        Text("La empresa del servidor aun no existe", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                         Text(
                             "Si este servidor atiende a una sola empresa, creala aqui: tu seras su business owner, " +
                                 "podras configurarla, crear su personal y activar sus modulos sin crear una empresa aparte. " +
@@ -144,10 +148,10 @@ fun ServerStaffScreen(
                                     }
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                            colors = accentButtonColors(),
                         ) { Text("Crear empresa del servidor") }
                     } else {
-                        Text("Datos de la empresa", style = MaterialTheme.typography.titleLarge, color = primaryColor)
+                        Text("Datos de la empresa", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
                         CompanyProfileFields(
                             name = name,
                             logoUrl = logoUrl,
@@ -194,7 +198,7 @@ fun ServerStaffScreen(
                                         }
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                                colors = accentButtonColors(),
                             ) { Text("Guardar") }
                         }
                         Text(

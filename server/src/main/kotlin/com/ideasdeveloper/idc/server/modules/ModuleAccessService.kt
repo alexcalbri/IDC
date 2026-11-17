@@ -50,9 +50,14 @@ class ModuleAccessService(
     private val customerChangeListener: () -> CustomerChangeListener? = { null },
     // The customer's notes for other modules (ModuleRegistry.customerNotesReader).
     private val customerNotesReader: () -> CustomerNotesReader? = { null },
+    // Notification center of the Core: modules notify users through it (see NotificationService).
+    val notifications: NotificationService = NotificationService(),
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(ModuleAccessService::class.java)
     private val tokenGenerator = SessionTokenGenerator()
+
+    /** The notifier of [moduleId]: creates notifications that always carry that module as their origin. */
+    fun notificationsFor(moduleId: String): ModuleNotifier = ModuleNotifier(moduleId, notifications)
 
     /** Where [moduleId] stores the files of [companyCode]; the table of the module keeps the returned refs. */
     fun files(companyCode: String, moduleId: String): ModuleFiles = companyFiles.module(companyCode, moduleId)
@@ -319,6 +324,49 @@ class ModuleAccessService(
         return connection
     }
 
+    // Codes of the active companies (the server workspace included); used by the Core's own jobs.
+    fun activeCompanies(): List<String> = central.connection.use { connection ->
+        connection.prepareStatement("SELECT code FROM companies WHERE is_active = TRUE ORDER BY code").use { query ->
+            query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
+        }
+    }
+
+    /**
+     * Validates the session and company of a request that belongs to the Core, not to a module (the
+     * notification center): who the user is, with no module permission involved.
+     */
+    fun userSession(call: ApplicationCall): UserSessionLookup {
+        val token = accessToken(call)
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_token", "La sesion es requerida."))
+        val companyCode = companyCode(call)
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("missing_company", "La empresa es requerida."))
+        val databaseName = findActiveDatabase(companyCode)
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Forbidden("company_not_found", "La empresa no esta activa."))
+        val tenantConfig = loginDatabases.tenantConfig(databaseName)
+            ?: return UserSessionLookup.Denied(ModuleAccessDecision.Forbidden("tenant_not_configured", "La base de datos de la empresa no esta configurada."))
+        // Server owners hold a central session and act in the server workspace.
+        if (companyCode == ServerWorkspace.Code && isServerWorkspace(companyCode)) {
+            serverOwnerSessionUser(token)?.let { return UserSessionLookup.Granted(companyCode, it) }
+        }
+        val userId = tenantConnection(tenantConfig.jdbcUrl, tenantConfig.user, tenantConfig.password).use { connection ->
+            connection.prepareStatement(
+                """
+                SELECT users.id
+                FROM application_sessions sessions
+                JOIN application_users users ON users.id = sessions.user_id
+                WHERE sessions.token_hash = ?
+                  AND sessions.revoked_at IS NULL
+                  AND sessions.expires_at > CURRENT_TIMESTAMP
+                  AND users.is_active = TRUE
+                """.trimIndent()
+            ).use { query ->
+                query.setString(1, tokenGenerator.hash(token))
+                query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+            }
+        } ?: return UserSessionLookup.Denied(ModuleAccessDecision.Unauthorized("invalid_session", "La sesion no es valida."))
+        return UserSessionLookup.Granted(companyCode, userId)
+    }
+
     // Active companies (the server workspace included) that have [moduleId] enabled; used by module jobs.
     fun companiesWithModule(moduleId: String): List<String> {
         if (!isInstalled(moduleId)) return emptyList()
@@ -537,6 +585,12 @@ class UserModuleAccess internal constructor(
     // Whether the user can use the tool somewhere: a server owner in every company of the server
     // (ModuleAccessService.serverOwnerAccess), anyone else where the module is enabled and permitted.
     fun mayUse(tool: RegisteredMcpTool): Boolean = serverOwner || permissions(tool.moduleId)?.has(tool.tool.permission) == true
+}
+
+// Who a Core request belongs to (see ModuleAccessService.userSession).
+sealed class UserSessionLookup {
+    data class Granted(val companyCode: String, val userId: UUID) : UserSessionLookup()
+    data class Denied(val decision: ModuleAccessDecision) : UserSessionLookup()
 }
 
 sealed class ModulePermissionLookup {

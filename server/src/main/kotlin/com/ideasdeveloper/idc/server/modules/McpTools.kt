@@ -85,7 +85,12 @@ class McpToolCall(
     val access: ModuleAccessService,
     // Name of the agent token, to tell in activity logs that an agent did the change.
     val agentName: String,
+    // Module that owns the tool.
+    val moduleId: String,
 ) {
+    // Creates notifications for users with this module as their origin.
+    val notifier: ModuleNotifier get() = access.notificationsFor(moduleId)
+
     private fun primitive(key: String): String? = (arguments[key] as? JsonPrimitive)?.contentOrNull?.trim()
 
     fun string(key: String, maxLength: Int = 2_000): String = primitive(key).orEmpty().take(maxLength)

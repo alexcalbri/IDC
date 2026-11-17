@@ -139,6 +139,14 @@ object CrmMcpTools {
             ),
         ) { call -> move(call) },
         McpTool(
+            name = "restore_lead",
+            title = "Restaurar lead archivado",
+            description = "Saca un lead archivado del archivo: vuelve a la etapa que tenia al archivarse. Si ya estaba abierto no hace nada. " +
+                "Cloudbeds y las importaciones no restauran leads por su cuenta.",
+            permission = CrmScreens.Manage,
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del lead.")), required = listOf("id")),
+        ) { call -> restore(call) },
+        McpTool(
             name = "add_lead_note",
             title = "Agregar nota a un lead",
             description = "Agrega una nota a la actividad de un lead visible.",
@@ -388,6 +396,8 @@ object CrmMcpTools {
         // A new stage is applied afterwards like move_lead, which records the stage history.
         val input = parsed.copy(stageId = lead.stageId, ownerUserId = if (call.has("owner")) parsed.ownerUserId else lead.ownerUserId)
         if (input.interestId != lead.interestId && !context.scope.canUseInterest(input.interestId)) throw McpToolException("El usuario no puede asignar ese interes.")
+        // Checked before saving anything: an archived lead does not change stage.
+        if (call.has("stage") && parsed.stageId != lead.stageId && lead.archivedAt != null) throw McpToolException("Restaura el lead antes de moverlo.")
         CrmRepository.updateLead(call.tenant, lead, input, context.stages, context.names, actor(call), context.fields)
         input.ownerUserId?.takeIf { it != lead.ownerUserId && it != context.scope.userId }?.let { CrmNotify.assigned(call.tenant, lead.id, it) }
         if (call.has("stage") && parsed.stageId != lead.stageId) {
@@ -419,7 +429,24 @@ object CrmMcpTools {
         if (stage.kind == StageKind.Won && pendingRooms && !reserved) {
             throw McpToolException("${lead.name} tiene habitaciones asignadas: la reserva debe confirmarse desde su ficha en el CRM.")
         }
-        CrmRepository.moveLead(call.tenant, lead, stage, context.stages, actor(call))
+        try {
+            CrmRepository.moveLead(call.tenant, lead, stage, context.stages, actor(call))
+        } catch (failure: CrmValidationException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+    }
+
+    private fun restore(call: McpToolCall): JsonElement {
+        val context = context(call)
+        val lead = visibleLead(call, context)
+        return when (restoreCheck(lead.archivedAt != null, call.permissions.has(CrmScreens.Manage))) {
+            CrmRestoreCheck.Restore -> {
+                if (!CrmRepository.restoreLead(call.tenant, lead.id, actor(call))) throw McpToolException("${lead.name} no esta archivado.")
+                json(CrmRepository.lead(call.tenant, lead.id)!!, context, brief = true)
+            }
+            CrmRestoreCheck.AlreadyOpen -> throw McpToolException("${lead.name} no esta archivado.")
+            CrmRestoreCheck.NoPermission -> throw McpToolException("El usuario no puede restaurar leads.")
+        }
     }
 
     private fun note(call: McpToolCall): JsonElement {

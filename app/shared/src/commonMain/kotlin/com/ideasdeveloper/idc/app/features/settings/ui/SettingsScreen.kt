@@ -1,5 +1,9 @@
 package com.ideasdeveloper.idc.app.features.settings.ui
 
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -127,16 +131,16 @@ fun SettingsScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
-                .fillMaxWidth(0.9f),
+                .contentWidth(ContentWidth.Form, 0.9f),
         ) {
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
+                verticalArrangement = Arrangement.spacedBy(AdaptiveLayout.gap),
             ) {
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Apariencia", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Text("Apariencia", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                     Spacer(Modifier.height(6.dp))
                     Text(
                         "El tema se guarda en este dispositivo. Los modulos instalados en el servidor pueden agregar temas.",
@@ -152,14 +156,14 @@ fun SettingsScreen(
                 }
 
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Conexion", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Text("Conexion", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                     Spacer(Modifier.height(10.dp))
                     SettingRow("Servidor", configuration?.serverUrl ?: "Sin configurar")
                     SettingRow("Empresa", configuration?.companyCode ?: "Administracion del servidor")
                 }
 
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Sesion", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Text("Sesion", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                     Spacer(Modifier.height(10.dp))
                     SettingRow("Usuario", session?.username ?: "Sin sesion")
                     SettingRow("Nombre", session?.displayName ?: "Sin nombre")
@@ -175,7 +179,7 @@ fun SettingsScreen(
                 }
 
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Version", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Text("Version", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                     Spacer(Modifier.height(10.dp))
                     SettingRow("Cliente", ClientVersion)
                     versionStatus?.let {
@@ -203,14 +207,14 @@ fun SettingsScreen(
                             }
                         },
                         enabled = !checkingVersion,
-                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                        colors = accentButtonColors(),
                     ) {
                         Text(if (checkingVersion) "Revisando..." else "Revisar actualizaciones")
                     }
                 }
 
                 SettingsCard(primaryColor = primaryColor) {
-                    Text("Datos locales", fontWeight = FontWeight.Bold, color = primaryColor)
+                    Text("Datos locales", fontWeight = FontWeight.Bold, color = AppTheme.colors.accentText)
                     Spacer(Modifier.height(10.dp))
                     Text(
                         text = "Limpia la URL, empresa guardada y sesion local. No modifica datos del servidor.",
@@ -233,10 +237,10 @@ private fun SettingsCard(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = AppTheme.colors.surface, contentColor = primaryColor),
+        colors = CardDefaults.cardColors(containerColor = AppTheme.colors.surface, contentColor = AppTheme.colors.accentText),
         shape = MaterialTheme.shapes.medium,
     ) {
-        Column(modifier = Modifier.padding(16.dp), content = content)
+        Column(modifier = Modifier.padding(if (AdaptiveLayout.roomy) 14.dp else 16.dp), content = content)
     }
 }
 

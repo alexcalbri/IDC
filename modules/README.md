@@ -373,6 +373,47 @@ like the Clientes profile; each company's data stays in its own database.
 of the company (the app goes to that module and shows the screen instead of its home). Older apps
 show the control disabled.
 
+## Notifications
+
+The Core has a notification center: the bell in the app's top bar lists each user's notifications
+(title, text, module and date) and a click opens the screen they point to. A module creates them
+with its own **notifier**, bound to its module id so it can never notify as another module, and
+never touches the table (`notifications`, core migration `V005__create_notifications.sql`, one per
+company database, including the server workspace):
+
+```kotlin
+// Final signature (ModuleNotifier). Three ways to get the module's notifier:
+access.notificationsFor("crm")        // anywhere you have the ModuleAccessService (routes, webhooks)
+context.notifier                       // ModuleJobContext, inside a ServerModule job
+call.notifier                          // McpToolCall, inside an MCP tool handler
+
+notifier.notify(
+    tenant: Connection,                // the company's connection (route, tool or job)
+    userId: UUID,                      // who receives it (ModulePermissions.userId, UserIdentity.userId...)
+    title: String,                     // required, up to 160 characters
+    text: String = "",                 // optional, up to 1000 characters
+    target: NotificationTarget? = null // NotificationTarget(screen, params), optional
+): UUID
+
+access.notificationsFor("crm").notify(tenant, leadOwnerId, "Te asignaron un lead", "Ana Perez", NotificationTarget("lead", mapOf("id" to leadId)))
+```
+
+- `target.screen` and `target.params` are the same screen id and parameters as a `UiOpenModule`
+  action: the app opens the module that created it and shows that screen (`ModuleDeepLinks`).
+  Without a target the click only marks the notification as read.
+- `access.notifications` (`NotificationService`) is the generic Core API (create with any module id,
+  list, count, mark, purge). It is for the Core and the agent bridge only; modules must use their
+  notifier. Each user sees only their own notifications, inside their company.
+- Notify inside the same flow that causes the event and do not fail it when the notification cannot
+  be created (catch and log): a notification is never required for the data change.
+- Notifications older than 90 days are deleted by a daily Core job, in batches (5000 rows, at most
+  20 batches per run); nothing to do in modules.
+- HTTP routes of the app (any signed-in user, `X-Company-Code` header): `GET /notifications?limit=&offset=&unread=`,
+  `GET /notifications/unread-count`, `POST /notifications/{id}/read` and `POST /notifications/read-all`.
+- AI agents list and mark them with the `agentes` tools `agentes_list_notifications` and
+  `agentes_mark_notifications_read` (own notifications only).
+- Phase 1 has no push: the app refreshes when the panel opens and every 60 seconds.
+
 ## Who made a change
 
 Every user (business owner, server owner and staff) has a name and an email

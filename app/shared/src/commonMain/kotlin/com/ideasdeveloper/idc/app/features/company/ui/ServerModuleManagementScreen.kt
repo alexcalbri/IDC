@@ -1,5 +1,9 @@
 package com.ideasdeveloper.idc.app.features.company.ui
 
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -148,7 +152,7 @@ fun ServerModuleManagementScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
-                .fillMaxWidth(0.92f),
+                .contentWidth(ContentWidth.Content, 0.92f),
         ) {
             Surface(
                 modifier = Modifier
@@ -158,11 +162,11 @@ fun ServerModuleManagementScreen(
                 color = AppTheme.colors.surface,
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
-                    Text("Modulos instalados", style = MaterialTheme.typography.titleLarge, color = primaryColor)
-                    Text("Repositorio de modulos", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+                    Text("Modulos instalados", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
+                    Text("Repositorio de modulos", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
                     OutlinedTextField(
                         value = catalogUrl,
                         onValueChange = { catalogUrl = it },
@@ -198,7 +202,7 @@ fun ServerModuleManagementScreen(
                                     }
                                 }
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                            colors = accentButtonColors(),
                         ) {
                             Text("Guardar catalogo")
                         }
@@ -208,7 +212,7 @@ fun ServerModuleManagementScreen(
                                 refreshCatalog()
                                 refreshModules()
                             },
-                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                         ) {
                             Text("Actualizar lista")
                         }
@@ -349,7 +353,7 @@ private fun ServerModuleRow(
             .padding(12.dp),
         verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        Text(module.displayName, style = MaterialTheme.typography.titleSmall, color = primaryColor)
+        Text(module.displayName, style = MaterialTheme.typography.titleSmall, color = AppTheme.colors.accentText)
         Text(module.description, color = AppTheme.colors.muted)
         Text(
             text = buildString {
@@ -414,7 +418,7 @@ private fun ServerModuleRow(
                 Button(
                     enabled = canInstall,
                     onClick = onInstall,
-                    colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                    colors = accentButtonColors(),
                 ) {
                     Text(
                         when {
@@ -440,7 +444,7 @@ private fun ServerModuleRow(
                 Button(
                     enabled = enabled,
                     onClick = onCancelDelete,
-                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor),
+                    colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText),
                 ) {
                     Text("Cancelar")
                 }

@@ -69,6 +69,8 @@ data class CrmLead(
     val reviewReason: String = "",
     // Set when the stay ended (Cloudbeds check-out): the lead leaves the pipeline and lists.
     val archivedAt: Instant? = null,
+    // Set when the lead was restored from the archive: the exit automation leaves it alone until its end date or stage changes.
+    val restoredAt: Instant? = null,
     // Values of the custom fields by key (see CrmFields).
     val customFields: JsonObject = JsonObject(emptyMap()),
     // Owned by Clientes; CRM only displays the customer's code.
@@ -128,19 +130,37 @@ data class CrmScope(
     }
 }
 
+/**
+ * "Sin calificar" over crm_leads "l": a lead has no interest (only when interests are on) or no
+ * assigned user; it leaves as soon as it has both.
+ */
+fun unqualifiedSql(interestsEnabled: Boolean): String =
+    if (interestsEnabled) "(l.interest_id IS NULL OR l.owner_user_id IS NULL)" else "l.owner_user_id IS NULL"
+
 // Filters of the pipeline and the lead list, on top of the user's scope.
 data class CrmLeadFilter(
     val interestId: UUID? = null,
     // Only leads without interest (reception inbox).
     val withoutInterest: Boolean = false,
+    // "Sin calificar": leads without interest or without an assigned user (see [unqualifiedSql]).
+    val unqualified: Boolean = false,
     val ownerUserId: UUID? = null,
     val unassigned: Boolean = false,
     val stageId: UUID? = null,
     val search: String = "",
     val openOnly: Boolean = false,
-    // Archived leads (stay finished) are hidden unless asked for.
+    // Only archived leads (the "Archivados" column of the pipeline).
     val archived: Boolean = false,
+    // Archived leads mixed with the rest ("Mostrar archivados" in the list). Hidden unless asked for.
+    val includeArchived: Boolean = false,
 )
+
+/** SQL condition over crm_leads "l" for the archived state of [filter]; null when archived and open leads both show. */
+fun archivedSql(filter: CrmLeadFilter): String? = when {
+    filter.archived -> "l.archived_at IS NOT NULL"
+    filter.includeArchived -> null
+    else -> "l.archived_at IS NULL"
+}
 
 data class CrmLeadInput(
     val name: String,
@@ -324,4 +344,17 @@ fun followUpState(followUpOn: LocalDate?, today: LocalDate): Pair<String, String
     followUpOn.isBefore(today) -> "Seguimiento vencido $followUpOn" to UiTone.Danger
     followUpOn == today -> "Seguimiento hoy" to UiTone.Warning
     else -> "Seguimiento $followUpOn" to UiTone.Info
+}
+
+/** What restoring an archived lead does; decided without the database so it can be tested. */
+enum class CrmRestoreCheck { Restore, NoPermission, AlreadyOpen }
+
+/**
+ * [canManage]: `crm.leads.manage`. Whether the lead is inside the user's scope is checked before (visibleLead).
+ * A lead that is already open is left alone (restoring twice changes nothing).
+ */
+fun restoreCheck(archived: Boolean, canManage: Boolean): CrmRestoreCheck = when {
+    !canManage -> CrmRestoreCheck.NoPermission
+    !archived -> CrmRestoreCheck.AlreadyOpen
+    else -> CrmRestoreCheck.Restore
 }

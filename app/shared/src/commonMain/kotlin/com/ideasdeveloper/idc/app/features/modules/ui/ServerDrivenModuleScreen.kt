@@ -1,5 +1,10 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
+import androidx.compose.foundation.layout.widthIn
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
@@ -13,6 +18,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import com.ideasdeveloper.idc.app.core.ui.CopyableCode
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -182,7 +188,17 @@ fun ServerDrivenModuleScreen(
             // El modulo se muestra como un panel con la X en su esquina superior derecha.
             ClosableView(
                 onClose = onReturnToDashboard,
-                modifier = Modifier.weight(1f).padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 16.dp),
+                modifier = Modifier
+                    .weight(1f)
+                    .align(Alignment.CenterHorizontally)
+                    .fillMaxWidth()
+                    .widthIn(max = ContentWidth.Wide + 240.dp)
+                    .padding(
+                        start = if (AdaptiveLayout.roomy) 12.dp else 16.dp,
+                        end = if (AdaptiveLayout.roomy) 12.dp else 16.dp,
+                        top = 8.dp,
+                        bottom = if (AdaptiveLayout.roomy) 12.dp else 16.dp,
+                    ),
             ) {
                 val panel = Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))
                 if (ui.type == "native") {
@@ -218,7 +234,7 @@ fun ServerDrivenModuleScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
-                .fillMaxWidth(0.9f),
+                .contentWidth(ContentWidth.Content, 0.9f),
         ) {
             Surface(
                 modifier = Modifier
@@ -228,12 +244,12 @@ fun ServerDrivenModuleScreen(
                 shape = MaterialTheme.shapes.medium,
             ) {
                 Column(
-                    modifier = Modifier.padding(18.dp),
+                    modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     when {
-                        loading -> CircularProgressIndicator(color = primaryColor)
+                        loading -> CircularProgressIndicator(color = AppTheme.colors.accentText)
                         error != null -> Text(error.orEmpty(), color = AppTheme.colors.danger)
                         metadata != null && moduleId == "clientes" -> CustomerServerDrivenContent(
                             serverUrl = serverUrl,
@@ -259,7 +275,7 @@ fun ServerDrivenModuleScreen(
                     Spacer(modifier = Modifier.height(8.dp))
                     Button(
                         onClick = onReturnToDashboard,
-                        colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+                        colors = accentButtonColors(),
                     ) {
                         Text("Volver al panel")
                     }
@@ -343,7 +359,7 @@ private fun CustomerServerDrivenContent(
     // El formulario empieza cerrado para ver la lista; Editar lo abre con los datos del cliente.
     CollapsibleSection(
         title = if (editingId == null) "Crear cliente" else "Editar cliente",
-        color = primaryColor,
+        color = AppTheme.colors.accentText,
         open = customerFormOpen || editingId != null,
         onToggle = { if (editingId != null) clearForm() else customerFormOpen = !customerFormOpen },
     ) {
@@ -382,10 +398,10 @@ private fun CustomerServerDrivenContent(
                     }
                 }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+            colors = accentButtonColors(),
         ) { Text(if (editingId == null) "Crear cliente" else "Guardar cambios") }
         if (editingId != null) {
-            Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) { Text("Cancelar edicion") }
+            Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) { Text("Cancelar edicion") }
         }
     }
 
@@ -419,13 +435,13 @@ private fun CustomerServerDrivenContent(
                     }
                 }
             },
-            colors = ButtonDefaults.buttonColors(containerColor = primaryColor),
+            colors = accentButtonColors(),
         ) { Text("Agregar campo") }
     }
 
     message?.let { Text(it, color = AppTheme.colors.success) }
     error?.let { Text(it, color = AppTheme.colors.danger) }
-    Text("Clientes", style = MaterialTheme.typography.titleMedium, color = primaryColor)
+    Text("Clientes", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
     if (customers.isEmpty()) {
         Text("Aun no hay clientes.", color = AppTheme.colors.muted)
     } else {
@@ -433,7 +449,7 @@ private fun CustomerServerDrivenContent(
             Column(modifier = Modifier.fillMaxWidth().background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small).padding(10.dp)) {
                 Text(listOf(customer.displayName, customer.primaryEmail, customer.primaryPhone).filter { it.isNotBlank() }.joinToString(" - ") + if (customer.customerType != "general") " (${customer.customerType})" else "", color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
                 if (customer.customerCode.isNotBlank()) {
-                    Text("Codigo de cliente: ${customer.customerCode}", color = AppTheme.colors.muted)
+                    CopyableCode(label = "Codigo de cliente", code = customer.customerCode)
                 }
                 androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = {
@@ -442,7 +458,7 @@ private fun CustomerServerDrivenContent(
                         email = customer.primaryEmail
                         phone = customer.primaryPhone
                         dynamicValues = customer.dynamicFields.mapValues { it.value.toString().trim('"') }
-                    }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) { Text("Editar") }
+                    }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) { Text("Editar") }
                     Button(onClick = {
                         val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
                         loading = true
@@ -459,7 +475,7 @@ private fun CustomerServerDrivenContent(
                             }
                         }
                     }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.danger)) { Text("Eliminar") }
-                    Button(onClick = { profileCustomerId = customer.id }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryColor)) {
+                    Button(onClick = { profileCustomerId = customer.id }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) {
                         Text("Ficha")
                     }
                 }
