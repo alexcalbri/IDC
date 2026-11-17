@@ -162,7 +162,7 @@ class CrmExitTest {
             error("moveLead must not reach the database")
         } as java.sql.Connection
         val archived = CrmLead(
-            UUID.randomUUID(), UUID.randomUUID(), "Ana", "", "", booked, null, null, "Web", "", "", "",
+            UUID.randomUUID(), UUID.randomUUID(), "Ana", "", "", booked, null, emptyList(), "Web", "", "", "",
             null, day, null, null, Instant.now(), null, Instant.now(), archivedAt = Instant.now(),
         )
         val failure = assertFailsWith<CrmValidationException> { CrmRepository.moveLead(tenant, archived, stages[1], stages, CrmActor(null, "Prueba")) }

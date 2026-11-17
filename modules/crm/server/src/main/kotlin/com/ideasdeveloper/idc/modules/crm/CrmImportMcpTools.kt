@@ -111,7 +111,7 @@ object CrmImportMcpTools {
                             "Datos de la persona (documento de identidad, nacimiento, direccion) van como campo del cliente. Confirma con el usuario antes de crear campos.",
                     ),
                     "stages" to map("Valor de la columna de etapa -> nombre de la etapa del CRM."),
-                    "owners" to map("Valor de la columna de responsable -> nombre del usuario del CRM."),
+                    "owners" to map("Persona de la columna de asignados (una columna puede traer varias, separadas por coma o punto y coma) -> nombre del usuario del CRM. Tambien se empareja por correo o nombre; las personas sin usuario se omiten y se anotan en el informe."),
                     "interests" to map("Valor de la columna de interes -> nombre del interes del CRM."),
                     "presetName" to McpSchema.string("Guardar este mapeo con este nombre (opcional)."),
                 ),
@@ -142,7 +142,7 @@ object CrmImportMcpTools {
         McpTool(
             name = "bulk_update_leads",
             title = "Acciones en lote (vista Lista de Leads)",
-            description = "Mueve de etapa, asigna responsable o elimina varios leads visibles a la vez (hasta 500). Eliminar necesita el permiso de eliminar leads.$Confirm",
+            description = "Mueve de etapa, cambia los usuarios asignados o elimina varios leads visibles a la vez (hasta 500). Asignar: owners (lista de nombres) con ownersMode add (anade), remove (quita) o replace (reemplaza; vacio deja sin asignar); owner (uno solo) reemplaza. Eliminar necesita el permiso de eliminar leads.$Confirm",
             permission = CrmScreens.Manage,
             destructive = true,
             inputSchema = McpSchema.obj(
@@ -152,10 +152,9 @@ object CrmImportMcpTools {
                         put("description", "Ids de los leads.")
                         put("items", McpSchema.uuid("Id del lead."))
                     },
-                    "action" to McpSchema.string("move: mover a etapa; assign: asignar responsable; delete: eliminar.", listOf("move", "assign", "delete")),
+                    "action" to McpSchema.string("move: mover a etapa; assign: anadir, quitar o reemplazar asignados; delete: eliminar.", listOf("move", "assign", "delete")),
                     "stage" to McpSchema.string("Etapa destino (move)."),
-                    "owner" to McpSchema.string("Responsable (assign); vacio deja sin asignar."),
-                ),
+                ) + CrmMcpTools.ownerArguments,
                 required = listOf("leads", "action"),
             ),
         ) { call -> bulk(call) },
@@ -355,14 +354,19 @@ object CrmImportMcpTools {
         if (ids.size > 500) throw McpToolException("Envia hasta 500 leads por llamada.")
         val leads = ids.map { runCatching { UUID.fromString(it) }.getOrNull() ?: throw McpToolException("'$it' no es un id de lead.") }
             .mapNotNull { CrmRepository.lead(call.tenant, it) }
-            .filter { context.scope.canSee(it.interestId, it.ownerUserId) }
+            .filter { context.scope.canSee(it.interestId, it.ownerUserIds) }
+        if (call.requiredString("action", 20) == "assign") {
+            // owner/owners + ownersMode, like create_lead and update_lead. Nothing sent is an error (never "leave nobody"):
+            // to empty the assigned users send owners: [] or owner: "Sin asignar" (or blank).
+            val change = CrmMcpTools.ownersRequiredForBulk(call.arguments, context.canAssign, context.users, CrmBulkActions.legacyOf(context, leads))
+            val message = checked { CrmBulkActions.assign(context, leads, change.mode, change.ids, actor(call), call.notifier) }
+            return buildJsonObject {
+                put("result", message)
+                if (leads.size < ids.size) put("note", "${ids.size - leads.size} id(s) no existen o no son visibles para el usuario y se omitieron.")
+            }
+        }
         val (action, value) = when (call.requiredString("action", 20)) {
             "move" -> CrmImportScreens.ActionStage to call.requiredString("stage", 100).let { wanted -> context.stages.firstOrNull { it.name.equals(wanted, ignoreCase = true) }?.name ?: wanted }
-            // Only blank leaves the leads unassigned (the "unassigned" option); an unknown name is an error.
-            "assign" -> CrmImportScreens.ActionOwner to call.string("owner", 200).let { wanted ->
-                if (wanted.isEmpty()) CrmForms.Unassigned else context.users.firstOrNull { it.name.equals(wanted, ignoreCase = true) }?.name
-                    ?: throw McpToolException("'$wanted' no es un usuario con acceso al CRM. Usuarios: ${context.users.joinToString { it.name }}.")
-            }
             "delete" -> CrmImportScreens.ActionDelete to ""
             else -> throw McpToolException("'action' debe ser move, assign o delete.")
         }

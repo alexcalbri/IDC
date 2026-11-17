@@ -79,7 +79,7 @@ class CrmCloudbedsTest {
     fun stayUsesTheLeadDatesByDefault() {
         val today = LocalDate.of(2026, 10, 28)
         val lead = CrmLead(
-            UUID.randomUUID(), UUID.randomUUID(), "Ana", "", "", UUID.randomUUID(), null, null, "", "", "", "",
+            UUID.randomUUID(), UUID.randomUUID(), "Ana", "", "", UUID.randomUUID(), null, emptyList(), "", "", "", "",
             LocalDate.of(2026, 11, 2), LocalDate.of(2026, 11, 6), null, null, Instant.now(), null, Instant.now(),
         )
         val stay = CrmCloudbedsScreens.stay(lead, emptyMap(), today)

@@ -17,7 +17,7 @@ data class CrmActor(val userId: UUID?, val name: String)
 object CrmRepository {
     private const val LeadColumns = """
         l.id, l.customer_id, c.display_name, c.primary_email, c.primary_phone, c.customer_code, l.stage_id, l.interest_id,
-        l.owner_user_id, l.source, l.language, l.message, l.details, l.target_start, l.target_end,
+        ${CrmAssignees.ListSql} AS owner_ids, l.source, l.language, l.message, l.details, l.target_start, l.target_end,
         l.estimated_value, l.follow_up_on, l.stage_changed_at, l.closed_at, l.created_at, l.suggested_owner_user_id, l.review_reason, l.archived_at, l.restored_at,
         l.custom_fields::text AS custom_fields
     """
@@ -183,7 +183,7 @@ object CrmRepository {
     // Users that can own leads: active and either business owner or holder of a CRM permission.
     fun users(tenant: Connection): List<CrmUser> = tenant.prepareStatement(
         """
-        SELECT users.id, users.postgres_role
+        SELECT users.id, users.postgres_role, COALESCE(users.email, '')
         FROM application_users users
         WHERE users.is_active
           AND (EXISTS (SELECT 1 FROM business_owner owner WHERE owner.user_id = users.id)
@@ -192,7 +192,22 @@ object CrmRepository {
         ORDER BY users.postgres_role
         """.trimIndent()
     ).use { query ->
-        query.executeQuery().use { rows -> buildList { while (rows.next()) add(CrmUser(rows.getObject(1, UUID::class.java), rows.getString(2))) } }
+        query.executeQuery().use { rows -> buildList { while (rows.next()) add(CrmUser(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3))) } }
+    }
+
+    /** Users that can be mentioned in a note: active, business owner or holder of the CRM view permission (they open the CRM). */
+    fun mentionableUsers(tenant: Connection): List<CrmUser> = tenant.prepareStatement(
+        """
+        SELECT users.id, users.postgres_role, COALESCE(users.email, '')
+        FROM application_users users
+        WHERE users.is_active
+          AND (EXISTS (SELECT 1 FROM business_owner owner WHERE owner.user_id = users.id)
+               OR EXISTS (SELECT 1 FROM application_user_permissions granted
+                          WHERE granted.user_id = users.id AND granted.permission_id = '${CrmScreens.View}'))
+        ORDER BY users.postgres_role
+        """.trimIndent()
+    ).use { query ->
+        query.executeQuery().use { rows -> buildList { while (rows.next()) add(CrmUser(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3))) } }
     }
 
     fun scope(tenant: Connection, permissions: ModulePermissions): CrmScope {
@@ -223,7 +238,7 @@ object CrmRepository {
     // ---- Leads ----
 
     private fun where(scope: CrmScope, filter: CrmLeadFilter): Pair<String, List<Any>> {
-        val (visible, params) = scope.sqlCondition()
+        val (visible, params) = scope.sqlCondition(filter.withMentions)
         val parts = mutableListOf(visible)
         archivedSql(filter)?.let { parts += it }
         val values = params.toMutableList()
@@ -232,8 +247,8 @@ object CrmRepository {
             filter.interestId?.let { parts += "l.interest_id = ?"; values += it }
         }
         if (filter.unqualified) parts += unqualifiedSql(scope.interestsEnabled)
-        filter.ownerUserId?.let { parts += "l.owner_user_id = ?"; values += it }
-        if (filter.unassigned) parts += "l.owner_user_id IS NULL"
+        filter.ownerUserId?.let { parts += CrmAssignees.OfUserSql; values += it }
+        if (filter.unassigned) parts += CrmAssignees.NoneSql
         filter.stageId?.let { parts += "l.stage_id = ?"; values += it }
         if (filter.openOnly) parts += "l.closed_at IS NULL"
         val search = filter.search.trim().lowercase()
@@ -324,14 +339,15 @@ object CrmRepository {
         tenant.prepareStatement(
             """
             INSERT INTO crm_leads (
-                customer_id, stage_id, interest_id, owner_user_id, source, language, message, details,
+                customer_id, stage_id, interest_id, source, language, message, details,
                 target_start, target_end, estimated_value, follow_up_on, closed_at, id, custom_fields
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CURRENT_TIMESTAMP END, ?, CAST(? AS jsonb))
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CURRENT_TIMESTAMP END, ?, CAST(? AS jsonb))
             """.trimIndent()
         ).use { insert ->
             insert.bind(tenant, listOf(customerId) + leadValues(input) + (stage.kind != StageKind.Open) + id + CrmFields.merge(JsonObject(emptyMap()), input.custom).toString())
             insert.executeUpdate()
         }
+        CrmAssignees.add(tenant, id, input.ownerUserIds.orEmpty())
         addActivity(tenant, id, "created", "Lead creado en ${stage.name}.", actor, toStage = stage.id)
         linkFiles(tenant, id, input, fields, actor)
         id
@@ -405,7 +421,12 @@ object CrmRepository {
         }
     }
 
-    /** Saves the lead form; contact changes are written to the shared customer. Logs what changed. */
+    /**
+     * Saves the lead form; contact changes are written to the shared customer. Logs what changed. Returns what really
+     * changed in the assigned users (to notify the ones added). [CrmLeadInput.ownerUserIds] null leaves them alone;
+     * otherwise only the difference between [ownersBefore] (the list the form was drawn with; the lead's current one
+     * by default) and the new list is applied, so assignments made meanwhile by somebody else are not undone.
+     */
     fun updateLead(
         tenant: Connection,
         lead: CrmLead,
@@ -414,7 +435,9 @@ object CrmRepository {
         names: CrmNames,
         actor: CrmActor,
         fields: List<CrmField> = emptyList(),
-    ) {
+        ownersBefore: List<UUID>? = null,
+    ): CrmAssignees.Change {
+        var ownersChange = CrmAssignees.Change(emptyList(), emptyList())
         transaction(tenant) {
         tenant.prepareStatement(
             "UPDATE customers SET display_name = ?, primary_email = ?, primary_phone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -427,7 +450,7 @@ object CrmRepository {
         }
         tenant.prepareStatement(
             """
-            UPDATE crm_leads SET stage_id = ?, interest_id = ?, owner_user_id = ?, source = ?, language = ?, message = ?, details = ?,
+            UPDATE crm_leads SET stage_id = ?, interest_id = ?, source = ?, language = ?, message = ?, details = ?,
                 target_start = ?, target_end = ?, estimated_value = ?, follow_up_on = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """.trimIndent()
@@ -442,8 +465,9 @@ object CrmRepository {
         if (!CrmExit.restoreSurvives(lead.stageId, input.stageId, lead.targetEnd, input.targetEnd)) {
             tenant.prepareStatement("UPDATE crm_leads SET restored_at = NULL WHERE id = ?").use { it.setObject(1, lead.id); it.executeUpdate() }
         }
-        if (input.ownerUserId != lead.ownerUserId) {
-            addActivity(tenant, lead.id, "owner", "Responsable: ${names.user(input.ownerUserId)}.", actor)
+        input.ownerUserIds?.let { wanted ->
+            ownersChange = CrmAssignees.apply(tenant, lead.id, CrmAssignees.diff(ownersBefore ?: lead.ownerUserIds, wanted))
+            if (!ownersChange.isEmpty) addActivity(tenant, lead.id, "owner", ownersActivity(tenant, names, CrmAssignees.of(tenant, lead.id), ownersChange), actor)
         }
         if (input.interestId != lead.interestId) {
             addActivity(tenant, lead.id, "interest", "Interes: ${names.interest(input.interestId)}.", actor)
@@ -460,6 +484,7 @@ object CrmRepository {
         }
         // Name, email and phone belong to the customer: they change at once in every company it is shared with.
         CrmCustomerEvents.changed(tenant, lead.customerId)
+        return ownersChange
     }
 
     /** "Campo: antes -> despues" for each changed value of the lead form, or null when nothing changed. */
@@ -552,8 +577,9 @@ object CrmRepository {
         archived
     }
 
-    fun addNote(tenant: Connection, leadId: UUID, body: String, actor: CrmActor) {
-        addActivity(tenant, leadId, "note", body, actor)
+    // [id]: the history entry's id, so the mentions of the note can hang from it (see CrmMentions.addNote).
+    fun addNote(tenant: Connection, leadId: UUID, body: String, actor: CrmActor, id: UUID = UUID.randomUUID()) {
+        addActivity(tenant, leadId, "note", body, actor, id = id)
         tenant.prepareStatement("UPDATE crm_leads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, leadId); it.executeUpdate() }
     }
 
@@ -563,7 +589,7 @@ object CrmRepository {
 
     fun activity(tenant: Connection, leadId: UUID, limit: Int): List<CrmActivity> = tenant.prepareStatement(
         """
-        SELECT a.kind, a.body, fs.name, ts.name, a.author, a.created_at
+        SELECT a.kind, a.body, fs.name, ts.name, a.author, a.created_at, a.id
         FROM crm_activity a
         LEFT JOIN crm_stages fs ON fs.id = a.from_stage_id
         LEFT JOIN crm_stages ts ON ts.id = a.to_stage_id
@@ -577,7 +603,7 @@ object CrmRepository {
         query.executeQuery().use { rows ->
             buildList {
                 while (rows.next()) add(
-                    CrmActivity(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getTimestamp(6).toInstant())
+                    CrmActivity(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getTimestamp(6).toInstant(), rows.getObject(7, UUID::class.java))
                 )
             }
         }
@@ -604,22 +630,71 @@ object CrmRepository {
         }
     }
 
-    // Assigns the suggested responsible user (approve = true) or drops the suggestion.
-    fun resolveSuggestion(tenant: Connection, lead: CrmLead, approve: Boolean, names: CrmNames, actor: CrmActor): UUID? {
-        val suggested = lead.suggestedOwnerUserId ?: return null
-        tenant.prepareStatement(
-            "UPDATE crm_leads SET owner_user_id = CASE WHEN ? THEN suggested_owner_user_id ELSE owner_user_id END, suggested_owner_user_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
-        ).use { update ->
-            update.setBoolean(1, approve)
-            update.setObject(2, lead.id)
+    /** Users in [ids] that are not in [users] (deactivated or without CRM access), named "<usuario> (sin acceso)". */
+    fun legacyUsers(tenant: Connection, users: List<CrmUser>, ids: Collection<UUID>): List<CrmUser> {
+        val missing = ids.distinct().filter { id -> users.none { it.id == id } }
+        if (missing.isEmpty()) return emptyList()
+        val roles = tenant.prepareStatement("SELECT id, postgres_role FROM application_users WHERE id = ANY(?)").use { query ->
+            query.setArray(1, tenant.createArrayOf("uuid", missing.toTypedArray()))
+            query.executeQuery().use { rows -> buildMap { while (rows.next()) put(rows.getObject(1, UUID::class.java), rows.getString(2)) } }
+        }
+        return missing.map { CrmUser(it, "${roles[it] ?: "Usuario eliminado"} (sin acceso)") }
+    }
+
+    /** Names of [ids] for the history: users without access keep their name with "(sin acceso)". */
+    fun displayNames(tenant: Connection, names: CrmNames, ids: Collection<UUID>): String {
+        val legacy = legacyUsers(tenant, emptyList(), ids.filter { !names.knows(it) }).associate { it.id to it.name }
+        return ids.joinToString(", ") { if (names.knows(it)) names.user(it) else legacy[it] ?: names.user(it) }
+    }
+
+    /** History line: who the lead has now, and who was added or removed. */
+    fun ownersActivity(tenant: Connection, names: CrmNames, now: Collection<UUID>, change: CrmAssignees.Change, suffix: String = ""): String {
+        val parts = mutableListOf("Asignados: ${if (now.isEmpty()) CrmForms.Unassigned else displayNames(tenant, names, now)}$suffix")
+        if (change.added.isNotEmpty()) parts += "Se anadio: ${displayNames(tenant, names, change.added)}"
+        if (change.removed.isNotEmpty()) parts += "Se quito: ${displayNames(tenant, names, change.removed)}"
+        return parts.joinToString(". ") + "."
+    }
+
+    /**
+     * Adds, removes or replaces assigned users of a lead in one transaction, with its history entry. Returns what
+     * really changed ([CrmAssignees.Change.added] are the ones to notify); nothing is written when nothing changes.
+     */
+    fun assign(tenant: Connection, lead: CrmLead, mode: CrmAssignees.Mode, ids: Collection<UUID>, names: CrmNames, actor: CrmActor, suffix: String = ""): CrmAssignees.Change = transaction(tenant) {
+        val change = when (mode) {
+            CrmAssignees.Mode.Add -> CrmAssignees.Change(CrmAssignees.add(tenant, lead.id, ids), emptyList())
+            CrmAssignees.Mode.Remove -> CrmAssignees.Change(emptyList(), CrmAssignees.remove(tenant, lead.id, ids))
+            CrmAssignees.Mode.Replace -> CrmAssignees.replace(tenant, lead.id, ids)
+        }
+        if (!change.isEmpty) {
+            tenant.prepareStatement("UPDATE crm_leads SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, lead.id); it.executeUpdate() }
+            addActivity(tenant, lead.id, "owner", ownersActivity(tenant, names, CrmAssignees.of(tenant, lead.id), change, suffix), actor)
+        }
+        change
+    }
+
+    /** [added]: the user the approval really added (to notify); [noAccess]: the suggested user can no longer have leads, so nobody was assigned. */
+    data class SuggestionResult(val added: UUID?, val noAccess: Boolean)
+
+    // Adds the suggested user to the assigned ones (approve = true) or drops the suggestion. A suggested user without
+    // access to the CRM (deactivated, no permission) is never assigned: the suggestion is only discarded.
+    fun resolveSuggestion(tenant: Connection, lead: CrmLead, approve: Boolean, names: CrmNames, actor: CrmActor): SuggestionResult = transaction(tenant) {
+        val suggested = lead.suggestedOwnerUserId ?: return@transaction SuggestionResult(null, false)
+        val noAccess = CrmAssignees.suggestionLacksAccess(approve, suggested) { names.knows(it) }
+        tenant.prepareStatement("UPDATE crm_leads SET suggested_owner_user_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { update ->
+            update.setObject(1, lead.id)
             update.executeUpdate()
         }
+        val added = if (approve && !noAccess) CrmAssignees.add(tenant, lead.id, listOf(suggested)).firstOrNull() else null
         addActivity(
             tenant, lead.id, "owner",
-            if (approve) "Responsable: ${names.user(suggested)} (sugerencia aprobada)." else "Sugerencia de ${names.user(suggested)} descartada.",
+            when {
+                noAccess -> "Sugerencia de ${displayNames(tenant, names, listOf(suggested))} descartada: el usuario ya no tiene acceso."
+                approve -> "Asignado: ${names.user(suggested)} (sugerencia aprobada)."
+                else -> "Sugerencia de ${names.user(suggested)} descartada."
+            },
             actor,
         )
-        return if (approve) suggested else null
+        SuggestionResult(added, noAccess)
     }
 
     fun clearReview(tenant: Connection, lead: CrmLead, actor: CrmActor) {
@@ -644,11 +719,12 @@ object CrmRepository {
         actor: CrmActor,
         fromStage: UUID? = null,
         toStage: UUID? = null,
+        id: UUID = UUID.randomUUID(),
     ) {
         tenant.prepareStatement(
             "INSERT INTO crm_activity (id, lead_id, kind, body, from_stage_id, to_stage_id, user_id, author) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
         ).use { insert ->
-            insert.setObject(1, UUID.randomUUID())
+            insert.setObject(1, id)
             insert.setObject(2, leadId)
             insert.setString(3, kind)
             insert.setString(4, body.take(5000))
@@ -661,7 +737,7 @@ object CrmRepository {
     }
 
     private fun leadValues(input: CrmLeadInput): List<Any?> = listOf(
-        input.stageId, input.interestId, input.ownerUserId, input.source, input.language, input.message, input.details,
+        input.stageId, input.interestId, input.source, input.language, input.message, input.details,
         input.targetStart, input.targetEnd, input.estimatedValue, input.followUpOn,
     )
 
@@ -673,7 +749,7 @@ object CrmRepository {
         phone = getString("primary_phone"),
         stageId = getObject("stage_id", UUID::class.java),
         interestId = getObject("interest_id", UUID::class.java),
-        ownerUserId = getObject("owner_user_id", UUID::class.java),
+        ownerUserIds = uuids("owner_ids"),
         source = getString("source"),
         language = getString("language"),
         message = getString("message"),
@@ -692,6 +768,10 @@ object CrmRepository {
         customFields = CrmFields.parseStored(getString("custom_fields")),
         customerCode = getString("customer_code").orEmpty(),
     )
+
+    // A uuid[] column as a list (empty for NULL).
+    private fun ResultSet.uuids(column: String): List<UUID> =
+        (getArray(column)?.array as? Array<*>).orEmpty().mapNotNull { it?.toString()?.let(UUID::fromString) }
 
     // Binds positional parameters; collections become uuid[] (used by "= ANY(?)").
     private fun PreparedStatement.bind(connection: Connection, params: List<Any?>) {
@@ -726,6 +806,8 @@ object CrmRepository {
 
 // Names of users and interests for messages and screens.
 class CrmNames(private val users: List<CrmUser>, private val interests: List<CrmInterest>) {
+    /** Whether [id] is a user that can still be assigned to leads. */
+    fun knows(id: UUID): Boolean = users.any { it.id == id }
     fun user(id: UUID?): String = id?.let { users.firstOrNull { user -> user.id == it }?.name ?: "Usuario sin acceso al CRM" } ?: CrmForms.Unassigned
     fun interest(id: UUID?): String = id?.let { interests.firstOrNull { interest -> interest.id == it }?.name } ?: CrmForms.NoInterest
 }

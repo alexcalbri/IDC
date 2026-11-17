@@ -4,7 +4,7 @@ import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /** Rules of the bulk bar: who gets assigned and which leads a form may touch. */
@@ -13,21 +13,47 @@ class CrmBulkActionsTest {
     private val users = listOf(ana, CrmUser(UUID.randomUUID(), "Beto"))
 
     @Test
-    fun onlyTheUnassignedOptionLeavesNoOwner() {
-        assertNull(CrmBulkActions.ownerFor(users, CrmForms.Unassigned))
-    }
-
-    @Test
     fun aKnownNameIsItsUser() {
-        assertEquals(ana.id, CrmBulkActions.ownerFor(users, "Ana"))
+        assertEquals(ana.id, CrmBulkActions.userFor(users, "Ana"))
     }
 
     @Test
-    fun emptyOrUnknownOwnerIsAnErrorNotAnUnassign() {
-        listOf("", "  ", "Zoe").forEach { value ->
-            val failure = assertFailsWith<CrmActionNotice>(value) { CrmBulkActions.ownerFor(users, value) }
-            assertEquals("Elige el responsable.", failure.message)
+    fun emptyUnknownOrUnassignedValueIsAnErrorNeverASilentChange() {
+        listOf("", "  ", "Zoe", CrmForms.Unassigned).forEach { value ->
+            val failure = assertFailsWith<CrmActionNotice>(value) { CrmBulkActions.userFor(users, value) }
+            assertEquals("Elige el usuario.", failure.message)
         }
+    }
+
+    private val beto = users[1]
+
+    @Test
+    fun addingAndRemovingAssigneesInBulk() {
+        val lead = listOf(ana.id)
+        // Add: the new user joins, the ones already there stay; repeating changes nothing.
+        val added = CrmAssignees.combine(lead, CrmAssignees.Mode.Add, listOf(beto.id))
+        assertEquals(listOf(ana.id, beto.id), added)
+        assertTrue(CrmBulkActions.changesAssignees(lead, added))
+        assertFalse(CrmBulkActions.changesAssignees(added, CrmAssignees.combine(added, CrmAssignees.Mode.Add, listOf(beto.id))))
+        // Remove: only that user goes; removing someone who is not there changes nothing.
+        val removed = CrmAssignees.combine(added, CrmAssignees.Mode.Remove, listOf(ana.id))
+        assertEquals(listOf(beto.id), removed)
+        assertFalse(CrmBulkActions.changesAssignees(lead, CrmAssignees.combine(lead, CrmAssignees.Mode.Remove, listOf(beto.id))))
+        // "Sin asignar": replacing with nobody takes everybody out.
+        assertEquals(emptyList(), CrmAssignees.combine(added, CrmAssignees.Mode.Replace, emptyList()))
+        // The users to notify are only the ones that were not assigned before.
+        assertEquals(listOf(beto.id), CrmAssignees.added(lead, added))
+    }
+
+    @Test
+    fun aReplacementKeepsAssignedUsersThatCannotBeChosenAnyMore() {
+        val inactive = UUID.randomUUID()
+        val assignable = users.map { it.id }
+        assertEquals(
+            listOf(beto.id, inactive),
+            CrmAssignees.combineKeepingInactive(listOf(ana.id, inactive), CrmAssignees.Mode.Replace, listOf(beto.id), assignable),
+        )
+        assertEquals(listOf(ana.id, inactive, beto.id), CrmAssignees.combineKeepingInactive(listOf(ana.id, inactive), CrmAssignees.Mode.Add, listOf(beto.id), assignable))
     }
 
     private val page = List(5) { UUID.randomUUID() }

@@ -252,12 +252,17 @@ object CrmAdminScreens {
                             UiField("notifyNewLeads", "Aviso de cada lead nuevo", type = "boolean", help = "Solo llega a quien ve todos los leads."),
                             UiField("notifyAssigned", "Aviso cuando le asignan un lead", type = "boolean"),
                             UiField("dailyDigest", "Resumen diario de sus leads", type = "boolean"),
+                            UiField(
+                                "notifyMentioned", "Avisarme por correo cuando me mencionen", type = "boolean",
+                                help = "Llega al correo del perfil del usuario. El aviso en la campana de la app siempre se crea.",
+                            ),
                         ),
                         mapOf(
                             "email" to settings?.email.orEmpty(),
                             "notifyNewLeads" to (settings?.notifyNewLeads ?: false).toString(),
                             "notifyAssigned" to (settings?.notifyAssigned ?: true).toString(),
                             "dailyDigest" to (settings?.dailyDigest ?: false).toString(),
+                            "notifyMentioned" to (settings?.notifyMentioned ?: true).toString(),
                         ),
                         submit = UiButton("Guardar", UiRequest(UiRoute + "/team", params = mapOf("op" to "user", "user" to user.id.toString()), formId = formId), style = "secondary"),
                         minFieldWidth = 220,

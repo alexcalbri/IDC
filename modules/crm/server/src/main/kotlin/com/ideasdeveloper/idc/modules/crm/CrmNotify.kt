@@ -2,7 +2,10 @@ package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.server.modules.MailException
 import com.ideasdeveloper.idc.server.modules.MailSender
+import com.ideasdeveloper.idc.server.modules.ModuleNotifier
+import com.ideasdeveloper.idc.server.modules.NotificationTarget
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
+import org.slf4j.LoggerFactory
 import java.sql.Connection
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -14,6 +17,8 @@ data class CrmUserSettings(
     val notifyNewLeads: Boolean,
     val notifyAssigned: Boolean,
     val dailyDigest: Boolean,
+    // "Avisarme por correo cuando me mencionen" (on by default; the email goes to the profile email of the user).
+    val notifyMentioned: Boolean = true,
 )
 
 /** Email notifications of the CRM. Messages are queued in crm_outbox and sent by a job. */
@@ -21,12 +26,12 @@ object CrmNotify {
     private const val MaxAttempts = 5
 
     fun userSettings(tenant: Connection): Map<UUID, CrmUserSettings> =
-        tenant.prepareStatement("SELECT user_id, email, notify_new_leads, notify_assigned, daily_digest FROM crm_user_settings").use { query ->
+        tenant.prepareStatement("SELECT user_id, email, notify_new_leads, notify_assigned, daily_digest, notify_mentioned FROM crm_user_settings").use { query ->
             query.executeQuery().use { rows ->
                 buildMap {
                     while (rows.next()) {
                         val id = rows.getObject(1, UUID::class.java)
-                        put(id, CrmUserSettings(id, rows.getString(2), rows.getBoolean(3), rows.getBoolean(4), rows.getBoolean(5)))
+                        put(id, CrmUserSettings(id, rows.getString(2), rows.getBoolean(3), rows.getBoolean(4), rows.getBoolean(5), rows.getBoolean(6)))
                     }
                 }
             }
@@ -36,9 +41,9 @@ object CrmNotify {
         if (settings.email.isNotEmpty() && !CrmContacts.isEmail(settings.email)) throw CrmValidationException("Escribe un correo valido o dejalo vacio.")
         tenant.prepareStatement(
             """
-            INSERT INTO crm_user_settings (user_id, email, notify_new_leads, notify_assigned, daily_digest) VALUES (?, ?, ?, ?, ?)
+            INSERT INTO crm_user_settings (user_id, email, notify_new_leads, notify_assigned, daily_digest, notify_mentioned) VALUES (?, ?, ?, ?, ?, ?)
             ON CONFLICT (user_id) DO UPDATE SET email = EXCLUDED.email, notify_new_leads = EXCLUDED.notify_new_leads,
-                notify_assigned = EXCLUDED.notify_assigned, daily_digest = EXCLUDED.daily_digest
+                notify_assigned = EXCLUDED.notify_assigned, daily_digest = EXCLUDED.daily_digest, notify_mentioned = EXCLUDED.notify_mentioned
             """.trimIndent()
         ).use { upsert ->
             upsert.setObject(1, settings.userId)
@@ -46,6 +51,7 @@ object CrmNotify {
             upsert.setBoolean(3, settings.notifyNewLeads)
             upsert.setBoolean(4, settings.notifyAssigned)
             upsert.setBoolean(5, settings.dailyDigest)
+            upsert.setBoolean(6, settings.notifyMentioned)
             upsert.executeUpdate()
         }
     }
@@ -87,16 +93,89 @@ object CrmNotify {
         val lead = CrmRepository.lead(tenant, leadId) ?: return
         userSettings(tenant).values.filter { it.notifyNewLeads && it.email.isNotEmpty() }.forEach { user ->
             val scope = userScope(tenant, user.userId)
-            if (!scope.seesAll || !scope.canSee(lead.interestId, lead.ownerUserId)) return@forEach
+            if (!scope.seesAll || !scope.canSee(lead.interestId, lead.ownerUserIds)) return@forEach
             enqueue(tenant, "new_lead", user.email, leadEmail("Lead nuevo: ${lead.name}", "Entro un lead nuevo en el CRM.", tenant, lead), lead.id)
         }
     }
 
-    // A lead was assigned to [userId].
-    fun assigned(tenant: Connection, leadId: UUID, userId: UUID) {
-        val user = userSettings(tenant)[userId]?.takeIf { it.notifyAssigned && it.email.isNotEmpty() } ?: return
-        val lead = CrmRepository.lead(tenant, leadId) ?: return
+    /**
+     * Users were added to the assigned ones of a lead: each one except [byUserId] (who assigned) gets "Te asignaron
+     * un lead" in the notification center of the Core (it opens the lead) and, when they turned it on
+     * (notify_assigned), the email too. A failing notification never fails the change that caused it.
+     */
+    fun assigned(tenant: Connection, notifier: ModuleNotifier?, leadId: UUID, added: Collection<UUID>, byUserId: UUID?) {
+        val targets = notifyTargets(added, byUserId)
+        if (targets.isEmpty()) return
+        runCatching {
+            val lead = CrmRepository.lead(tenant, leadId) ?: return
+            // One read of the users' settings for the whole batch.
+            val settings = userSettings(tenant)
+            targets.forEach { userId ->
+                runCatching {
+                    notifier?.notify(tenant, userId, AssignedTitle, lead.name, NotificationTarget("lead", mapOf("id" to leadId.toString())))
+                }.onFailure { log.warn("No se pudo crear el aviso de asignacion de un lead ({}).", it.javaClass.simpleName) }
+                runCatching { assignedEmail(tenant, lead, settings[userId]) }
+                    .onFailure { log.warn("No se pudo preparar el correo de asignacion de un lead ({}).", it.javaClass.simpleName) }
+            }
+        }.onFailure { log.warn("No se pudieron avisar las asignaciones de un lead ({}).", it.javaClass.simpleName) }
+    }
+
+    private val log = LoggerFactory.getLogger(CrmNotify::class.java)
+
+    const val AssignedTitle = "Te asignaron un lead"
+
+    /** Whom to tell about an assignment: the added users, each once, never the one who did it (self-assignment). */
+    fun notifyTargets(added: Collection<UUID>, byUserId: UUID?): List<UUID> = added.distinct().filter { it != byUserId }
+
+    // Email of "Te asignaron un lead", only for users that asked for it and have an email.
+    private fun assignedEmail(tenant: Connection, lead: CrmLead, settings: CrmUserSettings?) {
+        val user = settings?.takeIf { it.notifyAssigned && it.email.isNotEmpty() } ?: return
         enqueue(tenant, "assigned", user.email, leadEmail("Te asignaron a ${lead.name}", "Te asignaron este lead en el CRM.", tenant, lead), lead.id)
+    }
+
+    const val MentionedTitle = "Te mencionaron en un lead"
+    private const val MentionExcerpt = 140
+
+    /** The note as the notice shows it: one line, cut to [max] characters. */
+    fun excerpt(body: String, max: Int = MentionExcerpt): String {
+        val line = body.trim().replace(Regex("\\s+"), " ")
+        return if (line.length > max) line.take(max - 3).trimEnd() + "..." else line
+    }
+
+    /** Text of "Te mencionaron en un lead": the lead, who wrote the note and the note cut short. */
+    fun mentionText(leadName: String, by: String, body: String): String = "$leadName - $by: ${excerpt(body)}"
+
+    /**
+     * Where the email of a mention goes: the profile email of the user, only when they did not turn it off
+     * (notify_mentioned, on by default: a user without a settings row gets it) and have an email. Null: no email.
+     */
+    fun mentionEmailTarget(user: CrmUser, settings: CrmUserSettings?): String? =
+        user.email.trim().takeIf { it.isNotEmpty() && (settings?.notifyMentioned ?: true) }
+
+    /**
+     * [mentioned] were mentioned in a note of the lead ([CrmMentions.addNote] returns the ones to tell: never the writer, never
+     * twice for the same note): each gets "Te mencionaron en un lead" in the notification center of the Core (it opens
+     * the lead; the text is the note cut short) and, if they did not turn it off, an email to their profile email.
+     * A failing notification never fails the note that caused it.
+     */
+    fun mentioned(tenant: Connection, notifier: ModuleNotifier?, leadId: UUID, body: String, by: CrmActor, mentioned: Collection<CrmUser>) {
+        if (mentioned.isEmpty()) return
+        runCatching {
+            val lead = CrmRepository.lead(tenant, leadId) ?: return
+            val settings = userSettings(tenant)
+            val text = mentionText(lead.name, by.name, body)
+            mentioned.distinctBy { it.id }.forEach { user ->
+                runCatching {
+                    notifier?.notify(tenant, user.id, MentionedTitle, text, NotificationTarget("lead", mapOf("id" to leadId.toString())))
+                }.onFailure { log.warn("No se pudo crear el aviso de mencion en un lead ({}).", it.javaClass.simpleName) }
+                runCatching {
+                    mentionEmailTarget(user, settings[user.id])?.let { to ->
+                        val intro = "${by.name} te menciono en una nota de este lead.\n\nNota:\n${body.trim().take(1000)}"
+                        enqueue(tenant, "mentioned", to, leadEmail("Te mencionaron en ${lead.name}", intro, tenant, lead), lead.id)
+                    }
+                }.onFailure { log.warn("No se pudo preparar el correo de mencion en un lead ({}).", it.javaClass.simpleName) }
+            }
+        }.onFailure { log.warn("No se pudieron avisar las menciones de un lead ({}).", it.javaClass.simpleName) }
     }
 
     private fun leadEmail(subject: String, intro: String, tenant: Connection, lead: CrmLead): CrmEmail {
@@ -116,8 +195,8 @@ object CrmNotify {
 
     /**
      * Daily digest at the company's digest hour: each user that asked for it receives their open
-     * leads with a follow-up due (overdue or today); users that see every lead also get the count
-     * of open leads without responsible. Sent once per day.
+     * leads with a follow-up due (overdue or today; every assigned user gets them); users that see every
+     * lead also get the count of open leads without assigned users. Sent once per day.
      */
     fun digestIfDue(tenant: Connection, now: LocalDateTime) {
         val (hour, sentOn) = tenant.prepareStatement("SELECT digest_hour, digest_sent_on FROM crm_settings WHERE id = 1").use { query ->
@@ -140,7 +219,7 @@ object CrmNotify {
                 }
                 if (unassigned > 0) {
                     add("")
-                    add("Leads abiertos sin responsable: $unassigned.")
+                    add("Leads abiertos sin asignados: $unassigned.")
                 }
                 add("")
                 add("Usuario: ${names.user(user.userId)}")

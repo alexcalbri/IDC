@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -11,13 +12,34 @@ class CrmUnqualifiedTest {
     private fun permissions(vararg granted: String) = ModulePermissions("acme", "token", false, granted.toSet())
 
     @Test
-    fun conditionMatchesLeadsWithoutInterestOrWithoutOwner() {
-        assertEquals("(l.interest_id IS NULL OR l.owner_user_id IS NULL)", unqualifiedSql(interestsEnabled = true))
+    fun conditionNeedsNoInterestAndNobodyAssigned() {
+        assertEquals("(l.interest_id IS NULL AND ${CrmAssignees.NoneSql})", unqualifiedSql(interestsEnabled = true))
+        assertFalse(unqualifiedSql(interestsEnabled = true).contains("owner_user_id"))
     }
 
     @Test
-    fun withInterestsOffOnlyTheOwnerMatters() {
-        assertEquals("l.owner_user_id IS NULL", unqualifiedSql(interestsEnabled = false))
+    fun withInterestsOffOnlyTheAssignedUsersMatter() {
+        assertEquals(CrmAssignees.NoneSql, unqualifiedSql(interestsEnabled = false))
+    }
+
+    @Test
+    fun aLeadLeavesWithAtLeastOneAssignedUserOrAnInterest() {
+        val interest = UUID.randomUUID()
+        val ana = UUID.randomUUID()
+        val beto = UUID.randomUUID()
+        // Nothing yet: it is waiting.
+        assertTrue(isUnqualified(null, emptyList(), interestsEnabled = true))
+        // One assigned user is enough, with or without interest.
+        assertFalse(isUnqualified(null, listOf(ana), interestsEnabled = true))
+        assertFalse(isUnqualified(null, listOf(ana, beto), interestsEnabled = true))
+        // An interest is enough too.
+        assertFalse(isUnqualified(interest, emptyList(), interestsEnabled = true))
+        // With interests off the interest does not count.
+        assertTrue(isUnqualified(interest, emptyList(), interestsEnabled = false))
+        assertFalse(isUnqualified(null, listOf(ana), interestsEnabled = false))
+        // Removing the last assigned user puts a lead without interest back in the list.
+        assertTrue(isUnqualified(null, CrmAssignees.combine(listOf(ana), CrmAssignees.Mode.Remove, listOf(ana)), interestsEnabled = true))
+        assertFalse(isUnqualified(null, CrmAssignees.combine(listOf(ana, beto), CrmAssignees.Mode.Remove, listOf(ana)), interestsEnabled = true))
     }
 
     @Test

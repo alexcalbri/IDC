@@ -10,12 +10,12 @@ import kotlin.test.assertNull
 
 class CrmLeadChangesTest {
     private val lead = CrmLead(
-        UUID.randomUUID(), UUID.randomUUID(), "Ana", "ana@example.com", "+50760000000", UUID.randomUUID(), null, null, "Web", "", "Hola", "",
+        UUID.randomUUID(), UUID.randomUUID(), "Ana", "ana@example.com", "+50760000000", UUID.randomUUID(), null, emptyList(), "Web", "", "Hola", "",
         LocalDate.of(2026, 11, 2), null, BigDecimal("100.00"), null, Instant.now(), null, Instant.now(),
     )
 
     private fun input(phone: String = lead.phone, message: String = lead.message, value: BigDecimal? = lead.estimatedValue, end: LocalDate? = null) =
-        CrmLeadInput(lead.name, lead.email, phone, lead.stageId, null, null, lead.source, lead.language, message, lead.details, lead.targetStart, end, value, null)
+        CrmLeadInput(lead.name, lead.email, phone, lead.stageId, null, emptyList(), lead.source, lead.language, message, lead.details, lead.targetStart, end, value, null)
 
     // The history says what changed, not just that something did.
     @Test

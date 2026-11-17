@@ -106,7 +106,7 @@ object CrmIntegrationMcpTools {
         McpTool(
             name = "wordpress_map_agent",
             title = "Vincular agente del sitio",
-            description = "Vincula un agente del sitio (wpUserId de get_integrations) a un usuario del CRM, que sera el responsable sugerido de sus leads.",
+            description = "Vincula un agente del sitio (wpUserId de get_integrations) a un usuario del CRM, que sera el usuario sugerido para asignar en sus leads (al aprobarlo se anade a los asignados).",
             permission = CrmScreens.Settings,
             inputSchema = McpSchema.obj(
                 mapOf(
@@ -293,7 +293,7 @@ object CrmIntegrationMcpTools {
     }
 
     private fun visibleLead(call: McpToolCall, context: CrmScreens.Context): CrmLead =
-        CrmRepository.lead(call.tenant, call.requiredUuid("lead"))?.takeIf { context.scope.canSee(it.interestId, it.ownerUserId) }
+        CrmRepository.lead(call.tenant, call.requiredUuid("lead"))?.takeIf { context.scope.canSee(it.interestId, it.ownerUserIds) }
             ?: throw McpToolException("Lead no encontrado o no visible para el usuario.")
 
     private fun item(call: McpToolCall, lead: CrmLead): CrmItem =

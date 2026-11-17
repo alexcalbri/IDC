@@ -34,10 +34,10 @@ split by line of business (Surf, Yoga, Eventos...) or by property type.
 
 - The company defines its interests (`crm_interests`) and assigns interests to
   each user (`crm_user_interests`).
-- A user sees the leads of their interests and the leads they own.
+- A user sees the leads of their interests and the leads they are assigned to (0.19.0: even when the lead is outside their interests; see *Assigned users*).
 - Users with **Ver todos los leads** (and the business owner) see every lead
   and use the interest as a filter.
-- Leads without interest (or without a responsible user) wait in **Sin
+- Leads without interest and without assigned users wait in **Sin
   calificar**, visible to users with **Recepcion de leads** (reception is a
   role), who categorize them.
 - Deleting an interest sends its leads back to Recepcion.
@@ -54,7 +54,7 @@ Menu (0.18.0): **Nuevo lead - Leads - Sin calificar - Seguimientos - Configuraci
 | --- | --- | --- |
 | `new` | `crm.leads.manage` | New lead (first in the menu). Email and phone are optional (Clientes V005). While name, email or phone are typed the form suggests existing customers (`GET /modules/crm/ui/suggest/customers`, same permission); choosing one fills the contact and links that customer. Otherwise an existing customer with the same email, or else the same phone (compared by digits, at least 7), is reused; only an email or phone it lacked is added. Without a match a `prospect` customer of type `crm` is created. |
 | `leads` | `crm.view` | **Leads** (0.18.0): one item with a **Pipeline / Lista** selector. Both views share the filters (interest, "Mis leads" in the responsible dropdown, search and **Mostrar archivados**); the selector buttons send the filter form along. The last view of each user is remembered in `crm_user_settings.leads_view` (V016; the server owner has no user row, so it only lasts while `view` is sent). **Pipeline**: metrics and a kanban board (`UiBoard`; dragging a card changes its stage); with **Mostrar archivados** an **Archivados** column follows the last stage. **Lista**: searchable list (`UiList`, pages of 50, stage filter) with archived leads mixed in; with `crm.leads.manage` an accordion **Acciones en lote** (one checkbox per lead of the page, plus mover, asignar, archivar, restaurar and eliminar; `CrmBulkActions`). |
-| `reception` | `crm.reception` or `crm.assign` | **Sin calificar** (0.16.0): leads without interest (only with interests on) or without a responsible user; a lead leaves as soon as it has both. Pending responsible-user suggestions show as "Sugerido: <name>" with Aprobar / Descartar buttons (`crm.assign`). |
+| `reception` | `crm.reception` or `crm.assign` | **Sin calificar** (0.16.0, rule changed in 0.19.0): leads with nobody assigned and, with interests on, without interest; a lead leaves as soon as it has at least one assigned user **or** an interest. Pending assigned-user suggestions show as "Sugerido: <name>" with Aprobar / Descartar buttons (`crm.assign`); approving adds the person to the assigned users. |
 | `followups` | `crm.view` | Open leads with follow-up overdue, today or in the next 7 days. |
 | `settings` | `crm.settings` | **Configuracion**: a row of tabs (buttons; each tab is its own screen id, so the old routes open their tab). A tab with its own permission hides without it (today all use `crm.settings`). |
 | `lead` | `crm.view` | Detail form, notes and activity timeline (`UiTimeline`). Editing contact data updates the shared customer. The form also shows the custom fields and the **Documentos** attachments (see below). |
@@ -91,18 +91,109 @@ Routes: `GET /modules/crm/ui/{screen}` and `POST /modules/crm/ui/{screen}?op=...
 | Id | Meaning |
 | --- | --- |
 | `crm.view` | Use the CRM within the user's scope. |
-| `crm.leads.manage` | Create and edit leads, move stages, add notes, send messages. |
+| `crm.leads.manage` | Create and edit leads, move stages, add notes, send messages. (A user mentioned in a lead can answer it with notes without this permission, see *Mentions in notes*.) |
 | `crm.leads.delete` | Delete leads (the customer stays). |
-| `crm.reception` | See and qualify leads without interest or without a responsible user. |
+| `crm.reception` | See and qualify leads without interest and without assigned users. |
 | `crm.leads.all` | See leads of every interest. |
-| `crm.assign` | Choose a lead's responsible user; approve or discard suggestions. |
+| `crm.assign` | Choose the users a lead is assigned to (several); approve or discard suggestions. |
 | `crm.settings` | Configure stages, interests, mail, templates, anti-spam and team notifications. |
 
 Users that can own leads are active users that are business owner or hold any
 `crm.*` permission. Server owners using the server workspace act without a
 company user, so their changes are logged as "Dueno del servidor" and they
-cannot be a lead's responsible user. Only users with `crm.assign` or
-`crm.leads.all` change the responsible user of a lead.
+cannot be assigned to a lead. Only users with `crm.assign` or
+`crm.leads.all` change the assigned users of a lead.
+
+## Assigned users (V017, 0.19.0)
+
+A lead can be assigned to several users, all equal (there is no main person). The table
+`crm_lead_owners` (`lead_id`, `user_id`, `created_at`; primary key `(lead_id, user_id)`; lead rows are deleted
+with the lead; index by `user_id`) is the **only** source of truth: no query or write of the module uses
+`crm_leads.owner_user_id` any more. V017 copied the previous assignee of every lead into the table and kept the
+column (and its index) only so the change can be rolled back; it is deprecated and no longer updated, and a
+later migration can drop it. `CrmAssignees` holds the SQL fragments and the rules without a database.
+
+- **Visibility:** with interests on, each assigned user sees the lead even outside their interests
+  (`CrmScope.canSee` / `sqlCondition`, `EXISTS` over `crm_lead_owners`).
+- **Mis leads / Asignado filter:** leads where the user is one of the assigned; **Sin asignar** = nobody assigned.
+- **Sin calificar (rule changed from 0.18.0):** until 0.18.0 a lead stayed in the list while it lacked an interest
+  **or** an assigned user, and left only when it had both. Since 0.19.0 a lead is in the list only while it has
+  **no assigned user and no interest** (with interests off: no assigned user), and leaves as soon as it has at least
+  one assigned user **or** an interest (`unqualifiedSql`). Leads that had one of the two and were listed before no longer are.
+- **Lead form:** *Asignado* is a multiple dropdown (`UiField.multiple`). The form carries the list it was drawn with
+  (request parameter `owners0`) and saving applies only the difference to it (adds with add, removes with remove), so
+  assignments made by somebody else meanwhile are not undone; the notification goes to the users really added.
+  Without permission to assign (or when an agent sends no `owner`/`owners`) the assigned users are not touched at all.
+  Assigned users that can no longer have leads (deactivated) show as "<usuario> (sin acceso)" so they can be unchecked,
+  but they cannot be added; they also can be removed with bulk "Quitar asignado" and `ownersMode=remove`. They are never
+  shown in the `{responsable}` template variable. Cards and list rows show the initials of the assigned users.
+- **Suggestions:** approving adds the suggested user; if they no longer have access to the CRM nobody is assigned,
+  the suggestion is only discarded and the user is told.
+- **Concurrency:** changes of the assigned users lock the lead row (`SELECT ... FOR UPDATE`) and use set statements
+  (`INSERT ... SELECT unnest(...) ON CONFLICT DO NOTHING RETURNING`, `DELETE ... RETURNING`), so what was really
+  added or removed is known and notified.
+- **Notifications:** each user added (form, bulk, agents, approved suggestion) gets "Te asignaron un lead" in the
+  Core notification center (`ModuleNotifier`, target screen `lead` with its id) and, if `notify_assigned` is on in
+  `crm_user_settings`, the email too (failures are logged without personal data and never fail the change). Nobody is notified of assigning themselves. Imports add assigned users silently.
+- **Follow-ups and daily digest** reach every assigned user; the template variable `{responsable}` lists all names.
+- **History:** "Asignados: ..." entries (kind `owner`) say who the lead has now.
+- **Imports:** the people column accepts several people (monday writes "Ana, Beto"; CSV accepts comma or
+  semicolon). Each person is matched with a user by the equivalence table of the mapping, then by profile email,
+  then by name. People without a user are skipped and listed in the row report ("Sin usuario para asignar"); no user
+  is ever created. Importing again **only adds** assigned users and never removes any (users assigned by hand or removed
+  later are not touched), and it never repeats the ones the lead already has (`ON CONFLICT DO NOTHING`).
+  In monday and CSV the cell is split at every comma or semicolon, so a name written as "Perez, Ana" becomes two
+  people ("Perez" and "Ana"): write it as "Ana Perez" or map each piece in the equivalence table.
+- **WordPress, Encuentra24, Cloudbeds:** they do not assign directly; the agent of a listing is a *suggestion*
+  (`suggested_owner_user_id`) and approving it adds the user to the list.
+
+## Mentions in notes (V018, 0.20.0)
+
+A note of a lead can mention any user with access to the CRM (active, business owner or holder of `crm.view`),
+even if the lead is not theirs or of their interests. Two ways to mention, because the app has no "@" autocomplete
+in text fields yet:
+
+- the multiple dropdown **Mencionar a** next to the note (`UiField.multiple`, as *Asignado*);
+- `@Nombre` or `@correo` in the text of the note, matched against the same users (`CrmMentions.parseText`): names may
+  have spaces ("@Beto Ruiz", the longest match wins), case is ignored, an `@` glued to a word is an email address and not a
+  mention, repeated mentions count once and an unknown `@word` is reported ("No se reconocio: @Zoe") without failing the note.
+
+Table `crm_lead_mentions` (V018, in `runtimeTables`): `id`, `lead_id` (FK `crm_leads`, `ON DELETE CASCADE`), `user_id`,
+`activity_id` (the note in `crm_activity`; `ON DELETE SET NULL`), `mentioned_by`, `created_at` and `revoked_at`.
+Partial index by `user_id WHERE revoked_at IS NULL`; unique `(activity_id, user_id)`, so one note never mentions (or
+notifies) a user twice, even revoked. V018 also adds `crm_user_settings.notify_mentioned` (default true).
+
+**What a mention gives.** While the mention is active (`revoked_at IS NULL`) the user sees the lead in **Leads** (pipeline
+and list) with the badge **Mencionado**, can open it, read its data, notes, conversation and files, and **add notes**: nothing
+else. An archived lead disappears from their views (also with **Mostrar archivados**). Visibility has two kinds and they are never mixed:
+
+| Kind | Where | Allows |
+| --- | --- | --- |
+| By scope (`CrmScope.canSee`, `sqlCondition()`) | interests, assigned, reception, see all | everything their permissions allow |
+| By mention (`CrmScope.canRead`, `sqlCondition(withMentions = true)`, `CrmMentions.LeadAccess.ReadNotes`) | `EXISTS` over active `crm_lead_mentions` | read the lead and add notes |
+
+Only the lead views (`CrmLeadFilter.withMentions`: pipeline, list) and the agent search use the mention-aware condition;
+every write (`lead:save`, `restore`, `send`, `delete`, `approve`/`discard`, items, rooms, `pipeline:move`, `unmention`, bulk
+actions, the agent tools) keeps asking `canSee`. The note form is the only write open to a mention (`lead:note`; the user also
+needs `crm.view`). Bulk actions skip the leads seen only through a mention, in the screen (they get no checkbox) and again inside
+`CrmBulkActions` ("solo los ves por una mencion").
+
+**Who gives access.** Only a user with the lead inside their normal scope (`LeadAccess.Full`) creates mentions. Someone who
+reads through a mention can write notes, but their `@` stay plain text: no access is created, no revoked mention comes back and
+nobody is told, in the app and in `crm_add_lead_note` (`mentionsIgnored`). So "Quitar acceso" is final unless someone who manages the lead
+mentions the user again. A mention reads only while the lead is open: an archived lead is not reached through it (list SQL and direct open),
+and the mentioned user sees only the lead data, the conversation, the notes and the activity (no customer notes, items, reservations or suggestions).
+A name followed by `. _ + -` and a letter or digit is not that user ("@Ana-Maria" is not "@Ana"); runs of spaces/NBSP count as one.
+
+**Quitar acceso.** Whoever manages the lead (`crm.leads.manage` with the lead inside their scope) sees the list **Mencionados**
+in the lead with a **Quitar acceso** button per user (`lead:unmention`): it sets `revoked_at` on the user's active mentions and
+records it in the history. A later note that mentions them gives access again. Notes that mention someone are highlighted in the
+history (tone and the title "Nota del lead - menciona a @Ana"; the renderer has no inline styles).
+
+**Notices.** Each newly mentioned user gets "Te mencionaron en un lead" in the Core notification center (target screen `lead`
+with its id; the text is the lead, who wrote and the note cut to 140 characters) and, if `notify_mentioned` is on and they have a
+profile email, an email to that email through `crm_outbox` (kind `mentioned`). Nobody is told for mentioning themselves or twice for
+the same note. **Equipo** has the per-user option "Avisarme por correo cuando me mencionen" (`crm_update_user_notifications` has `notifyMentioned`).
 
 ## Inbox and channels (V002)
 
@@ -121,8 +212,8 @@ Every channel (forms, email, and the channel integrations) hands contacts to
    messages create nothing and are kept in the last-50 log.
 4. The message joins the customer's open lead, or a new lead is created in the
    first open stage with its origin (`source`, e.g. "WhatsApp") and, when the
-   source suggests one, a responsible user waiting in **Sin calificar**.
-   Nothing is assigned automatically.
+   source suggests one, an assigned user waiting in **Sin calificar** (`suggested_owner_user_id`;
+   approving it adds the person to the assigned users). Nothing is assigned automatically.
 
 The lead detail shows the **Conversacion** (`crm_messages`, deduplicated by the
 channel's message id) and replies through any available channel (`CrmChannels`;
@@ -134,7 +225,7 @@ today email).
   account. Replies and queued mail use it.
 - **Templates** (`crm_email_templates`): subject and HTML or plain-text body
   with placeholders `{nombre}`, `{correo}`, `{telefono}`, `{codigo_cliente}`
-  (the customer code, also the WiFi code of the hotspot), `{responsable}`,
+  (the customer code, also the WiFi code of the hotspot), `{responsable}` (every assigned user, names separated by comma),
   `{etapa}`, `{interes}`, `{checkin}`, `{checkout}`, `{valor}`, `{habitaciones}`,
   `{reserva}`. Values are HTML-escaped.
 - **Reading** (IMAP, optional): job `imap` every 5 minutes reads up to 50 new
@@ -144,8 +235,8 @@ today email).
 ## Notifications
 
 Users have no email in the core, so **Equipo** stores one per user
-(`crm_user_settings`) with three options: every new lead (only users that see
-all leads), leads assigned to them, and a daily digest of their follow-ups due
+(`crm_user_settings`) with four options (the fourth, 0.20.0: email when they are mentioned, to their profile email): every new lead (only users that see
+all leads), leads assigned to them, and a daily digest of their follow-ups due (every assigned user gets them)
 (at the company's digest hour, once a day). Mail goes through `crm_outbox`,
 sent by job `outbox` every minute with up to 5 attempts.
 
@@ -463,8 +554,9 @@ seconds per run so large downloads continue on the next minute.
 
 **Acciones en lote** (0.18.0, no longer a section): an accordion in the Lista view of
 Leads, only with `crm.leads.manage`. One checkbox per lead of the current page,
-"select all visible", and move to a stage, assign a responsible user (with
-`crm.assign` or see-all), archive, restore or delete (with `crm.leads.delete`).
+"select all visible", and move to a stage, **Anadir asignado**, **Quitar asignado** or **Sin asignar** (with
+`crm.assign` or see-all; 0.19.0, they replaced "Asignar responsable"), archive, restore or delete (with `crm.leads.delete`).
+A lead that would not change (already assigned, not assigned) is skipped and counted, so repeating the action is harmless.
 The renderer has no row selection, so it is a form with one checkbox field per lead.
 
 ## Custom fields and attachments (V010)
@@ -517,11 +609,12 @@ screens, so an agent sees and changes only the leads of its user's scope:
 
 | Tool | Permission | Does |
 |---|---|---|
-| `crm_list_pipeline`, `crm_search_leads`, `crm_get_lead`, `crm_list_follow_ups`, `crm_pipeline_summary` | `crm.view` | Stages, interests and owners; search and read leads; follow-ups; pipeline totals. |
+| `crm_list_pipeline`, `crm_search_leads`, `crm_get_lead`, `crm_list_follow_ups`, `crm_pipeline_summary` | `crm.view` | Stages, interests and assignable users; search and read leads (each lead returns `owners`, the list of assigned users, plus `owner`, the same names joined by comma); follow-ups; pipeline totals. `crm_search_leads`, `crm_get_lead` and `crm_get_lead_messages` also reach the leads where the user was mentioned (read-only: `readOnly: true`); `crm_get_lead` returns the active `mentioned` users. |
 | `crm_get_lead_messages`, `crm_list_message_templates` | `crm.view` | A lead's conversation; templates and channels. |
-| `crm_create_lead`, `crm_update_lead`, `crm_move_lead`, `crm_add_lead_note`, `crm_mark_lead_reviewed` | `crm.leads.manage` | Same rules as the forms (Cloudbeds rooms block winning without a reservation). |
+| `crm_add_lead_note` | `crm.view` | Adds a note to a visible lead; with `crm.leads.manage` for leads inside the scope, or for a lead where the user was mentioned (no other permission needed). `mentions` (names or emails) and `@Nombre` / `@correo` in the text mention users; returns `mentioned` and `notRecognized`. |
+| `crm_create_lead`, `crm_update_lead`, `crm_move_lead`, `crm_mark_lead_reviewed` | `crm.leads.manage` | Same rules as the forms (Cloudbeds rooms block winning without a reservation). Assigned users: `owners` (list of names) with `ownersMode` `replace` (default), `add` or `remove`; the old single `owner` still works and means "replace by this one" (blank leaves nobody). |
 | `crm_send_message` | `crm.leads.manage` | Sends by email, WhatsApp, Messenger or Instagram with the reply form's checks; recorded in the conversation (also when it fails). |
-| `crm_list_pending_assignments`, `crm_resolve_assignment` | `crm.assign` | Approve or discard suggested owners. |
+| `crm_list_pending_assignments`, `crm_resolve_assignment` | `crm.assign` | Approve (adds the suggested user to the assigned ones) or discard suggested assigned users. |
 | `crm_delete_lead` | `crm.leads.delete` | Deletes a lead (marked destructive); the customer stays. |
 
 Settings tools (`CrmSettingsMcpTools.kt`, permission `crm.settings`), with the same parsing as the
@@ -565,7 +658,7 @@ Import and bulk tools (`CrmImportMcpTools.kt`):
 | `crm_import_csv`, `crm_import_from_url`, `crm_import_leadspro` | `crm.settings` | Read a source into an import waiting for its mapping. |
 | `crm_list_monday_boards`, `crm_import_monday` | `crm.settings` | monday.com boards with the token saved in the app (the token is never offered). |
 | `crm_map_import`, `crm_apply_import_preset`, `crm_start_import`, `crm_cancel_import` | `crm.settings` | Column and value mapping (optionally saved), start and cancel. |
-| `crm_bulk_update_leads` | `crm.leads.manage` (+ assign / delete permissions) | Move, assign or delete up to 500 visible leads, with `CrmBulkActions` (the same code as the bulk bar of the Lista view). |
+| `crm_bulk_update_leads` | `crm.leads.manage` (+ assign / delete permissions) | Move, change the assigned users (`action: assign` with `owners` + `ownersMode` add / remove / replace, or the old `owner`, which also takes several names; sending neither is an error, an empty `owners` list or `owner: "Sin asignar"` leaves nobody) or delete up to 500 visible leads, with `CrmBulkActions` (the same code as the bulk bar of the Lista view). |
 
 The module's own agent instructions are in `CrmMcpTools.kt` (`CrmMcpTools.mcp` joins every tool
 file).

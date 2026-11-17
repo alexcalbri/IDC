@@ -54,6 +54,7 @@ object CrmScreens {
     const val Settings = "crm.settings"
     const val Assign = "crm.assign"
 
+    const val MentionedBadge = "Mencionado"
     private const val BoardPerStage = 30
     private const val PageSize = 50
     private const val AllOption = "Todos"
@@ -171,6 +172,17 @@ object CrmScreens {
         // Who may choose a lead's responsible user: assigners and users that see every lead.
         val canAssign get() = permissions.has(Assign) || scope.seesAll
 
+        // The leads where the user has an active mention (one read, only when needed).
+        val mentionedLeadIds: Set<UUID> by lazy { scope.userId?.let { CrmMentions.leadIds(tenant, it) }.orEmpty() }
+
+        /** How the user reaches [lead]: with their scope (full) or only through a mention (read and notes). Writes ask [CrmMentions.LeadAccess.canWrite]. */
+        fun readAccess(lead: CrmLead): CrmMentions.LeadAccess =
+            if (scope.canSee(lead.interestId, lead.ownerUserIds)) CrmMentions.LeadAccess.Full
+            else CrmMentions.leadAccess(scope, lead.interestId, lead.ownerUserIds, lead.id in mentionedLeadIds, lead.archivedAt != null)
+
+        // Users a note can mention: anybody with access to the CRM.
+        val mentionable: List<CrmUser> by lazy { CrmRepository.mentionableUsers(tenant) }
+
         companion object {
             fun load(tenant: Connection, permissions: ModulePermissions, serverMail: SmtpSettings? = null, publicBase: String = "") = Context(
                 tenant, permissions, CrmRepository.scope(tenant, permissions),
@@ -204,19 +216,20 @@ object CrmScreens {
         }
         if (screen == "rooms") {
             val lead = params["lead"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
-                ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserId) }
+                ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserIds) }
                 ?: return frame(context, "leads", "Habitaciones", UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), emptyList())
             return frame(context, "leads", "Habitaciones", notice, CrmCloudbedsScreens.rooms(context, lead, params), showTitle = false)
         }
         if (screen == "properties") {
             val lead = params["lead"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
-                ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserId) }
+                ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserIds) }
                 ?: return frame(context, "leads", "Propiedades", UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), emptyList())
             return frame(context, "leads", "Propiedades", notice, CrmWordPressScreens.properties(context, lead, params), showTitle = false)
         }
         if (screen == "lead") {
+            // Opening the lead also works through a mention (read-only, with notes): see CrmMentions.LeadAccess.
             val lead = params["id"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(context.tenant, it) }
-                ?.takeIf { context.scope.canSee(it.interestId, it.ownerUserId) }
+                ?.takeIf { context.readAccess(it).canRead }
                 ?: return frame(context, "leads", "Lead", notice ?: UiNotice("Ese lead no existe o no tienes acceso.", UiTone.Warning), leadViews(context, null, emptyMap()))
             return frame(context, "leads", lead.name, notice, leadDetail(context, lead, submitted), showTitle = false)
         }
@@ -280,6 +293,9 @@ object CrmScreens {
         )
     }
 
+    // Request parameter with the assigned users (ids separated by comma) a lead form was drawn with.
+    const val OwnersBeforeKey = "owners0"
+
     private const val ShowArchivedKey = "showArchived"
     private const val ArchivedColumn = "archived"
 
@@ -339,7 +355,7 @@ object CrmScreens {
                 add(UiField("fInterest", "Interes", type = "dropdown", options = options))
             }
             val owners = listOf(AllOption) + listOfNotNull(MineOption.takeIf { context.scope.userId != null }) + CrmForms.Unassigned + context.users.map { it.name }
-            add(UiField("fOwner", "Responsable", type = "dropdown", options = owners))
+            add(UiField("fOwner", "Asignado", type = "dropdown", options = owners))
             if (withStage) add(UiField("fStage", "Etapa", type = "dropdown", options = listOf(AllOption) + context.stages.map { it.name }))
             if (archivedShown != null) add(UiField(ShowArchivedKey, "Mostrar archivados", type = "boolean"))
         }
@@ -402,7 +418,8 @@ object CrmScreens {
 
     private fun pipelineBody(context: Context, params: Map<String, String>, showArchived: Boolean): List<UiNode> {
         // The stage filter is the list's: the board always shows every stage.
-        val filter = filter(context, params - "fStage")
+        // The board also shows the leads the user was mentioned in (read-only: moving them is refused).
+        val filter = filter(context, params - "fStage").copy(withMentions = true)
         val (byStage, totals) = CrmRepository.board(context.tenant, context.scope, filter, BoardPerStage)
         val canMove = context.permissions.has(Manage)
         val keep = filterParams(params) - "fStage" + (ShowArchivedKey to showArchived.toString())
@@ -444,7 +461,7 @@ object CrmScreens {
                 move = if (canMove) UiRequest(UiRoute + "/pipeline", params = keep + ("op" to "move")) else null,
                 emptyText = "Crea etapas en Configuracion.",
             ),
-            restoreCard(context, archivedShownLeads, "pipeline", keep),
+            restoreCard(context, archivedShownLeads.filter { context.readAccess(it).canWrite }, "pipeline", keep),
         )
     }
 
@@ -477,6 +494,8 @@ object CrmScreens {
         lead.suggestedOwnerUserId?.let { add(UiBadge("Sugerido: ${context.names.user(it)}", UiTone.Info)) }
         if (lead.reviewReason.isNotEmpty()) add(UiBadge("Por revisar", UiTone.Danger))
         if (lead.archivedAt != null) add(UiBadge("Archivado", UiTone.Neutral))
+        // Seen only because of a mention (not inside the user's scope): read and notes.
+        if (context.readAccess(lead) == CrmMentions.LeadAccess.ReadNotes) add(UiBadge(MentionedBadge, UiTone.Info))
     }
 
     private fun card(context: Context, lead: CrmLead, stage: CrmStage?) = UiBoardCard(
@@ -484,7 +503,8 @@ object CrmScreens {
         title = lead.name,
         subtitle = lead.message.ifBlank { lead.source }.replace('\n', ' ').let { if (it.length > 90) it.take(87) + "..." else it },
         details = listOfNotNull(
-            "Responsable: ${context.names.user(lead.ownerUserId)}",
+            // Initials of everybody assigned; the names are in the lead.
+            lead.ownerUserIds.takeIf { it.isNotEmpty() }?.let { "Asignados: ${CrmAssignees.initialsLabels(context.names, it).joinToString(", ")}" },
             // Archived leads sit outside the stages: say where they were.
             stage?.takeIf { lead.archivedAt != null }?.let { "Etapa: ${it.name}" },
             dates(lead)?.let { "Fechas: $it" },
@@ -504,7 +524,8 @@ object CrmScreens {
     private fun listItem(context: Context, lead: CrmLead, suggestion: Boolean = false) = UiListItem(
         title = lead.name,
         subtitle = listOf(
-            context.stage(lead.stageId)?.name.orEmpty(), lead.email, lead.phone, context.names.user(lead.ownerUserId),
+            context.stage(lead.stageId)?.name.orEmpty(), lead.email, lead.phone,
+            lead.ownerUserIds.takeIf { it.isNotEmpty() }?.let { CrmAssignees.initialsLabels(context.names, it).joinToString(", ") }.orEmpty(),
             lead.suggestedOwnerUserId.takeIf { suggestion }?.let { "Sugerido: ${context.names.user(it)}" }.orEmpty(),
         ).filter { it.isNotBlank() }.joinToString(" - "),
         trailing = lead.createdAt.atZone(ZoneId.systemDefault()).toLocalDate().toString(),
@@ -526,19 +547,25 @@ object CrmScreens {
     }
 
     /** The page of the list view the filters and page of [params] show. */
-    class ListPage(val leads: List<CrmLead>, val total: Int, val page: Int)
+    class ListPage(val leads: List<CrmLead>, val total: Int, val page: Int) {
+        /** The leads of the page the user may act on (bulk bar, restore): the ones seen through a mention only are read-only. */
+        fun writable(context: Context): List<CrmLead> = leads.filter { context.readAccess(it).canWrite }
+    }
 
     /** What the list view shows for [params]; the bulk bar uses it to know which leads the checkboxes were drawn for. */
     fun listPage(context: Context, params: Map<String, String>, showArchived: Boolean = showArchived(context, params)): ListPage {
         // Archived leads come mixed in, marked "Archivado".
-        val filter = filter(context, params).copy(includeArchived = showArchived)
+        val filter = filter(context, params).copy(includeArchived = showArchived, withMentions = true)
         val total = CrmRepository.count(context.tenant, context.scope, filter)
         val page = (params["page"]?.toIntOrNull() ?: 1).coerceIn(1, maxOf(1, (total + PageSize - 1) / PageSize))
         return ListPage(CrmRepository.leads(context.tenant, context.scope, filter, PageSize, (page - 1) * PageSize), total, page)
     }
 
     private fun listBody(context: Context, params: Map<String, String>, showArchived: Boolean): List<UiNode> {
-        val (leads, total, page) = listPage(context, params, showArchived).let { Triple(it.leads, it.total, it.page) }
+        val listed = listPage(context, params, showArchived)
+        val (leads, total, page) = Triple(listed.leads, listed.total, listed.page)
+        // Checkboxes and restore buttons only for the leads the user may act on (never the ones seen through a mention).
+        val writable = listed.writable(context)
         val keep = filterParams(params) + (ShowArchivedKey to showArchived.toString()) + ("page" to page.toString())
         return listOfNotNull(
             UiCard(
@@ -549,8 +576,8 @@ object CrmScreens {
                 title = "$total lead(s)",
             ),
             // Only with crm.leads.manage: one checkbox per lead of this page and the action.
-            CrmImportScreens.bulkCard(context, leads, page, total, keep - "page" + (ViewKey to ViewList)),
-            restoreCard(context, leads.filter { it.archivedAt != null }, "list", keep),
+            CrmImportScreens.bulkCard(context, writable, page, total, keep - "page" + (ViewKey to ViewList)),
+            restoreCard(context, writable.filter { it.archivedAt != null }, "list", keep),
         )
     }
 
@@ -572,10 +599,10 @@ object CrmScreens {
                     ),
                 )
             },
-            title = "Sugerencias de responsable (${suggested.size})",
+            title = "Sugerencias de asignado (${suggested.size})",
         ).takeIf { suggested.isNotEmpty() }
         return listOfNotNull(
-            UiText("Leads sin interes o sin usuario asignado. Abre cada uno, elige su interes y asignalo: saldra de esta lista en cuanto tenga ambos. El responsable que sugiere el origen del lead se aprueba o descarta aqui."),
+            UiText("Leads sin usuarios asignados y sin interes. Abre cada uno y dale un interes o asignalo a alguien: saldra de esta lista en cuanto tenga al menos uno de los dos. El usuario que sugiere el origen del lead se aprueba (se anade a los asignados) o se descarta aqui."),
             suggestions,
             UiCard(
                 listOfNotNull(UiList(leads.map { listItem(context, it, suggestion = context.canAssign) }, emptyText = "No hay leads por calificar."), pager("reception", params, page, total)),
@@ -611,6 +638,8 @@ object CrmScreens {
         context: Context,
         readOnly: Boolean,
         currentInterest: UUID?,
+        // Assigned users without access to the CRM: listed as "(sin acceso)" so they can be unchecked, never offered to others.
+        legacyOwners: List<CrmUser> = emptyList(),
         suggestCustomers: Boolean = false,
         showCustomerCode: Boolean = false,
     ): List<UiField> = buildList {
@@ -635,8 +664,9 @@ object CrmScreens {
         }
         add(
             UiField(
-                "owner", "Responsable", type = "dropdown", readOnly = readOnly || !context.canAssign,
-                options = listOf(CrmForms.Unassigned) + context.users.map { it.name }, section = "Seguimiento",
+                "owner", "Asignado", type = "dropdown", multiple = true, readOnly = readOnly || !context.canAssign,
+                options = (context.users + legacyOwners).map { it.name }, section = "Seguimiento",
+                help = "Pueden ser varias personas; todas ven el lead y reciben sus seguimientos.",
             ),
         )
         add(UiField("followUpOn", "Proximo seguimiento", type = "date", readOnly = readOnly, section = "Seguimiento"))
@@ -695,7 +725,7 @@ object CrmScreens {
         )
     }
 
-    fun leadValues(context: Context, lead: CrmLead): Map<String, String> = mapOf(
+    fun leadValues(context: Context, lead: CrmLead, legacyOwners: List<CrmUser> = emptyList()): Map<String, String> = mapOf(
         "name" to lead.name,
         "email" to lead.email,
         "phone" to lead.phone,
@@ -703,7 +733,7 @@ object CrmScreens {
         "language" to lead.language,
         "stage" to context.stage(lead.stageId)?.name.orEmpty(),
         "interest" to context.names.interest(lead.interestId),
-        "owner" to context.names.user(lead.ownerUserId),
+        "owner" to UiFieldValues.options(lead.ownerUserIds.mapNotNull { id -> (context.users + legacyOwners).firstOrNull { it.id == id }?.name }),
         "followUpOn" to lead.followUpOn?.toString().orEmpty(),
         "source" to lead.source,
         "targetStart" to lead.targetStart?.toString().orEmpty(),
@@ -725,7 +755,7 @@ object CrmScreens {
         val defaults = mapOf(
             "stage" to context.stages.first().name,
             "interest" to if (context.interestsEnabled && !context.scope.seesAll && !context.scope.reception) context.usableInterests.firstOrNull()?.name.orEmpty() else CrmForms.NoInterest,
-            "owner" to (context.scope.userId?.let { id -> context.users.firstOrNull { it.id == id }?.name } ?: CrmForms.Unassigned),
+            "owner" to UiFieldValues.options(listOfNotNull(context.scope.userId?.let { id -> context.users.firstOrNull { it.id == id }?.name })),
             // Every custom field is sent even if left untouched, so required ones are checked.
         ) + context.fields.associate { it.key to "" } + (CrmFields.Documents to "")
         return listOf(
@@ -745,7 +775,10 @@ object CrmScreens {
 
     private fun leadDetail(context: Context, lead: CrmLead, submitted: Map<String, String>?): List<UiNode> {
         val stage = context.stage(lead.stageId)
-        val canEdit = context.permissions.has(Manage)
+        // Through a mention only (not in the user's scope) the lead is read-only: notes are the one thing they can add.
+        val access = context.readAccess(lead)
+        val canEdit = context.permissions.has(Manage) && access.canWrite
+        val canNote = CrmMentions.canAddNote(access, context.permissions.has(Manage))
         val id = mapOf("id" to lead.id.toString())
         val header = UiRow(
             listOfNotNull(
@@ -763,33 +796,46 @@ object CrmScreens {
                 UiButton(
                     "Eliminar lead", UiRequest(UiRoute + "/lead", params = id + ("op" to "delete"), confirm = "Se elimina el lead y su actividad; el cliente queda en Clientes. Continuar?"),
                     style = "danger",
-                ).takeIf { context.permissions.has(Delete) },
+                ).takeIf { context.permissions.has(Delete) && access.canWrite },
             ),
         )
+        val legacyOwners = CrmRepository.legacyUsers(context.tenant, context.users, lead.ownerUserIds)
         val form = UiCard(
             listOf(
                 UiForm(
                     "lead",
-                    leadFields(context, readOnly = !canEdit, currentInterest = lead.interestId, showCustomerCode = true),
-                    leadValues(context, lead) + submitted.orEmpty() + ("customerCode" to lead.customerCode),
-                    submit = if (canEdit) UiButton("Guardar cambios", UiRequest(UiRoute + "/lead", params = id + ("op" to "save"), formId = "lead")) else null,
+                    leadFields(context, readOnly = !canEdit, currentInterest = lead.interestId, legacyOwners = legacyOwners, showCustomerCode = true),
+                    leadValues(context, lead, legacyOwners) + submitted.orEmpty() + ("customerCode" to lead.customerCode),
+                    // owners0: the assigned users the form was drawn with; saving applies only the difference to them.
+                    submit = if (canEdit) UiButton("Guardar cambios", UiRequest(UiRoute + "/lead", params = id + ("op" to "save") + (OwnersBeforeKey to lead.ownerUserIds.joinToString(",")), formId = "lead")) else null,
                     collapsibleSections = true,
                     openSections = openLeadSections(context),
                 ),
             ),
             title = "Datos del lead",
         )
+        // "Mencionar a" next to the note; the text also recognizes @Nombre and @correo (the app has no "@" autocomplete yet).
+        val mentionOptions = context.mentionable.filter { it.id != context.scope.userId }.map { it.name }
         val note = UiCard(
             listOf(
                 UiForm(
-                    "note", listOf(UiField("note", "Nota del lead", type = "textarea", required = true, placeholder = "Llamada, respuesta enviada, acuerdos...")),
+                    "note",
+                    listOfNotNull(
+                        UiField("note", "Nota del lead", type = "textarea", required = true, placeholder = "Llamada, respuesta enviada, acuerdos... Escribe @Nombre o @correo para mencionar a alguien."),
+                        UiField(
+                            "mentions", "Mencionar a", type = "dropdown", multiple = true, options = mentionOptions,
+                            help = "Pueden leer este lead y responder con notas, aunque no sea suyo. Reciben un aviso.",
+                        ).takeIf { mentionOptions.isNotEmpty() },
+                    ),
                     submit = UiButton("Agregar nota", UiRequest(UiRoute + "/lead", params = id + ("op" to "note"), formId = "note")),
                 ),
             ),
             title = "Notas del lead",
         )
+        val mentions = mentionsCard(context, lead, id, CrmMentions.canRevoke(access, context.permissions.has(Manage)))
         // Tastes and preferences of the customer (Clientes), so whoever attends the lead does not ask them again.
-        val customerNotes = CrmCustomerEvents.access?.customerNotes(context.tenant, lead.customerId)?.let { notes ->
+        // Through a mention only the notes and the conversation show: no customer notes, items, reservations or suggestions.
+        val customerNotes = CrmCustomerEvents.access?.takeIf { access.canWrite }?.customerNotes(context.tenant, lead.customerId)?.let { notes ->
             UiCard(
                 listOf(
                     UiTimeline(
@@ -807,39 +853,74 @@ object CrmScreens {
                 actions = listOf(UiButton("Abrir ficha", UiOpenModule("clientes", "customer", mapOf("id" to lead.customerId.toString())), style = "secondary")),
             )
         }
+        val noteMentions = CrmMentions.byNote(context.tenant, lead.id)
         val timeline = UiCard(
-            listOf(UiTimeline(CrmRepository.activity(context.tenant, lead.id, 100).map { entry(it) })),
+            listOf(
+                UiTimeline(
+                    CrmRepository.activity(context.tenant, lead.id, 100).map { activity ->
+                        val mentioned = activity.id?.let { noteMentions[it] }.orEmpty().map { user -> CrmRepository.displayNames(context.tenant, context.names, listOf(user)) }
+                        entry(activity, mentioned)
+                    },
+                ),
+            ),
             title = "Actividad",
         )
-        val review = lead.reviewReason.takeIf { it.isNotEmpty() }?.let { reason ->
+        val review = lead.reviewReason.takeIf { it.isNotEmpty() && access.canWrite }?.let { reason ->
             UiCard(
                 listOf(UiText(reason, tone = UiTone.Danger)),
                 title = "Por revisar",
                 actions = listOfNotNull(UiButton("Marcar revisado", UiRequest(UiRoute + "/lead", params = id + ("op" to "reviewed")), style = "secondary").takeIf { canEdit }),
             )
         }
-        val suggestion = lead.suggestedOwnerUserId?.let { suggested ->
+        val suggestion = lead.suggestedOwnerUserId?.takeIf { access.canWrite }?.let { suggested ->
             UiCard(
-                listOf(UiText("El origen del lead sugiere como responsable a ${context.names.user(suggested)}.")),
-                title = "Responsable sugerido",
-                actions = if (context.canAssign) listOf(
+                listOf(UiText("El origen del lead sugiere asignar a ${context.names.user(suggested)}. Al aprobar se anade a los asignados.")),
+                title = "Asignado sugerido",
+                actions = if (context.canAssign && access.canWrite) listOf(
                     UiButton("Aprobar", UiRequest(UiRoute + "/lead", params = id + ("op" to "approve"))),
                     UiButton("Descartar", UiRequest(UiRoute + "/lead", params = id + ("op" to "discard")), style = "secondary"),
                 ) else emptyList(),
             )
         }
         val conversation = CrmAdminScreens.conversation(context, lead, canEdit, submitted)
-        val items = CrmWordPressScreens.items(context, lead, canEdit)
-        val reservation = CrmCloudbedsScreens.reservation(context, lead, canEdit)
-        return listOfNotNull(header, actions, review, suggestion, customerNotes, form, items, reservation, conversation, note.takeIf { canEdit }, timeline)
+        val items = CrmWordPressScreens.items(context, lead, canEdit).takeIf { access.canWrite }
+        val reservation = CrmCloudbedsScreens.reservation(context, lead, canEdit).takeIf { access.canWrite }
+        return listOfNotNull(header, actions, review, suggestion, customerNotes, form, items, reservation, conversation, mentions, note.takeIf { canNote }, timeline)
     }
 
-    private fun entry(activity: CrmActivity): UiTimelineEntry {
+    /**
+     * "Mencionados": who can read this lead because a note mentioned them, with "Quitar acceso" for whoever manages
+     * the lead ([canRevoke]). Null when nobody is mentioned.
+     */
+    private fun mentionsCard(context: Context, lead: CrmLead, id: Map<String, String>, canRevoke: Boolean): UiNode? {
+        val active = CrmMentions.active(context.tenant, lead.id)
+        if (active.isEmpty()) return null
+        return UiCard(
+            listOf<UiNode>(
+                UiText("Pueden leer este lead y responder con notas mientras este abierto. No pueden moverlo, editarlo ni asignarlo.", UiTextStyle.Caption),
+            ) + active.map { mention ->
+                UiRow(
+                    listOfNotNull(
+                        UiText(CrmRepository.displayNames(context.tenant, context.names, listOf(mention.userId))),
+                        UiText(listOf(mention.byName.takeIf { it.isNotBlank() }?.let { "por $it" }.orEmpty(), time(mention.at)).filter { it.isNotBlank() }.joinToString(" - "), UiTextStyle.Caption),
+                        UiButton(
+                            "Quitar acceso", UiRequest(UiRoute + "/lead", params = id + ("op" to "unmention") + ("user" to mention.userId.toString()), confirm = "Deja de poder leer este lead, salvo que lo mencionen de nuevo. Continuar?"),
+                            style = "secondary",
+                        ).takeIf { canRevoke },
+                    ),
+                )
+            },
+            title = "Mencionados (${active.size})",
+        )
+    }
+
+    // [mentioned]: names of the users the note mentions; the entry is highlighted (the app has no inline styles) and says who.
+    private fun entry(activity: CrmActivity, mentioned: List<String> = emptyList()): UiTimelineEntry {
         val (title, tone) = when (activity.kind) {
             "created" -> "Lead creado" to UiTone.Info
-            "note" -> "Nota del lead" to UiTone.Neutral
+            "note" -> if (mentioned.isEmpty()) "Nota del lead" to UiTone.Neutral else "Nota del lead - menciona a ${CrmMentions.label(mentioned)}" to UiTone.Info
             "stage" -> "Cambio de etapa" to UiTone.Success
-            "owner" -> "Responsable" to UiTone.Warning
+            "owner" -> "Asignados" to UiTone.Warning
             "interest" -> "Interes" to UiTone.Info
             "files" -> "Archivos" to UiTone.Info
             else -> "Actualizado" to UiTone.Neutral

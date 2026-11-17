@@ -18,7 +18,7 @@ object CrmCustomerTimeline {
 
     val timeline = CustomerTimeline(permission = CrmScreens.View) { query ->
         val scope = CrmRepository.scope(query.tenant, query.permissions)
-        val leads = leads(query.tenant, query.customerId).filter { (lead, interestId, ownerId) -> scope.canSee(interestId, ownerId) }.map { it.first }
+        val leads = leads(query.tenant, query.customerId).filter { (lead, interestId, ownerIds) -> scope.canSee(interestId, ownerIds) }.map { it.first }
         if (leads.isEmpty()) return@CustomerTimeline emptyList()
         val byId = leads.associateBy { it.id }
         // Sales are written when the lead is won (CrmCustomerEvents); notes, stage changes and the rest of
@@ -28,9 +28,9 @@ object CrmCustomerTimeline {
         }.sortedByDescending { it.at }.take(query.limit)
     }
 
-    private fun leads(tenant: Connection, customerId: UUID): List<Triple<VisibleLead, UUID?, UUID?>> = tenant.prepareStatement(
+    private fun leads(tenant: Connection, customerId: UUID): List<Triple<VisibleLead, UUID?, List<UUID>>> = tenant.prepareStatement(
         """
-        SELECT leads.id, leads.interest_id, leads.owner_user_id, leads.created_at, leads.closed_at, leads.source,
+        SELECT leads.id, leads.interest_id, ${CrmAssignees.listSql("leads")} AS owner_ids, leads.created_at, leads.closed_at, leads.source,
                stages.name AS stage, stages.kind AS stage_kind, interests.name AS interest
         FROM crm_leads leads
         JOIN crm_stages stages ON stages.id = leads.stage_id
@@ -55,7 +55,7 @@ object CrmCustomerTimeline {
                         stageKind = rows.getString("stage_kind"),
                         source = rows.getString("source"),
                     )
-                    add(Triple(lead, rows.getObject("interest_id", UUID::class.java), rows.getObject("owner_user_id", UUID::class.java)))
+                    add(Triple(lead, rows.getObject("interest_id", UUID::class.java), (rows.getArray("owner_ids")?.array as? Array<*>).orEmpty().mapNotNull { it?.toString()?.let(UUID::fromString) }))
                 }
             }
         }

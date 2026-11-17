@@ -182,6 +182,7 @@ object CrmSettingsMcpTools {
                     "notifyNewLeads" to McpSchema.boolean("Aviso de cada lead nuevo (solo llega a quien ve todos los leads)."),
                     "notifyAssigned" to McpSchema.boolean("Aviso cuando le asignan un lead."),
                     "dailyDigest" to McpSchema.boolean("Resumen diario de sus leads."),
+                    "notifyMentioned" to McpSchema.boolean("Aviso por correo (al correo del perfil del usuario) cuando lo mencionan en una nota; activado por defecto."),
                 ),
                 required = listOf("user"),
             ),
@@ -286,6 +287,7 @@ object CrmSettingsMcpTools {
                         put("notifyNewLeads", saved?.notifyNewLeads ?: false)
                         put("notifyAssigned", saved?.notifyAssigned ?: true)
                         put("dailyDigest", saved?.dailyDigest ?: false)
+                        put("notifyMentioned", saved?.notifyMentioned ?: true)
                     })
                 }
             }
@@ -511,6 +513,7 @@ object CrmSettingsMcpTools {
             notifyNewLeads = if (call.has("notifyNewLeads")) call.boolean("notifyNewLeads") else saved?.notifyNewLeads ?: false,
             notifyAssigned = if (call.has("notifyAssigned")) call.boolean("notifyAssigned") else saved?.notifyAssigned ?: true,
             dailyDigest = if (call.has("dailyDigest")) call.boolean("dailyDigest") else saved?.dailyDigest ?: false,
+            notifyMentioned = if (call.has("notifyMentioned")) call.boolean("notifyMentioned") else saved?.notifyMentioned ?: true,
         )
         validated { CrmNotify.saveUserSettings(call.tenant, settings) }
         return result("Avisos de ${user.name} guardados.")

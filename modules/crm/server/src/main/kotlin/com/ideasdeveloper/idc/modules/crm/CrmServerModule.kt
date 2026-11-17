@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.modules.crm
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
+import com.ideasdeveloper.idc.server.modules.ModuleNotifier
 import com.ideasdeveloper.idc.server.modules.SettingsTable
 import com.ideasdeveloper.idc.server.modules.ModuleJob
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
@@ -76,6 +77,8 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V014__meta_server_app.sql",
         "modules/crm/migrations/V015__exit_automation_and_show_archived.sql",
         "modules/crm/migrations/V016__leads_view_preference.sql",
+        "modules/crm/migrations/V017__lead_owners.sql",
+        "modules/crm/migrations/V018__lead_mentions.sql",
     )
 
     override val runtimeTables = listOf(
@@ -84,6 +87,8 @@ object CrmServerModule : ServerModule {
         "crm_interests",
         "crm_user_interests",
         "crm_leads",
+        "crm_lead_owners",
+        "crm_lead_mentions",
         "crm_activity",
         "crm_identities",
         "crm_messages",
@@ -193,14 +198,14 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.18.0",
+        version = "0.20.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
-            ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas."),
+            ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas. Quien es mencionado en una nota puede leer ese lead y responder con notas sin este permiso."),
             ModulePermissionDefinition(CrmScreens.Delete, "Eliminar leads", "Permite eliminar leads (el cliente queda en Clientes)."),
             ModulePermissionDefinition(CrmScreens.Reception, "Recepcion de leads", "Permite ver y categorizar los leads que aun no tienen interes."),
             ModulePermissionDefinition(CrmScreens.SeeAll, "Ver todos los leads", "Permite ver los leads de todos los intereses y filtrarlos por interes."),
-            ModulePermissionDefinition(CrmScreens.Assign, "Asignar leads", "Permite elegir el responsable de un lead y aprobar o descartar las sugerencias."),
+            ModulePermissionDefinition(CrmScreens.Assign, "Asignar leads", "Permite elegir a quienes se asigna un lead (puede ser mas de uno) y aprobar o descartar las sugerencias."),
             ModulePermissionDefinition(CrmScreens.Settings, "Configurar CRM", "Permite cambiar etapas, intereses, correo, plantillas, anti-spam y avisos del equipo."),
         ),
         ui = ModuleUiEntry(type = "native", entry = CrmScreens.UiRoute, home = "home"),
@@ -326,7 +331,8 @@ object CrmServerModule : ServerModule {
                         CrmAttachments.file(tenant, access.files(companyCode, CrmModule.id), id)?.takeIf { stored ->
                             val leadId = stored.leadId ?: return@takeIf permissions.has(CrmScreens.Manage)
                             val lead = CrmRepository.lead(tenant, leadId) ?: return@takeIf false
-                            CrmRepository.scope(tenant, permissions).canSee(lead.interestId, lead.ownerUserId)
+                            // Reading a file is reading the lead: a mention is enough (never for uploading or linking).
+                            CrmMentions.access(tenant, CrmRepository.scope(tenant, permissions), lead).canRead
                         }
                     }
                 } ?: return@get call.respond(HttpStatusCode.NotFound, CrmErrorResponse("not_found", "Ese archivo ya no esta disponible."))
@@ -380,6 +386,8 @@ object CrmServerModule : ServerModule {
                     "lead" -> when (params["op"]) {
                         "delete" -> CrmScreens.Delete
                         "approve", "discard" -> null
+                        // Answering with a note is also open to who was mentioned in the lead (checked in action()).
+                        "note" -> null
                         else -> CrmScreens.Manage
                     }
                     else -> CrmScreens.Manage
@@ -387,7 +395,7 @@ object CrmServerModule : ServerModule {
                 if (required != null && !permissions.has(required)) {
                     return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
                 }
-                call.respondScreen(access) { tenant -> action(tenant, permissions, access.serverMail, call.publicBase(), screen, params, values, access.userIdentity(tenant, permissions)) }
+                call.respondScreen(access) { tenant -> action(tenant, permissions, access.serverMail, call.publicBase(), screen, params, values, access.userIdentity(tenant, permissions), access.notificationsFor(CrmModule.id)) }
             }
         }
     }
@@ -401,18 +409,29 @@ object CrmServerModule : ServerModule {
         params: Map<String, String>,
         values: Map<String, String>,
         identity: UserIdentity?,
+        notifier: ModuleNotifier,
     ): UiScreen {
         val context = CrmScreens.Context.load(tenant, permissions, serverMail, publicBase)
         val actor = CrmRepository.actor(tenant, permissions, identity)
         fun show(target: String, notice: UiNotice, targetParams: Map<String, String> = params - "op", submitted: Map<String, String>? = null) =
             CrmScreens.build(target, CrmScreens.Context.load(tenant, permissions, serverMail, publicBase), targetParams, notice, submitted)
         fun uuid(key: String) = params[key]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-        fun visibleLead(key: String) = uuid(key)?.let { CrmRepository.lead(tenant, it) }?.takeIf { context.scope.canSee(it.interestId, it.ownerUserId) }
+        // Inside the user's scope: what EVERY action that changes a lead asks. A lead seen only through a mention is not here.
+        fun visibleLead(key: String) = uuid(key)?.let { CrmRepository.lead(tenant, it) }?.takeIf { context.scope.canSee(it.interestId, it.ownerUserIds) }
+        // Scope or an active mention: only to read the lead and add notes.
+        fun readableLead(key: String) = uuid(key)?.let { CrmRepository.lead(tenant, it) }?.takeIf { context.readAccess(it).canRead }
 
         return try {
             when ("$screen:${params["op"]}") {
                 "pipeline:move" -> {
-                    val lead = visibleLead("card") ?: return show("pipeline", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), params - setOf("op", "card", "column"))
+                    val lead = visibleLead("card") ?: return show(
+                        "pipeline",
+                        UiNotice(
+                            if (readableLead("card") != null) "Ves ese lead porque te mencionaron: puedes leerlo y responder con notas, no moverlo." else "Ese lead ya no esta disponible.",
+                            UiTone.Warning,
+                        ),
+                        params - setOf("op", "card", "column"),
+                    )
                     // The "Archivados" column is not a stage: archived leads stay put.
                     if (lead.archivedAt != null || params["column"] == "archived") {
                         return show("pipeline", UiNotice("${lead.name} esta archivado: no se mueve entre etapas.", UiTone.Warning), params - setOf("op", "card", "column"))
@@ -435,33 +454,41 @@ object CrmServerModule : ServerModule {
                         return show("new", UiNotice("No puedes crear leads de ese interes.", UiTone.Danger), emptyMap(), values)
                     }
                     val stage = context.stage(input.stageId)!!
-                    // Without the assign permission the responsible user stays as the form defaulted it (the user).
-                    val owned = if (context.canAssign) input else input.copy(ownerUserId = context.scope.userId?.takeIf { id -> context.users.any { it.id == id } })
+                    // Without the assign permission the assigned user stays as the form defaulted it (the user).
+                    val owned = if (context.canAssign) input else input.copy(ownerUserIds = listOfNotNull(context.scope.userId?.takeIf { id -> context.users.any { it.id == id } }))
                     val chosen = values["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
                     val id = CrmRepository.createLead(tenant, owned, stage, actor, chosen, context.fields)
                     CrmNotify.newLead(tenant, id)
-                    owned.ownerUserId?.takeIf { it != context.scope.userId }?.let { CrmNotify.assigned(tenant, id, it) }
+                    CrmNotify.assigned(tenant, notifier, id, owned.ownerUserIds.orEmpty(), context.scope.userId)
                     show("lead", UiNotice("Lead creado.", UiTone.Success), mapOf("id" to id.toString()))
                 }
                 "lead:save" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
                     val parsed = try {
-                        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users, context.fields, lead.customFields)
+                        // Assigned users without access can be unchecked in the form (their labels end in "(sin acceso)"), never added.
+                        CrmForms.parseLead(
+                            values, context.stages, context.interests, context.interestsEnabled,
+                            context.users + CrmRepository.legacyUsers(tenant, context.users, lead.ownerUserIds), context.fields, lead.customFields,
+                        )
                     } catch (failure: CrmValidationException) {
                         return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), submitted = values)
                     }
-                    // Only assigners change the responsible user; for the rest it stays as it was.
-                    val input = if (context.canAssign) parsed else parsed.copy(ownerUserId = lead.ownerUserId)
+                    // Only assigners change the assigned users; for the rest they are not touched at all (null).
+                    val input = parsed.copy(ownerUserIds = CrmAssignees.wanted(context.canAssign, parsed.ownerUserIds))
+                    // The list the form was drawn with: only the difference with the new one is applied.
+                    val before = params[CrmScreens.OwnersBeforeKey]?.let { raw -> raw.split(',').mapNotNull { runCatching { UUID.fromString(it.trim()) }.getOrNull() } }
                     if (input.interestId != lead.interestId && !context.scope.canUseInterest(input.interestId)) {
                         return show("lead", UiNotice("No puedes asignar ese interes.", UiTone.Danger), submitted = values)
                     }
-                    try {
-                        CrmRepository.updateLead(tenant, lead, input, context.stages, context.names, actor, context.fields)
+                    val change = try {
+                        CrmRepository.updateLead(tenant, lead, input, context.stages, context.names, actor, context.fields, before)
                     } catch (failure: CrmValidationException) {
                         return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), submitted = values)
                     }
-                    input.ownerUserId?.takeIf { it != lead.ownerUserId && it != context.scope.userId }?.let { CrmNotify.assigned(tenant, lead.id, it) }
-                    if (context.scope.canSee(input.interestId, input.ownerUserId)) {
+                    // Only the users really added are told (not a stale picture of the list).
+                    CrmNotify.assigned(tenant, notifier, lead.id, change.added, context.scope.userId)
+                    val owners = CrmAssignees.of(tenant, lead.id)
+                    if (context.scope.canSee(input.interestId, owners)) {
                         show("lead", UiNotice("Cambios guardados.", UiTone.Success))
                     } else {
                         show("leads", UiNotice("Cambios guardados. El lead paso a un interes que no ves.", UiTone.Success), emptyMap())
@@ -487,9 +514,30 @@ object CrmServerModule : ServerModule {
                     }
                 }
                 "lead:note" -> {
+                    // The one write a mention allows. Scope: needs crm.leads.manage like before; mention: only the active mention.
+                    val lead = readableLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    if (!permissions.has(CrmScreens.View) || !CrmMentions.canAddNote(context.readAccess(lead), permissions.has(CrmScreens.Manage))) {
+                        return show("lead", UiNotice("No tienes permiso para agregar notas a este lead.", UiTone.Danger), mapOf("id" to lead.id.toString()))
+                    }
+                    val body = CrmForms.note(values)
+                    val chosen = CrmForms.mentionNames(values)
+                    val unmatched = CrmAssignees.match(chosen, context.mentionable).unmatched
+                    if (unmatched.isNotEmpty()) {
+                        return show("lead", UiNotice("Ya no se puede mencionar a: ${unmatched.joinToString()}.", UiTone.Danger), mapOf("id" to lead.id.toString()))
+                    }
+                    val result = CrmMentions.addNote(tenant, lead.id, body, chosen, context.mentionable, actor, CrmMentions.canGrant(context.readAccess(lead)))
+                    CrmNotify.mentioned(tenant, notifier, lead.id, body, actor, result.mentioned)
+                    val told = if (result.mentioned.isEmpty()) "" else " Se aviso a ${result.mentioned.joinToString { it.name }}."
+                    val plain = if (result.granted) "" else " Tus @ quedan como texto: solo quien gestiona el lead puede dar acceso al mencionar."
+                    val unknown = if (result.unknown.isEmpty()) "" else " No se reconocio: ${result.unknown.joinToString { "@$it" }}."
+                    show("lead", UiNotice("Nota agregada.$told$unknown$plain", if (result.unknown.isEmpty()) UiTone.Success else UiTone.Warning), mapOf("id" to lead.id.toString()))
+                }
+                "lead:unmention" -> {
+                    // Whoever manages the lead (permission + lead inside their scope) takes a mention's access away.
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
-                    CrmRepository.addNote(tenant, lead.id, CrmForms.note(values), actor)
-                    show("lead", UiNotice("Nota agregada.", UiTone.Success))
+                    val user = uuid("user") ?: return show("lead", UiNotice("Usuario invalido.", UiTone.Danger), mapOf("id" to lead.id.toString()))
+                    val revoked = CrmMentions.revoke(tenant, lead.id, user, context.names, actor)
+                    show("lead", UiNotice(if (revoked) "Acceso quitado." else "Ese usuario ya no tenia acceso por mencion.", if (revoked) UiTone.Success else UiTone.Warning), mapOf("id" to lead.id.toString()))
                 }
                 "lead:send" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
@@ -512,9 +560,13 @@ object CrmServerModule : ServerModule {
                     if (!context.canAssign) return show("lead", UiNotice("No tienes permiso para asignar leads.", UiTone.Danger))
                     val lead = visibleLead("id") ?: return show("reception", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
                     val approve = params["op"] == "approve"
-                    val owner = CrmRepository.resolveSuggestion(tenant, lead, approve, context.names, actor)
-                    owner?.takeIf { it != context.scope.userId }?.let { CrmNotify.assigned(tenant, lead.id, it) }
-                    val notice = UiNotice(if (approve) "Responsable asignado." else "Sugerencia descartada.", UiTone.Success)
+                    val resolved = CrmRepository.resolveSuggestion(tenant, lead, approve, context.names, actor)
+                    CrmNotify.assigned(tenant, notifier, lead.id, listOfNotNull(resolved.added), context.scope.userId)
+                    val notice = when {
+                        resolved.noAccess -> UiNotice("El usuario sugerido ya no tiene acceso: se descarto la sugerencia y no se asigno a nadie.", UiTone.Warning)
+                        approve -> UiNotice("Asignado: se anadio a los asignados del lead.", UiTone.Success)
+                        else -> UiNotice("Sugerencia descartada.", UiTone.Success)
+                    }
                     // From "Sin calificar" the user goes back to the list; from the lead, stays on it.
                     if (params["from"] == "reception" && CrmScreens.canOpen("reception", permissions)) show("reception", notice, emptyMap()) else show("lead", notice)
                 }
@@ -561,6 +613,8 @@ object CrmServerModule : ServerModule {
                         CrmUserSettings(
                             user.id, values["email"].orEmpty().trim(), values["notifyNewLeads"] == "true",
                             values["notifyAssigned"] == "true", values["dailyDigest"] == "true",
+                            // Not sent (an old form): keeps what was saved instead of turning it off.
+                            values["notifyMentioned"]?.let { it == "true" } ?: CrmNotify.userSettings(tenant)[user.id]?.notifyMentioned ?: true,
                         ),
                     )
                     show("team", UiNotice("Avisos de ${user.name} guardados.", UiTone.Success), emptyMap())
@@ -867,13 +921,14 @@ object CrmServerModule : ServerModule {
                     // Back to the list view, with the same filters and page.
                     val keep = params - setOf("op") + (CrmScreens.ViewKey to CrmScreens.ViewList)
                     // Only the leads of the page the checkboxes were drawn for (same filters and page), never others.
-                    val pageLeads = CrmScreens.listPage(context, params).leads
+                    // The ones seen only through a mention are never part of it: they are read-only.
+                    val pageLeads = CrmScreens.listPage(context, params).writable(context)
                     val chosen = CrmBulkActions.selectedIds(values, pageLeads.map { it.id }).toSet()
                     val selected = pageLeads.filter { it.id in chosen }
                     val action = values["action"].orEmpty()
-                    val value = if (action == CrmImportScreens.ActionOwner) values["owner"].orEmpty() else values["stage"].orEmpty()
+                    val value = if (action == CrmImportScreens.ActionAddOwner || action == CrmImportScreens.ActionRemoveOwner) values["owner"].orEmpty() else values["stage"].orEmpty()
                     try {
-                        show("leads", UiNotice(CrmBulkActions.apply(context, selected, action, value, actor), UiTone.Success), keep)
+                        show("leads", UiNotice(CrmBulkActions.apply(context, selected, action, value, actor, notifier), UiTone.Success), keep)
                     } catch (notice: CrmActionNotice) {
                         show("leads", UiNotice(notice.message.orEmpty(), if (notice.warning) UiTone.Warning else UiTone.Danger), keep)
                     }

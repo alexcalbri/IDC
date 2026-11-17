@@ -471,18 +471,23 @@ object CrmImport {
         created
     }
 
-    /** Different values of the columns mapped to [field] (for the stage, owner and interest maps). */
+    /**
+     * Different values of the columns mapped to [field] (for the stage, owner and interest maps). The people column
+     * ("owner") can hold several people in one cell ("Ana, Beto"): each person is a value of its own.
+     */
     fun distinctValues(tenant: Connection, job: CrmImportJob, field: String, limit: Int = 60): List<String> {
         val columns = job.mapping.columns.filterValues { it == field }.keys
         if (columns.isEmpty()) return emptyList()
-        return tenant.prepareStatement(
+        val values = tenant.prepareStatement(
             "SELECT DISTINCT value FROM crm_import_rows, jsonb_each_text(data) AS kv(key, value) WHERE job_id = ? AND key = ANY(?) AND value <> '' ORDER BY value LIMIT ?"
         ).use { query ->
             query.setObject(1, job.id)
             query.setArray(2, tenant.createArrayOf("text", columns.toTypedArray()))
-            query.setInt(3, limit)
+            // The limit of the people column applies after splitting the cells into people.
+            query.setInt(3, if (field == "owner") 5000 else limit)
             query.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getString(1)) } }
         }
+        return if (field == "owner") values.flatMap { CrmAssignees.parseList(it) }.distinctBy { it.lowercase() }.sortedBy { it.lowercase() }.take(limit) else values
     }
 
     // ---- Rows ----
@@ -505,7 +510,9 @@ object CrmImport {
         val phone: String,
         val stage: CrmStage?,
         val interestId: UUID?,
-        val ownerId: UUID?,
+        // Users matched to the people of the row's assigned column (all of them) and the people that had no user.
+        val ownerIds: List<UUID>,
+        val ownersUnmatched: List<String>,
         val fields: Map<String, String>,
         val notes: List<CrmImportNote>,
         val createdAt: LocalDate?,
@@ -527,7 +534,8 @@ object CrmImport {
         val stageName = mapping.stages[stageValue] ?: stageValue
         val stage = context.stages.firstOrNull { it.name.equals(stageName, ignoreCase = true) }
         val interest = first("interest").let { value -> mapping.interests[value] ?: value }.let { name -> context.interests.firstOrNull { it.name.equals(name, ignoreCase = true) }?.id }
-        val owner = first("owner").let { value -> mapping.owners[value] ?: value }.let { name -> context.users.firstOrNull { it.name.equals(name, ignoreCase = true) }?.id }
+        // Several people in the column (or in several columns): each one is matched by the equivalences, email or name.
+        val owners = CrmAssignees.match(all("owner").flatMap { CrmAssignees.parseList(it) }.distinctBy { it.lowercase() }, context.users, mapping.owners)
         val noteColumns = mapping.columns.filterValues { it == "note" }.keys.mapNotNull { column -> row[column]?.trim()?.ifEmpty { null }?.let { CrmImportNote(null, "", "$column: $it") } }
         val created = CrmImportParse.date(first("createdAt")) ?: CrmImportParse.date(row["__created"].orEmpty())
         val (start, end) = all("dates").firstOrNull()?.let { CrmImportParse.range(it, created?.year ?: context.today.year) } ?: (null to null)
@@ -539,7 +547,8 @@ object CrmImport {
             phone = phone,
             stage = stage,
             interestId = interest,
-            ownerId = owner,
+            ownerIds = owners.ids,
+            ownersUnmatched = owners.unmatched,
             fields = mapOf(
                 "source" to first("source"),
                 "language" to first("language"),
@@ -641,27 +650,31 @@ object CrmImport {
             val createdAt = values.createdAt?.atStartOfDay()?.toInstant(ZoneOffset.UTC) ?: Instant.now()
             tenant.prepareStatement(
                 """
-                INSERT INTO crm_leads (id, customer_id, stage_id, interest_id, owner_user_id, source, import_key, closed_at, created_at, stage_changed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CAST(? AS timestamptz) END, ?, ?)
+                INSERT INTO crm_leads (id, customer_id, stage_id, interest_id, source, import_key, closed_at, created_at, stage_changed_at)
+                VALUES (?, ?, ?, ?, ?, ?, CASE WHEN ? THEN CAST(? AS timestamptz) END, ?, ?)
                 """.trimIndent()
             ).use { insert ->
                 insert.setObject(1, id)
                 insert.setObject(2, customer)
                 insert.setObject(3, stage.id)
                 insert.setObject(4, values.interestId)
-                insert.setObject(5, values.ownerId)
-                insert.setString(6, values.fields["source"].orEmpty().ifEmpty { sourceLabel }.take(120))
-                insert.setString(7, values.key)
-                insert.setBoolean(8, stage.kind != StageKind.Open)
+                insert.setString(5, values.fields["source"].orEmpty().ifEmpty { sourceLabel }.take(120))
+                insert.setString(6, values.key)
+                insert.setBoolean(7, stage.kind != StageKind.Open)
+                insert.setTimestamp(8, Timestamp.from(createdAt))
                 insert.setTimestamp(9, Timestamp.from(createdAt))
                 insert.setTimestamp(10, Timestamp.from(createdAt))
-                insert.setTimestamp(11, Timestamp.from(createdAt))
                 insert.executeUpdate()
             }
             CrmRepository.addActivity(tenant, id, "created", "Importado desde $sourceLabel en ${stage.name}.", actor, toStage = stage.id)
             id
         }
         updateFields(tenant, leadId, values, existing != null, context)
+        // Importing again adds the people that are new and never repeats the ones the lead already has.
+        val added = CrmAssignees.add(tenant, leadId, values.ownerIds)
+        if (added.isNotEmpty()) {
+            CrmRepository.addActivity(tenant, leadId, "owner", "Asignados desde la importacion: ${CrmAssignees.names(CrmNames(context.users, context.interests), added)}.", actor)
+        }
         val problems = CrmImportTargets.apply(tenant, leadId, values.crm, values.customer, context.crmFields, context.customerFields)
         addNotes(tenant, leadId, values.notes)
         listings?.let { raw ->
@@ -669,7 +682,9 @@ object CrmImport {
                 CrmWordPress.listing(element)?.let { CrmWordPress.linkListing(tenant, leadId, it, null) }
             }
         }
-        return (if (existing != null) Outcome.Updated else Outcome.Created) to problems.joinToString("; ")
+        // The people of the row without a CRM user are not assigned and are listed in the report (users are never created here).
+        val report = problems + listOfNotNull(CrmAssignees.unmatchedNote(values.ownersUnmatched).takeIf { it.isNotEmpty() })
+        return (if (existing != null) Outcome.Updated else Outcome.Created) to report.joinToString("; ")
     }
 
     // Fills the lead with the row values; on updates only non-empty values replace the current ones.
@@ -687,7 +702,6 @@ object CrmImport {
                 target_end = COALESCE(?, target_end),
                 estimated_value = COALESCE(?, estimated_value),
                 interest_id = COALESCE(?, interest_id),
-                owner_user_id = COALESCE(?, owner_user_id),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """.trimIndent()
@@ -703,8 +717,7 @@ object CrmImport {
             statement.setObject(9, end)
             statement.setBigDecimal(10, text("estimatedValue").toBigDecimalOrNull()?.takeIf { it.signum() >= 0 && it < BigDecimal("1000000000000") }?.setScale(2, java.math.RoundingMode.HALF_UP))
             statement.setObject(11, values.interestId)
-            statement.setObject(12, values.ownerId)
-            statement.setObject(13, leadId)
+            statement.setObject(12, leadId)
             statement.executeUpdate()
         }
         // On a new import of an existing lead the mapped stage wins, recorded in the stage history.

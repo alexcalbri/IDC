@@ -28,7 +28,7 @@ object CrmImportParse {
         "phone" to "Telefono",
         "stage" to "Etapa",
         "interest" to "Interes",
-        "owner" to "Responsable",
+        "owner" to "Asignados (una o varias personas)",
         "source" to "Origen",
         "language" to "Idioma",
         "message" to "Mensaje",

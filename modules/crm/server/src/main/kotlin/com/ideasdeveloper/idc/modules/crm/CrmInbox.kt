@@ -356,7 +356,8 @@ object CrmInbox {
             "correo" to lead.email,
             "telefono" to lead.phone,
             "codigo_cliente" to code,
-            "responsable" to if (lead.ownerUserId == null) "" else names.user(lead.ownerUserId),
+            // Every assigned user, separated by comma ("" without any).
+            "responsable" to CrmAssignees.names(names, lead.ownerUserIds),
             "etapa" to stages.firstOrNull { it.id == lead.stageId }?.name.orEmpty(),
             "interes" to if (lead.interestId == null) "" else names.interest(lead.interestId),
             "checkin" to lead.targetStart?.toString().orEmpty(),

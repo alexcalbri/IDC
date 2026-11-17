@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.modules.crm
 
+import com.ideasdeveloper.idc.ui.UiFieldValues
 import com.ideasdeveloper.idc.ui.UiTone
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
@@ -40,8 +41,8 @@ data class CrmStage(val id: UUID, val name: String, val kind: StageKind, val ton
 
 data class CrmInterest(val id: UUID, val name: String, val position: Int)
 
-// A user that can own leads: active, business owner or holder of a CRM permission.
-data class CrmUser(val id: UUID, val name: String)
+// A user that can be assigned to leads: active, business owner or holder of a CRM permission. [email] is the profile email.
+data class CrmUser(val id: UUID, val name: String, val email: String = "")
 
 data class CrmLead(
     val id: UUID,
@@ -51,7 +52,8 @@ data class CrmLead(
     val phone: String,
     val stageId: UUID,
     val interestId: UUID?,
-    val ownerUserId: UUID?,
+    // Users assigned to the lead (crm_lead_owners): all equal, none is the main one.
+    val ownerUserIds: List<UUID>,
     val source: String,
     val language: String,
     val message: String,
@@ -84,12 +86,15 @@ data class CrmActivity(
     val toStage: String?,
     val author: String,
     val createdAt: Instant,
+    // Id of the history entry (a note's mentions hang from it); null when built without the database.
+    val id: UUID? = null,
 )
 
 /**
  * Which leads a user sees. With interests off everybody with the CRM sees every lead. With
- * interests on, a user sees the leads of the interests assigned to them, the leads they own and,
- * with the reception permission, the leads nobody has categorized yet; "see all" sees everything.
+ * interests on, a user sees the leads of the interests assigned to them, the leads they are one of the
+ * assigned users of (even outside their interests) and, with the reception permission, the leads nobody
+ * has categorized yet; "see all" sees everything.
  */
 data class CrmScope(
     val userId: UUID?,
@@ -98,28 +103,41 @@ data class CrmScope(
     val interestsEnabled: Boolean,
     val interests: Set<UUID>,
 ) {
-    fun canSee(interestId: UUID?, ownerUserId: UUID?): Boolean = when {
+    fun canSee(interestId: UUID?, ownerUserIds: Collection<UUID>): Boolean = when {
         !interestsEnabled || seesAll -> true
-        userId != null && ownerUserId == userId -> true
+        userId != null && userId in ownerUserIds -> true
         interestId == null -> reception
         else -> interestId in interests
     }
+
+    /**
+     * Whether the user may READ the lead (open it, read its notes and conversation) and ADD notes: the scope
+     * of [canSee] or an active mention ([mentioned], see CrmMentions). Never use it to allow any other action:
+     * moving, editing, assigning, archiving, deleting and bulk actions keep asking [canSee].
+     */
+    fun canRead(interestId: UUID?, ownerUserIds: Collection<UUID>, mentioned: Boolean, archived: Boolean = false): Boolean =
+        canSee(interestId, ownerUserIds) || mentioned && userId != null && !archived
 
     // Whether the user may give leads any interest (otherwise only the ones assigned to them).
     fun canUseInterest(interestId: UUID?): Boolean =
         !interestsEnabled || seesAll || if (interestId == null) reception else interestId in interests
 
     /**
-     * SQL condition over crm_leads aliased "l", equivalent to [canSee]. Parameters are UUIDs or a
-     * collection of UUIDs (bound as uuid[]).
+     * SQL condition over crm_leads aliased "l", equivalent to [canSee]; with [withMentions] it is [canRead]
+     * (the leads the user was mentioned in are added). Parameters are UUIDs or a collection of UUIDs (bound as uuid[]).
+     * Only the views that LIST leads to read pass [withMentions]; every condition used to write stays strict.
      */
-    fun sqlCondition(): Pair<String, List<Any>> {
+    fun sqlCondition(withMentions: Boolean = false): Pair<String, List<Any>> {
         if (!interestsEnabled || seesAll) return "TRUE" to emptyList()
         val parts = mutableListOf<String>()
         val params = mutableListOf<Any>()
         if (userId != null) {
-            parts += "l.owner_user_id = ?"
+            parts += CrmAssignees.OfUserSql
             params += userId
+            if (withMentions) {
+                parts += CrmMentions.OfUserSql
+                params += userId
+            }
         }
         if (reception) parts += "l.interest_id IS NULL"
         if (interests.isNotEmpty()) {
@@ -131,19 +149,24 @@ data class CrmScope(
 }
 
 /**
- * "Sin calificar" over crm_leads "l": a lead has no interest (only when interests are on) or no
- * assigned user; it leaves as soon as it has both.
+ * "Sin calificar" over crm_leads "l": a lead has nobody assigned and, when interests are on, no interest
+ * either. It leaves as soon as it has at least one assigned user or an interest.
  */
 fun unqualifiedSql(interestsEnabled: Boolean): String =
-    if (interestsEnabled) "(l.interest_id IS NULL OR l.owner_user_id IS NULL)" else "l.owner_user_id IS NULL"
+    if (interestsEnabled) "(l.interest_id IS NULL AND ${CrmAssignees.NoneSql})" else CrmAssignees.NoneSql
+
+/** Same rule as [unqualifiedSql] without the database, for tests and for rows already loaded. */
+fun isUnqualified(interestId: UUID?, ownerUserIds: Collection<UUID>, interestsEnabled: Boolean): Boolean =
+    ownerUserIds.isEmpty() && (!interestsEnabled || interestId == null)
 
 // Filters of the pipeline and the lead list, on top of the user's scope.
 data class CrmLeadFilter(
     val interestId: UUID? = null,
     // Only leads without interest (reception inbox).
     val withoutInterest: Boolean = false,
-    // "Sin calificar": leads without interest or without an assigned user (see [unqualifiedSql]).
+    // "Sin calificar": leads without assigned users and without interest (see [unqualifiedSql]).
     val unqualified: Boolean = false,
+    // Leads where this user is one of the assigned ("Mis leads").
     val ownerUserId: UUID? = null,
     val unassigned: Boolean = false,
     val stageId: UUID? = null,
@@ -153,6 +176,8 @@ data class CrmLeadFilter(
     val archived: Boolean = false,
     // Archived leads mixed with the rest ("Mostrar archivados" in the list). Hidden unless asked for.
     val includeArchived: Boolean = false,
+    // Also the leads the user was mentioned in (CrmScope.canRead). Only the lead views and the agent search turn it on.
+    val withMentions: Boolean = false,
 )
 
 /** SQL condition over crm_leads "l" for the archived state of [filter]; null when archived and open leads both show. */
@@ -168,7 +193,8 @@ data class CrmLeadInput(
     val phone: String,
     val stageId: UUID,
     val interestId: UUID?,
-    val ownerUserId: UUID?,
+    // The users the lead ends up with, or null to leave its assigned users alone (no permission to assign, nothing sent).
+    val ownerUserIds: List<UUID>?,
     val source: String,
     val language: String,
     val message: String,
@@ -222,9 +248,9 @@ object CrmForms {
         val interest = if (!interestsEnabled || interestName.isBlank() || interestName == NoInterest) null else {
             interests.firstOrNull { it.name == interestName } ?: throw CrmValidationException("Ese interes ya no existe.")
         }
-        val ownerName = values["owner"].orEmpty()
-        val owner = if (ownerName.isBlank() || ownerName == Unassigned) null else {
-            users.firstOrNull { it.name == ownerName } ?: throw CrmValidationException("Ese responsable ya no puede tener leads.")
+        // "owner" is a multiple dropdown (a JSON array of names); an old client sends one plain name.
+        val owners = UiFieldValues.options(values["owner"].orEmpty()).filter { it.isNotBlank() && it != Unassigned }.distinct().map { ownerName ->
+            users.firstOrNull { it.name == ownerName } ?: throw CrmValidationException("Ese usuario ya no puede tener leads.")
         }
         val targetStart = date(values["targetStart"], "La fecha de inicio")
         val targetEnd = date(values["targetEnd"], "La fecha de fin")
@@ -237,7 +263,7 @@ object CrmForms {
             phone = phone,
             stageId = stage.id,
             interestId = interest?.id,
-            ownerUserId = owner?.id,
+            ownerUserIds = owners.map { it.id },
             source = text("source", 120, "El origen"),
             language = text("language", 40, "El idioma"),
             message = text("message", MaxText, "El mensaje"),
@@ -266,6 +292,10 @@ object CrmForms {
         if (name.isEmpty() || name.length > 60) throw CrmValidationException("El nombre del interes debe tener entre 1 y 60 caracteres.")
         return name
     }
+
+    /** Names or emails the note form's "Mencionar a" field (a multiple dropdown) sent; an old client may send one plain name. */
+    fun mentionNames(values: Map<String, String>): List<String> =
+        UiFieldValues.options(values["mentions"].orEmpty()).map { it.trim() }.filter { it.isNotEmpty() }.distinctBy { it.lowercase() }
 
     fun note(values: Map<String, String>): String {
         val body = values["note"].orEmpty().trim()

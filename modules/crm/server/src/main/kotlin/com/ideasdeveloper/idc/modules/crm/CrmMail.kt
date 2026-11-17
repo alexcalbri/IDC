@@ -57,7 +57,7 @@ object CrmMail {
         "correo" to "Correo del cliente",
         "telefono" to "Telefono del cliente",
         "codigo_cliente" to "Codigo del cliente (acceso al WiFi por codigo)",
-        "responsable" to "Responsable del lead",
+        "responsable" to "Usuarios asignados al lead (todos, separados por coma)",
         "etapa" to "Etapa actual",
         "interes" to "Interes",
         "checkin" to "Fecha de inicio (entrada)",

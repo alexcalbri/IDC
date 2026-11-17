@@ -31,7 +31,7 @@ class CrmFormsTest {
         assertEquals("Megan Dravet", input.name)
         assertEquals(stages[1].id, input.stageId)
         assertEquals(surf.id, input.interestId)
-        assertEquals(ana.id, input.ownerUserId)
+        assertEquals(listOf(ana.id), input.ownerUserIds)
         assertEquals(LocalDate.of(2027, 1, 3), input.targetEnd)
         assertEquals(BigDecimal("1250.50"), input.estimatedValue)
     }
@@ -41,7 +41,7 @@ class CrmFormsTest {
         val input = parse(mapOf("interest" to CrmForms.NoInterest, "owner" to CrmForms.Unassigned))
         assertEquals(stages[0].id, input.stageId)
         assertNull(input.interestId)
-        assertNull(input.ownerUserId)
+        assertEquals(emptyList(), input.ownerUserIds)
         // With interests off the interest is ignored.
         assertNull(parse(mapOf("interest" to "Surf"), interestsEnabled = false).interestId)
     }

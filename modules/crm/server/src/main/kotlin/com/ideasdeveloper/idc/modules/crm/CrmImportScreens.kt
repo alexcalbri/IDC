@@ -186,7 +186,7 @@ object CrmImportScreens {
                     "$prefix:$value" to (mapped[value] ?: options.firstOrNull { it.equals(value, ignoreCase = true) } ?: options.first())
                 }
         val (stageFields, stageValues) = valueFields("stage", "stage", "Etapas", listOf(Default) + context.stages.map { it.name }, job.mapping.stages)
-        val (ownerFields, ownerValues) = valueFields("owner", "owner", "Responsables", listOf(CrmForms.Unassigned) + context.users.map { it.name }, job.mapping.owners)
+        val (ownerFields, ownerValues) = valueFields("owner", "owner", "Personas asignadas (cada persona de la columna)", listOf(CrmForms.Unassigned) + context.users.map { it.name }, job.mapping.owners)
         val (interestFields, interestValues) = if (context.interestsEnabled) {
             valueFields("interest", "interest", "Intereses", listOf(CrmForms.NoInterest) + context.interests.map { it.name }, job.mapping.interests)
         } else emptyList<UiField>() to emptyMap()
@@ -274,7 +274,9 @@ object CrmImportScreens {
     // ---- Bulk actions ----
 
     const val ActionStage = "Mover a etapa"
-    const val ActionOwner = "Asignar responsable"
+    const val ActionAddOwner = "Anadir asignado"
+    const val ActionRemoveOwner = "Quitar asignado"
+    const val ActionClearOwners = "Sin asignar"
     const val ActionArchive = "Archivar"
     const val ActionRestore = "Restaurar"
     const val ActionDelete = "Eliminar"
@@ -287,18 +289,19 @@ object CrmImportScreens {
     fun bulkCard(context: CrmScreens.Context, leads: List<CrmLead>, page: Int, total: Int, keep: Map<String, String>): UiNode? {
         if (!context.permissions.has(CrmScreens.Manage) || leads.isEmpty()) return null
         val actions = listOfNotNull(
-            ActionStage, ActionOwner.takeIf { context.canAssign }, ActionArchive, ActionRestore,
+            ActionStage, ActionAddOwner.takeIf { context.canAssign }, ActionRemoveOwner.takeIf { context.canAssign }, ActionClearOwners.takeIf { context.canAssign },
+            ActionArchive, ActionRestore,
             ActionDelete.takeIf { context.permissions.has(CrmScreens.Delete) },
         )
         val selection = leads.map { lead ->
-            UiField("lead:${lead.id}", "${lead.name} - ${context.stage(lead.stageId)?.name.orEmpty()} - ${context.names.user(lead.ownerUserId)}", type = "boolean", section = "Leads (pagina $page, $total en total)")
+            UiField("lead:${lead.id}", "${lead.name} - ${context.stage(lead.stageId)?.name.orEmpty()} - ${CrmAssignees.label(context.names, lead.ownerUserIds)}", type = "boolean", section = "Leads (pagina $page, $total en total)")
         }
         val fields = listOf(
             UiField("all", "Seleccionar todos los visibles (${leads.size})", type = "boolean", section = "Seleccion"),
         ) + selection + listOf(
             UiField("action", "Accion", type = "dropdown", required = true, options = actions, section = "Accion"),
             UiField("stage", "Etapa", type = "dropdown", options = context.stages.map { it.name }, section = "Accion", visibleWhen = com.ideasdeveloper.idc.ui.UiFieldCondition("action", listOf(ActionStage))),
-            UiField("owner", "Responsable", type = "dropdown", options = listOf(CrmForms.Unassigned) + context.users.map { it.name }, section = "Accion", visibleWhen = com.ideasdeveloper.idc.ui.UiFieldCondition("action", listOf(ActionOwner))),
+            UiField("owner", "Usuario", type = "dropdown", options = (context.users + CrmBulkActions.legacyOf(context, leads)).map { it.name }, section = "Accion", visibleWhen = com.ideasdeveloper.idc.ui.UiFieldCondition("action", listOf(ActionAddOwner, ActionRemoveOwner))),
         )
         return UiCard(
             listOf(

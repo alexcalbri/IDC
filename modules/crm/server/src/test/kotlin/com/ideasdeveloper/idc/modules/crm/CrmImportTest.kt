@@ -124,7 +124,7 @@ class CrmImportTest {
         assertEquals("JASON@gmail.com", values.email)
         assertEquals("+12025550123", values.phone)
         assertEquals("Reservado", values.stage?.name)
-        assertEquals(ana.id, values.ownerId)
+        assertEquals(listOf(ana.id), values.ownerIds)
         assertEquals(surf.id, values.interestId)
         assertEquals("2026-12-25", values.fields["targetStart"])
         assertEquals("2027-01-03", values.fields["targetEnd"])

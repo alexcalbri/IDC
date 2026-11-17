@@ -202,7 +202,7 @@ object CrmWordPressScreens {
             ),
             secretShown?.let { UiCard(listOf(UiText("Copia este secreto en Ajustes > IDC Connector. No se vuelve a mostrar."), UiText(it, UiTextStyle.Subtitle)), title = "Secreto del plugin") },
             UiCard(
-                listOf(UiText("El agente de la propiedad consultada se sugiere como responsable del lead.", UiTextStyle.Caption), agentForm),
+                listOf(UiText("El agente de la propiedad consultada se sugiere como asignado del lead (al aprobarlo se anade a los asignados).", UiTextStyle.Caption), agentForm),
                 title = "Agentes del sitio",
                 actions = listOf(UiButton("Sincronizar agentes", UiRequest(UiRoute + "/integrations", params = mapOf("op" to "wpAgentsSync")), style = "secondary", enabled = settings.ready)),
             ),
