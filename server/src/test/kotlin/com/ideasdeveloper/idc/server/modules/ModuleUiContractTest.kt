@@ -2,7 +2,11 @@ package com.ideasdeveloper.idc.server.modules
 
 import com.ideasdeveloper.idc.ui.UiBadge
 import com.ideasdeveloper.idc.ui.UiBoard
+import com.ideasdeveloper.idc.ui.UiBoardAction
 import com.ideasdeveloper.idc.ui.UiBoardCard
+import com.ideasdeveloper.idc.ui.UiField
+import com.ideasdeveloper.idc.ui.UiFieldOption
+import com.ideasdeveloper.idc.ui.UiSuggest
 import com.ideasdeveloper.idc.ui.UiBoardColumn
 import com.ideasdeveloper.idc.ui.UiButton
 import com.ideasdeveloper.idc.ui.UiCard
@@ -63,6 +67,34 @@ class ModuleUiContractTest {
         assertTrue(json.contains("\"type\":\"list\""))
         assertTrue(json.contains("\"type\":\"timeline\""))
         assertEquals(screen, UiJson.decodeFromString(UiScreen.serializer(), json))
+    }
+
+    @Test
+    fun boardActionsAndSuggestTriggerRoundTrip() {
+        val board = UiBoard(
+            columns = listOf(UiBoardColumn("new", "Nuevo", cards = listOf(UiBoardCard("1", "Ana")))),
+            actions = listOf(
+                UiBoardAction("assignMe", "Asignarme", UiRequest("/modules/crm/ui/pipeline", params = mapOf("op" to "action", "action" to "assignMe"))),
+                UiBoardAction(
+                    "stage", "Mover a etapa",
+                    UiRequest("/modules/crm/ui/pipeline", params = mapOf("op" to "action")),
+                    options = listOf(UiFieldOption("won", "Ganado")),
+                ),
+                UiBoardAction("delete", "Eliminar", UiRequest("/modules/crm/ui/pipeline", confirm = "Seguro?"), tone = UiTone.Danger),
+            ),
+        )
+        val json = UiJson.encodeToString(UiBoard.serializer(), board)
+        assertTrue(json.contains("\"actions\""))
+        assertEquals(board, UiJson.decodeFromString(UiBoard.serializer(), json))
+        // Un servidor viejo no manda actions: el tablero decodifica con la lista vacia.
+        val old = UiJson.decodeFromString(UiBoard.serializer(), """{"type":"board","columns":[]}""")
+        assertTrue(old.actions.isEmpty())
+
+        val field = UiField("note", "Nota", "textarea", suggest = UiSuggest("/modules/crm/ui/suggest/mentions", minLength = 0, trigger = "@"))
+        assertEquals(field, UiJson.decodeFromString(UiField.serializer(), UiJson.encodeToString(UiField.serializer(), field)))
+        val plain = UiJson.decodeFromString(UiSuggest.serializer(), """{"route":"/x"}""")
+        assertNull(plain.trigger)
+        assertEquals(2, plain.minLength)
     }
 
     @Test

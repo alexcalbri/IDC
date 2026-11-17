@@ -11,6 +11,10 @@ plugins {
 }
 
 // Ktor's JS client pins ws 8.20.1, affected by GHSA-96hv-2xvq-fx4p (fixed in 8.21.0).
+// The webpack dev tooling pulls qs ~6.16.0; 6.16.0 has a stringify DoS (Dependabot #80, fixed in 6.16.1).
 plugins.withType<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnPlugin> {
-    the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootExtension>().resolution("ws", "8.21.3")
+    the<org.jetbrains.kotlin.gradle.targets.js.yarn.YarnRootExtension>().apply {
+        resolution("ws", "8.21.3")
+        resolution("qs", "6.16.1")
+    }
 }

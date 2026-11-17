@@ -198,7 +198,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.20.0",
+        version = "0.21.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas. Quien es mencionado en una nota puede leer ese lead y responder con notas sin este permiso."),
@@ -366,6 +366,22 @@ object CrmServerModule : ServerModule {
                 }
             }
 
+            // Users the note of a lead can mention, while "@" is typed (UiSuggest.trigger). Same rule as adding a note:
+            // without it (or for a lead the user cannot reach) the list is empty.
+            get("/suggest/mentions") {
+                val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@get
+                val query = call.request.queryParameters
+                call.respondTenant(access, UiSuggestions.serializer()) { tenant ->
+                    val context = CrmScreens.Context.load(tenant, permissions)
+                    val lead = query["lead"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { CrmRepository.lead(tenant, it) }
+                    // Only who can give access by mentioning (lead inside their scope + manage): a mention-only reader gets nothing.
+                    val allowed = lead != null && permissions.has(CrmScreens.View) && permissions.has(CrmScreens.Manage) &&
+                        CrmMentions.canGrant(context.readAccess(lead))
+                    if (!allowed) UiSuggestions()
+                    else CrmMentions.suggestions(CrmMentions.suggest(context.mentionable, query["q"].orEmpty().take(100), context.scope.userId))
+                }
+            }
+
             get("/{screen}") {
                 val permissions = call.requireModuleAccess(access, CrmModule.id) ?: return@get
                 // The id as asked (old routes like "pipeline" or "bulk" open their own view or tab); build() resolves it.
@@ -443,6 +459,45 @@ object CrmServerModule : ServerModule {
                     }
                     CrmRepository.moveLead(tenant, lead, stage, context.stages, actor)
                     show("pipeline", UiNotice("${lead.name} paso a ${stage.name}.", UiTone.Success), params - setOf("op", "card", "column"))
+                }
+                "pipeline:action" -> {
+                    val back = params - setOf("op", "action", "cards", "value")
+                    fun notice(text: String, tone: String) = show("pipeline", UiNotice(text, tone), back)
+                    try {
+                        val actionId = params["action"].orEmpty()
+                        // Only the actions the board offers this user (same rule as its declaration).
+                        val offered = CrmBoardActions.available(
+                            canManage = permissions.has(CrmScreens.Manage), canAssign = context.canAssign,
+                            canDelete = permissions.has(CrmScreens.Delete), isUser = context.users.any { it.id == context.scope.userId },
+                            archivedColumn = true,
+                        )
+                        if (actionId !in offered) throw CrmActionNotice("Elige la accion.")
+                        val cards = CrmBoardActions.parseCards(params["cards"])
+                        val value = CrmBoardActions.checkValue(
+                            actionId, params["value"],
+                            if (actionId == CrmBoardActions.Move) context.stages.map { it.name } else context.users.map { it.name },
+                        )
+                        // Leads outside the user's scope (or gone) are never touched: CrmBulkActions leaves out the mention-only ones.
+                        val found = cards.ids.mapNotNull { CrmRepository.lead(tenant, it) }
+                            .filter { context.readAccess(it).canRead }
+                        var rejected = cards.invalid + (cards.ids.size - found.size)
+                        val requested = when (actionId) {
+                            // Archived leads stay put (they are not in a stage).
+                            CrmBoardActions.Move -> found.filter { it.archivedAt == null }.also { rejected += found.size - it.size }
+                            CrmBoardActions.Restore -> found.filter { it.archivedAt != null }.also { rejected += found.size - it.size }
+                            else -> found
+                        }
+                        val message = if (actionId == CrmBoardActions.AssignMe) {
+                            val me = context.users.first { it.id == context.scope.userId }
+                            CrmBulkActions.assign(context, requested, CrmAssignees.Mode.Add, listOf(me.id), actor, notifier)
+                        } else {
+                            CrmBulkActions.apply(context, requested, CrmBoardActions.bulkAction(actionId)!!, value, actor, notifier)
+                        }
+                        val extra = if (rejected > 0) " $rejected rechazados (no disponibles para esta accion)." else ""
+                        notice("$message$extra", UiTone.Success)
+                    } catch (failure: CrmActionNotice) {
+                        notice(failure.message.orEmpty(), if (failure.warning) UiTone.Warning else UiTone.Danger)
+                    }
                 }
                 "new:create" -> {
                     val input = try {

@@ -139,7 +139,7 @@ data class UiField(
     val section: String = "",
     // Shown only while another field of the form has one of the given values; hidden fields are not required.
     val visibleWhen: UiFieldCondition? = null,
-    // Suggestions while typing (text, email and phone fields); older clients ignore it.
+    // Suggestions while typing (any text-like field, including textarea; see UiSuggest.trigger); older clients ignore it.
     val suggest: UiSuggest? = null,
     // dropdown: several options can be chosen; the value is a JSON array of them (see UiFieldValues).
     val multiple: Boolean = false,
@@ -202,7 +202,14 @@ data class UiFieldCondition(val key: String, val values: List<String>)
  * that are not fields (e.g. a hidden id) are cleared again if the user edits the field afterwards.
  */
 @Serializable
-data class UiSuggest(val route: String, val minLength: Int = 2)
+data class UiSuggest(
+    val route: String,
+    val minLength: Int = 2,
+    // With a trigger (e.g. "@"), suggestions are asked only for the word typed after the last trigger
+    // before the cursor (even if shorter than minLength); choosing one replaces "@word" with the
+    // trigger + values["insert"] (or title) + a space. Without it, the whole field is the query.
+    val trigger: String? = null,
+)
 
 @Serializable
 data class UiSuggestion(
@@ -394,6 +401,23 @@ data class UiBoardCard(
     val action: UiAction? = null,
 )
 
+// Value/label pair of a choice, e.g. the options of a board action.
+@Serializable
+data class UiFieldOption(val value: String, val label: String)
+
+/**
+ * Action of a board applied to the selected cards (or to one card from its menu). The app runs
+ * [request] adding "cards" (ids separated by comma) and, when [options] is set, "value" (the chosen option).
+ */
+@Serializable
+data class UiBoardAction(
+    val id: String,
+    val label: String,
+    val request: UiRequest,
+    val options: List<UiFieldOption>? = null,
+    val tone: String = UiTone.Neutral,
+)
+
 @Serializable
 data class UiBoardColumn(
     val id: String,
@@ -418,6 +442,8 @@ data class UiBoard(
     val move: UiRequest? = null,
     val columnWidth: Int = 280,
     val emptyText: String = "Sin elementos.",
+    // Bulk actions: with any, users can select cards and apply them (see UiBoardAction).
+    val actions: List<UiBoardAction> = emptyList(),
     @EncodeDefault override val type: String = "board",
 ) : UiNode
 

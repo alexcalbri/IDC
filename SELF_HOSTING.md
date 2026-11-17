@@ -756,22 +756,36 @@ older installs do not have them. It:
 
 1. verifies `/opt/ideascore/source`, `/opt/ideascore/app`,
    `/etc/ideascore/server.env` and `ideascore.service`;
-2. refuses to continue if the checked-out source has local changes;
+2. asks for the branch, tag or commit and syncs a root-owned mirror
+   (`/var/lib/ideascore/mirror`) to it;
 3. ensures `TENANT_DATABASES_JSON`, `TENANT_JDBC_URL_PREFIX`,
    `MIGRATIONS_ROOT` and `COMPANY_BACKUPS_ROOT` exist in
    `/etc/ideascore/server.env`;
 4. ensures the installer-managed Nginx site proxies `/server` to Ktor;
-5. fetches the requested branch, tag or commit;
-6. builds `:server:test :server:installDist` with `-PserverOnly=true`;
+5. exports the mirror commit with `git archive` into
+   `/opt/ideascore/build-tree` (owned by `ideascore`) and also moves
+   `/opt/ideascore/source` to the same commit as a reference (warnings only);
+6. builds `:server:test :server:installDist` with `-PserverOnly=true` in the
+   build tree;
 7. backs up the current runtime app;
 8. replaces `/opt/ideascore/app`;
 9. restarts `ideascore.service` and checks `http://127.0.0.1:8080/`.
 
-Run it on the server with:
+Everything root runs comes from the root-owned mirror, never from
+`/opt/ideascore/source` (which the `ideascore` user can write). Download
+`update.sh` and `mirror.sh` into a root-owned directory and run it from there:
 
 ```bash
-sudo bash /opt/ideascore/source/scripts/ubuntu/update.sh
+sudo mkdir -p /root/ideascore-update
+sudo curl -fsSL -o /root/ideascore-update/update.sh https://raw.githubusercontent.com/alexcalbri/IDC/master/scripts/ubuntu/update.sh
+sudo curl -fsSL -o /root/ideascore-update/mirror.sh https://raw.githubusercontent.com/alexcalbri/IDC/master/scripts/ubuntu/mirror.sh
+sudo bash /root/ideascore-update/update.sh
 ```
+
+If `update.sh` (or `mirror.sh`) is in a path that is not entirely root-owned
+(every directory up to `/`, no group/other write, no symlinks), for example
+`/opt/ideascore/source/scripts/ubuntu/update.sh`, it refuses to run and asks you
+to use the root-owned download above.
 
 Existing PostgreSQL databases are preserved. Existing secrets in
 `/etc/ideascore/server.env` are preserved; the updater only appends missing

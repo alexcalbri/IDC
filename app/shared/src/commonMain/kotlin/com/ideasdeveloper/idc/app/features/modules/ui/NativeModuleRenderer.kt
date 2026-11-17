@@ -33,6 +33,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
@@ -50,6 +51,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -59,6 +61,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -68,6 +71,11 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -79,7 +87,9 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -97,11 +107,14 @@ import com.ideasdeveloper.idc.ui.UiAction
 import com.ideasdeveloper.idc.ui.UiBadge
 import com.ideasdeveloper.idc.ui.UiBarChart
 import com.ideasdeveloper.idc.ui.UiBoard
+import com.ideasdeveloper.idc.ui.UiBoardAction
+import com.ideasdeveloper.idc.ui.UiSuggestion
 import com.ideasdeveloper.idc.ui.UiBoardCard
 import com.ideasdeveloper.idc.ui.UiBoardColumn
 import com.ideasdeveloper.idc.ui.UiButton
 import com.ideasdeveloper.idc.ui.UiCard
 import com.ideasdeveloper.idc.ui.UiColumn
+import com.ideasdeveloper.idc.ui.UiRequest
 import com.ideasdeveloper.idc.ui.UiDivider
 import com.ideasdeveloper.idc.ui.UiField
 import com.ideasdeveloper.idc.ui.UiForm
@@ -527,6 +540,12 @@ private fun SuggestingField(
     chosenExtraKeys: Set<String>,
     onChosenExtraKeys: (Set<String>) -> Unit,
 ) {
+    // Con trigger (p. ej. "@") se sugiere solo para la palabra bajo el cursor; sin el, todo sigue igual.
+    val trigger = suggest.trigger
+    if (trigger != null) {
+        TriggerSuggestingField(form, field, suggest, trigger, context)
+        return
+    }
     val colors = context.colors
     val value = context.formValue(form.id, field.key)
     var result by remember(form.id, field.key) { mutableStateOf(UiSuggestions()) }
@@ -585,6 +604,143 @@ private fun SuggestingField(
                         if (item.subtitle.isNotBlank()) Text(item.subtitle, color = colors.muted, fontSize = 12.sp)
                     }
                 }
+            }
+        }
+    }
+}
+
+// Largo maximo de la palabra que sigue al trigger; los nombres pueden llevar espacios, no saltos de linea.
+private const val MaxTriggerToken = 40
+
+/** Mencion en curso: donde empieza el trigger en el texto y lo escrito despues de el hasta el cursor. */
+class TriggerToken(val start: Int, val query: String)
+
+/**
+ * Busca el ultimo [trigger] antes del cursor que empieza una palabra (al inicio o tras un espacio) y cuya
+ * consulta no tiene saltos de linea ni pasa de 40 caracteres. Devuelve null si el cursor no esta en una.
+ */
+fun findTriggerToken(text: String, cursor: Int, trigger: String): TriggerToken? {
+    if (trigger.isEmpty() || cursor < 0 || cursor > text.length) return null
+    var i = cursor - trigger.length
+    while (i >= 0) {
+        if (cursor - i - trigger.length > MaxTriggerToken) return null
+        if (text.startsWith(trigger, i) && (i == 0 || text[i - 1].isWhitespace())) {
+            val query = text.substring(i + trigger.length, cursor)
+            return if ('\n' in query) null else TriggerToken(i, query)
+        }
+        // Un salto de linea entre el cursor y el trigger corta la busqueda.
+        if (text[i] == '\n') return null
+        i--
+    }
+    return null
+}
+
+/**
+ * Campo (texto o textarea) con sugerencias por trigger: la lista aparece bajo el campo para la palabra que
+ * se escribe tras el trigger; elegir una reemplaza "@palabra" por "@" + values["insert"] (o titulo) + espacio.
+ * Teclado: flechas, Enter/Tab para elegir y Escape para cerrar; tambien se elige con clic o toque.
+ */
+@Composable
+private fun TriggerSuggestingField(form: UiForm, field: UiField, suggest: UiSuggest, trigger: String, context: ModuleRenderContext) {
+    val colors = context.colors
+    val value = context.formValue(form.id, field.key)
+    // El TextFieldValue local manda (conserva el cursor); solo se resincroniza si el valor cambio por fuera
+    // (p. ej. se limpio tras enviar), es decir, si no es el ultimo texto que escribio este campo.
+    var state by remember(form.id, field.key) { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    var lastWritten by remember(form.id, field.key) { mutableStateOf<String?>(null) }
+    val external = value != state.text && value != lastWritten
+    val current = if (external) TextFieldValue(value, TextRange(value.length)) else state
+    SideEffect {
+        if (external) {
+            state = current
+            lastWritten = value
+        }
+    }
+    var result by remember(form.id, field.key) { mutableStateOf(UiSuggestions()) }
+    // Consulta a la que pertenece el resultado: una lista de otra palabra nunca se muestra ni se inserta.
+    var resultFor by remember(form.id, field.key) { mutableStateOf<String?>(null) }
+    var dismissed by remember(form.id, field.key) { mutableStateOf(false) }
+    var selectedIndex by remember(form.id, field.key) { mutableIntStateOf(0) }
+    // Solo se busca lo que el usuario escribe, no los valores iniciales.
+    var typed by remember(form.id, field.key) { mutableStateOf(false) }
+    val token = if (typed && current.selection.collapsed) findTriggerToken(current.text, current.selection.end, trigger) else null
+    val tokenStart = token?.start
+    val tokenQuery = token?.query
+
+    LaunchedEffect(tokenStart, tokenQuery) {
+        result = UiSuggestions()
+        resultFor = null
+        if (tokenQuery == null) return@LaunchedEffect
+        // Al cambiar la palabra se cancela la consulta anterior; la pausa evita consultar en cada tecla.
+        delay(250)
+        // Solo q y field: las notas largas no deben viajar en la URL de un GET.
+        val found = context.suggest(suggest.route, mapOf("q" to tokenQuery, "field" to field.key))
+        result = found
+        resultFor = tokenQuery
+        selectedIndex = 0
+    }
+
+    val items = if (token != null && !dismissed && resultFor == tokenQuery) result.items else emptyList()
+
+    fun choose(item: UiSuggestion) {
+        val start = token?.start ?: return
+        val insert = trigger + (item.values["insert"] ?: item.title) + " "
+        val text = current.text.substring(0, start) + insert + current.text.substring(current.selection.end)
+        state = TextFieldValue(text, TextRange(start + insert.length))
+        lastWritten = text
+        context.setFormValue(form.id, field.key, text)
+        result = UiSuggestions()
+        resultFor = null
+    }
+
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
+        ModuleField(
+            field, value, !context.busy, colors,
+            textState = current,
+            onTextState = { input ->
+                typed = true
+                if (input.text != current.text) dismissed = false
+                state = input
+                lastWritten = input.text
+                context.setFormValue(form.id, field.key, input.text)
+            },
+            fieldModifier = Modifier.onPreviewKeyEvent { event ->
+                if (items.isEmpty()) return@onPreviewKeyEvent false
+                val handled = event.key == Key.DirectionDown || event.key == Key.DirectionUp || event.key == Key.Enter ||
+                    event.key == Key.NumPadEnter || event.key == Key.Tab || event.key == Key.Escape
+                if (!handled) return@onPreviewKeyEvent false
+                if (event.type == KeyEventType.KeyDown) {
+                    when (event.key) {
+                        Key.DirectionDown -> selectedIndex = (selectedIndex + 1) % items.size
+                        Key.DirectionUp -> selectedIndex = (selectedIndex - 1 + items.size) % items.size
+                        Key.Escape -> dismissed = true
+                        else -> choose(items[selectedIndex.coerceIn(0, items.lastIndex)])
+                    }
+                }
+                true
+            },
+        ) { input -> context.setFormValue(form.id, field.key, input) }
+        if (items.isNotEmpty()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.surfaceAlt, RoundedCornerShape(10.dp))
+                    .border(1.dp, colors.border, RoundedCornerShape(10.dp))
+                    .padding(vertical = 4.dp),
+            ) {
+                items.forEachIndexed { index, item ->
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (index == selectedIndex) colors.accent.copy(alpha = 0.16f) else Color.Transparent)
+                            .clickable(enabled = !context.busy) { choose(item) }
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Text(item.title, color = colors.text, fontWeight = FontWeight.SemiBold)
+                        if (item.subtitle.isNotBlank()) Text(item.subtitle, color = colors.muted, fontSize = 12.sp)
+                    }
+                }
+                TextButton(onClick = { dismissed = true }) { Text("Cerrar", color = colors.accentText, fontSize = 12.sp) }
             }
         }
     }
@@ -721,7 +877,17 @@ private fun formatBytes(bytes: Long): String = when {
 }
 
 @Composable
-private fun ModuleField(field: UiField, value: String, enabled: Boolean, colors: ModuleColors, onChange: (String) -> Unit) {
+private fun ModuleField(
+    field: UiField,
+    value: String,
+    enabled: Boolean,
+    colors: ModuleColors,
+    // Con textState el campo de texto usa TextFieldValue (cursor conocido), p. ej. para sugerencias por trigger.
+    textState: TextFieldValue? = null,
+    onTextState: ((TextFieldValue) -> Unit)? = null,
+    fieldModifier: Modifier = Modifier,
+    onChange: (String) -> Unit,
+) {
     val label = field.label + if (field.required && !field.readOnly) " *" else ""
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         when {
@@ -833,44 +999,65 @@ private fun ModuleField(field: UiField, value: String, enabled: Boolean, colors:
                 }
             }
             else -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = { input -> onChange(if (field.type == "number") input.filter { it.isDigit() || it == '-' } else input) },
-                    label = { Text(label) },
-                    placeholder = when {
-                        field.placeholder.isNotBlank() -> ({ Text(field.placeholder) })
-                        field.type == "date" -> ({ Text("AAAA-MM-DD") })
-                        field.type == "color" -> ({ Text("#RRGGBB") })
-                        else -> null
-                    },
-                    enabled = enabled,
-                    singleLine = field.type != "textarea",
-                    minLines = if (field.type == "textarea") 3 else 1,
-                    visualTransformation = if (field.type == "password") PasswordVisualTransformation() else VisualTransformation.None,
-                    keyboardOptions = KeyboardOptions(
-                        keyboardType = when (field.type) {
-                            "number" -> KeyboardType.Number
-                            "email" -> KeyboardType.Email
-                            "phone" -> KeyboardType.Phone
-                            "url" -> KeyboardType.Uri
-                            "password" -> KeyboardType.Password
-                            else -> KeyboardType.Text
-                        }
-                    ),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedTextColor = colors.text,
-                        unfocusedTextColor = colors.text,
-                        disabledTextColor = colors.muted,
-                        focusedBorderColor = colors.accentText,
-                        unfocusedBorderColor = colors.fieldBorder,
-                        focusedLabelColor = colors.accentText,
-                        unfocusedLabelColor = colors.muted,
-                        cursorColor = colors.accentText,
-                        focusedPlaceholderColor = colors.muted,
-                        unfocusedPlaceholderColor = colors.muted,
-                    ),
-                    modifier = Modifier.weight(1f),
+                val fieldLabel: @Composable () -> Unit = { Text(label) }
+                val fieldPlaceholder: (@Composable () -> Unit)? = when {
+                    field.placeholder.isNotBlank() -> ({ Text(field.placeholder) })
+                    field.type == "date" -> ({ Text("AAAA-MM-DD") })
+                    field.type == "color" -> ({ Text("#RRGGBB") })
+                    else -> null
+                }
+                val keyboard = KeyboardOptions(
+                    keyboardType = when (field.type) {
+                        "number" -> KeyboardType.Number
+                        "email" -> KeyboardType.Email
+                        "phone" -> KeyboardType.Phone
+                        "url" -> KeyboardType.Uri
+                        "password" -> KeyboardType.Password
+                        else -> KeyboardType.Text
+                    }
                 )
+                val textColors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = colors.text,
+                    unfocusedTextColor = colors.text,
+                    disabledTextColor = colors.muted,
+                    focusedBorderColor = colors.accentText,
+                    unfocusedBorderColor = colors.fieldBorder,
+                    focusedLabelColor = colors.accentText,
+                    unfocusedLabelColor = colors.muted,
+                    cursorColor = colors.accentText,
+                    focusedPlaceholderColor = colors.muted,
+                    unfocusedPlaceholderColor = colors.muted,
+                )
+                val transformation = if (field.type == "password") PasswordVisualTransformation() else VisualTransformation.None
+                if (textState != null && onTextState != null) {
+                    OutlinedTextField(
+                        value = textState,
+                        onValueChange = onTextState,
+                        label = fieldLabel,
+                        placeholder = fieldPlaceholder,
+                        enabled = enabled,
+                        singleLine = field.type != "textarea",
+                        minLines = if (field.type == "textarea") 3 else 1,
+                        visualTransformation = transformation,
+                        keyboardOptions = keyboard,
+                        colors = textColors,
+                        modifier = Modifier.weight(1f).then(fieldModifier),
+                    )
+                } else {
+                    OutlinedTextField(
+                        value = value,
+                        onValueChange = { input -> onChange(if (field.type == "number") input.filter { it.isDigit() || it == '-' } else input) },
+                        label = fieldLabel,
+                        placeholder = fieldPlaceholder,
+                        enabled = enabled,
+                        singleLine = field.type != "textarea",
+                        minLines = if (field.type == "textarea") 3 else 1,
+                        visualTransformation = transformation,
+                        keyboardOptions = keyboard,
+                        colors = textColors,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
                 if (field.type == "color") {
                     Box(
                         Modifier
@@ -952,7 +1139,8 @@ private class BoardDragState {
 
 // Tablero kanban: columnas con desplazamiento horizontal. Una tarjeta se arrastra a otra columna
 // (con el raton directamente; en pantallas tactiles tras mantenerla presionada, para no chocar con
-// el desplazamiento) o se mueve con su menu "Mover a".
+// el desplazamiento) o se mueve con su menu "Mover a". Con acciones, tambien se seleccionan tarjetas
+// para aplicarlas en bloque.
 @Composable
 private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
     val colors = context.colors
@@ -977,26 +1165,158 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
     }
     val canMove = node.move != null && !context.busy
 
-    // Las columnas mantienen su ancho (columnWidth) y el tablero se desplaza con barra visible en escritorio y web.
-    HorizontalScrollArea { Row(
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        modifier = Modifier.padding(bottom = 4.dp),
-    ) {
-        node.columns.forEach { column ->
-            val hostsDragged = draggedColumnId == column.id
-            BoardColumn(
-                node = node,
-                column = column,
-                drag = drag,
-                highlighted = target == column.id && !hostsDragged,
-                hostsDragged = hostsDragged,
-                draggedCardId = if (hostsDragged) dragging else null,
-                canMove = canMove,
-                onMove = onMove,
-                context = context,
-            )
+    // Seleccion: mapa observable por id de tarjeta; cada tarjeta lee solo si ella esta marcada (derivedStateOf),
+    // asi marcar una no redibuja las demas. Sobrevive a "Ver mas" porque vive aqui y no en la columna.
+    var selecting by remember { mutableStateOf(false) }
+    val selection = remember { mutableStateMapOf<String, Boolean>() }
+    // Ids del tablero: se recalculan solo cuando llega un tablero nuevo, y la poda depende de este conjunto.
+    val cardIds = remember(node) { node.columns.flatMapTo(HashSet()) { column -> column.cards.map { it.id } } }
+    LaunchedEffect(cardIds) {
+        // Las tarjetas que ya no estan en el tablero salen de la seleccion.
+        selection.keys.retainAll(cardIds)
+    }
+    // Accion con confirmacion en espera; la seleccion se conserva hasta que de verdad se ejecute.
+    var pendingRun by remember { mutableStateOf<PendingBoardRun?>(null) }
+    val onRun = remember(context.onAction, selection) {
+        { action: UiBoardAction, ids: List<String>, value: String?, bulk: Boolean ->
+            if (ids.isNotEmpty()) {
+                val params = action.request.params + mapOf("cards" to ids.joinToString(",")) + (value?.let { mapOf("value" to it) } ?: emptyMap())
+                val request = action.request.copy(params = params)
+                if (request.confirm != null) {
+                    pendingRun = PendingBoardRun(request, bulk)
+                } else {
+                    // Solo la accion sobre la seleccion sale del modo seleccion; la de una tarjeta no la toca.
+                    if (bulk) {
+                        selection.clear()
+                        selecting = false
+                    }
+                    context.onAction(request)
+                }
+            }
         }
-    } }
+    }
+    pendingRun?.let { pending ->
+        AlertDialog(
+            onDismissRequest = { pendingRun = null },
+            text = { Text(pending.request.confirm.orEmpty()) },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingRun = null
+                    if (pending.bulk) {
+                        selection.clear()
+                        selecting = false
+                    }
+                    context.onAction(pending.request.copy(confirm = null))
+                }) { Text("Continuar") }
+            },
+            dismissButton = { TextButton(onClick = { pendingRun = null }) { Text("Cancelar") } },
+        )
+    }
+    val hasActions = node.actions.isNotEmpty()
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+        // Barra fija sobre el area desplazable: siempre visible aunque el tablero se desplace de lado.
+        if (hasActions) {
+            if (selecting) {
+                BoardSelectionBar(node.actions, selection, colors, !context.busy, onRun) {
+                    selection.clear()
+                    selecting = false
+                }
+            } else {
+                TextButton(onClick = { selecting = true }, enabled = !context.busy) {
+                    Text("Seleccionar", color = colors.accentText, fontWeight = FontWeight.SemiBold)
+                }
+            }
+        }
+        // Las columnas mantienen su ancho (columnWidth) y el tablero se desplaza con barra visible en escritorio y web.
+        HorizontalScrollArea { Row(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            modifier = Modifier.padding(bottom = 4.dp),
+        ) {
+            node.columns.forEach { column ->
+                val hostsDragged = draggedColumnId == column.id
+                BoardColumn(
+                    node = node,
+                    column = column,
+                    drag = drag,
+                    highlighted = target == column.id && !hostsDragged,
+                    hostsDragged = hostsDragged,
+                    draggedCardId = if (hostsDragged) dragging else null,
+                    canMove = canMove,
+                    onMove = onMove,
+                    selecting = selecting,
+                    selection = selection,
+                    onRun = onRun,
+                    context = context,
+                )
+            }
+        } }
+    }
+}
+
+// Accion de tablero que espera confirmacion; bulk indica si se aplica a la seleccion o a una sola tarjeta.
+private class PendingBoardRun(val request: UiRequest, val bulk: Boolean)
+
+// Barra del modo seleccion: contador, acciones (con submenu si traen opciones) y "Cancelar".
+@Composable
+private fun BoardSelectionBar(
+    actions: List<UiBoardAction>,
+    selection: SnapshotStateMap<String, Boolean>,
+    colors: ModuleColors,
+    enabled: Boolean,
+    onRun: (UiBoardAction, List<String>, String?, Boolean) -> Unit,
+    onCancel: () -> Unit,
+) {
+    // Solo esta barra lee el tamano de la seleccion.
+    val count = selection.size
+    FlowRow(
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(colors.surfaceAlt, RoundedCornerShape(12.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Text(
+            if (count == 1) "1 seleccionado" else "$count seleccionados",
+            color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+        )
+        actions.forEach { action ->
+            BoardActionButton(action, colors, enabled && count > 0) { value -> onRun(action, selection.keys.toList(), value, true) }
+        }
+        TextButton(onClick = onCancel) { Text("Cancelar", color = colors.muted) }
+    }
+}
+
+// Boton de una accion: sin opciones la ejecuta; con opciones abre un menu con ellas.
+@Composable
+private fun BoardActionButton(action: UiBoardAction, colors: ModuleColors, enabled: Boolean, onRun: (String?) -> Unit) {
+    val color = if (action.tone == UiTone.Danger) colors.danger else colors.accentText
+    val options = action.options
+    var open by remember { mutableStateOf(false) }
+    Box {
+        TextButton(
+            onClick = { if (options.isNullOrEmpty()) onRun(null) else open = true },
+            enabled = enabled,
+        ) {
+            Text(if (options.isNullOrEmpty()) action.label else "${action.label} ▾", color = if (enabled) color else colors.muted, fontWeight = FontWeight.SemiBold)
+        }
+        if (!options.isNullOrEmpty()) {
+            DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                options.forEach { option ->
+                    DropdownMenuItem(
+                        text = { Text(option.label) },
+                        onClick = {
+                            open = false
+                            onRun(option.value)
+                        },
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -1009,6 +1329,9 @@ private fun BoardColumn(
     draggedCardId: String?,
     canMove: Boolean,
     onMove: (String, String) -> Unit,
+    selecting: Boolean,
+    selection: SnapshotStateMap<String, Boolean>,
+    onRun: (UiBoardAction, List<String>, String?, Boolean) -> Unit,
     context: ModuleRenderContext,
 ) {
     val colors = context.colors
@@ -1031,16 +1354,38 @@ private fun BoardColumn(
         }
         if (column.caption.isNotBlank()) Text(column.caption, color = colors.muted, fontSize = 12.sp)
         if (column.cards.isEmpty()) Text("Sin elementos.", color = colors.muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
+        if (selecting && column.cards.isNotEmpty()) {
+            // Solo las tarjetas ya cargadas (las que muestra "Ver mas") entran en "Seleccionar todos".
+            val loaded = column.cards.take(shown)
+            val allSelected by remember(selection, loaded) { derivedStateOf { loaded.all { selection.containsKey(it.id) } } }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier.fillMaxWidth().clickable(enabled = !context.busy) {
+                    if (allSelected) loaded.forEach { selection.remove(it.id) } else loaded.forEach { selection[it.id] = true }
+                },
+            ) {
+                Checkbox(
+                    checked = allSelected,
+                    onCheckedChange = null,
+                    colors = CheckboxDefaults.colors(checkedColor = colors.accent, uncheckedColor = colors.muted, checkmarkColor = colors.onAccent),
+                )
+                Text("Seleccionar todos", color = colors.text, fontSize = 12.sp)
+            }
+        }
         column.cards.take(shown).forEach { card ->
             key(card.id) {
                 BoardCard(
                     card = card,
                     column = column,
                     columns = node.columns,
+                    actions = node.actions,
                     drag = drag,
                     isDragged = draggedCardId == card.id,
                     canMove = canMove,
                     onMove = onMove,
+                    selecting = selecting,
+                    selection = selection,
+                    onRun = onRun,
                     context = context,
                 )
             }
@@ -1055,22 +1400,32 @@ private fun BoardCard(
     card: UiBoardCard,
     column: UiBoardColumn,
     columns: List<UiBoardColumn>,
+    actions: List<UiBoardAction>,
     drag: BoardDragState,
     isDragged: Boolean,
     canMove: Boolean,
     onMove: (String, String) -> Unit,
+    selecting: Boolean,
+    selection: SnapshotStateMap<String, Boolean>,
+    onRun: (UiBoardAction, List<String>, String?, Boolean) -> Unit,
     context: ModuleRenderContext,
 ) {
     val colors = context.colors
     var menu by remember(card.id) { mutableStateOf(false) }
+    // Accion con opciones elegida en el menu: muestra sus opciones como submenu.
+    var submenu by remember(card.id) { mutableStateOf<UiBoardAction?>(null) }
     val currentOnMove by rememberUpdatedState(onMove)
+    // Solo cambia cuando esta tarjeta se marca o desmarca; las demas no se redibujan.
+    val selected by remember(selection, card.id) { derivedStateOf { selection.containsKey(card.id) } }
+    // El arrastre se desactiva mientras se selecciona.
+    val dragEnabled = canMove && !selecting
     DisposableEffect(drag, card.id) { onDispose { drag.cards.remove(card.id) } }
     Column(
         verticalArrangement = Arrangement.spacedBy(6.dp),
         modifier = Modifier
             .fillMaxWidth()
             // Solo las tarjetas movibles guardan su posicion; es un holder no observable.
-            .then(if (canMove) Modifier.onGloballyPositioned { drag.cards[card.id] = it } else Modifier)
+            .then(if (dragEnabled) Modifier.onGloballyPositioned { drag.cards[card.id] = it } else Modifier)
             .graphicsLayer {
                 if (isDragged) {
                     translationX = drag.dragOffset.x
@@ -1078,13 +1433,22 @@ private fun BoardCard(
                     shadowElevation = 12f
                 }
             }
-            .background(colors.surface, RoundedCornerShape(12.dp))
-            .border(1.dp, if (isDragged) colors.accent else colors.border, RoundedCornerShape(12.dp))
-            .then(card.action?.let { action -> Modifier.clickable(enabled = !context.busy) { context.onAction(action) } } ?: Modifier)
+            .background(if (selected) colors.accent.copy(alpha = 0.12f) else colors.surface, RoundedCornerShape(12.dp))
+            .border(1.dp, if (isDragged || selected) colors.accent else colors.border, RoundedCornerShape(12.dp))
+            .then(
+                if (selecting) {
+                    // En modo seleccion tocar la tarjeta la marca en vez de abrirla.
+                    Modifier.clickable(enabled = !context.busy) {
+                        if (selection.containsKey(card.id)) selection.remove(card.id) else selection[card.id] = true
+                    }
+                } else {
+                    card.action?.let { action -> Modifier.clickable(enabled = !context.busy) { context.onAction(action) } } ?: Modifier
+                }
+            )
             // After clickable so the drag sees the pointer first and its consumed events
             // cancel the click (opening the card) and the board scroll.
             .then(
-                if (canMove) Modifier.pointerInput(card.id, column.id, drag) {
+                if (dragEnabled) Modifier.pointerInput(card.id, column.id, drag) {
                     awaitEachGesture {
                         val down = awaitFirstDown(requireUnconsumed = false)
                         val start = if (down.type == PointerType.Mouse) {
@@ -1114,28 +1478,79 @@ private fun BoardCard(
             )
             .padding(10.dp),
     ) {
-        Text(card.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        if (selecting) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(
+                    checked = selected,
+                    onCheckedChange = null,
+                    colors = CheckboxDefaults.colors(checkedColor = colors.accent, uncheckedColor = colors.muted, checkmarkColor = colors.onAccent),
+                )
+                Text(card.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1f))
+            }
+        } else {
+            Text(card.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        }
         if (card.subtitle.isNotBlank()) Text(card.subtitle, color = colors.muted, fontSize = 12.sp, maxLines = 2)
         card.details.forEach { Text(it, color = colors.muted, fontSize = 12.sp) }
         ModuleBadges(card.badges, colors)
-        if (canMove && columns.size > 1) {
+        val canPickColumn = canMove && columns.size > 1
+        if (!selecting && (canPickColumn || actions.isNotEmpty())) {
             Box {
                 Text(
-                    "Mover a...",
+                    when {
+                        canPickColumn && actions.isNotEmpty() -> "Mover / Acciones"
+                        canPickColumn -> "Mover a..."
+                        else -> "Acciones"
+                    },
                     color = colors.accentText,
                     fontSize = 12.sp,
                     fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clickable { menu = true }.padding(vertical = 2.dp),
+                    modifier = Modifier.clickable { submenu = null; menu = true }.padding(vertical = 2.dp),
                 )
-                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                    columns.filter { it.id != column.id }.forEach { other ->
-                        DropdownMenuItem(
-                            text = { Text(other.title) },
-                            onClick = {
-                                menu = false
-                                onMove(card.id, other.id)
-                            },
-                        )
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false; submenu = null }) {
+                    val chosen = submenu
+                    if (chosen != null) {
+                        DropdownMenuItem(text = { Text("‹ ${chosen.label}", fontWeight = FontWeight.SemiBold) }, onClick = { submenu = null })
+                        chosen.options.orEmpty().forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.label) },
+                                onClick = {
+                                    menu = false
+                                    submenu = null
+                                    onRun(chosen, listOf(card.id), option.value, false)
+                                },
+                            )
+                        }
+                    } else {
+                        if (canPickColumn) columns.filter { it.id != column.id }.forEach { other ->
+                            DropdownMenuItem(
+                                text = { Text(other.title) },
+                                onClick = {
+                                    menu = false
+                                    onMove(card.id, other.id)
+                                },
+                            )
+                        }
+                        if (canPickColumn && actions.isNotEmpty()) HorizontalDivider(color = colors.border)
+                        actions.forEach { action ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        if (action.options.isNullOrEmpty()) action.label else "${action.label} ›",
+                                        color = if (action.tone == UiTone.Danger) colors.danger else Color.Unspecified,
+                                    )
+                                },
+                                enabled = !context.busy,
+                                onClick = {
+                                    if (action.options.isNullOrEmpty()) {
+                                        menu = false
+                                        onRun(action, listOf(card.id), null, false)
+                                    } else {
+                                        submenu = action
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }

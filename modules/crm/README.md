@@ -195,6 +195,23 @@ with its id; the text is the lead, who wrote and the note cut to 140 characters)
 profile email, an email to that email through `crm_outbox` (kind `mentioned`). Nobody is told for mentioning themselves or twice for
 the same note. **Equipo** has the per-user option "Avisarme por correo cuando me mencionen" (`crm_update_user_notifications` has `notifyMentioned`).
 
+## "@" autocomplete and pipeline selection (0.21.0)
+
+**Mention autocomplete.** The note field of the lead carries `UiSuggest(route, minLength = 0, trigger = "@")`. The route is
+`GET /modules/crm/ui/suggest/mentions?lead=<id>&q=<text after @>`: up to 8 mentionable users (the same set as the "Mencionar a"
+dropdown, never the writer) whose name contains `q` (ignoring case; emails are never matched); with an empty `q`, the first 8 alphabetically. Each
+`UiSuggestion` has the name as title and `values.insert` = the name (names with spaces resolve in `CrmMentions.parseText`); the
+subtitle is empty unless two suggested users share a name, then it is their email. Only who can give access by mentioning gets
+suggestions (crm.leads.manage with the lead inside their scope); a mention-only reader gets an empty list. The "Mencionar a" dropdown stays for old clients and the MCP.
+
+**Pipeline actions.** `UiBoard.actions` declares what the app runs on selected cards (or one card): move (options = stages),
+assign me, assign to (options = users), remove assigned, archive, restore (only with the archived column shown) and delete
+(with confirmation). Each is a `UiRequest` to `pipeline` with `op=action`, `action=<id>`; the app adds `cards` (comma ids, up to 500)
+and `value`. The server runs them through `CrmBulkActions`, so scope and permissions are the bulk bar's: assign actions need the
+assign permission (or seeing every lead), delete needs crm.leads.delete, leads seen only by a mention are skipped, and move and
+restore only touch open and archived leads respectively. Only the actions the user may run are declared; any other id is refused.
+The reply is the refreshed pipeline with the summary ("N lead(s) ...") and how many cards were rejected. The old `pipeline` and `bulk` routes are unchanged.
+
 ## Inbox and channels (V002)
 
 Every channel (forms, email, and the channel integrations) hands contacts to

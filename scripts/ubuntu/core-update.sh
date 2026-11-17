@@ -12,8 +12,8 @@ umask 077
 
 readonly CONFIG_FILE=/etc/ideascore/server.env
 readonly STATE_DIR=/var/lib/ideascore
-readonly MIRROR_DIR=$STATE_DIR/mirror
-readonly REPO_URL=https://github.com/alexcalbri/IDC.git
+readonly MIRROR_LIB_DIR=/usr/local/lib/ideascore
+readonly MIRROR_LIB=$MIRROR_LIB_DIR/mirror.sh
 readonly MAINTENANCE_LOCK_FILE=/run/ideascore-maintenance.lock
 readonly HELPER_LOCK_FILE=/run/ideascore-core-update.lock
 readonly DEPLOYED_FILE=$STATE_DIR/deployed-commit
@@ -32,6 +32,9 @@ if [[ ${1:-} == --install ]]; then
     umask 022
     install -d -m 700 -o root -g root "$STATE_DIR"
     install -o root -g root -m 755 "${BASH_SOURCE[0]}" "$INSTALLED_PATH"
+    # Libreria del espejo: la carga este ayudante desde una ruta de root, no desde el codigo descargado.
+    install -d -m 755 -o root -g root "$MIRROR_LIB_DIR"
+    install -o root -g root -m 644 "$(dirname -- "${BASH_SOURCE[0]}")/mirror.sh" "$MIRROR_LIB"
     cat > /etc/systemd/system/ideascore-core-update.service <<'UNIT'
 [Unit]
 Description=Update the IdeasCore core when the server owner requests it
@@ -59,6 +62,9 @@ UNIT
 fi
 
 [[ -r $CONFIG_FILE ]] || die "No se encontro $CONFIG_FILE."
+[[ -f $MIRROR_LIB ]] || die "No se encontro $MIRROR_LIB; ejecuta update.sh de nuevo."
+# shellcheck source=mirror.sh
+source "$MIRROR_LIB"
 command -v flock >/dev/null 2>&1 || die 'No se encontro flock (paquete util-linux).'
 
 # Una sola copia del ayudante a la vez.
@@ -171,30 +177,11 @@ fail_request() {
     exit 1
 }
 
-mirror_git() {
-    GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null -C "$MIRROR_DIR" "$@"
-}
-
-# Deja el espejo en el ultimo commit de CORE_UPDATE_REF. Cada paso usa || return para que set -e
-# no se suspenda dentro de un "if".
-sync_mirror() {
-    install -d -m 700 -o root -g root "$STATE_DIR" || return 1
-    if [[ ! -d $MIRROR_DIR/.git ]]; then
-        rm -rf -- "$MIRROR_DIR"
-        GIT_TERMINAL_PROMPT=0 git -c core.hooksPath=/dev/null clone --quiet "$REPO_URL" "$MIRROR_DIR" || return 1
-    fi
-    chmod 700 "$MIRROR_DIR" || return 1
-    [[ $(mirror_git remote get-url origin) == "$REPO_URL" ]] || return 1
-    mirror_git fetch --quiet --no-tags origin "$CORE_UPDATE_REF" || return 1
-    mirror_git checkout --quiet --force --detach FETCH_HEAD || return 1
-    mirror_git clean -ffdxq || return 1
-}
-
 [[ $TARGET_VERSION =~ $VERSION_PATTERN ]] || fail_request 'Version destino invalida.'
 install -m 600 /dev/null "$LOG_FILE"
 FINALIZED=false
 
-sync_mirror >> "$LOG_FILE" 2>&1 || fail_request 'No se pudo descargar el codigo desde GitHub'
+sync_mirror "$CORE_UPDATE_REF" >> "$LOG_FILE" 2>&1 || fail_request 'No se pudo descargar el codigo desde GitHub'
 TARGET_COMMIT=$(mirror_git rev-parse HEAD)
 [[ $TARGET_COMMIT =~ ^[0-9a-f]{40}$ ]] || fail_request 'No se pudo leer el commit descargado'
 grep -Fxq "version = \"$TARGET_VERSION\"" "$MIRROR_DIR/server/build.gradle.kts" ||

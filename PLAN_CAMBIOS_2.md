@@ -109,3 +109,58 @@ Permisos del usuario del backend: `GRANT SELECT, INSERT ON core_update_requests`
 - La pantalla muestra la versión actual y la última, y un botón Actualizar con confirmación. Mientras la solicitud está `pending` o `running`, consulta el estado cada 5 s y muestra el log en monoespaciado.
 - Si falla la red durante la actualización, muestra "El servidor se esta reiniciando..." y sigue consultando.
 - Con `stalePending`, muestra un aviso: falta el ayudante y hay que correr `update.sh` una vez por SSH.
+
+## 3. update.sh manual también seguro (scripts)
+
+El modo manual hace lo mismo que el automático, pero preguntando:
+- root sincroniza su clon `/var/lib/ideascore/mirror` (URL fija, sin hooks, `clean -ffdx`) con la rama, etiqueta o commit elegido;
+- `TRUSTED_DIR` es ese clon;
+- compila en `/opt/ideascore/build-tree` a partir de `git archive`;
+- `source/` se actualiza como `ideascore` solo como referencia.
+
+Nada de lo que corre como root o postgres se lee de `source/`. La lógica del clon se comparte con `core-update.sh` en un archivo nuevo, `scripts/ubuntu/mirror.sh`, que `update.sh` y `core-update.sh` cargan con `source` desde el directorio de confianza. Si se ejecuta `update.sh` desde `source/` (archivo de `ideascore`), avisa y pide confirmación, porque el propio script podría estar alterado. Lo recomendado es descargarlo de GitHub.
+
+## 4. Autocompletado de @ en las notas del lead (Core + app + CRM)
+
+**Core (`ModuleUi.kt`):**
+- `UiSuggest` gana `trigger: String? = null`.
+- Con `trigger` (p. ej. `"@"`), el campo, que también puede ser `textarea`, pide sugerencias solo para la palabra que se escribe después del último `trigger` antes del cursor, aunque tenga menos de `minLength`. La consulta va con `q` = el texto después del `@` y `field` = la clave.
+- Elegir una sugerencia reemplaza `@<texto>` por `@` + `UiSuggestion.values["insert"]` (o `title` si no viene) + un espacio, y no toca los demás campos.
+- Sin `trigger`, todo funciona como hoy. Los clientes viejos ignoran el campo.
+
+**App (`NativeModuleRenderer.kt`):** el campo con sugerencias ya acepta `textarea` y el modo `trigger`, con la lista bajo el campo, navegable con teclado y clic.
+
+**CRM:**
+- Nueva ruta `GET /suggest/mentions?q=&lead=`. Devuelve hasta 8 `UiSuggestion(title = nombre, subtitle = correo, values = {"insert": nombre})`, tomadas de los usuarios mencionables del lead (los mismos que `mentionOptions`, sin el propio usuario), filtradas por nombre o correo que contengan `q`.
+- La nota (`textarea`) lleva `suggest = UiSuggest(route, minLength = 0, trigger = "@")`.
+- Se conserva el dropdown "mentions" para clientes viejos y para el MCP.
+
+## 5. Selección múltiple y acciones por tarjeta en el pipeline (Core + app + CRM)
+
+**Core (`ModuleUi.kt`):**
+- Nuevo `UiBoardAction(id: String, label: String, request: UiRequest, options: List<UiFieldOption>? = null, tone: String = UiTone.Neutral)`, donde `UiFieldOption(value, label)` es un tipo nuevo si no existe uno equivalente.
+- `UiBoard` gana `actions: List<UiBoardAction> = emptyList()`.
+- La app ejecuta `request` y agrega los params `cards` (ids separados por coma) y, si hay `options`, `value` (la opción elegida). `request.confirm` se pide antes.
+
+**App:**
+- Con `actions` no vacío, el tablero muestra un botón "Seleccionar". En modo selección, cada tarjeta tiene una casilla y tocarla la marca; la columna tiene "Seleccionar todos" para las tarjetas cargadas.
+- Una barra fija muestra "N seleccionados", las acciones (con submenú si tienen `options`) y "Cancelar". El arrastre se desactiva en modo selección.
+- Fuera del modo selección, el menú de cada tarjeta (donde está "Mover a...") muestra las mismas acciones aplicadas a esa tarjeta sola.
+
+**CRM:**
+- El tablero declara estas acciones, mapeadas a `CrmBulkActions` con la misma regla de alcance y permisos por lead: los leads vistos solo por mención no entran.
+  - Mover a etapa, con las etapas como options;
+  - Asignarme;
+  - Asignar a, con usuarios como options;
+  - Quitar asignados;
+  - Archivar;
+  - Restaurar, solo en la columna de archivados;
+  - Eliminar, con confirmación.
+- Nueva operación `pipeline op=action`, con `action` = el id de la acción, `cards` y `value`. Responde con el tablero actualizado y un mensaje "N leads actualizados", o con los rechazados.
+- Los alias viejos `pipeline` y `bulk` no se tocan.
+
+## 6. Dependabot #80: qs 6.16.0 (HECHO)
+
+`build.gradle.kts` fuerza `resolution("qs", "6.16.1")` y `kotlin-js-store/yarn.lock` quedó regenerado.
+
+**Versiones de los cambios 3 a 6:** Core 0.5.0, app 0.5.0 y CRM 0.21.0.

@@ -71,20 +71,49 @@ readonly APP_DIR=/opt/ideascore
 readonly SOURCE_DIR=$APP_DIR/source
 readonly APP_RUNTIME_DIR=$APP_DIR/app
 readonly WEB_RUNTIME_DIR=$APP_DIR/web
+# Verdadero si la ruta, ya resuelta (sin enlaces), y cada directorio hasta / son de root y no son
+# escribibles por grupo ni otros (los directorios con sticky bit tipo /tmp tampoco sirven).
+is_root_private() {
+    local path info
+    path=$(realpath -e -- "$1") || return 1
+    while :; do
+        info=$(stat -c '%u %a' -- "$path") || return 1
+        [[ ${info%% *} == 0 ]] || return 1
+        (( (8#${info##* } & 8#022) == 0 )) || return 1
+        [[ $path != / ]] || return 0
+        path=${path%/*}
+        path=${path:-/}
+    done
+}
+
+# Verdadero si es un archivo regular (tras resolver enlaces) y toda su ruta es de root.
+is_root_private_file() {
+    local resolved
+    resolved=$(realpath -e -- "$1") || return 1
+    [[ -f $resolved && ! -L $resolved ]] && is_root_private "$resolved"
+}
+
 # Todo lo que se ejecuta o se lee como root/postgres (migrations.sh, SQL, helpers) sale de TRUSTED_DIR.
-# En modo manual es el propio SOURCE_DIR (sin cambios); en modo no interactivo es obligatorio y debe
-# ser un directorio de root que nadie mas pueda escribir (el espejo del ayudante).
-readonly TRUSTED_DIR=${IDEASCORE_TRUSTED_DIR:-$SOURCE_DIR}
+# En modo manual es el espejo de root (/var/lib/ideascore/mirror), que se asigna tras elegir la referencia;
+# en modo no interactivo es obligatorio y debe ser un directorio de root que nadie mas pueda escribir.
+TRUSTED_DIR=${IDEASCORE_TRUSTED_DIR:-}
 if [[ $NON_INTERACTIVE == true ]]; then
     [[ -n ${IDEASCORE_TRUSTED_DIR:-} ]] || die 'IDEASCORE_TRUSTED_DIR es obligatorio en modo no interactivo.'
     [[ $TRUSTED_DIR == /* && -d $TRUSTED_DIR ]] || die 'IDEASCORE_TRUSTED_DIR debe ser una ruta absoluta existente.'
     [[ $(realpath -- "$TRUSTED_DIR") != "$(realpath -- "$SOURCE_DIR")" ]] ||
         die 'IDEASCORE_TRUSTED_DIR no puede ser el directorio de codigo fuente.'
-    trusted_stat=$(stat -c '%u %a' -- "$TRUSTED_DIR")
-    [[ ${trusted_stat%% *} == 0 ]] || die 'IDEASCORE_TRUSTED_DIR debe pertenecer a root.'
-    (( (8#${trusted_stat##* } & 8#022) == 0 )) || die 'IDEASCORE_TRUSTED_DIR no puede ser escribible por grupo u otros.'
+    is_root_private "$TRUSTED_DIR" ||
+        die 'IDEASCORE_TRUSTED_DIR (y cada directorio que lo contiene) debe ser de root y no escribible por grupo u otros.'
     [[ -f $TRUSTED_DIR/scripts/ubuntu/migrations.sh && -f $TRUSTED_DIR/scripts/ubuntu/core-update.sh ]] ||
         die 'IDEASCORE_TRUSTED_DIR no contiene los scripts de IdeasCore.'
+    readonly TRUSTED_DIR
+fi
+
+# El script que corre como root debe estar en un lugar que solo root pueda modificar.
+SCRIPT_PATH=$(realpath -- "$0")
+SCRIPT_DIR=${SCRIPT_PATH%/*}
+if ! is_root_private_file "$SCRIPT_PATH"; then
+    die "update.sh esta en $SCRIPT_DIR, una ruta que no es solo de root (o es un enlace) y podria haber sido alterada. Descarga update.sh y mirror.sh desde https://raw.githubusercontent.com/alexcalbri/IDC/master/scripts/ubuntu/ a un directorio de root (por ejemplo /root/ideascore-update) y ejecuta sudo bash /root/ideascore-update/update.sh."
 fi
 readonly CONFIG_FILE=/etc/ideascore/server.env
 readonly SERVICE_NAME=ideascore.service
@@ -502,7 +531,33 @@ harden_app_dir() {
 # siga enlaces del arbol de ideascore, y se rechaza todo lo que no sea archivo o directorio.
 copy_dist_as_ideascore() {
     local src=$1 dest=$2
-    runuser -u ideascore -- tar -C "$src" -cf - . | tar -C "$dest" -xf - --no-same-owner --no-same-permissions
+    local archive entry
+    # Root no extrae directamente un flujo que controla ideascore: se guarda en un archivo de root,
+    # se valida el listado y solo entonces se extrae.
+    archive=$(mktemp -p "$ROOT_STATE_DIR" dist.XXXXXX.tar) || die 'No se pudo crear el archivo temporal de la distribucion.'
+    chmod 600 "$archive"
+    if ! runuser -u ideascore -- tar -C "$src" -cf - . > "$archive"; then
+        rm -f -- "$archive"
+        die "No se pudo empaquetar la distribucion de $src."
+    fi
+    while IFS= read -r entry; do
+        # Primer caracter del modo: - archivo, d directorio; todo lo demas se rechaza.
+        if [[ ${entry:0:1} != - && ${entry:0:1} != d ]]; then
+            rm -f -- "$archive"
+            die "La distribucion de $src contiene enlaces o archivos especiales."
+        fi
+    done < <(tar -tvf "$archive")
+    while IFS= read -r entry; do
+        if [[ $entry == /* || $entry == '..' || $entry == ../* || $entry == */../* || $entry == */.. ]]; then
+            rm -f -- "$archive"
+            die "La distribucion de $src contiene rutas no permitidas."
+        fi
+    done < <(tar -tf "$archive")
+    tar -C "$dest" -xf "$archive" --no-same-owner --no-same-permissions --no-overwrite-dir || {
+        rm -f -- "$archive"
+        die "No se pudo extraer la distribucion de $src."
+    }
+    rm -f -- "$archive"
     if [[ -n $(find "$dest" ! -type f ! -type d -print -quit) ]]; then
         die "La distribucion de $src contiene enlaces o archivos especiales."
     fi
@@ -528,6 +583,8 @@ harden_app_dir
 cd "$SOURCE_DIR"
 CURRENT_REF=$(git_source rev-parse --abbrev-ref HEAD) || CURRENT_REF=HEAD
 CURRENT_COMMIT=$(git_source rev-parse --short HEAD) || CURRENT_COMMIT=desconocido
+# root no se queda con el directorio de trabajo dentro de un arbol que ideascore puede escribir.
+cd /
 if [[ $NON_INTERACTIVE == true ]]; then
     GIT_REF=$ARG_COMMIT
     UPDATE_TARGET=$ARG_TARGET
@@ -546,11 +603,6 @@ else
     esac
 fi
 
-# En modo no interactivo se compila desde un arbol nuevo; el codigo fuente no importa para el resultado.
-if [[ $NON_INTERACTIVE != true ]] && { ! git_source diff --quiet || ! git_source diff --cached --quiet; }; then
-    die 'El repositorio de instalacion tiene cambios locales. Resuelvelos antes de actualizar.'
-fi
-
 printf 'Instalacion actual: %s (%s)\n' "$CURRENT_REF" "$CURRENT_COMMIT"
 printf 'Destino: %s\n' "$GIT_REF"
 if [[ $NON_INTERACTIVE == true ]]; then
@@ -559,6 +611,28 @@ else
     ask CONFIRM "Continuar con respaldo, build y reemplazo de $UPDATE_TARGET? Escribe si" no
 fi
 [[ $CONFIRM == si ]] || die 'Cancelado sin cambiar archivos.'
+
+if [[ $NON_INTERACTIVE == true ]]; then
+    BUILD_SHA=$ARG_COMMIT
+else
+    # Modo manual: root sincroniza su espejo con la referencia elegida y todo sale de ahi.
+    MIRROR_LIB_FILE=''
+    if is_root_private_file "$SCRIPT_DIR/mirror.sh"; then
+        MIRROR_LIB_FILE=$(realpath -e -- "$SCRIPT_DIR/mirror.sh")
+    elif is_root_private_file /usr/local/lib/ideascore/mirror.sh; then
+        MIRROR_LIB_FILE=$(realpath -e -- /usr/local/lib/ideascore/mirror.sh)
+    fi
+    [[ -n $MIRROR_LIB_FILE ]] || die 'No se encontro mirror.sh en un lugar seguro. Descarga update.sh y mirror.sh desde https://raw.githubusercontent.com/alexcalbri/IDC/master/scripts/ubuntu/ a un directorio de root (por ejemplo /root/ideascore-update) y ejecuta sudo bash /root/ideascore-update/update.sh.'
+    # shellcheck source=mirror.sh
+    source "$MIRROR_LIB_FILE"
+    printf 'Sincronizando el espejo de root con %s...\n' "$GIT_REF"
+    BUILD_SHA=$(sync_mirror "$GIT_REF") || die "No se pudo traer $GIT_REF desde GitHub al espejo $MIRROR_DIR."
+    [[ $BUILD_SHA =~ ^[0-9a-f]{40}$ ]] || die 'No se pudo leer el commit del espejo.'
+    TRUSTED_DIR=$MIRROR_DIR
+    readonly TRUSTED_DIR
+    [[ -f $TRUSTED_DIR/scripts/ubuntu/migrations.sh && -f $TRUSTED_DIR/scripts/ubuntu/core-update.sh ]] ||
+        die 'El espejo no contiene los scripts de IdeasCore.'
+fi
 
 if [[ -n ${JAVA_HOME:-} && -x $JAVA_HOME/bin/java ]]; then
     UPDATE_JAVA_HOME=$JAVA_HOME
@@ -572,26 +646,18 @@ configure_service_writable_paths
 configure_nginx_server_route
 ensure_nginx_module_upload_limit
 
-if [[ $NON_INTERACTIVE == true ]]; then
-    # Commit exacto. El codigo fuente se deja en ese sha como ideascore (mejor esfuerzo, para que el modo
-    # manual siga alineado), pero no se confia en el: se compila desde un arbol nuevo del espejo de root.
-    git_source fetch --tags --prune origin || printf 'AVISO: no se pudo actualizar %s (fetch).\n' "$SOURCE_DIR" >&2
-    git_source checkout --detach "$ARG_COMMIT" ||
-        printf 'AVISO: no se pudo dejar %s en el commit %s.\n' "$SOURCE_DIR" "$ARG_COMMIT" >&2
-    TARGET_COMMIT=${ARG_COMMIT:0:7}
-    BUILD_DIR=$BUILD_TREE
-    rm -rf --one-file-system -- "$BUILD_DIR"
-    install -d -m 755 -o ideascore -g ideascore "$BUILD_DIR"
-    git -c core.hooksPath=/dev/null -C "$TRUSTED_DIR" archive "$ARG_COMMIT" |
-        runuser -u ideascore -- tar -x -C "$BUILD_DIR" --no-same-owner
-    [[ -f $BUILD_DIR/gradlew && -f $BUILD_DIR/server/build.gradle.kts ]] || die 'El arbol de compilacion esta incompleto.'
-else
-    git_source fetch --tags --prune origin
-    git_source checkout "$GIT_REF"
-    git_source pull --ff-only origin "$GIT_REF" 2>/dev/null || true
-    TARGET_COMMIT=$(git_source rev-parse --short HEAD)
-    BUILD_DIR=$SOURCE_DIR
-fi
+# Se compila desde un arbol nuevo del espejo de root. El codigo fuente se deja en el mismo sha como
+# ideascore (mejor esfuerzo, solo como referencia), pero no se confia en el.
+git_source fetch --tags --prune origin || printf 'AVISO: no se pudo actualizar %s (fetch).\n' "$SOURCE_DIR" >&2
+git_source checkout --detach "$BUILD_SHA" ||
+    printf 'AVISO: no se pudo dejar %s en el commit %s.\n' "$SOURCE_DIR" "$BUILD_SHA" >&2
+TARGET_COMMIT=${BUILD_SHA:0:7}
+BUILD_DIR=$BUILD_TREE
+rm -rf --one-file-system -- "$BUILD_DIR"
+install -d -m 755 -o ideascore -g ideascore "$BUILD_DIR"
+git -c core.hooksPath=/dev/null -c core.fsmonitor=false -C "$TRUSTED_DIR" archive "$BUILD_SHA" |
+    runuser -u ideascore -- tar -x -C "$BUILD_DIR" --no-same-owner
+[[ -f $BUILD_DIR/gradlew && -f $BUILD_DIR/server/build.gradle.kts ]] || die 'El arbol de compilacion esta incompleto.'
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     apply_control_migrations
     bash "$TRUSTED_DIR/scripts/ubuntu/domains-sync.sh" --install
@@ -623,11 +689,7 @@ BACKUP_DIR=$BACKUP_ROOT/$TIMESTAMP
 install -d -m 700 "$BACKUP_DIR"
 cp -a "$APP_RUNTIME_DIR" "$BACKUP_DIR/app"
 cp -a "$WEB_RUNTIME_DIR" "$BACKUP_DIR/web"
-if [[ $NON_INTERACTIVE == true ]]; then
-    printf '%s\n' "$ARG_COMMIT" > "$BACKUP_DIR/source-commit.txt"
-else
-    git_source rev-parse HEAD > "$BACKUP_DIR/source-commit.txt"
-fi
+printf '%s\n' "$BUILD_SHA" > "$BACKUP_DIR/source-commit.txt"
 
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     systemctl stop "$SERVICE_NAME"

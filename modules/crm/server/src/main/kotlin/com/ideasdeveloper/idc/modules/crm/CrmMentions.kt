@@ -1,5 +1,7 @@
 package com.ideasdeveloper.idc.modules.crm
 
+import com.ideasdeveloper.idc.ui.UiSuggestion
+import com.ideasdeveloper.idc.ui.UiSuggestions
 import java.sql.Connection
 import java.time.Instant
 import java.util.UUID
@@ -158,6 +160,31 @@ object CrmMentions {
 
     /** "Ana" -> "@Ana"; the line shown for a note that mentions people ("Menciona a @Ana, @Beto"). */
     fun label(names: Collection<String>): String = names.joinToString(", ") { "@$it" }
+
+    /** Most users the "@" autocomplete of the note offers at once. */
+    const val MaxSuggestions = 8
+
+    /**
+     * Users the "@" autocomplete offers: [mentionable] without the writer ([selfId]), whose name or email contains
+     * [query] (ignoring case; the email is never matched, so it cannot be enumerated). Without a query, the first
+     * [MaxSuggestions] alphabetically. Never more than [MaxSuggestions].
+     */
+    fun suggest(mentionable: List<CrmUser>, query: String, selfId: UUID?, limit: Int = MaxSuggestions): List<CrmUser> {
+        val needle = query.trim()
+        return mentionable
+            .filter { it.id != selfId && (needle.isEmpty() || it.name.contains(needle, ignoreCase = true)) }
+            .sortedBy { it.name.lowercase() }
+            .take(limit)
+    }
+
+    /** What the "@" autocomplete shows: the name is what the app inserts after the "@" (parseText resolves it, spaces included). */
+    fun suggestions(users: List<CrmUser>): UiSuggestions {
+        // The email only shows to tell apart users that share a name.
+        val repeated = users.groupingBy { it.name.lowercase() }.eachCount().filterValues { it > 1 }.keys
+        return UiSuggestions(items = users.map {
+            UiSuggestion(title = it.name, subtitle = if (it.name.lowercase() in repeated) it.email else "", values = mapOf("insert" to it.name))
+        })
+    }
 
     // ---- Database ----
 

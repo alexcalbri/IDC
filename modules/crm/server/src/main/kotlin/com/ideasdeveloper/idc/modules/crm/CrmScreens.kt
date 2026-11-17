@@ -460,6 +460,7 @@ object CrmScreens {
                 columns = stageColumns + archivedColumn,
                 move = if (canMove) UiRequest(UiRoute + "/pipeline", params = keep + ("op" to "move")) else null,
                 emptyText = "Crea etapas en Configuracion.",
+                actions = CrmBoardActions.declared(context, keep, archivedColumn = showArchived),
             ),
             restoreCard(context, archivedShownLeads.filter { context.readAccess(it).canWrite }, "pipeline", keep),
         )
@@ -633,6 +634,9 @@ object CrmScreens {
 
     // Route the new lead form asks while the contact is typed, to reuse an existing customer.
     const val CustomerSuggestRoute = "$UiRoute/suggest/customers"
+
+    // Route the note of a lead asks while "@" is typed (the lead id goes as ?lead=).
+    const val MentionSuggestRoute = "$UiRoute/suggest/mentions"
 
     private fun leadFields(
         context: Context,
@@ -814,14 +818,18 @@ object CrmScreens {
             ),
             title = "Datos del lead",
         )
-        // "Mencionar a" next to the note; the text also recognizes @Nombre and @correo (the app has no "@" autocomplete yet).
+        // "Mencionar a" next to the note; the text also recognizes @Nombre and @correo, and the app suggests users while "@" is typed.
         val mentionOptions = context.mentionable.filter { it.id != context.scope.userId }.map { it.name }
         val note = UiCard(
             listOf(
                 UiForm(
                     "note",
                     listOfNotNull(
-                        UiField("note", "Nota del lead", type = "textarea", required = true, placeholder = "Llamada, respuesta enviada, acuerdos... Escribe @Nombre o @correo para mencionar a alguien."),
+                        UiField(
+                            "note", "Nota del lead", type = "textarea", required = true, placeholder = "Llamada, respuesta enviada, acuerdos... Escribe @ para mencionar a alguien.",
+                            // The lead goes in the route: the app only adds q and field (and the form values).
+                            suggest = UiSuggest(MentionSuggestRoute + "?lead=" + lead.id, minLength = 0, trigger = "@"),
+                        ),
                         UiField(
                             "mentions", "Mencionar a", type = "dropdown", multiple = true, options = mentionOptions,
                             help = "Pueden leer este lead y responder con notas, aunque no sea suyo. Reciben un aviso.",

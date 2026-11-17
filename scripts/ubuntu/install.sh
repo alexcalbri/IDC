@@ -85,6 +85,7 @@ readonly REQUIRED_FILES=(
     scripts/ubuntu/migrations.sh
     scripts/ubuntu/domains-sync.sh
     scripts/ubuntu/core-update.sh
+    scripts/ubuntu/mirror.sh
     database/core/migrations/V001__create_application_users.sql
     database/core/migrations/V002__create_application_sessions.sql
     database/core/migrations/V003__add_application_user_profile.sql
