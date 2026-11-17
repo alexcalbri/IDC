@@ -106,3 +106,26 @@ data class ServerErrorLogEntry(
 
 @Serializable
 data class ServerLogsResponse(val errors: List<ServerErrorLogEntry>)
+
+// Solicitud de actualizacion del Core (la procesa el ayudante root del servidor).
+@Serializable
+data class CoreUpdateRequestDto(
+    val id: Long,
+    val targetVersion: String,
+    val fromVersion: String,
+    val status: String,
+    val requestedAt: String,
+    val startedAt: String? = null,
+    val finishedAt: String? = null,
+    val message: String? = null,
+    val logTail: String? = null,
+    val stalePending: Boolean = false,
+)
+
+@Serializable
+data class CoreUpdateStatusResponse(
+    val currentVersion: String,
+    val latestVersion: String? = null,
+    val updateAvailable: Boolean,
+    val request: CoreUpdateRequestDto? = null,
+)

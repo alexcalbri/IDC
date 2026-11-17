@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import com.ideasdeveloper.idc.app.core.theme.accentTextOn
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
+import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -45,6 +46,7 @@ import kotlinx.coroutines.launch
 import com.ideasdeveloper.idc.app.core.version.ClientVersion
 import com.ideasdeveloper.idc.app.core.version.VersionApi
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import com.ideasdeveloper.idc.navigation.NavRoute
@@ -142,6 +144,7 @@ fun DashboardScreen(
     val colors = AppTheme.colors
     val primaryColor = colors.accent
     var versionNotice by remember { mutableStateOf<String?>(null) }
+    var coreUpdateAvailable by remember { mutableStateOf(false) }
 
     LaunchedEffect(serverUrl, session?.role) {
         if (session?.role == "server_owner" && !serverUrl.isNullOrBlank()) {
@@ -154,26 +157,26 @@ fun DashboardScreen(
                     ?.joinToString { update -> "${update.displayName} ${update.latestVersion}" }
                     ?.let { add("Modulos: $it") }
             }
+            coreUpdateAvailable = version?.latestCoreVersion?.let { isNewerVersion(it, version.coreVersion) } == true
             versionNotice = notices.takeIf { it.isNotEmpty() }?.joinToString(prefix = "Actualizaciones disponibles: ")
         }
     }
 
     // Renderiza el fondo principal con los colores configurados para la empresa.
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(colors.screenBrush)
+    AuthenticatedScreen(
+        modifier = modifier.background(colors.screenBrush),
+        topBar = {
+            // Renderiza la barra superior autenticada con acceso a ajustes y cierre de sesion.
+            AuthenticatedTopBar(
+                title = companyIdentity.name,
+                subtitle = "Dashboard principal",
+                primaryColor = primaryColor,
+                onSettings = { onNavigateTo(NavRoute.Settings) },
+                onLogout = onLogout,
+                titleMenu = titleMenu,
+            )
+        },
     ) {
-        // Renderiza la barra superior autenticada con acceso a ajustes y cierre de sesion.
-        AuthenticatedTopBar(
-            title = companyIdentity.name,
-            subtitle = "Dashboard principal",
-            primaryColor = primaryColor,
-            onSettings = { onNavigateTo(NavRoute.Settings) },
-            onLogout = onLogout,
-            modifier = Modifier.align(Alignment.TopCenter),
-            titleMenu = titleMenu,
-        )
 
         Column(
             modifier = Modifier
@@ -213,11 +216,24 @@ fun DashboardScreen(
             }
 
             versionNotice?.let {
-                Text(
-                    text = it,
-                    color = AppTheme.colors.onScreen,
+                Row(
                     modifier = Modifier.padding(bottom = 16.dp),
-                )
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Text(
+                        text = it,
+                        color = AppTheme.colors.onScreen,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    // Lleva a la pantalla que actualiza el Core del servidor.
+                    if (coreUpdateAvailable) {
+                        Button(
+                            onClick = { onNavigateTo(NavRoute.Module("server-update")) },
+                            colors = accentButtonColors(),
+                        ) { Text("Actualizar") }
+                    }
+                }
             }
 
             // Reune las tarjetas de acceso y las reparte en una o dos columnas segun el ancho de la ventana.
@@ -229,10 +245,11 @@ fun DashboardScreen(
                     add(DashboardCardData("Modulos del servidor", "Administra los modulos instalados en este servidor", "M", "server-modules"))
                     add(DashboardCardData("Empresa del servidor", "Configura la empresa del servidor y su personal sin crear una empresa", "S", "server-staff"))
                     add(DashboardCardData("Errores del servidor", "Consulta los errores recientes del servidor para diagnosticar fallos", "!", "server-logs"))
+                    add(DashboardCardData("Actualizar servidor", "Actualiza el Core y la webapp del servidor desde la app", "U", "server-update"))
                 }
                 // Modulos activos recibidos desde el servidor.
                 enabledModules
-                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" }
+                    .filter { it != "empresa" && it != "server-modules" && it != "server-staff" && it != "server-logs" && it != "server-update" }
                     .forEach { moduleId ->
                         val module = moduleId.toDashboardModule()
                         add(DashboardCardData(module.title, module.description, module.iconText, moduleId))
@@ -264,6 +281,20 @@ fun DashboardScreen(
             Spacer(modifier = Modifier.height(40.dp))
         }
     }
+}
+
+// Verdadero si [latest] es un X.Y.Z valido estrictamente mayor que [current] (comparacion numerica).
+private fun isNewerVersion(latest: String, current: String): Boolean {
+    fun parts(value: String): List<Int>? {
+        val numbers = value.trim().split('.').map { it.toIntOrNull() ?: return null }
+        return numbers.takeIf { it.size == 3 && it.all { n -> n >= 0 } }
+    }
+    val newer = parts(latest) ?: return false
+    val old = parts(current) ?: return false
+    for (i in 0..2) {
+        if (newer[i] != old[i]) return newer[i] > old[i]
+    }
+    return false
 }
 
 private suspend inline fun <T> VersionApi.use(block: suspend (VersionApi) -> T): T {

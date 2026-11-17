@@ -785,6 +785,20 @@ deployment build and sets Kotlin compiler execution through
 afterward. This avoids depending on the Kotlin daemon socket and gives the
 Kotlin/JS production compiler enough memory on small servers.
 
+### Actualizar desde la app
+
+El server owner puede actualizar el Core desde la app (dashboard, "Actualizar
+servidor"). El backend solo registra la solicitud en `core_update_requests`
+(`GET`/`POST /server/core-update`); la ejecuta un ayudante root,
+`ideascore-core-update`, que un timer de systemd revisa cada minuto. El
+ayudante usa su propio clon espejo de `origin` en `/var/lib/ideascore/mirror`
+(rama `CORE_UPDATE_REF` de `server.env`, por defecto `master`), verifica que la
+version del commit coincida con la pedida y corre `update.sh --non-interactive`
+con los scripts del espejo, nunca los de `/opt/ideascore/source`. El instalador
+lo deja instalado; en un servidor anterior hay que correr `update.sh` una vez
+por SSH. Si la solicitud sigue `pending` mas de 3 minutos, la app avisa de que
+falta el ayudante. La app queda sin servicio solo durante el reinicio.
+
 ------------------------------------------------------------------------
 
 ## 16. Security Checklist

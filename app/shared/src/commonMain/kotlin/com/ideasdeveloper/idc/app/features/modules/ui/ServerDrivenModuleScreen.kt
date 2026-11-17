@@ -61,10 +61,10 @@ import com.ideasdeveloper.idc.app.features.modules.data.CustomerResponse
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleApi
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleDefinition
 import com.ideasdeveloper.idc.app.features.modules.data.ModuleException
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
 import com.ideasdeveloper.idc.app.features.shell.ui.TopBarMenuItem
-import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -176,32 +176,32 @@ fun ServerDrivenModuleScreen(
 
     if (ui != null && callContext != null && (ui.type == "native" || ui.type == "web")) {
         // Los modulos con interfaz propia ocupan toda la pantalla debajo de la barra superior.
-        Column(
-            modifier = modifier
-                .fillMaxSize()
-                .background(colors.screenBrush)
+        AuthenticatedScreen(
+            modifier = modifier.background(colors.screenBrush),
+            topBar = {
+                AuthenticatedTopBar(
+                    title = definition?.displayName ?: fallbackTitle,
+                    subtitle = switchMessage ?: definition?.description,
+                    primaryColor = primaryColor,
+                    onReturnToDashboard = onReturnToDashboard,
+                    onSettings = onSettings,
+                    onLogout = onLogout,
+                    titleMenu = titleMenu,
+                )
+            },
         ) {
-            AuthenticatedTopBar(
-                title = definition?.displayName ?: fallbackTitle,
-                subtitle = switchMessage ?: definition?.description,
-                primaryColor = primaryColor,
-                onReturnToDashboard = onReturnToDashboard,
-                onSettings = onSettings,
-                onLogout = onLogout,
-                titleMenu = titleMenu,
-            )
             // El modulo se muestra como un panel con la X en su esquina superior derecha.
             ClosableView(
                 onClose = onReturnToDashboard,
                 modifier = Modifier
-                    .weight(1f)
-                    .align(Alignment.CenterHorizontally)
-                    .fillMaxWidth()
+                    .align(Alignment.TopCenter)
+                    .fillMaxHeight()
+                    // widthIn antes de fillMaxWidth: al reves el limite no tiene efecto.
                     .widthIn(max = ContentWidth.Wide + 240.dp)
+                    .fillMaxWidth()
                     .padding(
                         start = if (AdaptiveLayout.roomy) 12.dp else 16.dp,
                         end = if (AdaptiveLayout.roomy) 12.dp else 16.dp,
-                        top = 8.dp,
                         bottom = if (AdaptiveLayout.roomy) 12.dp else 16.dp,
                     ),
             ) {
@@ -217,28 +217,26 @@ fun ServerDrivenModuleScreen(
         return
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(colors.screenBrush)
+    AuthenticatedScreen(
+        modifier = modifier.background(colors.screenBrush),
+        topBar = {
+            AuthenticatedTopBar(
+                title = metadata?.displayName ?: fallbackTitle,
+                subtitle = switchMessage ?: metadata?.views?.firstOrNull()?.title,
+                primaryColor = primaryColor,
+                onReturnToDashboard = onReturnToDashboard,
+                onSettings = onSettings,
+                onLogout = onLogout,
+                titleMenu = titleMenu,
+            )
+        },
     ) {
-        AuthenticatedTopBar(
-            title = metadata?.displayName ?: fallbackTitle,
-            subtitle = switchMessage ?: metadata?.views?.firstOrNull()?.title,
-            primaryColor = primaryColor,
-            onReturnToDashboard = onReturnToDashboard,
-            onSettings = onSettings,
-            onLogout = onLogout,
-            modifier = Modifier.align(Alignment.TopCenter),
-            titleMenu = titleMenu,
-        )
-
         // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
         ClosableView(
             onClose = onReturnToDashboard,
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .padding(bottom = 16.dp)
                 .contentWidth(ContentWidth.Content, 0.9f),
         ) {
             // Clientes dibuja una lista larga: la LazyColumn hace el desplazamiento, sin scroll exterior anidado.

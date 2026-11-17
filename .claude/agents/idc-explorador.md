@@ -1,6 +1,6 @@
 ---
 name: idc-explorador
-description: Explorador de solo lectura de IdeasCore. Úsalo antes de implementar un cambio de PLAN_CAMBIOS.md para ubicar archivos, funciones, rutas, permisos, migraciones y pruebas relacionadas. Devuelve un mapa corto, no el contenido de los archivos.
+description: Explorador de solo lectura de IdeasCore. Úsalo antes de implementar un cambio del plan vigente (PLAN_CAMBIOS_2.md) para ubicar archivos, funciones, rutas, permisos, migraciones y pruebas relacionadas. Devuelve un mapa corto, no el contenido de los archivos.
 tools: Read, Grep, Glob, Bash
 model: haiku
 ---

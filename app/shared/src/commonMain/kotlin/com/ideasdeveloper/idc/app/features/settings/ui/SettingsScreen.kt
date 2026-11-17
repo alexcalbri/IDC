@@ -7,12 +7,10 @@ import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -44,10 +42,10 @@ import com.ideasdeveloper.idc.app.core.version.VersionApi
 import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.auth.ui.ProfileDialog
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
 import com.ideasdeveloper.idc.app.features.shell.ui.ConfirmDialog
-import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.selectable
@@ -110,27 +108,25 @@ fun SettingsScreen(
         )
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(colors.screenBrush),
+    AuthenticatedScreen(
+        modifier = modifier.background(colors.screenBrush),
+        topBar = {
+            AuthenticatedTopBar(
+                title = "Ajustes",
+                subtitle = "Cliente",
+                primaryColor = primaryColor,
+                onReturnToDashboard = onReturnToDashboard,
+                onSettings = {},
+                onLogout = onLogout,
+            )
+        },
     ) {
-        AuthenticatedTopBar(
-            title = "Ajustes",
-            subtitle = "Cliente",
-            primaryColor = primaryColor,
-            onReturnToDashboard = onReturnToDashboard,
-            onSettings = {},
-            onLogout = onLogout,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
-
         // La vista empieza debajo de la barra superior y lleva la X en su esquina superior derecha.
         ClosableView(
             onClose = onReturnToDashboard,
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .padding(bottom = 16.dp)
                 .contentWidth(ContentWidth.Form, 0.9f),
         ) {
             Column(

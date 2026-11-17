@@ -17,6 +17,8 @@ import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningExce
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningConfig
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.idc.server.company.application.CompanySelfService
+import com.ideasdeveloper.idc.server.company.application.CoreUpdateService
+import com.ideasdeveloper.idc.server.company.application.JdbcCoreUpdateStore
 import com.ideasdeveloper.idc.server.company.application.ServerMcpTools
 import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.infrastructure.database.DatabaseFactory
@@ -43,9 +45,7 @@ import io.ktor.server.plugins.ratelimit.RateLimitName
 import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.response.*
 import io.ktor.server.routing.*
-import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
-import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.SQLException
@@ -53,8 +53,6 @@ import java.util.ServiceLoader
 import javax.sql.DataSource
 import kotlin.system.exitProcess
 import kotlin.time.Duration.Companion.seconds
-
-private val VersionCatalogJson = Json { ignoreUnknownKeys = true }
 
 fun main(args: Array<String>) {
     EngineMain.main(args)
@@ -245,6 +243,15 @@ fun Application.module() {
                 authorizer = ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions),
                 provisioning = companyProvisioning,
                 selfService = companySelfService,
+                coreUpdates = CoreUpdateService(
+                    store = JdbcCoreUpdateStore(DatabaseFactory.getDataSource()),
+                    currentVersion = IdeasCoreVersion,
+                    latestVersion = {
+                        VersionCatalogClient.fetch(
+                            environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty()
+                        )?.latestCoreVersion
+                    },
+                ),
             )
         }
         // Centro de notificaciones del Core: la campana de la app lee y marca las del usuario.
@@ -259,13 +266,7 @@ private fun versionResponse(
     remoteModuleCatalog: RemoteModuleCatalog,
     defaultModuleCatalogUrl: String,
 ): VersionResponse {
-    val remote = catalogUrl.trim().takeIf { it.isNotBlank() }?.let { url ->
-        runCatching {
-            VersionCatalogJson.decodeFromString<RemoteVersionCatalog>(
-                URI.create(url).toURL().readText()
-            )
-        }.getOrNull()
-    }
+    val remote = VersionCatalogClient.fetch(catalogUrl)
     return VersionResponse(
         latestCoreVersion = remote?.latestCoreVersion,
         latestAppVersion = remote?.latestAppVersion,

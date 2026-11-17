@@ -45,9 +45,11 @@ fun HorizontalScrollArea(
 ) {
     val state = rememberScrollState()
     Column(modifier = modifier.fillMaxWidth()) {
+        // Barra arriba y abajo: el contenido alto (p. ej. el pipeline) deja la de abajo fuera de vista.
+        // Las barras leen el estado del scroll por su cuenta: hacer scroll no recompone `content`.
+        if (showsHorizontalScrollbar) HorizontalScrollbarBar(state, Modifier.padding(bottom = 4.dp))
         Box(modifier = Modifier.fillMaxWidth().horizontalScroll(state)) { content() }
-        // La barra lee el estado del scroll por su cuenta: hacer scroll no recompone `content`.
-        if (showsHorizontalScrollbar) HorizontalScrollbarBar(state)
+        if (showsHorizontalScrollbar) HorizontalScrollbarBar(state, Modifier.padding(top = 4.dp))
     }
 }
 
@@ -59,14 +61,23 @@ private fun thumbWidthPx(trackPx: Float, maxScroll: Int): Float =
 
 // Area tactil de 16 dp con la pista de 10 dp centrada; solo aparece si el contenido no cabe.
 @Composable
-private fun HorizontalScrollbarBar(state: ScrollState) {
+private fun HorizontalScrollbarBar(state: ScrollState, modifier: Modifier = Modifier) {
     val colors = AppTheme.colors
     val scope = rememberCoroutineScope()
-    // Solo cambia al medir (no en cada frame de scroll); el resto se lee en layout.
-    if (state.maxValue <= 0) return
+    // Siempre compuesta: se colapsa en la fase de layout cuando el contenido cabe (o aun no se midio),
+    // asi no hay salto ni recomposicion extra. El padding va dentro para que tambien se colapse.
     BoxWithConstraints(
         modifier = Modifier
-            .padding(top = 4.dp)
+            .layout { measurable, constraints ->
+                val fits = state.maxValue <= 0 || state.maxValue == Int.MAX_VALUE
+                if (fits) {
+                    layout(0, 0) {}
+                } else {
+                    val placeable = measurable.measure(constraints)
+                    layout(placeable.width, placeable.height) { placeable.place(0, 0) }
+                }
+            }
+            .then(modifier)
             .fillMaxWidth()
             .height(16.dp)
             // Clic en la pista: salta a la posicion proporcional.

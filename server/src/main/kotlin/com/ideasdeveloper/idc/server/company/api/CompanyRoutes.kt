@@ -1,6 +1,8 @@
 package com.ideasdeveloper.idc.server.company.api
 
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningException
+import com.ideasdeveloper.idc.server.company.application.CoreUpdateOutcome
+import com.ideasdeveloper.idc.server.company.application.CoreUpdateService
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningService
 import com.ideasdeveloper.idc.server.company.application.CompanySelfException
 import com.ideasdeveloper.idc.server.company.application.CompanySelfService
@@ -32,6 +34,7 @@ fun Route.companyRoutes(
     authorizer: ServerOwnerAuthorizer,
     provisioning: CompanyProvisioningService?,
     selfService: CompanySelfService?,
+    coreUpdates: CoreUpdateService? = null,
 ) {
     // Devuelve el perfil de la empresa asociada a la sesion business_owner.
     get("/companies/me") {
@@ -856,6 +859,31 @@ fun Route.companyRoutes(
             call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_NOT_LINKED", exception.message ?: "No se pudo vincular la empresa."))
         } catch (exception: SQLException) {
             call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("DATABASE_UNAVAILABLE", exception.toCompanyMessage()))
+        }
+    }
+
+    // Estado de la actualizacion del Core y ultima solicitud hecha desde la app.
+    get("/server/core-update") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        call.serverOwnerRole(authorizer)
+            ?: return@get call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+        val service = coreUpdates
+            ?: return@get call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", "La actualizacion del servidor no esta disponible."))
+        call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.status() })
+    }
+
+    // Pide actualizar el Core a la ultima version del catalogo; la ejecuta el ayudante root del servidor.
+    post("/server/core-update") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+            ?: return@post call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner."))
+        val service = coreUpdates
+            ?: return@post call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("CORE_UPDATE_NOT_CONFIGURED", "La actualizacion del servidor no esta disponible."))
+        when (val outcome = withContext(Dispatchers.IO) { service.request(serverOwnerRole) }) {
+            is CoreUpdateOutcome.Accepted -> call.respond(HttpStatusCode.Accepted, outcome.request)
+            CoreUpdateOutcome.CatalogUnavailable -> call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("VERSION_CATALOG_UNAVAILABLE", "No se pudo leer el catalogo de versiones."))
+            CoreUpdateOutcome.UpToDate -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UP_TO_DATE", "El servidor ya tiene la ultima version."))
+            CoreUpdateOutcome.InProgress -> call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("CORE_UPDATE_IN_PROGRESS", "Ya hay una actualizacion en curso."))
         }
     }
 

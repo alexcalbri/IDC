@@ -25,6 +25,7 @@ import com.ideasdeveloper.idc.app.features.company.ui.CompanyProvisioningScreen
 import com.ideasdeveloper.idc.app.features.company.ui.ServerModuleManagementScreen
 import com.ideasdeveloper.idc.app.features.company.ui.ServerStaffScreen
 import com.ideasdeveloper.idc.app.features.company.ui.ServerLogsScreen
+import com.ideasdeveloper.idc.app.features.company.ui.ServerUpdateScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ModuleDeepLinks
@@ -181,6 +182,14 @@ fun App(initialServerUrl: String = "") {
                             onLogout = ::requestLogout,
                             onReturnToDashboard = ::openDashboard,
                         )
+                    } else if (moduleId == "server-update" && currentSession?.role == "server_owner") {
+                        ServerUpdateScreen(
+                            serverUrl = clientConfiguration?.serverUrl,
+                            session = currentSession,
+                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                            onLogout = ::requestLogout,
+                            onReturnToDashboard = ::openDashboard,
+                        )
                     } else if (moduleId == "empresa") {
                         if (currentSession?.role == "server_owner") {
                             CompanyProvisioningScreen(
@@ -269,6 +278,7 @@ private fun String.toModuleTitle(): String = when (this) {
     "server-modules" -> "Modulos del servidor"
     "server-staff" -> "Empresa del servidor"
     "server-logs" -> "Errores del servidor"
+    "server-update" -> "Actualizar servidor"
     "clientes" -> "Clientes"
     else -> replace("-", " ")
         .replace("_", " ")

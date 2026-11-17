@@ -20,9 +20,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 
-// Altura de AuthenticatedTopBar (boton de 48dp + 18dp arriba y abajo); las vistas empiezan debajo.
-val AuthenticatedTopBarHeight = 84.dp
-
 /**
  * Vista abierta con la X de cerrar centrada sobre su esquina superior derecha, por encima del
  * contenido. Sin [onClose] (por ejemplo en el panel principal) no muestra la X.

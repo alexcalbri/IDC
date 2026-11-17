@@ -84,6 +84,7 @@ readonly REPO_RAW_BASE=https://raw.githubusercontent.com/alexcalbri/IDC
 readonly REQUIRED_FILES=(
     scripts/ubuntu/migrations.sh
     scripts/ubuntu/domains-sync.sh
+    scripts/ubuntu/core-update.sh
     database/core/migrations/V001__create_application_users.sql
     database/core/migrations/V002__create_application_sessions.sql
     database/core/migrations/V003__add_application_user_profile.sql
@@ -98,6 +99,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V007__add_audit_actor_identity.sql
     database/control/migrations/V008__add_company_owner_group.sql
     database/control/migrations/V009__add_server_owner_company_sessions.sql
+    database/control/migrations/V010__create_core_update_requests.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -134,12 +136,12 @@ trap 'cleanup_install_swap' EXIT
 recover_stale_swaps() {
     local swap_file
     while IFS= read -r swap_file; do
-        if [[ $swap_file == "$APP_DIR"/* ]]; then
+        if [[ $swap_file == "$APP_DIR"/* || $swap_file == /var/lib/ideascore/* ]]; then
             printf 'Desactivando swap temporal de una ejecucion anterior: %s\n' "$swap_file"
             swapoff "$swap_file"
         fi
     done < <(awk 'NR > 1 { print $1 }' /proc/swaps)
-    for swap_file in "$INSTALL_SWAP_FILE" "$APP_DIR/update.swap"; do
+    for swap_file in "$INSTALL_SWAP_FILE" "$APP_DIR/update.swap" /var/lib/ideascore/update.swap; do
         if [[ -e $swap_file ]]; then
             printf 'Eliminando swap temporal de una ejecucion anterior: %s\n' "$swap_file"
             rm -f "$swap_file"
@@ -268,10 +270,12 @@ clean_files_and_services() {
     rm -f "$SERVICE_FILE" /etc/systemd/system/ideascore-certbot.service /etc/systemd/system/ideascore-certbot.timer
     systemctl disable --now ideascore-domains.timer ideascore-domains-renew.timer >/dev/null 2>&1 || true
     rm -f /etc/systemd/system/ideascore-domains{,-renew}.{service,timer} /usr/local/sbin/ideascore-domains-sync
+    systemctl disable --now ideascore-core-update.timer >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/ideascore-core-update.{service,timer} /usr/local/sbin/ideascore-core-update
     rm -f /etc/nginx/sites-enabled/ideascore "$NGINX_SITE"
     rm -f /etc/nginx/sites-enabled/ideascore-domain-* /etc/nginx/sites-available/ideascore-domain-*
     recover_stale_swaps
-    rm -rf "$APP_DIR" "$CONFIG_DIR" "$ACME_ROOT"
+    rm -rf "$APP_DIR" "$CONFIG_DIR" "$ACME_ROOT" /var/log/ideascore-update /var/lib/ideascore
     if getent passwd ideascore >/dev/null; then
         userdel -r ideascore >/dev/null 2>&1 || userdel ideascore >/dev/null 2>&1 || true
     fi
@@ -567,8 +571,14 @@ fi
 [[ $(pg_admin -Atc "SELECT count(*) FROM pg_roles WHERE rolname = '$SERVER_OWNER'") == 0 ]] || die "El rol $SERVER_OWNER ya existe."
 
 # 2. Build without root privileges or Android SDK. The wrapper pins Gradle.
-useradd --system --user-group --create-home --home-dir "$APP_DIR" --shell /usr/sbin/nologin ideascore
+# APP_DIR belongs to root: ideascore only owns its home and the directories created for it below,
+# so it cannot plant symlinks where root writes.
+install -d -m 755 -o root -g root "$APP_DIR"
+useradd --system --user-group --create-home --home-dir "$APP_DIR/home" --shell /usr/sbin/nologin ideascore
+chmod 700 "$APP_DIR/home"
+chown root:root "$APP_DIR"
 chmod 755 "$APP_DIR"
+install -d -m 755 -o ideascore -g ideascore "$APP_DIR/source"
 JAVA_HOME="/usr/lib/jvm/java-21-openjdk-$(dpkg --print-architecture)"
 [[ -x $JAVA_HOME/bin/java ]] || die 'No se encontró el JDK 21 instalado.'
 runuser -u ideascore -- git clone --depth 1 --branch "$GIT_REF" -- "$REPO_URL" "$APP_DIR/source"
@@ -582,7 +592,8 @@ run_gradle -PserverOnly=true :server:tasks --all
 run_gradle -PserverOnly=true :server:test :server:installDist
 [[ -x server/build/install/server/bin/server ]] || die 'No se encontró la distribución del servidor.'
 install -d -m 755 "$APP_DIR/app"
-cp -R server/build/install/server/. "$APP_DIR/app/"
+# Streamed as ideascore: root never reads the ideascore tree directly (symlinks could leak root files).
+runuser -u ideascore -- tar -C server/build/install/server -cf - . | tar -C "$APP_DIR/app" -xf - --no-same-owner --no-same-permissions
 chown -R root:root "$APP_DIR/app"
 chmod -R a+rX "$APP_DIR/app"
 chmod -R go-w "$APP_DIR/app"
@@ -592,7 +603,7 @@ run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution
 WEB_DIST="$APP_DIR/source/app/webApp/build/dist/js/productionExecutable"
 [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se encontro la distribucion web completa.'
 install -d -m 755 "$APP_DIR/web"
-cp -R "$WEB_DIST/." "$APP_DIR/web/"
+runuser -u ideascore -- tar -C "$WEB_DIST" -cf - . | tar -C "$APP_DIR/web" -xf - --no-same-owner --no-same-permissions
 chown -R root:root "$APP_DIR/web"
 chmod -R a+rX "$APP_DIR/web"
 chmod -R go-w "$APP_DIR/web"
@@ -630,6 +641,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V006__add_server_
 apply_migration "$DB_NAME" control database/control/migrations/V007__add_audit_actor_identity.sql
 apply_migration "$DB_NAME" control database/control/migrations/V008__add_company_owner_group.sql
 apply_migration "$DB_NAME" control database/control/migrations/V009__add_server_owner_company_sessions.sql
+apply_migration "$DB_NAME" control database/control/migrations/V010__create_core_update_requests.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
@@ -656,6 +668,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_owner_company_sessions TO :"db_user";
+REVOKE INSERT ON core_update_requests FROM :"db_user";
+GRANT SELECT ON core_update_requests TO :"db_user";
+GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";
+GRANT USAGE ON SEQUENCE core_update_requests_id_seq TO :"db_user";
 COMMIT;
 SQL
 PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
@@ -685,6 +701,8 @@ install -d -m 700 "$CONFIG_DIR"
     # 60 requests/hour limit when listing and installing modules; edit and restart ideascore.
     printf 'MODULE_GITHUB_TOKEN=\n'
     printf 'VERSION_CATALOG_URL=\n'
+    # Branch the root update helper follows (ideascore-core-update).
+    printf 'CORE_UPDATE_REF=master\n'
     # Read by the root domain helper (hotspot portals and other module domains).
     printf 'PUBLIC_SCHEME=%s\n' "$PUBLIC_SCHEME"
     printf 'ACME_EMAIL=%s\n' "${ACME_EMAIL:-}"
@@ -953,6 +971,7 @@ UNIT
     fi
 fi
 bash "$APP_DIR/source/scripts/ubuntu/domains-sync.sh" --install
+bash "$APP_DIR/source/scripts/ubuntu/core-update.sh" --install
 printf 'Configuracion: /etc/ideascore/server.env\nLogs: sudo journalctl -u ideascore -f\n'
 printf 'Correo SMTP del servidor: completa SMTP_* en server.env y ejecuta sudo systemctl restart ideascore.\n'
 printf 'Login disponible: POST %s://%s/auth/login\n' "$PUBLIC_SCHEME" "$DOMAIN"

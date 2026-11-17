@@ -6,7 +6,6 @@ import com.ideasdeveloper.idc.app.core.layout.ContentWidth
 import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,9 +35,9 @@ import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.ServerErrorLogEntry
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
-import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import kotlinx.coroutines.launch
 
 @Composable
@@ -83,21 +82,24 @@ fun ServerLogsScreen(
 
     LaunchedEffect(serverUrl, session?.accessToken) { load() }
 
-    Box(modifier.fillMaxSize().background(colors.screenBrush)) {
-        AuthenticatedTopBar(
-            title = "Errores del servidor",
-            subtitle = "Ultimos errores registrados desde el inicio del servidor",
-            primaryColor = colors.accent,
-            onReturnToDashboard = onReturnToDashboard,
-            onSettings = onSettings,
-            onLogout = onLogout,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
+    AuthenticatedScreen(
+        modifier = modifier.background(colors.screenBrush),
+        topBar = {
+            AuthenticatedTopBar(
+                title = "Errores del servidor",
+                subtitle = "Ultimos errores registrados desde el inicio del servidor",
+                primaryColor = colors.accent,
+                onReturnToDashboard = onReturnToDashboard,
+                onSettings = onSettings,
+                onLogout = onLogout,
+            )
+        },
+    ) {
         ClosableView(
             onClose = onReturnToDashboard,
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .padding(bottom = 16.dp)
                 .contentWidth(ContentWidth.Wide, 0.94f),
         ) {
             Column(

@@ -801,19 +801,32 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    suspend fun coreUpdateStatus(accessToken: String): CoreUpdateStatusResponse = call("No se pudo consultar el estado de la actualizacion.") {
+        client.get("$baseUrl/server/core-update") {
+            bearerAuth(accessToken)
+        }
+    }
+
+    // Solicita actualizar el Core; el servidor responde 202 con la solicitud creada.
+    suspend fun requestCoreUpdate(accessToken: String): CoreUpdateRequestDto = call("No se pudo solicitar la actualizacion.") {
+        client.post("$baseUrl/server/core-update") {
+            bearerAuth(accessToken)
+        }
+    }
+
     // Respuesta 2xx como [T]; si no, el mensaje del servidor o [failure].
     private suspend inline fun <reified T> call(failure: String, request: () -> HttpResponse): T {
         try {
             val response = request()
             if (response.status.isSuccess()) return response.body()
             val message = runCatching { response.body<CompanyErrorResponse>().message }.getOrNull()
-            throw CompanyException(message ?: failure)
+            throw CompanyException(message ?: failure, status = response.status.value)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
             throw exception
         } catch (_: Exception) {
-            throw CompanyException("No se pudo comunicar con el servidor.")
+            throw CompanyException("No se pudo comunicar con el servidor.", network = true)
         }
     }
 
@@ -823,4 +836,6 @@ class CompanyApi(serverUrl: String) {
     }
 }
 
-class CompanyException(message: String) : Exception(message)
+// [network] es true cuando no hubo respuesta del servidor (por ejemplo, durante un reinicio).
+// [status] es el codigo HTTP de la respuesta de error, o null si no hubo respuesta.
+class CompanyException(message: String, val network: Boolean = false, val status: Int? = null) : Exception(message)

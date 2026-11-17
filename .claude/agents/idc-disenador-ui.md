@@ -1,6 +1,6 @@
 ---
 name: idc-disenador-ui
-description: Diseñador e implementador de UI de IdeasCore para la app Compose Multiplatform (app/shared). Úsalo para los cambios 7 (scroll horizontal) y 13 (diseño de escritorio y contraste) de PLAN_CAMBIOS.md, o cualquier ajuste visual del tema, el login, el dashboard o el renderizador de módulos.
+description: Diseñador e implementador de UI de IdeasCore para la app Compose Multiplatform (app/shared). Úsalo para los cambios visuales del plan vigente (PLAN_CAMBIOS_2.md) o cualquier ajuste visual del tema, el login, el dashboard o el renderizador de módulos.
 tools: Read, Edit, Write, Grep, Glob, Bash
 model: sonnet
 ---

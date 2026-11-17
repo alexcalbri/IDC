@@ -11,11 +11,9 @@ import androidx.compose.foundation.selection.selectable
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -54,9 +52,9 @@ import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.CompanySummaryResponse
 import com.ideasdeveloper.idc.app.features.company.data.CreateCompanyRequest
 import com.ideasdeveloper.idc.app.features.company.data.UpdateCompanyRequest
+import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
-import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBarHeight
 import com.ideasdeveloper.idc.app.features.shell.ui.toComposeColor
 import kotlinx.coroutines.launch
 
@@ -221,21 +219,19 @@ fun CompanyProvisioningScreen(
         refreshCompanies()
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .background(colors.screenBrush)
+    AuthenticatedScreen(
+        modifier = modifier.background(colors.screenBrush),
+        topBar = {
+            AuthenticatedTopBar(
+                title = "Empresa",
+                subtitle = "Crear empresa",
+                primaryColor = primaryColor,
+                onReturnToDashboard = ::requestReturnToDashboard,
+                onSettings = onSettings,
+                onLogout = onLogout,
+            )
+        },
     ) {
-        AuthenticatedTopBar(
-            title = "Empresa",
-            subtitle = "Crear empresa",
-            primaryColor = primaryColor,
-            onReturnToDashboard = ::requestReturnToDashboard,
-            onSettings = onSettings,
-            onLogout = onLogout,
-            modifier = Modifier.align(Alignment.TopCenter),
-        )
-
         if (confirmReturnToDashboard) {
             AlertDialog(
                 onDismissRequest = { confirmReturnToDashboard = false },
@@ -265,7 +261,7 @@ fun CompanyProvisioningScreen(
             onClose = ::requestReturnToDashboard,
             modifier = Modifier
                 .align(Alignment.Center)
-                .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
+                .padding(bottom = 16.dp)
                 .contentWidth(ContentWidth.Content, 0.92f),
         ) {
             Surface(

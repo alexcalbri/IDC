@@ -25,7 +25,32 @@ git_source() {
 }
 
 [[ $EUID -eq 0 ]] || die 'Ejecuta con sudo bash update.sh.'
-[[ -r /dev/tty ]] || die 'Se necesita una terminal interactiva; usa ssh -t.'
+
+# Modo no interactivo (lo usa ideascore-core-update): sin preguntas, commit exacto y destino fijos.
+NON_INTERACTIVE=false
+ARG_COMMIT=''
+ARG_TARGET=''
+while (( $# > 0 )); do
+    case "$1" in
+        --non-interactive) NON_INTERACTIVE=true; shift ;;
+        --commit) [[ $# -ge 2 ]] || die '--commit requiere un valor.'; ARG_COMMIT=$2; shift 2 ;;
+        --target) [[ $# -ge 2 ]] || die '--target requiere un valor.'; ARG_TARGET=$2; shift 2 ;;
+        *) die "Argumento desconocido: $1" ;;
+    esac
+done
+# Se reconstruyen para el re-exec bajo flock.
+SCRIPT_ARGS=()
+if [[ $NON_INTERACTIVE == true ]]; then
+    [[ $ARG_COMMIT =~ ^[0-9a-f]{40}$ ]] || die '--commit debe ser un sha completo de 40 caracteres hexadecimales.'
+    case "$ARG_TARGET" in
+        server|webapp|ambos) ;;
+        *) die '--target debe ser server, webapp o ambos.' ;;
+    esac
+    SCRIPT_ARGS=(--non-interactive --commit "$ARG_COMMIT" --target "$ARG_TARGET")
+else
+    [[ -z $ARG_COMMIT && -z $ARG_TARGET ]] || die '--commit y --target solo se usan con --non-interactive.'
+    [[ -r /dev/tty ]] || die 'Se necesita una terminal interactiva; usa ssh -t.'
+fi
 
 # One install or update at a time (install.sh takes the same lock): the script runs again under flock,
 # which holds the lock until it ends.
@@ -37,7 +62,7 @@ if [[ ${IDEASCORE_MAINTENANCE_LOCKED:-} != 1 ]]; then
     command -v flock >/dev/null 2>&1 || die 'No se encontro flock (paquete util-linux).'
     lock_status=0
     flock -n -o -E "$MAINTENANCE_LOCK_BUSY" "$MAINTENANCE_LOCK_FILE" \
-        env IDEASCORE_MAINTENANCE_LOCKED=1 bash -- "$0" "$@" || lock_status=$?
+        env IDEASCORE_MAINTENANCE_LOCKED=1 bash -- "$0" ${SCRIPT_ARGS[@]+"${SCRIPT_ARGS[@]}"} || lock_status=$?
     (( lock_status != MAINTENANCE_LOCK_BUSY )) || die 'Ya hay una instalacion o actualizacion de IdeasCore en curso. Espera a que termine.'
     exit "$lock_status"
 fi
@@ -46,11 +71,35 @@ readonly APP_DIR=/opt/ideascore
 readonly SOURCE_DIR=$APP_DIR/source
 readonly APP_RUNTIME_DIR=$APP_DIR/app
 readonly WEB_RUNTIME_DIR=$APP_DIR/web
+# Todo lo que se ejecuta o se lee como root/postgres (migrations.sh, SQL, helpers) sale de TRUSTED_DIR.
+# En modo manual es el propio SOURCE_DIR (sin cambios); en modo no interactivo es obligatorio y debe
+# ser un directorio de root que nadie mas pueda escribir (el espejo del ayudante).
+readonly TRUSTED_DIR=${IDEASCORE_TRUSTED_DIR:-$SOURCE_DIR}
+if [[ $NON_INTERACTIVE == true ]]; then
+    [[ -n ${IDEASCORE_TRUSTED_DIR:-} ]] || die 'IDEASCORE_TRUSTED_DIR es obligatorio en modo no interactivo.'
+    [[ $TRUSTED_DIR == /* && -d $TRUSTED_DIR ]] || die 'IDEASCORE_TRUSTED_DIR debe ser una ruta absoluta existente.'
+    [[ $(realpath -- "$TRUSTED_DIR") != "$(realpath -- "$SOURCE_DIR")" ]] ||
+        die 'IDEASCORE_TRUSTED_DIR no puede ser el directorio de codigo fuente.'
+    trusted_stat=$(stat -c '%u %a' -- "$TRUSTED_DIR")
+    [[ ${trusted_stat%% *} == 0 ]] || die 'IDEASCORE_TRUSTED_DIR debe pertenecer a root.'
+    (( (8#${trusted_stat##* } & 8#022) == 0 )) || die 'IDEASCORE_TRUSTED_DIR no puede ser escribible por grupo u otros.'
+    [[ -f $TRUSTED_DIR/scripts/ubuntu/migrations.sh && -f $TRUSTED_DIR/scripts/ubuntu/core-update.sh ]] ||
+        die 'IDEASCORE_TRUSTED_DIR no contiene los scripts de IdeasCore.'
+fi
 readonly CONFIG_FILE=/etc/ideascore/server.env
 readonly SERVICE_NAME=ideascore.service
 readonly NGINX_SITE=/etc/nginx/sites-available/ideascore
-readonly BACKUP_ROOT=$APP_DIR/backups
-readonly UPDATE_SWAP_FILE=$APP_DIR/update.swap
+# Todo lo que escribe root vive fuera de lo que ideascore puede modificar: /opt/ideascore es de root.
+readonly ROOT_STATE_DIR=/var/lib/ideascore
+readonly BACKUP_ROOT=$ROOT_STATE_DIR/backups
+readonly BUILD_LOG_DIR=/var/log/ideascore-update
+readonly UPDATE_SWAP_FILE=$ROOT_STATE_DIR/update.swap
+readonly LEGACY_SWAP_FILE=$APP_DIR/update.swap
+readonly APP_HOME_DIR=$APP_DIR/home
+# En modo no interactivo se compila en un arbol nuevo (ideascore lo escribe, root no lo lee directamente).
+readonly BUILD_TREE=$APP_DIR/build-tree
+readonly KEEP_BACKUPS=5
+readonly KEEP_LOGS=10
 # Same limits as install.sh: the production webpack build needs extra memory for Node.
 readonly UPDATE_SWAP_SIZE_MB=4096
 readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
@@ -102,7 +151,10 @@ ensure_update_swap() {
 }
 
 run_gradle() {
+    # HOME explicito: /opt/ideascore es de root y el directorio personal de ideascore es home/.
     runuser -u ideascore -- env \
+        HOME="$APP_HOME_DIR" \
+        GRADLE_USER_HOME="$APP_HOME_DIR/.gradle" \
         JAVA_HOME="$UPDATE_JAVA_HOME" \
         NODE_OPTIONS="$NODE_OPTIONS_VALUE" \
         bash ./gradlew \
@@ -160,6 +212,7 @@ configure_server_env() {
     append_config_value MODULE_PACKAGES_ROOT "$APP_DIR/server-modules"
     append_config_value MODULE_GITHUB_TOKEN ''
     append_config_value VERSION_CATALOG_URL ''
+    append_config_value CORE_UPDATE_REF master
     if [[ -f $NGINX_SITE ]] && grep -Eq 'listen[[:space:]]+443' "$NGINX_SITE"; then
         append_config_value PUBLIC_SCHEME https
     else
@@ -286,6 +339,8 @@ apply_control_migrations() {
     db_user=$(config_value DB_USER)
     [[ -n $db_url ]] || die 'DB_URL no existe en /etc/ideascore/server.env.'
     [[ -n $db_user ]] || die 'DB_USER no existe en /etc/ideascore/server.env.'
+    # Rutas relativas de aqui en adelante: SQL y migrations.sh se leen del directorio confiable.
+    cd "$TRUSTED_DIR"
     db_name="${db_url##*/}"
     [[ -n $db_name && $db_name != "$db_url" ]] || die 'No se pudo inferir la base central desde DB_URL.'
     [[ -f scripts/ubuntu/migrations.sh ]] || die 'No se encontro scripts/ubuntu/migrations.sh.'
@@ -303,6 +358,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V008__add_company_owner_group.sql.'
     [[ -f database/control/migrations/V009__add_server_owner_company_sessions.sql ]] ||
         die 'No se encontro database/control/migrations/V009__add_server_owner_company_sessions.sql.'
+    [[ -f database/control/migrations/V010__create_core_update_requests.sql ]] ||
+        die 'No se encontro database/control/migrations/V010__create_core_update_requests.sql.'
     [[ -f database/core/migrations/V003__add_application_user_profile.sql ]] ||
         die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
     [[ -f database/core/migrations/V004__add_application_user_code.sql ]] ||
@@ -320,6 +377,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V007__add_audit_actor_identity.sql
     apply_migration "$db_name" control database/control/migrations/V008__add_company_owner_group.sql
     apply_migration "$db_name" control database/control/migrations/V009__add_server_owner_company_sessions.sql
+    apply_migration "$db_name" control database/control/migrations/V010__create_core_update_requests.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     apply_migration "$db_name" core database/core/migrations/V004__add_application_user_code.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
@@ -331,6 +389,10 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_owner_company_sessions TO :"db_user";
+REVOKE INSERT ON core_update_requests FROM :"db_user";
+GRANT SELECT ON core_update_requests TO :"db_user";
+GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";
+GRANT USAGE ON SEQUENCE core_update_requests_id_seq TO :"db_user";
 SQL
 
     [[ -f database/tenant/migrations/V004__create_application_permissions.sql ]] ||
@@ -345,6 +407,10 @@ SQL
         die 'No se encontro modules/clientes/migrations/V004__add_customer_code.sql.'
     while IFS= read -r tenant_db; do
         [[ -n $tenant_db ]] || continue
+        if [[ ! $tenant_db =~ ^[a-z][a-z0-9_]{0,62}$ ]]; then
+            printf 'AVISO: se omite la base "%s": nombre de base no valido.\n' "$tenant_db" >&2
+            continue
+        fi
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V002__require_customer_contact_fields.sql
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V003__add_customer_type.sql
         apply_migration "$tenant_db" clientes modules/clientes/migrations/V004__add_customer_code.sql
@@ -360,6 +426,94 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO :"db_use
 GRANT SELECT, INSERT, DELETE, UPDATE (read_at) ON notifications TO :"db_user";
 SQL
     done < <(runuser -u postgres -- psql -X -d "$db_name" -At -c "SELECT database_name FROM companies ORDER BY code")
+    cd /
+}
+
+# Instalaciones anteriores dejaban /opt/ideascore como home de ideascore: ese usuario podia plantar enlaces
+# simbolicos donde root escribe. Se deja el directorio en manos de root y ideascore pasa a /opt/ideascore/home.
+# Debe ejecutarse antes de cualquier otra escritura de root en APP_DIR.
+harden_app_dir() {
+    local entry name legacy_owner
+    # Primero se cierra el directorio: desde aqui ideascore ya no puede crear ni renombrar entradas en el.
+    chown root:root "$APP_DIR"
+    chmod 755 "$APP_DIR"
+    install -d -m 700 -o root -g root "$ROOT_STATE_DIR"
+
+    # Los directorios de ideascore deben ser directorios reales, no enlaces.
+    for name in source company-backups company-files server-modules; do
+        [[ ! -L $APP_DIR/$name ]] || die "$APP_DIR/$name es un enlace simbolico; no es seguro continuar."
+    done
+
+    # Hogar nuevo de ideascore.
+    if [[ -L $APP_HOME_DIR ]]; then
+        rm -f -- "$APP_HOME_DIR"
+    fi
+    if [[ ! -d $APP_HOME_DIR ]]; then
+        rm -rf --one-file-system -- "$APP_HOME_DIR"
+        mkdir -m 700 -- "$APP_HOME_DIR"
+    fi
+    chown -h ideascore:ideascore "$APP_HOME_DIR"
+    chmod 700 "$APP_HOME_DIR"
+
+    # Mueve las entradas ocultas (.gradle, .cache, .config...) sin seguir enlaces: rename no los sigue.
+    for entry in "$APP_DIR"/.[!.]* "$APP_DIR"/..?*; do
+        [[ -e $entry || -L $entry ]] || continue
+        name=${entry##*/}
+        if [[ -e $APP_HOME_DIR/$name || -L $APP_HOME_DIR/$name ]]; then
+            continue
+        fi
+        mv -T -- "$entry" "$APP_HOME_DIR/$name"
+    done
+    if [[ $(getent passwd ideascore | cut -d: -f6) != "$APP_HOME_DIR" ]]; then
+        # usermod rechaza cambiar el directorio si ideascore tiene procesos (el servicio corre);
+        # no es fatal: Gradle recibe HOME explicito y el cambio se reintenta en la siguiente actualizacion.
+        if usermod -d "$APP_HOME_DIR" ideascore; then
+            printf 'ideascore ahora usa %s como directorio personal.\n' "$APP_HOME_DIR"
+        else
+            printf 'AVISO: no se pudo cambiar el directorio personal de ideascore (servicio en uso); se reintentara.\n' >&2
+        fi
+    fi
+
+    # Swap heredado: se desactiva sin seguir enlaces y se elimina.
+    if [[ -e $LEGACY_SWAP_FILE || -L $LEGACY_SWAP_FILE ]]; then
+        if [[ ! -L $LEGACY_SWAP_FILE ]] && awk 'NR > 1 { print $1 }' /proc/swaps | grep -Fxq "$LEGACY_SWAP_FILE"; then
+            swapoff "$LEGACY_SWAP_FILE"
+        fi
+        rm -f -- "$LEGACY_SWAP_FILE"
+    fi
+
+    # Entradas que root usa directamente en APP_DIR: se eliminan si son enlaces o no son de root.
+    for name in update-logs backups app.new app.previous web.new web.previous build-tree; do
+        entry=$APP_DIR/$name
+        [[ -e $entry || -L $entry ]] || continue
+        legacy_owner=$(stat -c %u -- "$entry")
+        if [[ -L $entry || $legacy_owner != 0 ]]; then
+            rm -rf --one-file-system -- "$entry"
+        fi
+    done
+    # Respaldos antiguos de root: se mueven al nuevo lugar si es un directorio real.
+    if [[ -d $APP_DIR/backups && ! -L $APP_DIR/backups && ! -e $BACKUP_ROOT ]]; then
+        mv -T -- "$APP_DIR/backups" "$BACKUP_ROOT"
+    fi
+    install -d -m 700 -o root -g root "$BACKUP_ROOT" "$BUILD_LOG_DIR"
+}
+
+# Copia una distribucion compilada a un directorio de root. Se lee como ideascore (tar) para que root no
+# siga enlaces del arbol de ideascore, y se rechaza todo lo que no sea archivo o directorio.
+copy_dist_as_ideascore() {
+    local src=$1 dest=$2
+    runuser -u ideascore -- tar -C "$src" -cf - . | tar -C "$dest" -xf - --no-same-owner --no-same-permissions
+    if [[ -n $(find "$dest" ! -type f ! -type d -print -quit) ]]; then
+        die "La distribucion de $src contiene enlaces o archivos especiales."
+    fi
+}
+
+# Conserva solo los N mas recientes (por fecha de modificacion) de un patron dentro de un directorio.
+prune_old() {
+    local dir=$1 pattern=$2 keep=$3 item
+    while IFS= read -r item; do
+        rm -rf --one-file-system -- "$item"
+    done < <(find "$dir" -mindepth 1 -maxdepth 1 -name "$pattern" -printf '%T@ %p\n' | sort -rn | tail -n "+$((keep + 1))" | cut -d' ' -f2-)
 }
 
 [[ -d $SOURCE_DIR/.git ]] || die "No se encontro el repositorio en $SOURCE_DIR."
@@ -369,24 +523,41 @@ SQL
 id ideascore >/dev/null 2>&1 || die 'No existe el usuario Linux ideascore.'
 systemctl cat "$SERVICE_NAME" >/dev/null 2>&1 || die "No existe $SERVICE_NAME."
 
-cd "$SOURCE_DIR"
-CURRENT_REF=$(git_source rev-parse --abbrev-ref HEAD)
-CURRENT_COMMIT=$(git_source rev-parse --short HEAD)
-ask GIT_REF 'Rama, etiqueta o commit para actualizar' "$CURRENT_REF"
-[[ $GIT_REF =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*$ && $GIT_REF != *..* ]] || die 'Referencia Git invalida.'
-ask UPDATE_TARGET 'Que deseas actualizar? server, webapp o ambos' ambos
-case "$UPDATE_TARGET" in
-    server|webapp|ambos) ;;
-    *) die 'Opcion invalida. Usa server, webapp o ambos.' ;;
-esac
+harden_app_dir
 
-if ! git_source diff --quiet || ! git_source diff --cached --quiet; then
+cd "$SOURCE_DIR"
+CURRENT_REF=$(git_source rev-parse --abbrev-ref HEAD) || CURRENT_REF=HEAD
+CURRENT_COMMIT=$(git_source rev-parse --short HEAD) || CURRENT_COMMIT=desconocido
+if [[ $NON_INTERACTIVE == true ]]; then
+    GIT_REF=$ARG_COMMIT
+    UPDATE_TARGET=$ARG_TARGET
+else
+    # Tras una actualizacion automatica el repositorio queda en HEAD desacoplado: se sugiere la rama configurada.
+    if [[ $CURRENT_REF == HEAD ]]; then
+        CURRENT_REF=$(config_value CORE_UPDATE_REF)
+        CURRENT_REF=${CURRENT_REF:-master}
+    fi
+    ask GIT_REF 'Rama, etiqueta o commit para actualizar' "$CURRENT_REF"
+    [[ $GIT_REF =~ ^[a-zA-Z0-9][a-zA-Z0-9._/-]*$ && $GIT_REF != *..* ]] || die 'Referencia Git invalida.'
+    ask UPDATE_TARGET 'Que deseas actualizar? server, webapp o ambos' ambos
+    case "$UPDATE_TARGET" in
+        server|webapp|ambos) ;;
+        *) die 'Opcion invalida. Usa server, webapp o ambos.' ;;
+    esac
+fi
+
+# En modo no interactivo se compila desde un arbol nuevo; el codigo fuente no importa para el resultado.
+if [[ $NON_INTERACTIVE != true ]] && { ! git_source diff --quiet || ! git_source diff --cached --quiet; }; then
     die 'El repositorio de instalacion tiene cambios locales. Resuelvelos antes de actualizar.'
 fi
 
 printf 'Instalacion actual: %s (%s)\n' "$CURRENT_REF" "$CURRENT_COMMIT"
 printf 'Destino: %s\n' "$GIT_REF"
-ask CONFIRM "Continuar con respaldo, build y reemplazo de $UPDATE_TARGET? Escribe si" no
+if [[ $NON_INTERACTIVE == true ]]; then
+    CONFIRM=si
+else
+    ask CONFIRM "Continuar con respaldo, build y reemplazo de $UPDATE_TARGET? Escribe si" no
+fi
 [[ $CONFIRM == si ]] || die 'Cancelado sin cambiar archivos.'
 
 if [[ -n ${JAVA_HOME:-} && -x $JAVA_HOME/bin/java ]]; then
@@ -401,32 +572,49 @@ configure_service_writable_paths
 configure_nginx_server_route
 ensure_nginx_module_upload_limit
 
-git_source fetch --tags --prune origin
-git_source checkout "$GIT_REF"
-git_source pull --ff-only origin "$GIT_REF" 2>/dev/null || true
-TARGET_COMMIT=$(git_source rev-parse --short HEAD)
+if [[ $NON_INTERACTIVE == true ]]; then
+    # Commit exacto. El codigo fuente se deja en ese sha como ideascore (mejor esfuerzo, para que el modo
+    # manual siga alineado), pero no se confia en el: se compila desde un arbol nuevo del espejo de root.
+    git_source fetch --tags --prune origin || printf 'AVISO: no se pudo actualizar %s (fetch).\n' "$SOURCE_DIR" >&2
+    git_source checkout --detach "$ARG_COMMIT" ||
+        printf 'AVISO: no se pudo dejar %s en el commit %s.\n' "$SOURCE_DIR" "$ARG_COMMIT" >&2
+    TARGET_COMMIT=${ARG_COMMIT:0:7}
+    BUILD_DIR=$BUILD_TREE
+    rm -rf --one-file-system -- "$BUILD_DIR"
+    install -d -m 755 -o ideascore -g ideascore "$BUILD_DIR"
+    git -c core.hooksPath=/dev/null -C "$TRUSTED_DIR" archive "$ARG_COMMIT" |
+        runuser -u ideascore -- tar -x -C "$BUILD_DIR" --no-same-owner
+    [[ -f $BUILD_DIR/gradlew && -f $BUILD_DIR/server/build.gradle.kts ]] || die 'El arbol de compilacion esta incompleto.'
+else
+    git_source fetch --tags --prune origin
+    git_source checkout "$GIT_REF"
+    git_source pull --ff-only origin "$GIT_REF" 2>/dev/null || true
+    TARGET_COMMIT=$(git_source rev-parse --short HEAD)
+    BUILD_DIR=$SOURCE_DIR
+fi
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     apply_control_migrations
-    bash scripts/ubuntu/domains-sync.sh --install
+    bash "$TRUSTED_DIR/scripts/ubuntu/domains-sync.sh" --install
+    bash "$TRUSTED_DIR/scripts/ubuntu/core-update.sh" --install
 fi
 
-runuser -u ideascore -- env JAVA_HOME="$UPDATE_JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
+cd "$BUILD_DIR"
+runuser -u ideascore -- env HOME="$APP_HOME_DIR" GRADLE_USER_HOME="$APP_HOME_DIR/.gradle" JAVA_HOME="$UPDATE_JAVA_HOME" bash ./gradlew --stop >/dev/null 2>&1 || true
 
-BUILD_LOG_DIR="$APP_DIR/update-logs"
-install -d -m 755 "$BUILD_LOG_DIR"
+install -d -m 700 -o root -g root "$BUILD_LOG_DIR"
 SERVER_BUILD_LOG="$BUILD_LOG_DIR/server-$TARGET_COMMIT.log"
 WEB_BUILD_LOG="$BUILD_LOG_DIR/web-$TARGET_COMMIT.log"
 
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     run_gradle -PserverOnly=true :server:test :server:installDist 2>&1 | tee "$SERVER_BUILD_LOG"
-    [[ -x server/build/install/server/bin/server ]] || die 'No se genero la distribucion del servidor.'
+    [[ -x $BUILD_DIR/server/build/install/server/bin/server ]] || die 'No se genero la distribucion del servidor.'
 fi
 if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
     # build/js keeps the yarn.lock of the previous build; when kotlin-js-store/yarn.lock changed,
     # kotlinStoreYarnLock fails with "Lock file was changed". It is only a build cache.
-    rm -rf -- "$SOURCE_DIR/build/js"
+    runuser -u ideascore -- rm -rf -- "$BUILD_DIR/build/js"
     run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution 2>&1 | tee "$WEB_BUILD_LOG"
-    WEB_DIST="$SOURCE_DIR/app/webApp/build/dist/js/productionExecutable"
+    WEB_DIST="$BUILD_DIR/app/webApp/build/dist/js/productionExecutable"
     [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se genero la distribucion web completa.'
 fi
 
@@ -435,7 +623,11 @@ BACKUP_DIR=$BACKUP_ROOT/$TIMESTAMP
 install -d -m 700 "$BACKUP_DIR"
 cp -a "$APP_RUNTIME_DIR" "$BACKUP_DIR/app"
 cp -a "$WEB_RUNTIME_DIR" "$BACKUP_DIR/web"
-git_source rev-parse HEAD > "$BACKUP_DIR/source-commit.txt"
+if [[ $NON_INTERACTIVE == true ]]; then
+    printf '%s\n' "$ARG_COMMIT" > "$BACKUP_DIR/source-commit.txt"
+else
+    git_source rev-parse HEAD > "$BACKUP_DIR/source-commit.txt"
+fi
 
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     systemctl stop "$SERVICE_NAME"
@@ -444,7 +636,7 @@ fi
 if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     rm -rf "$APP_RUNTIME_DIR.new"
     install -d -m 755 "$APP_RUNTIME_DIR.new"
-    cp -R server/build/install/server/. "$APP_RUNTIME_DIR.new/"
+    copy_dist_as_ideascore "$BUILD_DIR/server/build/install/server" "$APP_RUNTIME_DIR.new"
     chown -R root:root "$APP_RUNTIME_DIR.new"
     chmod -R a+rX "$APP_RUNTIME_DIR.new"
     chmod -R go-w "$APP_RUNTIME_DIR.new"
@@ -457,7 +649,7 @@ fi
 if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
     rm -rf "$WEB_RUNTIME_DIR.new"
     install -d -m 755 "$WEB_RUNTIME_DIR.new"
-    cp -R "$WEB_DIST/." "$WEB_RUNTIME_DIR.new/"
+    copy_dist_as_ideascore "$WEB_DIST" "$WEB_RUNTIME_DIR.new"
     chown -R root:root "$WEB_RUNTIME_DIR.new"
     chmod -R a+rX "$WEB_RUNTIME_DIR.new"
     chmod -R go-w "$WEB_RUNTIME_DIR.new"
@@ -483,16 +675,20 @@ if [[ ($UPDATE_TARGET == server || $UPDATE_TARGET == ambos) && -x "$(command -v 
     if [[ $HEALTH_OK != true ]]; then
         systemctl status "$SERVICE_NAME" --no-pager >&2 || true
         journalctl -u "$SERVICE_NAME" -n 80 --no-pager >&2 || true
-        die 'El servicio no respondio en http://127.0.0.1:8080/ despues de 90 segundos. Los artefactos anteriores estan en *.previous y el respaldo en backups/.'
+        die 'El servicio no respondio en http://127.0.0.1:8080/ despues de 90 segundos. Los artefactos anteriores estan en *.previous y el respaldo en /var/lib/ideascore/backups.'
     fi
 elif [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     systemctl is-active --quiet "$SERVICE_NAME" || {
         systemctl status "$SERVICE_NAME" --no-pager >&2 || true
-        die 'El servicio no arranco. Los artefactos anteriores estan en *.previous y el respaldo en backups/.'
+        die 'El servicio no arranco. Los artefactos anteriores estan en *.previous y el respaldo en /var/lib/ideascore/backups.'
     }
 fi
 
 rm -rf "$APP_RUNTIME_DIR.previous" "$WEB_RUNTIME_DIR.previous"
+cd /
+[[ $BUILD_DIR != "$BUILD_TREE" ]] || rm -rf --one-file-system -- "$BUILD_TREE"
+prune_old "$BACKUP_ROOT" '20*' "$KEEP_BACKUPS"
+prune_old "$BUILD_LOG_DIR" '*.log' "$KEEP_LOGS"
 
 printf 'IdeasCore actualizado (%s) de %s a %s.\n' "$UPDATE_TARGET" "$CURRENT_COMMIT" "$TARGET_COMMIT"
 printf 'Respaldo: %s\n' "$BACKUP_DIR"

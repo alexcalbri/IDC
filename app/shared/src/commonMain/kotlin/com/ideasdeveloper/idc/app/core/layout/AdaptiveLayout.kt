@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.app.core.layout
 
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
@@ -76,4 +77,6 @@ fun ProvideWidthClass(content: @Composable () -> Unit) {
  * mediano y amplio se detiene en [max]. Combinalo con `align(Alignment.Center)` o `TopCenter`.
  */
 fun Modifier.contentWidth(max: Dp = ContentWidth.Content, compactFraction: Float = 0.9f): Modifier =
-    fillMaxWidth(compactFraction).widthIn(max = max)
+    // fillMaxWidth fija el ancho exacto; sin wrapContentWidth el widthIn posterior no puede achicarlo
+    // (asi el login ocupaba el 90% en pantallas anchas). wrapContentWidth suelta el minimo y centra.
+    fillMaxWidth(compactFraction).wrapContentWidth().widthIn(max = max).fillMaxWidth()
