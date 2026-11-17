@@ -144,7 +144,7 @@ object CrmFields {
         }
     }
 
-    /** [delete] without managing the transaction: for callers that already run inside one ("Mover a Clientes"). */
+    /** [delete] without managing the transaction: for callers that already run inside a transaction. */
     fun remove(tenant: Connection, field: CrmField): Int {
         tenant.prepareStatement("UPDATE crm_leads SET custom_fields = custom_fields - ? WHERE jsonb_exists(custom_fields, ?)").use { update ->
             update.setString(1, field.key)

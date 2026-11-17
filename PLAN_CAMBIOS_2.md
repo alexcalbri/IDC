@@ -227,3 +227,9 @@ Nada de lo que corre como root o postgres se lee de `source/`. La lógica del cl
 - **Campos dinámicos de Clientes** (`ServerDrivenModuleScreen`): al crear un campo se puede elegir el tipo (texto, número, fecha, sí/no, lista) y no solo texto.
 
 **Versiones:** CRM 0.22.0. La app pasa a 0.6.0 e incluye el cambio 7, que todavía no tiene commit. El Core sigue en 0.5.0 porque el modelo de UI no cambia. Clientes no cambia, salvo que haga falta para los tipos.
+
+**Ajuste del 8 (CRM 0.23.0, migración V020), pedido del usuario:**
+- **Se quita "Mover a Clientes"** por completo: acción, botón, código, pruebas y README. `age` sigue siendo un campo personalizado del CRM.
+- **Campos en cualquier sección:** un campo personalizado se puede poner en las secciones fijas del lead ("Datos del cliente", la de contacto con nombre, teléfono y correo; "Seguimiento"; "Mensaje y detalles"; "Documentos") o en una sección creada por la empresa. Si la sección no existe, se crea con su nombre y se le agregan campos.
+- **Orden de las secciones:** todas se ordenan a gusto, fijas y personalizadas, salvo "Datos del cliente", que siempre va primero.
+- **Cómo:** V020 agrega `system_key` a `crm_field_sections` y crea en cada empresa una fila por sección fija, en el orden actual. Las secciones fijas no se borran; renombrarlas no se pide, así que se dejan con su nombre. `position` controla el orden y "Datos del cliente" se fija en 0. El formulario y el detalle se arman recorriendo las secciones en orden: en cada una van primero sus campos fijos y después los personalizados asignados a ella.

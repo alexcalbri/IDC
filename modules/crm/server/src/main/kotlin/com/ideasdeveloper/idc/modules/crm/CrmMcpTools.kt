@@ -355,6 +355,12 @@ object CrmMcpTools {
                     )
                 }
             }
+            // Sections of the lead form in order; a custom field can be in any of them (fixed = built-in, cannot be deleted).
+            putJsonArray("sections") {
+                CrmFieldSections.sorted(context.sections).forEach { section ->
+                    add(buildJsonObject { put("name", section.name); put("fixed", section.isSystem) })
+                }
+            }
             // The date fields that are the check-in and check-out: targetStart and targetEnd write in them.
             val stay = CrmStay.effective(context.stay, context.fields)
             put(

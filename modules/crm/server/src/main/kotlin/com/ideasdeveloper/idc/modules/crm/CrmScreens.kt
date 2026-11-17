@@ -643,51 +643,74 @@ object CrmScreens {
         legacyOwners: List<CrmUser> = emptyList(),
         suggestCustomers: Boolean = false,
         showCustomerCode: Boolean = false,
-    ): List<UiField> = buildList {
+    ): List<UiField> {
         val suggest = UiSuggest(CustomerSuggestRoute).takeIf { suggestCustomers }
-        add(UiField("name", "Nombre", required = true, readOnly = readOnly, section = "Contacto", suggest = suggest))
-        add(
-            UiField(
-                "email", "Correo", type = "email", readOnly = readOnly, section = "Contacto", suggest = suggest?.copy(minLength = 3),
-                help = if (suggestCustomers) "Si ya hay un cliente con este correo o telefono, el lead se le asigna." else "",
+        val customer = CrmFieldSections.system.first { it.first == CrmFieldSections.Customer }.second
+        val followup = CrmFieldSections.system.first { it.first == CrmFieldSections.Followup }.second
+        val message = CrmFieldSections.system.first { it.first == CrmFieldSections.Message }.second
+        // The built-in fields of each built-in section.
+        val builtIn: Map<String, List<UiField>> = mapOf(
+            CrmFieldSections.Customer to buildList {
+                add(UiField("name", "Nombre", required = true, readOnly = readOnly, section = customer, suggest = suggest))
+                add(
+                    UiField(
+                        "email", "Correo", type = "email", readOnly = readOnly, section = customer, suggest = suggest?.copy(minLength = 3),
+                        help = if (suggestCustomers) "Si ya hay un cliente con este correo o telefono, el lead se le asigna." else "",
+                    ),
+                )
+                add(UiField("phone", "Telefono", type = "phone", readOnly = readOnly, section = customer, suggest = suggest?.copy(minLength = 3)))
+                if (showCustomerCode) add(UiField("customerCode", "Codigo del cliente", readOnly = true, section = customer))
+                add(UiField("language", "Idioma", readOnly = readOnly, section = customer))
+            },
+            CrmFieldSections.Followup to buildList {
+                add(UiField("stage", "Etapa", type = "dropdown", required = true, readOnly = readOnly, options = context.stages.map { it.name }, section = followup))
+                if (context.interestsEnabled) {
+                    val usable = context.usableInterests.map { it.name }
+                    val current = currentInterest?.let { context.names.interest(it) }
+                    val options = listOfNotNull(CrmForms.NoInterest.takeIf { context.scope.seesAll || context.scope.reception || currentInterest == null }) +
+                        (usable + listOfNotNull(current)).distinct()
+                    add(UiField("interest", "Interes", type = "dropdown", readOnly = readOnly, options = options, section = followup))
+                }
+                add(
+                    UiField(
+                        "owner", "Asignado", type = "dropdown", multiple = true, readOnly = readOnly || !context.canAssign,
+                        options = (context.users + legacyOwners).map { it.name }, section = followup,
+                        help = "Pueden ser varias personas; todas ven el lead y reciben sus seguimientos.",
+                    ),
+                )
+                add(UiField("followUpOn", "Proximo seguimiento", type = "date", readOnly = readOnly, section = followup))
+                add(UiField("source", "Origen", readOnly = readOnly, placeholder = "Sitio web, WhatsApp, referido...", section = followup))
+                add(UiField("estimatedValue", "Valor estimado", type = "number", readOnly = readOnly, section = followup))
+            },
+            CrmFieldSections.Message to listOf(
+                UiField("message", "Mensaje del lead", type = "textarea", readOnly = readOnly, section = message),
+                UiField("details", "Detalles", type = "textarea", readOnly = readOnly, help = "Cotizacion, personas y lo propio de esta oportunidad. Gustos y preferencias que valen siempre van en Notas del cliente.", section = message),
+            ),
+            CrmFieldSections.Documents to listOf(
+                UiField(
+                    CrmFields.Documents, CrmFields.DocumentsLabel, type = "files", readOnly = readOnly, files = Files, section = CrmFields.DocumentsLabel,
+                    help = "Adjunta documentos o carpetas completas. Se guardan al guardar el lead.",
+                ),
             ),
         )
-        add(UiField("phone", "Telefono", type = "phone", readOnly = readOnly, section = "Contacto", suggest = suggest?.copy(minLength = 3)))
-        if (showCustomerCode) add(UiField("customerCode", "Codigo del cliente", readOnly = true, section = "Contacto"))
-        add(UiField("language", "Idioma", readOnly = readOnly, section = "Contacto"))
-        add(UiField("stage", "Etapa", type = "dropdown", required = true, readOnly = readOnly, options = context.stages.map { it.name }, section = "Seguimiento"))
-        if (context.interestsEnabled) {
-            val usable = context.usableInterests.map { it.name }
-            val current = currentInterest?.let { context.names.interest(it) }
-            val options = listOfNotNull(CrmForms.NoInterest.takeIf { context.scope.seesAll || context.scope.reception || currentInterest == null }) +
-                (usable + listOfNotNull(current)).distinct()
-            add(UiField("interest", "Interes", type = "dropdown", readOnly = readOnly, options = options, section = "Seguimiento"))
+        // Walk the sections in order: the built-in fields of a built-in section first, then the custom fields placed in it.
+        val sections = CrmFieldSections.sorted(context.sections)
+        return buildList {
+            sections.forEach { section ->
+                section.systemKey?.let { builtIn[it] }?.let { addAll(it) }
+                context.fields.filter { it.sectionId == section.id }.sortedWith(compareBy({ it.position }, { it.label.lowercase() }))
+                    .forEach { add(customField(it, readOnly, section.name)) }
+            }
+            // The fields without section (or whose section is gone) go last, in "Campos personalizados".
+            val placed = sections.map { it.id }.toSet()
+            context.fields.filter { it.sectionId == null || it.sectionId !in placed }.sortedWith(compareBy({ it.position }, { it.label.lowercase() }))
+                .forEach { add(customField(it, readOnly, CrmFields.Section)) }
         }
-        add(
-            UiField(
-                "owner", "Asignado", type = "dropdown", multiple = true, readOnly = readOnly || !context.canAssign,
-                options = (context.users + legacyOwners).map { it.name }, section = "Seguimiento",
-                help = "Pueden ser varias personas; todas ven el lead y reciben sus seguimientos.",
-            ),
-        )
-        add(UiField("followUpOn", "Proximo seguimiento", type = "date", readOnly = readOnly, section = "Seguimiento"))
-        add(UiField("source", "Origen", readOnly = readOnly, placeholder = "Sitio web, WhatsApp, referido...", section = "Seguimiento"))
-        add(UiField("estimatedValue", "Valor estimado", type = "number", readOnly = readOnly, section = "Seguimiento"))
-        add(UiField("message", "Mensaje del lead", type = "textarea", readOnly = readOnly, section = "Mensaje y detalles"))
-        add(UiField("details", "Detalles", type = "textarea", readOnly = readOnly, help = "Cotizacion, personas y lo propio de esta oportunidad. Gustos y preferencias que valen siempre van en Notas del cliente.", section = "Mensaje y detalles"))
-        // Sections by position, each with its fields in order; the fields without section go last, in "Campos personalizados".
-        CrmFieldSections.ordered(context.fields, context.sections).forEach { field -> add(customField(field, readOnly, CrmFieldSections.title(field, context.sections))) }
-        add(
-            UiField(
-                CrmFields.Documents, CrmFields.DocumentsLabel, type = "files", readOnly = readOnly, files = Files, section = CrmFields.DocumentsLabel,
-                help = "Adjunta documentos o carpetas completas. Se guardan al guardar el lead.",
-            ),
-        )
     }
 
     // Sections of the lead form that start open: the ones used every time, and the custom fields when one is required.
     private fun openLeadSections(context: Context): List<String> =
-        listOf("Contacto", "Seguimiento") + context.fields.filter { it.required }.map { CrmFieldSections.title(it, context.sections) }.distinct()
+        listOf(CrmFieldSections.system[0].second, CrmFieldSections.system[1].second) + context.fields.filter { it.required }.map { CrmFieldSections.title(it, context.sections) }.distinct()
 
     // Where the app uploads and downloads the files of the lead form (see CrmServerModule).
     const val FilesRoute = "$UiRoute/files"
@@ -937,7 +960,7 @@ object CrmScreens {
 
     private fun customFieldsCard(context: Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> {
         val editing = params["field"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { id -> context.fields.firstOrNull { it.id == id } }
-        val editingSection = params["section"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { id -> context.sections.firstOrNull { it.id == id } }
+        val editingSection = params["section"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { id -> context.sections.firstOrNull { it.id == id && !it.isSystem } }
         val mapped = CrmStay.effective(context.stay, context.fields)
         val rows = CrmFieldSections.ordered(context.fields, context.sections).map { field ->
             val detail = buildList {
@@ -952,16 +975,6 @@ object CrmScreens {
                 listOfNotNull(
                     UiText("${field.position}. ${field.label} ($detail)"),
                     UiButton("Editar", UiNavigate("settings", mapOf("field" to field.id.toString())), style = "secondary"),
-                    // Files fields have no equivalent in Clientes.
-                    UiButton(
-                        "Mover a Clientes",
-                        UiRequest(
-                            UiRoute + "/settings", params = mapOf("op" to "fieldMove", "id" to field.id.toString()),
-                            confirm = "El campo ${field.label} se crea en Clientes con sus valores (sin pisar los que el cliente ya tenga) y se elimina del CRM. Necesitas el permiso de administrar campos de Clientes." +
-                                (if (CrmStay.isMapped(mapped, field.key)) " Es una fecha de estadia: ${CrmStay.ConfirmClear.removeSuffix(" Continuar?")}" else "") + " Continuar?",
-                        ),
-                        style = "secondary",
-                    ).takeIf { field.type != CrmFieldType.Files },
                     UiButton(
                         "Eliminar",
                         UiRequest(
@@ -983,7 +996,7 @@ object CrmScreens {
                 help = if (editing != null) "El tipo no cambia despues de crear el campo." else "",
             ),
             UiField(
-                "section", "Seccion de la ficha", type = "dropdown", options = listOf(CrmFields.Section) + context.sections.map { it.name }, section = section,
+                "section", "Seccion de la ficha", type = "dropdown", options = listOf(CrmFields.Section) + CrmFieldSections.sorted(context.sections).filter { s -> context.sections.any { it.id == s.id } }.map { it.name }, section = section,
                 help = "Los campos sin seccion van en ${CrmFields.Section}.",
             ),
             UiField(
@@ -1013,11 +1026,16 @@ object CrmScreens {
                 ),
             title = "Campos personalizados",
         )
-        val sectionRows = context.sections.map { item ->
+        val ordered = CrmFieldSections.sorted(context.sections)
+        val sectionRows = ordered.mapIndexed { index, item ->
+            val move = { direction: String -> UiRequest(UiRoute + "/settings", params = mapOf("op" to "sectionMove", "id" to item.id.toString(), "dir" to direction)) }
             UiRow(
-                listOf(
-                    UiText("${item.position}. ${item.name} (${context.fields.count { it.sectionId == item.id }} campos)"),
-                    UiButton("Editar", UiNavigate("settings", mapOf("section" to item.id.toString())), style = "secondary"),
+                listOfNotNull(
+                    UiText("${index + 1}. ${item.name}${if (item.isSystem) " (fija)" else ""} (${context.fields.count { it.sectionId == item.id }} campos propios)"),
+                    // "Datos del cliente" is always first: it never moves and nothing goes before it.
+                    UiButton("Subir", move("up"), style = "secondary").takeIf { index > 1 },
+                    UiButton("Bajar", move("down"), style = "secondary").takeIf { index > 0 && index < ordered.lastIndex },
+                    UiButton("Renombrar", UiNavigate("settings", mapOf("section" to item.id.toString())), style = "secondary").takeIf { !item.isSystem },
                     UiButton(
                         "Eliminar",
                         UiRequest(
@@ -1025,26 +1043,22 @@ object CrmScreens {
                             confirm = "Se elimina la seccion ${item.name}; sus campos quedan en ${CrmFields.Section}, sin borrarlos. Continuar?",
                         ),
                         style = "danger",
-                    ),
+                    ).takeIf { !item.isSystem },
                 ),
             )
         }
-        val sectionTitle = if (editingSection == null) "Nueva seccion" else "Editar ${editingSection.name}"
-        val sectionValues = editingSection?.let { mapOf("sectionName" to it.name, "sectionPosition" to it.position.toString()) }
-            ?: mapOf("sectionPosition" to ((context.sections.maxOfOrNull { it.position } ?: -1) + 1).toString())
+        val sectionTitle = if (editingSection == null) "Nueva seccion" else "Renombrar ${editingSection.name}"
+        val sectionValues = editingSection?.let { mapOf("sectionName" to it.name) }.orEmpty()
         val sectionParams = mapOf("op" to "sectionSave") + listOfNotNull(editingSection?.let { "id" to it.id.toString() })
         val sectionsCard = UiCard(
-            listOf(UiText("Cada seccion agrupa campos en la ficha del lead (por ejemplo Datos de la reserva). Se muestran por posicion; los campos sin seccion van al final.")) +
-                sectionRows.ifEmpty { listOf(UiText("Aun no hay secciones.", tone = UiTone.Neutral)) } +
+            listOf(UiText("La ficha del lead se arma con estas secciones, en este orden. Las fijas (Datos del cliente, Seguimiento, Mensaje y detalles, Documentos) no se borran ni se renombran; puedes poner campos propios en cualquiera de ellas o en las que crees. Datos del cliente siempre va primero. Los campos sin seccion van al final, en ${CrmFields.Section}.")) +
+                sectionRows +
                 listOfNotNull(UiButton("Nueva seccion", UiNavigate("settings"), style = "secondary").takeIf { editingSection != null }) +
                 UiForm(
                     "fieldSection",
-                    listOf(
-                        UiField("sectionName", "Nombre", required = true, section = sectionTitle),
-                        UiField("sectionPosition", "Posicion", type = "number", help = "Orden de la seccion en la ficha del lead.", section = sectionTitle),
-                    ),
-                    sectionValues + submitted.orEmpty().filterKeys { it in setOf("sectionName", "sectionPosition") },
-                    submit = UiButton(if (editingSection == null) "Agregar seccion" else "Guardar seccion", UiRequest(UiRoute + "/settings", params = sectionParams, formId = "fieldSection")),
+                    listOf(UiField("sectionName", "Nombre", required = true, section = sectionTitle)),
+                    sectionValues + submitted.orEmpty().filterKeys { it == "sectionName" },
+                    submit = UiButton(if (editingSection == null) "Agregar seccion (al final)" else "Guardar nombre", UiRequest(UiRoute + "/settings", params = sectionParams, formId = "fieldSection")),
                     minFieldWidth = 220,
                 ),
             title = "Secciones de la ficha",

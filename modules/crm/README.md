@@ -601,7 +601,7 @@ The renderer has no row selection, so it is a form with one checkbox field per l
   with `customFields` in `crm_create_lead` / `crm_update_lead` (by name or key); files are only
   attached from the app.
 
-## Field sections, stay dates and "Mover a Clientes" (V019, 0.22.0)
+## Field sections and stay dates (V019, 0.22.0)
 
 - **Sections** (`crm_field_sections`: id, name, position; `crm_field_definitions.section_id`, nullable). In *Configuracion > General* the
   company creates, renames, orders and deletes sections and picks the section of each custom field. The lead form and detail draw
@@ -622,15 +622,25 @@ The renderer has no row selection, so it is a form with one checkbox field per l
   value already there) and sets the mapping. Companies without dates get nothing. The history of a date change now reads "Fecha de ingreso: antes -> despues".
 - **Imports:** the columns for check-in/check-out (and the range column) write into the mapped fields; empty dates never erase. Without mapping
   the dates are ignored and the report of the row says so.
-- **"Mover a Clientes"** (button on each field of *Campos personalizados*, with confirmation; needs `crm.settings` **and** `clientes.fields.manage`):
-  in one transaction it creates the field in `customer_field_definitions` with the same key, label and an equivalent type (text, textarea, number,
-  email, phone, date, boolean, select/multi_select; url becomes text), copies each lead's value into `customers.flexible_attributes` without
-  replacing what the customer already has (a customer with several leads takes the most recent lead that has a value), and deletes the field and
-  its values from the CRM. A key that already exists in Clientes with another type cancels the move with a message; with the same type it is reused.
-  Files fields cannot be moved. Moving a mapped date field also clears the mapping.
 - **Agents:** `targetStart` and `targetEnd` of `crm_create_lead` / `crm_update_lead` are aliases that write in the mapped fields (error if none is
   chosen; send them in `customFields` instead if you prefer). `crm_list_pipeline` returns each field's `section` and `stayDates` (the labels of the
   mapped fields); `crm_get_lead` still returns `targetStart` / `targetEnd` (the copy) besides `customFields`.
+
+## Sections for every field (V020, 0.23.0)
+
+"Mover a Clientes" was removed (the 0.22.0 action, its permission check and code): a field such as `age` stays a custom field of the CRM.
+
+- **Built-in sections are rows** of `crm_field_sections` with a `system_key` (V020, idempotent by key): `customer` "Datos del cliente" (name, email, phone,
+  customer code, language; it used to be called "Contacto"), `followup` "Seguimiento", `message` "Mensaje y detalles" and `documents` "Documentos". V020 seeds them
+  in today's order (positions 0..3) and moves the company's own sections after them, keeping their order. A custom section that already used a built-in name is renamed
+  "... (propia)". Built-in sections keep their name and cannot be deleted (the screen hides the button and the server refuses); custom names cannot reuse theirs.
+- **Any field in any section:** the field form lists every section (built-in and custom) plus "Campos personalizados" (no section). To use a new name, create the section first
+  (it goes to the end) and then assign fields to it.
+- **Order:** every section can move up or down (`settings:sectionMove`, `dir=up|down`, which renumbers positions), except **Datos del cliente**, which is always first (the code pins it
+  whatever its stored position says; nothing can go before it).
+- **How the form is built:** `leadFields` walks the sections in order; in each built-in section its built-in fields come first, then the custom fields assigned to it (by field position);
+  the fields without section follow in "Campos personalizados". Required built-in fields keep their `required` flag wherever their section sits. The lead detail uses the same form.
+- Agents: `crm_list_pipeline` returns `sections` (in order, `fixed` for built-in ones) and each field's `section`.
 
 ## Customer history (0.15.0)
 

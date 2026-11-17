@@ -1,6 +1,5 @@
 package com.ideasdeveloper.idc.modules.crm
 
-import com.ideasdeveloper.idc.server.modules.ModuleAccessDecision
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
@@ -81,6 +80,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V017__lead_owners.sql",
         "modules/crm/migrations/V018__lead_mentions.sql",
         "modules/crm/migrations/V019__field_sections_and_stay_dates.sql",
+        "modules/crm/migrations/V020__system_sections.sql",
     )
 
     override val runtimeTables = listOf(
@@ -202,7 +202,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.22.0",
+        version = "0.23.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas. Quien es mencionado en una nota puede leer ese lead y responder con notas sin este permiso."),
@@ -415,10 +415,7 @@ object CrmServerModule : ServerModule {
                 if (required != null && !permissions.has(required)) {
                     return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
                 }
-                // "Mover a Clientes" also needs the permission to manage the fields of Clientes (another module).
-                val customerFields = params["op"] == "fieldMove" && screen == "settings" &&
-                    withContext(Dispatchers.IO) { runCatching { access.authorize(call, "clientes", "clientes.fields.manage") == ModuleAccessDecision.Allowed }.getOrDefault(false) }
-                call.respondScreen(access) { tenant -> action(tenant, permissions, access.serverMail, call.publicBase(), screen, params, values, access.userIdentity(tenant, permissions), access.notificationsFor(CrmModule.id), customerFields) }
+                call.respondScreen(access) { tenant -> action(tenant, permissions, access.serverMail, call.publicBase(), screen, params, values, access.userIdentity(tenant, permissions), access.notificationsFor(CrmModule.id)) }
             }
         }
     }
@@ -433,8 +430,6 @@ object CrmServerModule : ServerModule {
         values: Map<String, String>,
         identity: UserIdentity?,
         notifier: ModuleNotifier,
-        // Whether the user holds clientes.fields.manage (only asked for "settings:fieldMove").
-        canManageCustomerFields: Boolean = false,
     ): UiScreen {
         val context = CrmScreens.Context.load(tenant, permissions, serverMail, publicBase)
         val actor = CrmRepository.actor(tenant, permissions, identity)
@@ -1086,18 +1081,16 @@ object CrmServerModule : ServerModule {
                 "settings:sectionDelete" -> {
                     val section = uuid("id")?.let { id -> context.sections.firstOrNull { it.id == id } }
                         ?: return show("settings", UiNotice("Esa seccion ya no existe.", UiTone.Warning), emptyMap())
-                    CrmFieldSections.delete(tenant, section.id)
+                    try {
+                        CrmFieldSections.delete(tenant, section)
+                    } catch (failure: CrmValidationException) {
+                        return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
+                    }
                     show("settings", UiNotice("Seccion ${section.name} eliminada; sus campos quedaron en ${CrmFields.Section}.", UiTone.Success), emptyMap())
                 }
-                "settings:fieldMove" -> {
-                    val field = uuid("id")?.let { id -> context.fields.firstOrNull { it.id == id } }
-                        ?: return show("settings", UiNotice("Ese campo ya no existe.", UiTone.Warning), emptyMap())
-                    val notice = try {
-                        UiNotice(CrmMoveToCustomers.move(tenant, field, canManageCustomerFields, permissions.has(CrmScreens.Settings)), UiTone.Success)
-                    } catch (failure: CrmValidationException) {
-                        UiNotice(failure.message.orEmpty(), UiTone.Danger)
-                    }
-                    show("settings", notice, emptyMap())
+                "settings:sectionMove" -> {
+                    val moved = uuid("id")?.let { CrmFieldSections.move(tenant, context.sections, it, params["dir"] == "up") } == true
+                    show("settings", UiNotice(if (moved) "Orden de las secciones guardado." else "Esa seccion no se puede mover ahi (Datos del cliente va siempre primero).", if (moved) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "settings:fieldDelete" -> {
                     val field = uuid("id")?.let { id -> context.fields.firstOrNull { it.id == id } }

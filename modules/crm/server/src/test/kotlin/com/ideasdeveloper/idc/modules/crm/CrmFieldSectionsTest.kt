@@ -42,8 +42,8 @@ class CrmFieldSectionsTest {
 
     @Test
     fun sectionFormIsValidated() {
-        val input = CrmFieldSections.parse(mapOf("sectionName" to " Notas ", "sectionPosition" to "3"), sections, null)
-        assertEquals(CrmFieldSectionInput("Notas", 3), input)
+        val input = CrmFieldSections.parse(mapOf("sectionName" to " Notas "), sections, null)
+        assertEquals(CrmFieldSectionInput("Notas"), input)
         assertFailsWith<CrmValidationException> { CrmFieldSections.parse(mapOf("sectionName" to " "), sections, null) }
         assertFailsWith<CrmValidationException> { CrmFieldSections.parse(mapOf("sectionName" to "familia"), sections, null) }
         // Renaming a section to its own name is fine.
@@ -51,7 +51,7 @@ class CrmFieldSectionsTest {
         // The sections of the fixed part of the form cannot be reused.
         assertFailsWith<CrmValidationException> { CrmFieldSections.parse(mapOf("sectionName" to "Contacto"), sections, null) }
         assertFailsWith<CrmValidationException> { CrmFieldSections.parse(mapOf("sectionName" to CrmFields.Section), sections, null) }
-        assertFailsWith<CrmValidationException> { CrmFieldSections.parse(mapOf("sectionName" to "Notas", "sectionPosition" to "1000"), sections, null) }
+        assertFailsWith<CrmValidationException> { CrmFieldSections.parse(mapOf("sectionName" to "datos del cliente"), sections, null) }
     }
 
     @Test
@@ -61,5 +61,65 @@ class CrmFieldSectionsTest {
         assertNull(CrmFields.parseDefinition(mapOf("label" to "Hijos", "type" to "Texto", "section" to CrmFields.Section), null, sections).sectionId)
         assertNull(CrmFields.parseDefinition(mapOf("label" to "Hijos", "type" to "Texto"), null, sections).sectionId)
         assertFailsWith<CrmValidationException> { CrmFields.parseDefinition(mapOf("label" to "Hijos", "type" to "Texto", "section" to "Otra"), null, sections) }
+    }
+
+    private fun system(key: String, position: Int) =
+        CrmFieldSection(UUID.randomUUID(), CrmFieldSections.system.first { it.first == key }.second, position, key)
+
+    private val customer = system(CrmFieldSections.Customer, 5)
+    private val followup = system(CrmFieldSections.Followup, 0)
+    private val message = system(CrmFieldSections.Message, 2)
+    private val documents = system(CrmFieldSections.Documents, 1)
+    private val all = listOf(followup, documents, message, reserva.copy(position = 4), customer)
+
+    @Test
+    fun customerDataIsAlwaysFirstWhateverThePositionsSay() {
+        // Its stored position is the last one, yet it leads; the rest follow their positions.
+        assertEquals(
+            listOf("Datos del cliente", "Seguimiento", "Documentos", "Mensaje y detalles", "Datos de la reserva"),
+            CrmFieldSections.sorted(all).map { it.name },
+        )
+        // A database before V020 has no built-in rows: they are added in their original order.
+        assertEquals(
+            listOf("Datos del cliente", "Seguimiento", "Mensaje y detalles", "Documentos"),
+            CrmFieldSections.sorted(emptyList()).map { it.name },
+        )
+    }
+
+    @Test
+    fun aCustomFieldInABuiltInSectionRendersInsideIt() {
+        val inFollowup = field("cf_age", 0, followup)
+        val own = field("cf_hijos", 0, familia)
+        val loose = field("cf_suelto", 0)
+        val ordered = CrmFieldSections.ordered(listOf(loose, own, inFollowup), all + familia.copy(position = 6))
+        // Seguimiento comes before the company's Familia; the field without section is last.
+        assertEquals(listOf("cf_age", "cf_hijos", "cf_suelto"), ordered.map { it.key })
+        assertEquals("Seguimiento", CrmFieldSections.title(inFollowup, all))
+    }
+
+    @Test
+    fun builtInSectionsCannotBeDeleted() {
+        assertFailsWith<CrmValidationException> { CrmFieldSections.checkDeletable(customer) }
+        assertFailsWith<CrmValidationException> { CrmFieldSections.checkDeletable(followup) }
+        CrmFieldSections.checkDeletable(reserva)
+    }
+
+    @Test
+    fun sectionsReorderButNothingGoesBeforeCustomerData() {
+        val order = CrmFieldSections.sorted(all) // Datos del cliente, Seguimiento, Documentos, Mensaje, Datos de la reserva
+        // Customer data never moves.
+        assertNull(CrmFieldSections.reorder(all, customer.id, up = false))
+        assertNull(CrmFieldSections.reorder(all, customer.id, up = true))
+        // The first one after it cannot go up (it would pass customer data); the last cannot go down.
+        assertNull(CrmFieldSections.reorder(all, order[1].id, up = true))
+        assertNull(CrmFieldSections.reorder(all, order.last().id, up = false))
+        // A built-in section moves like any other and positions are renumbered.
+        val moved = CrmFieldSections.reorder(all, message.id, up = true)!!
+        assertEquals(listOf("Datos del cliente", "Seguimiento", "Mensaje y detalles", "Documentos", "Datos de la reserva"), moved.map { it.name })
+        assertEquals(listOf(0, 1, 2, 3, 4), moved.map { it.position })
+        // A custom section can go above built-in ones, never above customer data.
+        val up = CrmFieldSections.reorder(all, reserva.id, up = true)!!
+        assertEquals("Datos del cliente", up.first().name)
+        assertEquals("Datos de la reserva", up[3].name)
     }
 }
