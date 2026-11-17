@@ -46,8 +46,15 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.structuralEqualityPolicy
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateMapOf
@@ -58,7 +65,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
@@ -66,6 +72,7 @@ import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -90,6 +97,8 @@ import com.ideasdeveloper.idc.ui.UiAction
 import com.ideasdeveloper.idc.ui.UiBadge
 import com.ideasdeveloper.idc.ui.UiBarChart
 import com.ideasdeveloper.idc.ui.UiBoard
+import com.ideasdeveloper.idc.ui.UiBoardCard
+import com.ideasdeveloper.idc.ui.UiBoardColumn
 import com.ideasdeveloper.idc.ui.UiButton
 import com.ideasdeveloper.idc.ui.UiCard
 import com.ideasdeveloper.idc.ui.UiColumn
@@ -381,6 +390,7 @@ private fun ModuleBarChart(node: UiBarChart, colors: ModuleColors) {
 
 @Composable
 private fun ModuleTable(node: UiTable, colors: ModuleColors) {
+    var shown by remember(node.columns) { mutableIntStateOf(PageSize) }
     if (node.rows.isEmpty()) {
         Text(node.emptyText, color = colors.muted, fontSize = 13.sp)
         return
@@ -392,7 +402,7 @@ private fun ModuleTable(node: UiTable, colors: ModuleColors) {
                 Text(column.label.uppercase(), color = colors.muted, fontSize = 11.sp, letterSpacing = 1.sp, modifier = Modifier.width(cellWidth).padding(8.dp))
             }
         }
-        node.rows.forEach { row ->
+        node.rows.take(shown).forEach { row ->
             HorizontalDivider(color = colors.border, modifier = Modifier.width(cellWidth * node.columns.size))
             Row {
                 node.columns.forEach { column ->
@@ -401,6 +411,7 @@ private fun ModuleTable(node: UiTable, colors: ModuleColors) {
             }
         }
     } }
+    if (node.rows.size > shown) ShowMoreButton(node.rows.size - shown, colors) { shown += PageSize }
 }
 
 @Composable
@@ -432,16 +443,40 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
     // Valores que puso una sugerencia elegida en claves que no son campos (p. ej. el id del cliente).
     var chosenExtraKeys by remember(node.id) { mutableStateOf(emptySet<String>()) }
     val openSections = remember(node.id) { mutableStateMapOf<String, Boolean>().apply { node.openSections.forEach { put(it, true) } } }
+    // Derivados de los valores del formulario: una tecla solo recompone el formulario si cambia la
+    // visibilidad de algun campo (igualdad estructural: sin cambios se conserva la misma lista).
+    val visible by remember(node, context.formValue) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            node.fields.filter { field ->
+                field.visibleWhen?.let { condition -> context.formValue(node.id, condition.key) in condition.values } ?: true
+            }
+        }
+    }
+    // Agrupa campos consecutivos de la misma seccion bajo un titulo; solo se rehace si cambia la visibilidad.
+    val groups = remember(visible) {
+        buildList<Pair<String, List<UiField>>> {
+            var currentSection: String? = null
+            var current = mutableListOf<UiField>()
+            visible.forEach { field ->
+                val previous = currentSection
+                if (previous != null && previous != field.section) {
+                    add(previous to current)
+                    current = mutableListOf()
+                }
+                currentSection = field.section
+                current += field
+            }
+            currentSection?.let { add(it to current) }
+        }
+    }
+    val missing by remember(node, context.formValue) {
+        derivedStateOf(structuralEqualityPolicy()) {
+            visible.firstOrNull { field ->
+                field.required && !field.readOnly && field.type != "password" && field.type != "boolean" && context.formValue(node.id, field.key).isBlank()
+            }
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-        // Agrupa campos consecutivos de la misma seccion bajo un titulo.
-        val groups = mutableListOf<Pair<String, MutableList<UiField>>>()
-        val visible = node.fields.filter { field ->
-            field.visibleWhen?.let { condition -> context.formValue(node.id, condition.key) in condition.values } ?: true
-        }
-        visible.forEach { field ->
-            if (groups.isEmpty() || groups.last().first != field.section) groups += field.section to mutableListOf()
-            groups.last().second += field
-        }
         groups.forEach { (section, fields) ->
             // Con collapsibleSections cada seccion con nombre es un acordeon; empieza cerrado salvo las de openSections.
             val collapsible = node.collapsibleSections && section.isNotBlank()
@@ -471,11 +506,10 @@ private fun ModuleForm(node: UiForm, context: ModuleRenderContext) {
             }
         }
         node.submit?.let { submit ->
-            val missing = visible.firstOrNull { field ->
-                field.required && !field.readOnly && field.type != "password" && field.type != "boolean" && context.formValue(node.id, field.key).isBlank()
-            }
-            ModuleButton(submit.copy(enabled = submit.enabled && missing == null), context)
-            missing?.let { Text("Completa: ${it.label}", color = context.colors.muted, fontSize = 12.sp) }
+            val missingField = missing
+            val submitButton = remember(submit, missingField == null) { submit.copy(enabled = submit.enabled && missingField == null) }
+            ModuleButton(submitButton, context)
+            missingField?.let { Text("Completa: ${it.label}", color = context.colors.muted, fontSize = 12.sp) }
         }
     }
 }
@@ -567,7 +601,9 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
     val scope = rememberCoroutineScope()
     var status by remember(form.id, field.key) { mutableStateOf<String?>(null) }
     var uploading by remember(form.id, field.key) { mutableStateOf(false) }
-    val current = UiFieldValues.files(context.formValue(form.id, field.key))
+    val rawValue = context.formValue(form.id, field.key)
+    val current = remember(rawValue) { UiFieldValues.files(rawValue) }
+    val folders = remember(current) { current.groupBy { it.path }.entries.sortedBy { it.key }.map { it.key to it.value } }
     val editable = !field.readOnly && files != null
     val maxBytes = files?.maxFileBytes ?: 0L
 
@@ -620,7 +656,7 @@ private fun FilesField(form: UiForm, field: UiField, context: ModuleRenderContex
                 .padding(10.dp),
         ) {
             if (current.isEmpty()) Text("Sin archivos.", color = colors.muted, fontSize = 13.sp)
-            current.groupBy { it.path }.entries.sortedBy { it.key }.forEach { (folder, items) ->
+            folders.forEach { (folder, items) ->
                 if (folder.isNotBlank()) {
                     Text("Carpeta: $folder", color = colors.accentText, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 4.dp))
                 }
@@ -873,6 +909,47 @@ private fun ModuleBadges(badges: List<UiBadge>, colors: ModuleColors) {
     }
 }
 
+// Tamano de pagina de las listas largas: se muestran 50 y "Ver mas" suma otros 50.
+private const val PageSize = 50
+
+@Composable
+private fun ShowMoreButton(remaining: Int, colors: ModuleColors, onClick: () -> Unit) {
+    TextButton(onClick = onClick) { Text("Ver m\u00e1s ($remaining restantes)", color = colors.accentText) }
+}
+
+/**
+ * Estado del arrastre de una tarjeta del tablero. Las coordenadas de columnas y tarjetas viven en mapas
+ * no observables (solo se leen al iniciar o terminar el arrastre); lo observable es `dragging`, `pointer`
+ * y `dragOffset`, que cambian durante el gesto.
+ */
+@Stable
+private class BoardDragState {
+    val columns = mutableMapOf<String, LayoutCoordinates>()
+    val cards = mutableMapOf<String, LayoutCoordinates>()
+    var dragging by mutableStateOf<String?>(null)
+    var pointer by mutableStateOf(Offset.Zero)
+    var dragOffset by mutableStateOf(Offset.Zero)
+
+    // Only the horizontal position counts: a column is as tall as its cards, and dropping below
+    // the last card of a short column must still land in it.
+    fun columnAt(position: Offset): String? = columns.entries.firstOrNull { (_, coordinates) ->
+        coordinates.isAttached && coordinates.boundsInRoot().let { position.x >= it.left && position.x < it.right }
+    }?.key
+
+    fun dropTarget(): String? = columnAt(pointer + dragOffset)
+
+    fun start(cardId: String, origin: Offset, downPosition: Offset, startPosition: Offset) {
+        dragging = cardId
+        pointer = origin + downPosition
+        dragOffset = startPosition - downPosition
+    }
+
+    fun stop() {
+        dragging = null
+        dragOffset = Offset.Zero
+    }
+}
+
 // Tablero kanban: columnas con desplazamiento horizontal. Una tarjeta se arrastra a otra columna
 // (con el raton directamente; en pantallas tactiles tras mantenerla presionada, para no chocar con
 // el desplazamiento) o se mueve con su menu "Mover a".
@@ -883,19 +960,22 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
         Text(node.emptyText, color = colors.muted, fontSize = 13.sp)
         return
     }
-    // Limites de cada columna en coordenadas de la ventana, para saber donde se suelta la tarjeta.
-    val columnBounds = remember(node) { mutableStateMapOf<String, Rect>() }
-    var dragging by remember(node) { mutableStateOf<String?>(null) }
-    var pointer by remember(node) { mutableStateOf(Offset.Zero) }
-    var dragOffset by remember(node) { mutableStateOf(Offset.Zero) }
-    // Only the horizontal position counts: a column is as tall as its cards, and dropping below
-    // the last card of a short column must still land in it.
-    fun columnAt(position: Offset) = columnBounds.entries.firstOrNull { (_, bounds) -> position.x >= bounds.left && position.x < bounds.right }?.key
-    val target = dragging?.let { columnAt(pointer + dragOffset) }
-
-    fun move(cardId: String, columnId: String) {
-        node.move?.let { move -> context.onAction(move.copy(params = move.params + mapOf("card" to cardId, "column" to columnId))) }
+    val drag = remember { BoardDragState() }
+    // La columna de destino se deriva de los estados del arrastre: este composable solo recompone al
+    // cambiar de columna, no en cada frame del gesto.
+    val target by remember(drag) { derivedStateOf { drag.dragging?.let { drag.dropTarget() } } }
+    val dragging = drag.dragging
+    // Columna que contiene la tarjeta arrastrada; se calcula una vez por cambio de arrastre.
+    val draggedColumnId = remember(node, dragging) {
+        dragging?.let { id -> node.columns.firstOrNull { column -> column.cards.any { it.id == id } }?.id }
     }
+    val onMove = remember(node.move, context.onAction) {
+        { cardId: String, columnId: String ->
+            node.move?.let { move -> context.onAction(move.copy(params = move.params + mapOf("card" to cardId, "column" to columnId))) }
+            Unit
+        }
+    }
+    val canMove = node.move != null && !context.busy
 
     // Las columnas mantienen su ancho (columnWidth) y el tablero se desplaza con barra visible en escritorio y web.
     HorizontalScrollArea { Row(
@@ -903,123 +983,176 @@ private fun ModuleBoard(node: UiBoard, context: ModuleRenderContext) {
         modifier = Modifier.padding(bottom = 4.dp),
     ) {
         node.columns.forEach { column ->
-            val hostsDragged = column.cards.any { it.id == dragging }
-            val highlighted = target == column.id && !hostsDragged
-            Column(
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier
-                    .width(node.columnWidth.dp)
-                    .zIndex(if (hostsDragged) 1f else 0f)
-                    .onGloballyPositioned { columnBounds[column.id] = it.boundsInRoot() }
-                    .background(if (highlighted) colors.accent.copy(alpha = 0.14f) else colors.surfaceAlt, RoundedCornerShape(16.dp))
-                    .border(1.dp, if (highlighted) colors.accent else colors.border, RoundedCornerShape(16.dp))
-                    .padding(10.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Box(Modifier.size(10.dp).background(colors.tone(column.tone), CircleShape))
-                    Text(column.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                    Text(column.cards.size.toString(), color = colors.muted, fontSize = 12.sp)
-                }
-                if (column.caption.isNotBlank()) Text(column.caption, color = colors.muted, fontSize = 12.sp)
-                if (column.cards.isEmpty()) Text("Sin elementos.", color = colors.muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
-                column.cards.forEach { card -> key(card.id) {
-                    var origin by remember(card.id) { mutableStateOf(Offset.Zero) }
-                    var menu by remember(card.id) { mutableStateOf(false) }
-                    val isDragged = dragging == card.id
-                    val canMove = node.move != null && !context.busy
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .onGloballyPositioned { origin = it.positionInRoot() }
-                            .graphicsLayer {
-                                if (isDragged) {
-                                    translationX = dragOffset.x
-                                    translationY = dragOffset.y
-                                    shadowElevation = 12f
-                                }
-                            }
-                            .background(colors.surface, RoundedCornerShape(12.dp))
-                            .border(1.dp, if (isDragged) colors.accent else colors.border, RoundedCornerShape(12.dp))
-                            .then(card.action?.let { action -> Modifier.clickable(enabled = !context.busy) { context.onAction(action) } } ?: Modifier)
-                            // After clickable so the drag sees the pointer first and its consumed events
-                            // cancel the click (opening the card) and the board scroll.
-                            .then(
-                                if (canMove) Modifier.pointerInput(card.id, column.id) {
-                                    awaitEachGesture {
-                                        val down = awaitFirstDown(requireUnconsumed = false)
-                                        val start = if (down.type == PointerType.Mouse) {
-                                            awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
-                                        } else {
-                                            awaitLongPressOrCancellation(down.id)
-                                        } ?: return@awaitEachGesture
-                                        dragging = card.id
-                                        pointer = origin + down.position
-                                        dragOffset = start.position - down.position
-                                        var dropped: String? = null
-                                        try {
-                                            val completed = drag(start.id) { change ->
-                                                dragOffset += change.positionChange()
-                                                change.consume()
-                                            }
-                                            if (completed) {
-                                                // The release must not also open the card.
-                                                currentEvent.changes.forEach { it.consume() }
-                                                dropped = columnAt(pointer + dragOffset)
-                                            }
-                                        } finally {
-                                            dragging = null
-                                            dragOffset = Offset.Zero
-                                        }
-                                        dropped?.takeIf { it != column.id }?.let { move(card.id, it) }
-                                    }
-                                } else Modifier
-                            )
-                            .padding(10.dp),
-                    ) {
-                        Text(card.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                        if (card.subtitle.isNotBlank()) Text(card.subtitle, color = colors.muted, fontSize = 12.sp, maxLines = 2)
-                        card.details.forEach { Text(it, color = colors.muted, fontSize = 12.sp) }
-                        ModuleBadges(card.badges, colors)
-                        if (canMove && node.columns.size > 1) {
-                            Box {
-                                Text(
-                                    "Mover a...",
-                                    color = colors.accentText,
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    modifier = Modifier.clickable { menu = true }.padding(vertical = 2.dp),
-                                )
-                                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                                    node.columns.filter { it.id != column.id }.forEach { other ->
-                                        DropdownMenuItem(
-                                            text = { Text(other.title) },
-                                            onClick = {
-                                                menu = false
-                                                move(card.id, other.id)
-                                            },
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                } }
-                column.footer?.let { ModuleButton(it, context) }
-            }
+            val hostsDragged = draggedColumnId == column.id
+            BoardColumn(
+                node = node,
+                column = column,
+                drag = drag,
+                highlighted = target == column.id && !hostsDragged,
+                hostsDragged = hostsDragged,
+                draggedCardId = if (hostsDragged) dragging else null,
+                canMove = canMove,
+                onMove = onMove,
+                context = context,
+            )
         }
     } }
 }
 
 @Composable
+private fun BoardColumn(
+    node: UiBoard,
+    column: UiBoardColumn,
+    drag: BoardDragState,
+    highlighted: Boolean,
+    hostsDragged: Boolean,
+    draggedCardId: String?,
+    canMove: Boolean,
+    onMove: (String, String) -> Unit,
+    context: ModuleRenderContext,
+) {
+    val colors = context.colors
+    var shown by remember(column.id) { mutableIntStateOf(PageSize) }
+    DisposableEffect(drag, column.id) { onDispose { drag.columns.remove(column.id) } }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .width(node.columnWidth.dp)
+            .zIndex(if (hostsDragged) 1f else 0f)
+            .onGloballyPositioned { drag.columns[column.id] = it }
+            .background(if (highlighted) colors.accent.copy(alpha = 0.14f) else colors.surfaceAlt, RoundedCornerShape(16.dp))
+            .border(1.dp, if (highlighted) colors.accent else colors.border, RoundedCornerShape(16.dp))
+            .padding(10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(Modifier.size(10.dp).background(colors.tone(column.tone), CircleShape))
+            Text(column.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+            Text(column.cards.size.toString(), color = colors.muted, fontSize = 12.sp)
+        }
+        if (column.caption.isNotBlank()) Text(column.caption, color = colors.muted, fontSize = 12.sp)
+        if (column.cards.isEmpty()) Text("Sin elementos.", color = colors.muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 8.dp))
+        column.cards.take(shown).forEach { card ->
+            key(card.id) {
+                BoardCard(
+                    card = card,
+                    column = column,
+                    columns = node.columns,
+                    drag = drag,
+                    isDragged = draggedCardId == card.id,
+                    canMove = canMove,
+                    onMove = onMove,
+                    context = context,
+                )
+            }
+        }
+        if (column.cards.size > shown) ShowMoreButton(column.cards.size - shown, colors) { shown += PageSize }
+        column.footer?.let { ModuleButton(it, context) }
+    }
+}
+
+@Composable
+private fun BoardCard(
+    card: UiBoardCard,
+    column: UiBoardColumn,
+    columns: List<UiBoardColumn>,
+    drag: BoardDragState,
+    isDragged: Boolean,
+    canMove: Boolean,
+    onMove: (String, String) -> Unit,
+    context: ModuleRenderContext,
+) {
+    val colors = context.colors
+    var menu by remember(card.id) { mutableStateOf(false) }
+    val currentOnMove by rememberUpdatedState(onMove)
+    DisposableEffect(drag, card.id) { onDispose { drag.cards.remove(card.id) } }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            // Solo las tarjetas movibles guardan su posicion; es un holder no observable.
+            .then(if (canMove) Modifier.onGloballyPositioned { drag.cards[card.id] = it } else Modifier)
+            .graphicsLayer {
+                if (isDragged) {
+                    translationX = drag.dragOffset.x
+                    translationY = drag.dragOffset.y
+                    shadowElevation = 12f
+                }
+            }
+            .background(colors.surface, RoundedCornerShape(12.dp))
+            .border(1.dp, if (isDragged) colors.accent else colors.border, RoundedCornerShape(12.dp))
+            .then(card.action?.let { action -> Modifier.clickable(enabled = !context.busy) { context.onAction(action) } } ?: Modifier)
+            // After clickable so the drag sees the pointer first and its consumed events
+            // cancel the click (opening the card) and the board scroll.
+            .then(
+                if (canMove) Modifier.pointerInput(card.id, column.id, drag) {
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        val start = if (down.type == PointerType.Mouse) {
+                            awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                        } else {
+                            awaitLongPressOrCancellation(down.id)
+                        } ?: return@awaitEachGesture
+                        val origin = drag.cards[card.id]?.takeIf { it.isAttached }?.positionInRoot() ?: Offset.Zero
+                        drag.start(card.id, origin, down.position, start.position)
+                        var dropped: String? = null
+                        try {
+                            val completed = drag(start.id) { change ->
+                                drag.dragOffset += change.positionChange()
+                                change.consume()
+                            }
+                            if (completed) {
+                                // The release must not also open the card.
+                                currentEvent.changes.forEach { it.consume() }
+                                dropped = drag.dropTarget()
+                            }
+                        } finally {
+                            drag.stop()
+                        }
+                        dropped?.takeIf { it != column.id }?.let { currentOnMove(card.id, it) }
+                    }
+                } else Modifier
+            )
+            .padding(10.dp),
+    ) {
+        Text(card.title, color = colors.text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+        if (card.subtitle.isNotBlank()) Text(card.subtitle, color = colors.muted, fontSize = 12.sp, maxLines = 2)
+        card.details.forEach { Text(it, color = colors.muted, fontSize = 12.sp) }
+        ModuleBadges(card.badges, colors)
+        if (canMove && columns.size > 1) {
+            Box {
+                Text(
+                    "Mover a...",
+                    color = colors.accentText,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clickable { menu = true }.padding(vertical = 2.dp),
+                )
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    columns.filter { it.id != column.id }.forEach { other ->
+                        DropdownMenuItem(
+                            text = { Text(other.title) },
+                            onClick = {
+                                menu = false
+                                onMove(card.id, other.id)
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ModuleList(node: UiList, context: ModuleRenderContext) {
     val colors = context.colors
+    var shown by remember { mutableIntStateOf(PageSize) }
     if (node.items.isEmpty()) {
         Text(node.emptyText, color = colors.muted, fontSize = 13.sp)
         return
     }
     Column(modifier = Modifier.fillMaxWidth()) {
-        node.items.forEachIndexed { index, item ->
+        node.items.take(shown).forEachIndexed { index, item ->
             if (index > 0) HorizontalDivider(color = colors.border)
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -1037,17 +1170,19 @@ private fun ModuleList(node: UiList, context: ModuleRenderContext) {
                 if (item.trailing.isNotBlank()) Text(item.trailing, color = colors.muted, fontSize = 12.sp)
             }
         }
+        if (node.items.size > shown) ShowMoreButton(node.items.size - shown, colors) { shown += PageSize }
     }
 }
 
 @Composable
 private fun ModuleTimeline(node: UiTimeline, colors: ModuleColors) {
+    var shown by remember { mutableIntStateOf(PageSize) }
     if (node.entries.isEmpty()) {
         Text(node.emptyText, color = colors.muted, fontSize = 13.sp)
         return
     }
     Column(verticalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
-        node.entries.forEach { entry ->
+        node.entries.take(shown).forEach { entry ->
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Box(Modifier.padding(top = 4.dp).size(10.dp).background(colors.tone(entry.tone), CircleShape))
                 Column(verticalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.weight(1f)) {
@@ -1057,6 +1192,7 @@ private fun ModuleTimeline(node: UiTimeline, colors: ModuleColors) {
                 }
             }
         }
+        if (node.entries.size > shown) ShowMoreButton(node.entries.size - shown, colors) { shown += PageSize }
     }
 }
 

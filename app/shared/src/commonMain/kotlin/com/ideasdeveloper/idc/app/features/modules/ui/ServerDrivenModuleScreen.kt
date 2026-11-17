@@ -11,6 +11,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -20,6 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import com.ideasdeveloper.idc.app.core.ui.CopyableCode
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonColors
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -32,6 +36,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -236,14 +241,24 @@ fun ServerDrivenModuleScreen(
                 .padding(top = AuthenticatedTopBarHeight + 8.dp, bottom = 16.dp)
                 .contentWidth(ContentWidth.Content, 0.9f),
         ) {
+            // Clientes dibuja una lista larga: la LazyColumn hace el desplazamiento, sin scroll exterior anidado.
+            val customersList = !loading && error == null && metadata != null && moduleId == "clientes"
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .then(if (customersList) Modifier else Modifier.verticalScroll(rememberScrollState())),
                 color = AppTheme.colors.surface,
                 shape = MaterialTheme.shapes.medium,
             ) {
-                Column(
+                if (customersList) CustomerServerDrivenContent(
+                    serverUrl = serverUrl,
+                    session = session,
+                    primaryColor = primaryColor,
+                    onOpenModule = onOpenModule,
+                    onReturnToDashboard = onReturnToDashboard,
+                    // "Abrir ficha" desde otro modulo (el lead del CRM) abre la ficha del cliente.
+                    initialProfileId = deepLink?.takeIf { it.screen == "customer" }?.params?.get("id"),
+                ) else Column(
                     modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -251,14 +266,6 @@ fun ServerDrivenModuleScreen(
                     when {
                         loading -> CircularProgressIndicator(color = AppTheme.colors.accentText)
                         error != null -> Text(error.orEmpty(), color = AppTheme.colors.danger)
-                        metadata != null && moduleId == "clientes" -> CustomerServerDrivenContent(
-                            serverUrl = serverUrl,
-                            session = session,
-                            primaryColor = primaryColor,
-                            onOpenModule = onOpenModule,
-                            // "Abrir ficha" desde otro modulo (el lead del CRM) abre la ficha del cliente.
-                            initialProfileId = deepLink?.takeIf { it.screen == "customer" }?.params?.get("id"),
-                        )
                         metadata != null && ui != null && callContext == null -> Text(
                             "Este modulo requiere iniciar sesion en una empresa.",
                             color = AppTheme.colors.danger,
@@ -291,6 +298,7 @@ private fun CustomerServerDrivenContent(
     session: LoginResponse?,
     primaryColor: Color,
     onOpenModule: (UiOpenModule) -> Unit,
+    onReturnToDashboard: () -> Unit,
     initialProfileId: String? = null,
 ) {
     val scope = rememberCoroutineScope()
@@ -356,117 +364,80 @@ private fun CustomerServerDrivenContent(
         loadAll()
     }
 
-    // El formulario empieza cerrado para ver la lista; Editar lo abre con los datos del cliente.
-    CollapsibleSection(
-        title = if (editingId == null) "Crear cliente" else "Editar cliente",
-        color = AppTheme.colors.accentText,
-        open = customerFormOpen || editingId != null,
-        onToggle = { if (editingId != null) clearForm() else customerFormOpen = !customerFormOpen },
+    val secondaryButtonColors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)
+    val dangerButtonColors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.danger)
+    // Lambdas estables para las filas: llaman a la version mas reciente de lo que capturan.
+    val currentDelete by rememberUpdatedState<(String) -> Unit> { customerId ->
+        val (activeServerUrl, token, companyCode) = activeContext() ?: return@rememberUpdatedState
+        loading = true
+        scope.launch {
+            try {
+                ModuleApi(activeServerUrl).use { api -> api.deleteCustomer(token, companyCode, customerId) }
+                message = "Cliente eliminado."
+                if (editingId == customerId) clearForm()
+                loadAll()
+            } catch (exception: ModuleException) {
+                error = exception.message
+            } finally {
+                loading = false
+            }
+        }
+    }
+    val onEditCustomer = remember {
+        { customer: CustomerResponse ->
+            editingId = customer.id
+            name = customer.displayName
+            email = customer.primaryEmail
+            phone = customer.primaryPhone
+            dynamicValues = customer.dynamicFields.mapValues { it.value.toString().trim('"') }
+        }
+    }
+    // Fuera del item de la lista: si la seccion sale de pantalla y se descompone, sigue abierta o cerrada.
+    var dynamicFieldsOpen by remember { mutableStateOf(false) }
+    val onDeleteCustomer = remember { { customerId: String -> currentDelete(customerId) } }
+    val onCustomerProfile = remember { { customerId: String -> profileCustomerId = customerId } }
+
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = PaddingValues(AdaptiveLayout.screenPadding - 2.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        OutlinedTextField(name, { name = it }, label = { Text("Nombre *") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(email, { email = it }, label = { Text("Correo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(phone, { phone = it }, label = { Text("Telefono") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        fields.forEach { field ->
-            OutlinedTextField(
-                value = dynamicValues[field.fieldKey].orEmpty(),
-                onValueChange = { value -> dynamicValues = dynamicValues + (field.fieldKey to value) },
-                label = { Text(field.label + if (field.required) " *" else "") },
-                singleLine = field.fieldType != "textarea",
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        Button(
-            enabled = !loading && name.isNotBlank(),
-            onClick = {
-                val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
-                loading = true
-                message = null
-                error = null
-                scope.launch {
-                    try {
-                        ModuleApi(activeServerUrl).use { api ->
-                            val id = editingId
-                            if (id == null) api.createCustomer(token, companyCode, request()) else api.updateCustomer(token, companyCode, id, request())
-                        }
-                        message = if (editingId == null) "Cliente creado." else "Cliente actualizado."
-                        clearForm()
-                        loadAll()
-                    } catch (exception: ModuleException) {
-                        error = exception.message
-                    } finally {
-                        loading = false
-                    }
+        item {
+            // El formulario empieza cerrado para ver la lista; Editar lo abre con los datos del cliente.
+            CollapsibleSection(
+                title = if (editingId == null) "Crear cliente" else "Editar cliente",
+                color = AppTheme.colors.accentText,
+                open = customerFormOpen || editingId != null,
+                onToggle = { if (editingId != null) clearForm() else customerFormOpen = !customerFormOpen },
+            ) {
+                OutlinedTextField(name, { name = it }, label = { Text("Nombre *") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(email, { email = it }, label = { Text("Correo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(phone, { phone = it }, label = { Text("Telefono") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                fields.forEach { field ->
+                    OutlinedTextField(
+                        value = dynamicValues[field.fieldKey].orEmpty(),
+                        onValueChange = { value -> dynamicValues = dynamicValues + (field.fieldKey to value) },
+                        label = { Text(field.label + if (field.required) " *" else "") },
+                        singleLine = field.fieldType != "textarea",
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
-            },
-            colors = accentButtonColors(),
-        ) { Text(if (editingId == null) "Crear cliente" else "Guardar cambios") }
-        if (editingId != null) {
-            Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) { Text("Cancelar edicion") }
-        }
-    }
-
-    // Se configuran una vez: empiezan cerrados.
-    CollapsibleSection("Campos dinamicos de Clientes", primaryColor, subtitle = "Campos extra de la ficha de todos los clientes") {
-        OutlinedTextField(newFieldKey, { newFieldKey = it }, label = { Text("Clave del campo, ej: direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        OutlinedTextField(newFieldLabel, { newFieldLabel = it }, label = { Text("Etiqueta, ej: Direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-        androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
-            Checkbox(checked = newFieldRequired, onCheckedChange = { newFieldRequired = it })
-            Text("Requerido")
-        }
-        Button(
-            enabled = !loading && newFieldKey.isNotBlank() && newFieldLabel.isNotBlank(),
-            onClick = {
-                val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
-                loading = true
-                scope.launch {
-                    try {
-                        ModuleApi(activeServerUrl).use { api ->
-                            api.createCustomerField(token, companyCode, CreateCustomerFieldRequest(newFieldKey, newFieldLabel, "text", required = newFieldRequired))
-                        }
-                        newFieldKey = ""
-                        newFieldLabel = ""
-                        newFieldRequired = false
-                        message = "Campo dinamico creado."
-                        loadAll()
-                    } catch (exception: ModuleException) {
-                        error = exception.message
-                    } finally {
-                        loading = false
-                    }
-                }
-            },
-            colors = accentButtonColors(),
-        ) { Text("Agregar campo") }
-    }
-
-    message?.let { Text(it, color = AppTheme.colors.success) }
-    error?.let { Text(it, color = AppTheme.colors.danger) }
-    Text("Clientes", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
-    if (customers.isEmpty()) {
-        Text("Aun no hay clientes.", color = AppTheme.colors.muted)
-    } else {
-        customers.forEach { customer ->
-            Column(modifier = Modifier.fillMaxWidth().background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small).padding(10.dp)) {
-                Text(listOf(customer.displayName, customer.primaryEmail, customer.primaryPhone).filter { it.isNotBlank() }.joinToString(" - ") + if (customer.customerType != "general") " (${customer.customerType})" else "", color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
-                if (customer.customerCode.isNotBlank()) {
-                    CopyableCode(label = "Codigo de cliente", code = customer.customerCode)
-                }
-                androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        editingId = customer.id
-                        name = customer.displayName
-                        email = customer.primaryEmail
-                        phone = customer.primaryPhone
-                        dynamicValues = customer.dynamicFields.mapValues { it.value.toString().trim('"') }
-                    }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) { Text("Editar") }
-                    Button(onClick = {
+                Button(
+                    enabled = !loading && name.isNotBlank(),
+                    onClick = {
                         val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
                         loading = true
+                        message = null
+                        error = null
                         scope.launch {
                             try {
-                                ModuleApi(activeServerUrl).use { api -> api.deleteCustomer(token, companyCode, customer.id) }
-                                message = "Cliente eliminado."
-                                if (editingId == customer.id) clearForm()
+                                ModuleApi(activeServerUrl).use { api ->
+                                    val id = editingId
+                                    if (id == null) api.createCustomer(token, companyCode, request()) else api.updateCustomer(token, companyCode, id, request())
+                                }
+                                message = if (editingId == null) "Cliente creado." else "Cliente actualizado."
+                                clearForm()
                                 loadAll()
                             } catch (exception: ModuleException) {
                                 error = exception.message
@@ -474,12 +445,75 @@ private fun CustomerServerDrivenContent(
                                 loading = false
                             }
                         }
-                    }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.danger)) { Text("Eliminar") }
-                    Button(onClick = { profileCustomerId = customer.id }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) {
-                        Text("Ficha")
-                    }
+                    },
+                    colors = accentButtonColors(),
+                ) { Text(if (editingId == null) "Crear cliente" else "Guardar cambios") }
+                if (editingId != null) {
+                    Button(onClick = { clearForm() }, colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = AppTheme.colors.accentText)) { Text("Cancelar edicion") }
                 }
             }
+        }
+        item {
+            // Se configuran una vez: empiezan cerrados.
+            CollapsibleSection(
+                "Campos dinamicos de Clientes",
+                primaryColor,
+                open = dynamicFieldsOpen,
+                onToggle = { dynamicFieldsOpen = !dynamicFieldsOpen },
+                subtitle = "Campos extra de la ficha de todos los clientes",
+            ) {
+                OutlinedTextField(newFieldKey, { newFieldKey = it }, label = { Text("Clave del campo, ej: direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(newFieldLabel, { newFieldLabel = it }, label = { Text("Etiqueta, ej: Direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = newFieldRequired, onCheckedChange = { newFieldRequired = it })
+                    Text("Requerido")
+                }
+                Button(
+                    enabled = !loading && newFieldKey.isNotBlank() && newFieldLabel.isNotBlank(),
+                    onClick = {
+                        val (activeServerUrl, token, companyCode) = activeContext() ?: return@Button
+                        loading = true
+                        scope.launch {
+                            try {
+                                ModuleApi(activeServerUrl).use { api ->
+                                    api.createCustomerField(token, companyCode, CreateCustomerFieldRequest(newFieldKey, newFieldLabel, "text", required = newFieldRequired))
+                                }
+                                newFieldKey = ""
+                                newFieldLabel = ""
+                                newFieldRequired = false
+                                message = "Campo dinamico creado."
+                                loadAll()
+                            } catch (exception: ModuleException) {
+                                error = exception.message
+                            } finally {
+                                loading = false
+                            }
+                        }
+                    },
+                    colors = accentButtonColors(),
+                ) { Text("Agregar campo") }
+            }
+        }
+        message?.let { text -> item { Text(text, color = AppTheme.colors.success) } }
+        error?.let { text -> item { Text(text, color = AppTheme.colors.danger) } }
+        item { Text("Clientes", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText) }
+        if (customers.isEmpty()) {
+            item { Text("Aun no hay clientes.", color = AppTheme.colors.muted) }
+        } else {
+            items(customers, key = { it.id }) { customer ->
+                CustomerRow(
+                    customer = customer,
+                    secondaryButtonColors = secondaryButtonColors,
+                    dangerButtonColors = dangerButtonColors,
+                    onEdit = onEditCustomer,
+                    onDelete = onDeleteCustomer,
+                    onProfile = onCustomerProfile,
+                )
+            }
+        }
+        item { Spacer(modifier = Modifier.height(8.dp)) }
+        item {
+            Button(onClick = onReturnToDashboard, colors = accentButtonColors()) { Text("Volver al panel") }
         }
     }
     val profileId = profileCustomerId
@@ -498,6 +532,28 @@ private fun CustomerServerDrivenContent(
                 loadAll()
             },
         )
+    }
+}
+
+@Composable
+private fun CustomerRow(
+    customer: CustomerResponse,
+    secondaryButtonColors: ButtonColors,
+    dangerButtonColors: ButtonColors,
+    onEdit: (CustomerResponse) -> Unit,
+    onDelete: (String) -> Unit,
+    onProfile: (String) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth().background(AppTheme.colors.surfaceAlt, MaterialTheme.shapes.small).padding(10.dp)) {
+        Text(listOf(customer.displayName, customer.primaryEmail, customer.primaryPhone).filter { it.isNotBlank() }.joinToString(" - ") + if (customer.customerType != "general") " (${customer.customerType})" else "", color = AppTheme.colors.text, fontWeight = FontWeight.SemiBold)
+        if (customer.customerCode.isNotBlank()) {
+            CopyableCode(label = "Codigo de cliente", code = customer.customerCode)
+        }
+        androidx.compose.foundation.layout.Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = { onEdit(customer) }, colors = secondaryButtonColors) { Text("Editar") }
+            Button(onClick = { onDelete(customer.id) }, colors = dangerButtonColors) { Text("Eliminar") }
+            Button(onClick = { onProfile(customer.id) }, colors = secondaryButtonColors) { Text("Ficha") }
+        }
     }
 }
 

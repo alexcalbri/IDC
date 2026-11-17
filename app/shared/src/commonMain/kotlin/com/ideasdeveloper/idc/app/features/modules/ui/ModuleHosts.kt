@@ -31,6 +31,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -161,41 +162,49 @@ fun NativeModuleHost(
 
     LaunchedEffect(ui.entry, context) { execute(initial ?: UiNavigate(ui.home)) }
 
-    val colors = ModuleColors.from(AppTheme.colors)
-    val renderContext = ModuleRenderContext(
-        colors = colors,
-        busy = busy,
-        formValue = { formId, key -> forms[formId]?.get(key).orEmpty() },
-        setFormValue = { formId, key, value -> forms = forms + (formId to (forms[formId].orEmpty() + (key to value))) },
-        onAction = { execute(it) },
-        loadImage = { url -> ModuleImageCache.load(context, url) },
-        suggest = { route, params ->
-            val api = ModuleApi(context.serverUrl)
-            try {
-                api.suggestions(context.accessToken, context.companyCode, route, params)
-            } finally {
-                api.close()
-            }
-        },
-        uploadFile = { route, file ->
-            val api = ModuleApi(context.serverUrl)
-            try {
-                api.upload(context.accessToken, context.companyCode, route, file.name, file.path, file.mimeType, file.bytes ?: ByteArray(0))
-            } finally {
-                api.close()
-            }
-        },
-        downloadFile = { route, file ->
-            val api = ModuleApi(context.serverUrl)
-            try {
-                saveBinaryFile(file.name, api.downloadFile(context.accessToken, context.companyCode, route, file.id), "application/octet-stream")
-            } catch (exception: ModuleException) {
-                exception.message ?: "No se pudo descargar ${file.name}."
-            } finally {
-                api.close()
-            }
-        },
-    )
+    val appColors = AppTheme.colors
+    val colors = remember(appColors) { ModuleColors.from(appColors) }
+    // execute() es una funcion local que cambia en cada recomposicion: las lambdas estables del contexto
+    // la llaman a traves de este estado para no quedarse con una version vieja.
+    val currentExecute by rememberUpdatedState<(UiAction) -> Unit> { action -> execute(action) }
+    // Se recrea solo si cambia algo que el contexto expone; las lambdas leen `forms` al ejecutarse, asi que
+    // quienes llaman a formValue desde la composicion siguen observando los cambios.
+    val renderContext = remember(colors, busy, context, ui.entry) {
+        ModuleRenderContext(
+            colors = colors,
+            busy = busy,
+            formValue = { formId, key -> forms[formId]?.get(key).orEmpty() },
+            setFormValue = { formId, key, value -> forms = forms + (formId to (forms[formId].orEmpty() + (key to value))) },
+            onAction = { currentExecute(it) },
+            loadImage = { url -> ModuleImageCache.load(context, url) },
+            suggest = { route, params ->
+                val api = ModuleApi(context.serverUrl)
+                try {
+                    api.suggestions(context.accessToken, context.companyCode, route, params)
+                } finally {
+                    api.close()
+                }
+            },
+            uploadFile = { route, file ->
+                val api = ModuleApi(context.serverUrl)
+                try {
+                    api.upload(context.accessToken, context.companyCode, route, file.name, file.path, file.mimeType, file.bytes ?: ByteArray(0))
+                } finally {
+                    api.close()
+                }
+            },
+            downloadFile = { route, file ->
+                val api = ModuleApi(context.serverUrl)
+                try {
+                    saveBinaryFile(file.name, api.downloadFile(context.accessToken, context.companyCode, route, file.id), "application/octet-stream")
+                } catch (exception: ModuleException) {
+                    exception.message ?: "No se pudo descargar ${file.name}."
+                } finally {
+                    api.close()
+                }
+            },
+        )
+    }
 
     ModuleScreenLayout(
         screen = screen,

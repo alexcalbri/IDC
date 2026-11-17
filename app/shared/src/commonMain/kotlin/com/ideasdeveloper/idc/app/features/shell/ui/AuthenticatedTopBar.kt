@@ -24,10 +24,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -51,7 +51,7 @@ fun AuthenticatedTopBar(
     var titleMenuExpanded by remember { mutableStateOf(false) }
     // Controla el menu de acciones y anima el icono cuando se abre.
     var menuExpanded by remember { mutableStateOf(false) }
-    val menuRotation by animateFloatAsState(
+    val menuRotation = animateFloatAsState(
         // Cerrado parte de 270 grados y al abrirse gira 90 grados mas.
         targetValue = if (menuExpanded) 360f else 270f,
         label = "authenticated-menu-rotation",
@@ -64,17 +64,17 @@ fun AuthenticatedTopBar(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Muestra el logo provisional de la empresa o servidor.
+        val logoBrush = remember(colors) {
+            Brush.radialGradient(
+                colors = listOf(colors.surface, colors.surfaceAlt),
+                center = Offset(24f, 24f),
+                radius = 30f,
+            )
+        }
         Box(
             modifier = Modifier
                 .size(48.dp)
-                .background(
-                    brush = Brush.radialGradient(
-                        colors = listOf(colors.surface, colors.surfaceAlt),
-                        center = Offset(24f, 24f),
-                        radius = 30f,
-                    ),
-                    shape = CircleShape,
-                )
+                .background(brush = logoBrush, shape = CircleShape)
         )
 
         Spacer(modifier = Modifier.width(14.dp))
@@ -125,10 +125,12 @@ fun AuthenticatedTopBar(
         }
 
         // Sobre el degradado, el circulo va del tono opuesto al texto para no restarle contraste.
-        val circleColor = if (colors.brandBackground) {
-            (if (colors.onScreen.wcagLuminance() > 0.5) Color.Black else Color.White).copy(alpha = 0.18f)
-        } else {
-            colors.onScreen.copy(alpha = 0.18f)
+        val circleColor = remember(colors) {
+            if (colors.brandBackground) {
+                (if (colors.onScreen.wcagLuminance() > 0.5) Color.Black else Color.White).copy(alpha = 0.18f)
+            } else {
+                colors.onScreen.copy(alpha = 0.18f)
+            }
         }
 
         // Centro de notificaciones: solo aparece con una sesion de empresa o del espacio del servidor.
@@ -142,7 +144,7 @@ fun AuthenticatedTopBar(
                 modifier = Modifier
                     .size(48.dp)
                     .background(circleColor, CircleShape)
-                    .rotate(menuRotation),
+                    .graphicsLayer { rotationZ = menuRotation.value },
             ) {
                 // Siempre "|||" girado (gira al abrirse) para no confundirse con la X de cerrar.
                 Text(

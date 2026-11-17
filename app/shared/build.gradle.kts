@@ -100,6 +100,11 @@ kotlin {
     }
 }
 
+composeCompiler {
+    // Los tipos de UI del core (com.ideasdeveloper.idc.ui.*) son inmutables pero viven en otro modulo.
+    stabilityConfigurationFiles.add(project.layout.projectDirectory.file("compose-stability.conf"))
+}
+
 dependencies {
     androidRuntimeClasspath(libs.compose.uiTooling)
 }
