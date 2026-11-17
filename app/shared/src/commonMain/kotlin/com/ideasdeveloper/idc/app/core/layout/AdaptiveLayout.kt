@@ -1,6 +1,8 @@
 package com.ideasdeveloper.idc.app.core.layout
 
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.runtime.Composable
@@ -32,6 +34,53 @@ object ContentWidth {
     val Form = 640.dp
     val Content = 880.dp
     val Wide = 1120.dp
+    // Pantallas de listas y tarjetas: usan casi todo el ancho de escritorio.
+    val Max = 1600.dp
+}
+
+/**
+ * Cuadricula adaptable: el numero de columnas sale del ancho disponible y de [minItemWidth]. Cada hijo
+ * directo de [content] es una celda; las filas toman el alto del hijo mas alto y la ultima fila
+ * incompleta no estira sus celdas. Con una sola columna se apila como una Column normal.
+ */
+@Composable
+fun AdaptiveGrid(
+    modifier: Modifier = Modifier,
+    minItemWidth: Dp = 360.dp,
+    gap: Dp = 12.dp,
+    // Iguala el alto de las celdas de una fila con medidas intrinsecas. Desactivalo si alguna celda
+    // contiene BoxWithConstraints, listas perezosas o scroll (no admiten medidas intrinsecas).
+    equalHeight: Boolean = true,
+    content: @Composable () -> Unit,
+) {
+    Layout(content = content, modifier = modifier) { measurables, constraints ->
+        val gapPx = gap.roundToPx()
+        // Sin ancho acotado (p. ej. dentro de un scroll horizontal) se usa una columna de minItemWidth.
+        val maxWidth = if (constraints.hasBoundedWidth) constraints.maxWidth else minItemWidth.roundToPx()
+        val columns = ((maxWidth + gapPx) / (minItemWidth.roundToPx() + gapPx)).coerceAtLeast(1)
+        val cellWidth = ((maxWidth - gapPx * (columns - 1)) / columns).coerceAtLeast(0)
+        val rows = measurables.chunked(columns)
+        val placeables = rows.map { row ->
+            // Con una sola celda en la fila no hace falta igualar: se evita medir dos veces.
+            if (equalHeight && row.size > 1) {
+                // El alto de la fila es el del hijo mas alto (intrinseco); asi las celdas quedan iguales.
+                val rowHeight = row.maxOf { it.maxIntrinsicHeight(cellWidth) }
+                row.map { it.measure(Constraints.fixed(cellWidth, rowHeight)) } to rowHeight
+            } else {
+                // Cada celda conserva su alto; la fila toma el de la mas alta.
+                val measured = row.map { it.measure(Constraints(minWidth = cellWidth, maxWidth = cellWidth)) }
+                measured to measured.maxOf { it.height }
+            }
+        }
+        val height = placeables.sumOf { it.second } + gapPx * (placeables.size - 1).coerceAtLeast(0)
+        layout(maxWidth.coerceIn(constraints.minWidth, constraints.maxWidth), height.coerceIn(constraints.minHeight, constraints.maxHeight)) {
+            var y = 0
+            placeables.forEach { (row, rowHeight) ->
+                row.forEachIndexed { index, placeable -> placeable.placeRelative(index * (cellWidth + gapPx), y) }
+                y += rowHeight + gapPx
+            }
+        }
+    }
 }
 
 private val LocalWidthClass = staticCompositionLocalOf { WidthClass.Compact }

@@ -35,9 +35,9 @@ object CrmImportParse {
         "details" to "Detalles",
         "note" to "Nota",
         "followUpOn" to "Proximo seguimiento",
-        "targetStart" to "Fecha de inicio",
-        "targetEnd" to "Fecha de fin",
-        "dates" to "Rango de fechas (inicio - fin)",
+        "targetStart" to "Fecha de ingreso (campo de estadia)",
+        "targetEnd" to "Fecha de salida (campo de estadia)",
+        "dates" to "Rango de fechas (ingreso - salida)",
         "estimatedValue" to "Valor estimado",
         "createdAt" to "Fecha de creacion",
     )

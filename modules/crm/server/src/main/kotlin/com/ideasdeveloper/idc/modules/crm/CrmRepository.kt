@@ -322,7 +322,9 @@ object CrmRepository {
      * The customer keeps its data; only an email or phone it did not have yet is added. Without a
      * match a new prospect customer is created in Clientes.
      */
-    fun createLead(tenant: Connection, input: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID? = null, fields: List<CrmField> = emptyList()): UUID = transaction(tenant) {
+    fun createLead(tenant: Connection, entered: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID? = null, fields: List<CrmField> = emptyList()): UUID = transaction(tenant) {
+        // target_start and target_end are copied from the mapped date fields (empty without mapping).
+        val input = withStayDates(tenant, entered, JsonObject(emptyMap()), fields)
         val existing = chosenCustomerId?.takeIf { activeCustomer(tenant, it) } ?: matchCustomer(tenant, input.email, input.phone)
         val customerId = existing?.also { CrmInbox.fillMissingContact(tenant, it, input.email, input.phone) } ?: UUID.randomUUID().also { id ->
             tenant.prepareStatement(
@@ -430,13 +432,14 @@ object CrmRepository {
     fun updateLead(
         tenant: Connection,
         lead: CrmLead,
-        input: CrmLeadInput,
+        entered: CrmLeadInput,
         stages: List<CrmStage>,
         names: CrmNames,
         actor: CrmActor,
         fields: List<CrmField> = emptyList(),
         ownersBefore: List<UUID>? = null,
     ): CrmAssignees.Change {
+        val input = withStayDates(tenant, entered, lead.customFields, fields)
         var ownersChange = CrmAssignees.Change(emptyList(), emptyList())
         transaction(tenant) {
         tenant.prepareStatement(
@@ -511,8 +514,7 @@ object CrmRepository {
             // Long texts would flood the history: only say they changed.
             if (lead.message != input.message) add("Mensaje modificado")
             if (lead.details != input.details) add("Detalles modificados")
-            compare("Fecha de inicio", lead.targetStart, input.targetStart)
-            compare("Fecha de fin", lead.targetEnd, input.targetEnd)
+            // The dates are custom fields now: their changes are listed with the label of the field (CrmFields.changes).
             compare("Valor estimado", lead.estimatedValue?.stripTrailingZeros()?.toPlainString(), input.estimatedValue?.stripTrailingZeros()?.toPlainString())
             compare("Seguimiento", lead.followUpOn, input.followUpOn)
         }
@@ -734,6 +736,16 @@ object CrmRepository {
             insert.setString(8, actor.name)
             insert.executeUpdate()
         }
+    }
+
+    /**
+     * [input] with the internal copy of the dates (target_start, target_end) taken from the mapped custom fields of what the
+     * lead will have after saving ([stored] + the custom values sent). Without mapping both are empty. Throws when the end is
+     * before the start.
+     */
+    fun withStayDates(tenant: Connection, input: CrmLeadInput, stored: JsonObject, fields: List<CrmField> = emptyList()): CrmLeadInput {
+        val known = fields.ifEmpty { CrmFields.all(tenant) }
+        return CrmStay.withDates(input, CrmStay.load(tenant), known, stored)
     }
 
     private fun leadValues(input: CrmLeadInput): List<Any?> = listOf(

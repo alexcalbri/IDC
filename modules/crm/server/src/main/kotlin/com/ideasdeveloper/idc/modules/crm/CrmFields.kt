@@ -46,6 +46,8 @@ data class CrmField(
     val multiple: kotlin.Boolean = false,
     val required: kotlin.Boolean = false,
     val position: Int = 0,
+    // Section of the lead form the field shows in (crm_field_sections); null: "Campos personalizados".
+    val sectionId: UUID? = null,
 )
 
 data class CrmFieldInput(
@@ -55,6 +57,7 @@ data class CrmFieldInput(
     val multiple: kotlin.Boolean,
     val required: kotlin.Boolean,
     val position: Int,
+    val sectionId: UUID? = null,
 )
 
 object CrmFields {
@@ -68,7 +71,7 @@ object CrmFields {
     // ---- Definitions ----
 
     fun all(tenant: Connection): List<CrmField> = tenant.prepareStatement(
-        "SELECT id, field_key, label, field_type, options::text, multiple, required, position FROM crm_field_definitions ORDER BY position, created_at"
+        "SELECT id, field_key, label, field_type, options::text, multiple, required, position, section_id FROM crm_field_definitions ORDER BY position, created_at"
     ).use { query ->
         query.executeQuery().use { rows ->
             buildList {
@@ -78,7 +81,7 @@ object CrmFields {
                         CrmField(
                             rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3), type,
                             Json.parseToJsonElement(rows.getString(5)).jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull },
-                            rows.getBoolean(6), rows.getBoolean(7), rows.getInt(8),
+                            rows.getBoolean(6), rows.getBoolean(7), rows.getInt(8), rows.getObject(9, UUID::class.java),
                         )
                     )
                 }
@@ -92,9 +95,9 @@ object CrmFields {
         val options = JsonArray(input.options.map { JsonPrimitive(it) }).toString()
         if (id == null) {
             if (existing.size >= MaxFields) throw CrmValidationException("El CRM admite hasta $MaxFields campos personalizados.")
-            val field = CrmField(UUID.randomUUID(), uniqueKey(input.label, existing.map { it.key }.toSet()), input.label, input.type, input.options, input.multiple, input.required, input.position)
+            val field = CrmField(UUID.randomUUID(), uniqueKey(input.label, existing.map { it.key }.toSet()), input.label, input.type, input.options, input.multiple, input.required, input.position, input.sectionId)
             tenant.prepareStatement(
-                "INSERT INTO crm_field_definitions (id, field_key, label, field_type, options, multiple, required, position) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?)"
+                "INSERT INTO crm_field_definitions (id, field_key, label, field_type, options, multiple, required, position, section_id) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?)"
             ).use { insert ->
                 insert.setObject(1, field.id)
                 insert.setString(2, field.key)
@@ -104,45 +107,55 @@ object CrmFields {
                 insert.setBoolean(6, field.multiple)
                 insert.setBoolean(7, field.required)
                 insert.setInt(8, field.position)
+                insert.setObject(9, field.sectionId)
                 insert.executeUpdate()
             }
             return field
         }
         val current = existing.firstOrNull { it.id == id } ?: throw CrmValidationException("Ese campo ya no existe.")
         tenant.prepareStatement(
-            "UPDATE crm_field_definitions SET label = ?, options = CAST(? AS jsonb), multiple = ?, required = ?, position = ? WHERE id = ?"
+            "UPDATE crm_field_definitions SET label = ?, options = CAST(? AS jsonb), multiple = ?, required = ?, position = ?, section_id = ? WHERE id = ?"
         ).use { update ->
             update.setString(1, input.label)
             update.setString(2, options)
             update.setBoolean(3, input.multiple)
             update.setBoolean(4, input.required)
             update.setInt(5, input.position)
-            update.setObject(6, id)
+            update.setObject(6, input.sectionId)
+            update.setObject(7, id)
             update.executeUpdate()
         }
-        return current.copy(label = input.label, options = input.options, multiple = input.multiple, required = input.required, position = input.position)
+        return current.copy(label = input.label, options = input.options, multiple = input.multiple, required = input.required, position = input.position, sectionId = input.sectionId)
     }
 
-    /** Deletes the field with its values in every lead (and its files). */
-    fun delete(tenant: Connection, field: CrmField) {
+    /** Deletes the field with its values in every lead (and its files). Returns how many leads lost their stay dates. */
+    fun delete(tenant: Connection, field: CrmField): Int {
         val autoCommit = tenant.autoCommit
         tenant.autoCommit = false
         try {
-            tenant.prepareStatement("UPDATE crm_leads SET custom_fields = custom_fields - ? WHERE jsonb_exists(custom_fields, ?)").use { update ->
-                update.setString(1, field.key)
-                update.setString(2, field.key)
-                update.executeUpdate()
-            }
-            // The stored files are deleted afterwards by the attachments job.
-            CrmAttachments.deleteField(tenant, field.key)
-            tenant.prepareStatement("DELETE FROM crm_field_definitions WHERE id = ?").use { it.setObject(1, field.id); it.executeUpdate() }
+            val lost = remove(tenant, field)
             tenant.commit()
+            return lost
         } catch (failure: Exception) {
             tenant.rollback()
             throw failure
         } finally {
             tenant.autoCommit = autoCommit
         }
+    }
+
+    /** [delete] without managing the transaction: for callers that already run inside one ("Mover a Clientes"). */
+    fun remove(tenant: Connection, field: CrmField): Int {
+        tenant.prepareStatement("UPDATE crm_leads SET custom_fields = custom_fields - ? WHERE jsonb_exists(custom_fields, ?)").use { update ->
+            update.setString(1, field.key)
+            update.setString(2, field.key)
+            update.executeUpdate()
+        }
+        // The stored files are deleted afterwards by the attachments job.
+        CrmAttachments.deleteField(tenant, field.key)
+        tenant.prepareStatement("DELETE FROM crm_field_definitions WHERE id = ?").use { it.setObject(1, field.id); it.executeUpdate() }
+        // A date field that was the check-in or check-out leaves the mapping and the internal copy of the dates.
+        return CrmStay.fieldRemoved(tenant, field.key)
     }
 
     // "Fecha de firma" -> cf_fecha_de_firma (cf_fecha_de_firma_2 when taken).
@@ -158,7 +171,7 @@ object CrmFields {
     }
 
     /** Reads the field form of Configuracion. [editing] keeps its type. */
-    fun parseDefinition(values: Map<String, String>, editing: CrmField?): CrmFieldInput {
+    fun parseDefinition(values: Map<String, String>, editing: CrmField?, sections: List<CrmFieldSection> = emptyList()): CrmFieldInput {
         val label = values["label"].orEmpty().trim()
         if (label.isEmpty()) throw CrmValidationException("Escribe el nombre del campo.")
         if (label.length > 80) throw CrmValidationException("El nombre admite hasta 80 caracteres.")
@@ -171,6 +184,10 @@ object CrmFields {
         options.firstOrNull { it.length > 120 }?.let { throw CrmValidationException("Cada opcion admite hasta 120 caracteres.") }
         val position = values["position"].orEmpty().trim().ifEmpty { "0" }.toIntOrNull()?.takeIf { it in 0..999 }
             ?: throw CrmValidationException("La posicion debe ser un numero de 0 a 999.")
+        // "section" is the name of a section; empty or "Campos personalizados": no section.
+        val sectionName = values["section"].orEmpty().trim()
+        val section = if (sectionName.isEmpty() || sectionName == Section) null
+            else sections.firstOrNull { it.name == sectionName } ?: throw CrmValidationException("Esa seccion ya no existe.")
         return CrmFieldInput(
             label = label,
             type = type,
@@ -178,6 +195,7 @@ object CrmFields {
             multiple = type == CrmFieldType.Dropdown && values["multiple"] == "true",
             required = type != CrmFieldType.Boolean && values["required"] == "true",
             position = position,
+            sectionId = section?.id,
         )
     }
 

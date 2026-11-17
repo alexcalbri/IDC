@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -107,7 +108,7 @@ fun ServerStaffScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(bottom = 16.dp)
-                .contentWidth(ContentWidth.Content, 0.92f),
+                .contentWidth(ContentWidth.Max, 0.92f),
         ) {
             Surface(
                 modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
@@ -147,6 +148,11 @@ fun ServerStaffScreen(
                             colors = accentButtonColors(),
                         ) { Text("Crear empresa del servidor") }
                     } else {
+                        // El formulario de la empresa conserva un ancho legible aunque el panel sea amplio.
+                        Column(
+                            modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
                         Text("Datos de la empresa", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
                         CompanyProfileFields(
                             name = name,
@@ -202,6 +208,7 @@ fun ServerStaffScreen(
                                 "Solo ve los modulos para los que tiene permiso. Activa modulos con \"Usar en el servidor\" en Modulos del servidor.",
                             color = AppTheme.colors.muted,
                         )
+                        }
                         CompanyUsersSection(
                             serverUrl = serverUrl,
                             accessToken = session.accessToken,

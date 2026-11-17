@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.app.features.company.ui
 import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
 import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.idc.app.core.layout.ContentWidth
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveGrid
 import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -148,7 +150,7 @@ fun ServerModuleManagementScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(bottom = 16.dp)
-                .contentWidth(ContentWidth.Content, 0.92f),
+                .contentWidth(ContentWidth.Max, 0.92f),
         ) {
             Surface(
                 modifier = Modifier
@@ -161,6 +163,11 @@ fun ServerModuleManagementScreen(
                     modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    // El formulario del repositorio se queda en un ancho legible; las tarjetas usan todo el ancho.
+                    Column(
+                        modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
                     Text("Modulos instalados", style = MaterialTheme.typography.titleLarge, color = AppTheme.colors.accentText)
                     Text("Repositorio de modulos", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
                     OutlinedTextField(
@@ -218,7 +225,9 @@ fun ServerModuleManagementScreen(
                     if (isLoading) {
                         Text("Cargando modulos...", color = AppTheme.colors.muted)
                     }
+                    }
 
+                    AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 360.dp, gap = 12.dp) {
                     modules.forEach { module ->
                         ServerModuleRow(
                             module = module,
@@ -316,6 +325,7 @@ fun ServerModuleManagementScreen(
                                 }
                             },
                         )
+                    }
                     }
 
                     Spacer(modifier = Modifier.height(2.dp))

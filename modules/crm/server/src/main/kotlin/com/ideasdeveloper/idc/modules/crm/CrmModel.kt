@@ -221,7 +221,7 @@ object CrmForms {
      * interests off the interest is always empty.
      */
     fun parseLead(
-        values: Map<String, String>,
+        rawValues: Map<String, String>,
         stages: List<CrmStage>,
         interests: List<CrmInterest>,
         interestsEnabled: Boolean,
@@ -229,7 +229,12 @@ object CrmForms {
         fields: List<CrmField> = emptyList(),
         // Custom values the lead already has (editing), see CrmFields.parseValues.
         stored: JsonObject = JsonObject(emptyMap()),
+        // The date fields that are the check-in and check-out (Configuracion > Integraciones); none: no dates.
+        stay: CrmStayMapping = CrmStayMapping.None,
     ): CrmLeadInput {
+        // The old names targetStart and targetEnd (agents) are moved to the mapped fields.
+        val mapping = CrmStay.effective(stay, fields)
+        val values = CrmStay.withAliases(rawValues, mapping)
         fun text(key: String, max: Int, label: String): String {
             val value = values[key].orEmpty().trim()
             if (value.length > max) throw CrmValidationException("$label admite hasta $max caracteres.")
@@ -252,11 +257,9 @@ object CrmForms {
         val owners = UiFieldValues.options(values["owner"].orEmpty()).filter { it.isNotBlank() && it != Unassigned }.distinct().map { ownerName ->
             users.firstOrNull { it.name == ownerName } ?: throw CrmValidationException("Ese usuario ya no puede tener leads.")
         }
-        val targetStart = date(values["targetStart"], "La fecha de inicio")
-        val targetEnd = date(values["targetEnd"], "La fecha de fin")
-        if (targetStart != null && targetEnd != null && targetEnd.isBefore(targetStart)) {
-            throw CrmValidationException("La fecha de fin no puede ser anterior a la de inicio.")
-        }
+        val custom = CrmFields.parseValues(values, fields, stored)
+        // The internal copy of the dates comes from the mapped fields; the end cannot be before the start.
+        val (targetStart, targetEnd) = CrmStay.datesAfterSave(mapping, fields, stored, custom)
         return CrmLeadInput(
             name = name,
             email = email,
@@ -272,7 +275,7 @@ object CrmForms {
             targetEnd = targetEnd,
             estimatedValue = money(values["estimatedValue"]),
             followUpOn = date(values["followUpOn"], "La fecha de seguimiento"),
-            custom = CrmFields.parseValues(values, fields, stored),
+            custom = custom,
             files = CrmFields.parseFiles(values, fields),
         )
     }

@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.app.features.dashboard.ui
 
 import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveGrid
 import com.ideasdeveloper.idc.app.core.layout.ContentWidth
 import com.ideasdeveloper.idc.app.core.layout.contentWidth
 import androidx.compose.foundation.layout.IntrinsicSize
@@ -180,7 +181,8 @@ fun DashboardScreen(
 
         Column(
             modifier = Modifier
-                .contentWidth(ContentWidth.Content, 0.9f)
+                .contentWidth(ContentWidth.Max, 0.9f)
+                .padding(horizontal = if (AdaptiveLayout.roomy) AdaptiveLayout.screenPadding else 0.dp)
                 .align(Alignment.Center)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
@@ -255,27 +257,18 @@ fun DashboardScreen(
                         add(DashboardCardData(module.title, module.description, module.iconText, moduleId))
                     }
             }
-            val columns = if (AdaptiveLayout.roomy) 2 else 1
             val gap = if (AdaptiveLayout.roomy) AdaptiveLayout.gap else 12.dp
-            cards.chunked(columns).forEach { row ->
-                Row(
-                    modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                    horizontalArrangement = Arrangement.spacedBy(gap),
-                ) {
-                    row.forEach { card ->
-                        DashboardActionCard(
-                            title = card.title,
-                            description = card.description,
-                            iconText = card.iconText,
-                            primaryColor = primaryColor,
-                            onClick = { onNavigateTo(NavRoute.Module(card.moduleId)) },
-                            modifier = Modifier.weight(1f).fillMaxHeight(),
-                        )
-                    }
-                    // Completa la ultima fila para que la tarjeta suelta no se estire.
-                    repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
+            AdaptiveGrid(minItemWidth = 320.dp, gap = gap, modifier = Modifier.fillMaxWidth()) {
+                cards.forEach { card ->
+                    DashboardActionCard(
+                        title = card.title,
+                        description = card.description,
+                        iconText = card.iconText,
+                        primaryColor = primaryColor,
+                        onClick = { onNavigateTo(NavRoute.Module(card.moduleId)) },
+                        modifier = Modifier.fillMaxSize(),
+                    )
                 }
-                Spacer(modifier = Modifier.height(gap))
             }
 
             Spacer(modifier = Modifier.height(40.dp))

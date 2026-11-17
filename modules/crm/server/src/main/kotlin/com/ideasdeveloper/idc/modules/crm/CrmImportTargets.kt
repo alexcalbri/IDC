@@ -76,7 +76,7 @@ object CrmImportTargets {
     }
 
     // Clientes field type (ClientesModule.fieldTypes) for a CRM field type.
-    private fun customerType(type: CrmFieldType, multiple: Boolean): String = when (type) {
+    fun customerType(type: CrmFieldType, multiple: Boolean): String = when (type) {
         CrmFieldType.Textarea -> "textarea"
         CrmFieldType.Number -> "number"
         CrmFieldType.Email -> "email"
@@ -256,6 +256,8 @@ object CrmImportTargets {
                     update.setObject(2, leadId)
                     update.executeUpdate()
                 }
+                // A column mapped straight to a stay date field also updates the internal copy of the dates.
+                CrmStay.resync(tenant, leadId)
             }
         }
         if (customerValues.isNotEmpty()) {

@@ -601,6 +601,37 @@ The renderer has no row selection, so it is a form with one checkbox field per l
   with `customFields` in `crm_create_lead` / `crm_update_lead` (by name or key); files are only
   attached from the app.
 
+## Field sections, stay dates and "Mover a Clientes" (V019, 0.22.0)
+
+- **Sections** (`crm_field_sections`: id, name, position; `crm_field_definitions.section_id`, nullable). In *Configuracion > General* the
+  company creates, renames, orders and deletes sections and picks the section of each custom field. The lead form and detail draw
+  each section with its fields (sections by position, fields by position inside; `CrmFieldSections.ordered`), and the fields without a
+  section go last in **Campos personalizados**. Deleting a section keeps its fields (they become unsectioned). The fixed section
+  "Lo que busca" is gone; **Valor estimado** is a fixed field of **Seguimiento**. Names of the fixed sections cannot be reused.
+- **Stay dates are custom fields.** `crm_settings.stay_start_field` / `stay_end_field` hold the keys of the date fields that count as
+  check-in and check-out, chosen in *Configuracion > Integraciones > Fechas de estadia* (also shown in the Cloudbeds block). `crm_leads.target_start`
+  and `target_end` stay as an **internal copy** that the repository fills from the mapped fields on every save of a lead (form, MCP,
+  import, `CrmStay.resync`) and that is empty without mapping; the hotspot (`HotspotCrmPipeline`), the exit automation (`CrmExit`),
+  `restoreSurvives`, the Cloudbeds default dates and the `{checkin}` / `{checkout}` template variables keep reading it unchanged.
+  The end must be equal or after the start (validated in the form, the MCP and the import). Changing the mapping, or deleting or moving
+  the mapped field, refreshes the copy of every lead. The pipeline card shows each mapped date with the label of its field.
+- **Migration V019** (per company, applied with the module update): creates the sections table and `section_id`, relaxes the key check of
+  `crm_field_definitions` to allow `fecha_ingreso` / `fecha_salida` (and `_2`, `_3`... when the key is taken), and, **only in companies that
+  have leads with `target_start` or `target_end`**, creates the section "Datos de la reserva" with the date fields "Fecha de ingreso" (`fecha_ingreso`)
+  and "Fecha de salida" (`fecha_salida`) (an existing date field with that key is reused), copies the dates into `custom_fields` (never overwriting a
+  value already there) and sets the mapping. Companies without dates get nothing. The history of a date change now reads "Fecha de ingreso: antes -> despues".
+- **Imports:** the columns for check-in/check-out (and the range column) write into the mapped fields; empty dates never erase. Without mapping
+  the dates are ignored and the report of the row says so.
+- **"Mover a Clientes"** (button on each field of *Campos personalizados*, with confirmation; needs `crm.settings` **and** `clientes.fields.manage`):
+  in one transaction it creates the field in `customer_field_definitions` with the same key, label and an equivalent type (text, textarea, number,
+  email, phone, date, boolean, select/multi_select; url becomes text), copies each lead's value into `customers.flexible_attributes` without
+  replacing what the customer already has (a customer with several leads takes the most recent lead that has a value), and deletes the field and
+  its values from the CRM. A key that already exists in Clientes with another type cancels the move with a message; with the same type it is reused.
+  Files fields cannot be moved. Moving a mapped date field also clears the mapping.
+- **Agents:** `targetStart` and `targetEnd` of `crm_create_lead` / `crm_update_lead` are aliases that write in the mapped fields (error if none is
+  chosen; send them in `customFields` instead if you prefer). `crm_list_pipeline` returns each field's `section` and `stayDates` (the labels of the
+  mapped fields); `crm_get_lead` still returns `targetStart` / `targetEnd` (the copy) besides `customFields`.
+
 ## Customer history (0.15.0)
 
 When a lead moves to a won stage (from the board, a bulk action, a sold or booked item or an agent)

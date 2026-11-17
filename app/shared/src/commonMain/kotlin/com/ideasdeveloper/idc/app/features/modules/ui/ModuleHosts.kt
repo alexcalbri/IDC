@@ -1,5 +1,7 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
+import com.ideasdeveloper.idc.app.core.layout.StickyScrollbarHost
+import com.ideasdeveloper.idc.app.core.layout.showsHorizontalScrollbar
 import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import com.ideasdeveloper.idc.app.core.theme.webThemeQuery
@@ -247,10 +249,18 @@ fun ModuleScreenLayout(
     BoxWithConstraints(modifier = modifier.fillMaxSize().background(colors.background)) {
         val wide = maxWidth >= 840.dp
         val navigation = screen?.navigation
+        val verticalState = rememberScrollState()
         val content: @Composable (Modifier) -> Unit = { contentModifier ->
+            // El host va fuera del scroll vertical: la barra horizontal del pipeline queda pegada abajo.
+            StickyScrollbarHost(verticalState, modifier = contentModifier) {
             Column(
                 verticalArrangement = Arrangement.spacedBy(16.dp),
-                modifier = contentModifier.verticalScroll(rememberScrollState()).padding(if (wide) 24.dp else 16.dp),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(verticalState)
+                    .padding(if (wide) 24.dp else 16.dp)
+                    // Deja sitio a la barra superpuesta para que no tape el final del contenido.
+                    .padding(bottom = if (showsHorizontalScrollbar) 20.dp else 0.dp),
             ) {
                 if (context.busy) LinearProgressIndicator(color = colors.accent, trackColor = colors.surfaceAlt, modifier = Modifier.fillMaxWidth())
                 screen?.notice?.let { ModuleNoticeBanner(it, colors) }
@@ -265,6 +275,7 @@ fun ModuleScreenLayout(
                     null -> if (context.busy) CircularProgressIndicator(color = colors.accent)
                     else -> screen.body.forEach { ModuleNode(it, context) }
                 }
+            }
             }
         }
         when {

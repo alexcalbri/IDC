@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -199,7 +200,7 @@ fun CompanyManagementScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(bottom = 16.dp)
-                .contentWidth(ContentWidth.Content, 0.92f),
+                .contentWidth(ContentWidth.Max, 0.92f),
         ) {
             Surface(
                 modifier = Modifier
@@ -212,6 +213,11 @@ fun CompanyManagementScreen(
                     modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    // Formulario y copias en ancho legible; los usuarios de abajo usan la cuadricula.
+                    Column(
+                        modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
                     Text("Datos de empresa", style = MaterialTheme.typography.titleLarge, color = primaryCompose)
 
                     CompanyProfileFields(
@@ -346,6 +352,7 @@ fun CompanyManagementScreen(
                                 },
                             )
                         }
+                    }
                     }
 
                     CompanyUsersSection(

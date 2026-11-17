@@ -1,8 +1,11 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
 import com.ideasdeveloper.idc.app.core.theme.AppColors
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveGrid
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.idc.app.core.layout.HorizontalScrollArea
 import com.ideasdeveloper.idc.app.core.ui.CopyableCode
+import com.ideasdeveloper.idc.app.core.ui.DateFieldPicker
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.foundation.BorderStroke
@@ -204,7 +207,7 @@ fun ModuleNode(node: UiNode, context: ModuleRenderContext) {
     when (node) {
         is UiText -> ModuleText(node, context.colors)
         is UiColumn -> Column(verticalArrangement = Arrangement.spacedBy(node.spacing.dp), modifier = Modifier.fillMaxWidth()) {
-            node.children.forEach { ModuleNode(it, context) }
+            ModuleChildren(node.children, node.spacing.dp, context)
         }
         is UiRow -> ModuleRow(node, context)
         is UiGrid -> ResponsiveGrid(node.children.size, node.minItemWidth.dp, node.spacing.dp) { index -> ModuleNode(node.children[index], context) }
@@ -226,6 +229,49 @@ fun ModuleNode(node: UiNode, context: ModuleRenderContext) {
         is UiTimeline -> ModuleTimeline(node, context.colors)
         // Piezas de un servidor mas nuevo: se omiten para no romper la pantalla.
         else -> Unit
+    }
+}
+
+// Tarjetas que pueden ir lado a lado: sin tablas, tableros, formularios ni graficos dentro.
+private fun isFlowCard(node: UiNode): Boolean =
+    node is UiCard && node.children.none { it.isWideNode() } && node.actions.none { it.isWideNode() }
+
+private fun UiNode.isWideNode(): Boolean = when (this) {
+    is UiTable, is UiBoard, is UiForm, is UiBarChart, is UiTimeline, is UiGrid, is UiImage -> true
+    is UiCard -> children.any { it.isWideNode() }
+    is UiColumn -> children.any { it.isWideNode() }
+    is UiRow -> children.any { it.isWideNode() }
+    else -> false
+}
+
+// Agrupa tarjetas consecutivas (se conserva el orden); el resto de nodos queda solo en su grupo.
+private fun groupFlowCards(children: List<UiNode>): List<List<UiNode>> {
+    val groups = ArrayList<MutableList<UiNode>>()
+    var lastWasCard = false
+    children.forEach { child ->
+        val card = isFlowCard(child)
+        if (card && lastWasCard) groups.last().add(child) else groups.add(mutableListOf(child))
+        lastWasCard = card
+    }
+    return groups
+}
+
+/**
+ * Hijos de una columna. En compacto se apilan como siempre; en ventanas medianas y amplias las
+ * tarjetas consecutivas se acomodan en una cuadricula si caben dos o mas columnas.
+ */
+@Composable
+private fun ModuleChildren(children: List<UiNode>, spacing: Dp, context: ModuleRenderContext) {
+    if (!AdaptiveLayout.roomy) {
+        children.forEach { ModuleNode(it, context) }
+        return
+    }
+    val groups = remember(children) { groupFlowCards(children) }
+    groups.forEach { group ->
+        if (group.size == 1) ModuleNode(group[0], context)
+        else AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 360.dp, gap = spacing, equalHeight = false) {
+            group.forEach { ModuleNode(it, context) }
+        }
     }
 }
 
@@ -998,11 +1044,31 @@ private fun ModuleField(
                     }
                 }
             }
+            field.type == "date" || field.type == "datetime" -> DateFieldPicker(
+                value = value,
+                onValueChange = onChange,
+                label = label,
+                withTime = field.type == "datetime",
+                enabled = enabled,
+                placeholder = field.placeholder.ifBlank { if (field.type == "datetime") "AAAA-MM-DDTHH:mm" else "AAAA-MM-DD" },
+                textFieldColors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = colors.text,
+                    unfocusedTextColor = colors.text,
+                    disabledTextColor = colors.muted,
+                    focusedBorderColor = colors.accentText,
+                    unfocusedBorderColor = colors.fieldBorder,
+                    focusedLabelColor = colors.accentText,
+                    unfocusedLabelColor = colors.muted,
+                    cursorColor = colors.accentText,
+                    focusedPlaceholderColor = colors.muted,
+                    unfocusedPlaceholderColor = colors.muted,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
             else -> Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 val fieldLabel: @Composable () -> Unit = { Text(label) }
                 val fieldPlaceholder: (@Composable () -> Unit)? = when {
                     field.placeholder.isNotBlank() -> ({ Text(field.placeholder) })
-                    field.type == "date" -> ({ Text("AAAA-MM-DD") })
                     field.type == "color" -> ({ Text("#RRGGBB") })
                     else -> null
                 }

@@ -675,7 +675,15 @@ object CrmImport {
         if (added.isNotEmpty()) {
             CrmRepository.addActivity(tenant, leadId, "owner", "Asignados desde la importacion: ${CrmAssignees.names(CrmNames(context.users, context.interests), added)}.", actor)
         }
-        val problems = CrmImportTargets.apply(tenant, leadId, values.crm, values.customer, context.crmFields, context.customerFields)
+        val problems = CrmImportTargets.apply(tenant, leadId, values.crm, values.customer, context.crmFields, context.customerFields) +
+            // The dates of the row go to the mapped stay fields (the check-in and check-out); without mapping they are ignored and reported.
+            listOfNotNull(
+                CrmStay.importDates(
+                    tenant, leadId,
+                    values.fields["targetStart"].orEmpty().ifEmpty { null }?.let { LocalDate.parse(it) },
+                    values.fields["targetEnd"].orEmpty().ifEmpty { null }?.let { LocalDate.parse(it) },
+                ),
+            )
         addNotes(tenant, leadId, values.notes)
         listings?.let { raw ->
             runCatching { json.parseToJsonElement(raw) }.getOrNull().arr().forEach { element ->
@@ -698,26 +706,19 @@ object CrmImport {
                 message = CASE WHEN ? = '' THEN message ELSE ? END,
                 details = CASE WHEN ? = '' THEN details ELSE ? END,
                 follow_up_on = COALESCE(?, follow_up_on),
-                target_start = COALESCE(?, target_start),
-                target_end = COALESCE(?, target_end),
                 estimated_value = COALESCE(?, estimated_value),
                 interest_id = COALESCE(?, interest_id),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = ?
             """.trimIndent()
         ).use { statement ->
-            val start = date("targetStart")
-            // An end before the start is dropped (the table refuses it).
-            val end = date("targetEnd")?.takeIf { start == null || !it.isBefore(start) }
             statement.setString(1, text("language")); statement.setString(2, text("language").take(40))
             statement.setString(3, text("message")); statement.setString(4, text("message").take(5000))
             statement.setString(5, text("details")); statement.setString(6, text("details").take(5000))
             statement.setObject(7, date("followUpOn"))
-            statement.setObject(8, start)
-            statement.setObject(9, end)
-            statement.setBigDecimal(10, text("estimatedValue").toBigDecimalOrNull()?.takeIf { it.signum() >= 0 && it < BigDecimal("1000000000000") }?.setScale(2, java.math.RoundingMode.HALF_UP))
-            statement.setObject(11, values.interestId)
-            statement.setObject(12, leadId)
+            statement.setBigDecimal(8, text("estimatedValue").toBigDecimalOrNull()?.takeIf { it.signum() >= 0 && it < BigDecimal("1000000000000") }?.setScale(2, java.math.RoundingMode.HALF_UP))
+            statement.setObject(9, values.interestId)
+            statement.setObject(10, leadId)
             statement.executeUpdate()
         }
         // On a new import of an existing lead the mapped stage wins, recorded in the stage history.

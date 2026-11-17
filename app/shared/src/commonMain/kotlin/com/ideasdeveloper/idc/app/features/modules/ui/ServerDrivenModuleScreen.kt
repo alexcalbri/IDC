@@ -28,7 +28,12 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
+import com.ideasdeveloper.idc.app.core.ui.DateFieldPicker
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -75,6 +80,17 @@ import com.ideasdeveloper.idc.ui.UiNavigate
 import com.ideasdeveloper.idc.ui.UiOpenModule
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+
+// Tipos de campo dinamico de Clientes que acepta el servidor (clave del servidor, nombre en pantalla).
+private val customerFieldTypes = listOf(
+    "text" to "Texto",
+    "textarea" to "Texto largo",
+    "number" to "Numero",
+    "date" to "Fecha",
+    "datetime" to "Fecha y hora",
+    "boolean" to "Si/No",
+)
 
 @Composable
 // Renderiza un modulo generico usando metadata servida por el backend.
@@ -196,8 +212,7 @@ fun ServerDrivenModuleScreen(
                 modifier = Modifier
                     .align(Alignment.TopCenter)
                     .fillMaxHeight()
-                    // widthIn antes de fillMaxWidth: al reves el limite no tiene efecto.
-                    .widthIn(max = ContentWidth.Wide + 240.dp)
+                    // Todo el ancho menos el margen: el pipeline muestra tantas etapas como quepan.
                     .fillMaxWidth()
                     .padding(
                         start = if (AdaptiveLayout.roomy) 12.dp else 16.dp,
@@ -237,7 +252,7 @@ fun ServerDrivenModuleScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(bottom = 16.dp)
-                .contentWidth(ContentWidth.Content, 0.9f),
+                .contentWidth(ContentWidth.Max, 0.9f),
         ) {
             // Clientes dibuja una lista larga: la LazyColumn hace el desplazamiento, sin scroll exterior anidado.
             val customersList = !loading && error == null && metadata != null && moduleId == "clientes"
@@ -307,9 +322,13 @@ private fun CustomerServerDrivenContent(
     var email by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
     var dynamicValues by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    // Claves que el usuario edito y valores originales del cliente (JSON intacto) para no corromper los que no toco.
+    var dynamicEdited by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var originalDynamic by remember { mutableStateOf(JsonObject(emptyMap())) }
     var newFieldKey by remember { mutableStateOf("") }
     var newFieldLabel by remember { mutableStateOf("") }
     var newFieldRequired by remember { mutableStateOf(false) }
+    var newFieldType by remember { mutableStateOf("text") }
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(false) }
@@ -349,14 +368,25 @@ private fun CustomerServerDrivenContent(
         email = ""
         phone = ""
         dynamicValues = emptyMap()
+        dynamicEdited = emptySet()
+        originalDynamic = JsonObject(emptyMap())
     }
 
-    fun request(): CreateCustomerRequest = CreateCustomerRequest(
-        displayName = name,
-        primaryEmail = email,
-        primaryPhone = phone,
-        dynamicFields = JsonObject(dynamicValues.mapValues { JsonPrimitive(it.value) }),
-    )
+    // El servidor reemplaza todos los campos dinamicos al editar: las claves que el usuario no toco
+    // se reenvian con su valor original (JSON intacto) y solo las editadas se codifican segun su tipo.
+    fun request(): CreateCustomerRequest {
+        val types = fields.associate { it.fieldKey to it.fieldType }
+        val result = originalDynamic.toMutableMap()
+        dynamicEdited.forEach { key ->
+            val text = dynamicValues[key].orEmpty()
+            result[key] = when (types[key]) {
+                "boolean" -> JsonPrimitive(text == "true")
+                "number" -> text.toLongOrNull()?.let { JsonPrimitive(it) } ?: text.toDoubleOrNull()?.let { JsonPrimitive(it) } ?: JsonPrimitive(text)
+                else -> JsonPrimitive(text)
+            }
+        }
+        return CreateCustomerRequest(displayName = name, primaryEmail = email, primaryPhone = phone, dynamicFields = JsonObject(result))
+    }
 
     LaunchedEffect(serverUrl, session?.accessToken, session?.companyCode) {
         loadAll()
@@ -387,7 +417,12 @@ private fun CustomerServerDrivenContent(
             name = customer.displayName
             email = customer.primaryEmail
             phone = customer.primaryPhone
-            dynamicValues = customer.dynamicFields.mapValues { it.value.toString().trim('"') }
+            originalDynamic = customer.dynamicFields
+            dynamicEdited = emptySet()
+            // Solo los primitivos se pueden editar como texto; arrays y objetos se muestran de solo lectura.
+            dynamicValues = customer.dynamicFields.mapNotNull { (key, element) ->
+                (element as? JsonPrimitive)?.let { key to (it.contentOrNull ?: "") }
+            }.toMap()
         }
     }
     // Fuera del item de la lista: si la seccion sale de pantalla y se descompone, sigue abierta o cerrada.
@@ -413,13 +448,44 @@ private fun CustomerServerDrivenContent(
                 OutlinedTextField(email, { email = it }, label = { Text("Correo") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(phone, { phone = it }, label = { Text("Telefono") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 fields.forEach { field ->
-                    OutlinedTextField(
-                        value = dynamicValues[field.fieldKey].orEmpty(),
-                        onValueChange = { value -> dynamicValues = dynamicValues + (field.fieldKey to value) },
-                        label = { Text(field.label + if (field.required) " *" else "") },
-                        singleLine = field.fieldType != "textarea",
-                        modifier = Modifier.fillMaxWidth(),
-                    )
+                    val fieldLabel = field.label + if (field.required) " *" else ""
+                    val fieldValue = dynamicValues[field.fieldKey].orEmpty()
+                    val update = { value: String ->
+                        dynamicValues = dynamicValues + (field.fieldKey to value)
+                        dynamicEdited = dynamicEdited + field.fieldKey
+                    }
+                    val original = originalDynamic[field.fieldKey]
+                    when {
+                        original != null && original !is JsonPrimitive -> {
+                            Text(field.label, color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
+                            Text(
+                                (original as? kotlinx.serialization.json.JsonArray)?.joinToString(", ") { (it as? JsonPrimitive)?.contentOrNull ?: it.toString() } ?: original.toString(),
+                                color = AppTheme.colors.text,
+                            )
+                        }
+                        else -> when (field.fieldType) {
+                        "date", "datetime" -> DateFieldPicker(
+                            value = fieldValue,
+                            onValueChange = update,
+                            label = fieldLabel,
+                            withTime = field.fieldType == "datetime",
+                            textFieldColors = OutlinedTextFieldDefaults.colors(),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        "boolean" -> androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
+                            Checkbox(checked = fieldValue == "true", onCheckedChange = { update(it.toString()) })
+                            Text(fieldLabel)
+                        }
+                        else -> OutlinedTextField(
+                            value = fieldValue,
+                            onValueChange = { value -> update(if (field.fieldType == "number") value.filter { it.isDigit() || it == '-' || it == '.' } else value) },
+                            label = { Text(fieldLabel) },
+                            singleLine = field.fieldType != "textarea",
+                            minLines = if (field.fieldType == "textarea") 3 else 1,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                        }
+                    }
                 }
                 Button(
                     enabled = !loading && name.isNotBlank(),
@@ -462,6 +528,23 @@ private fun CustomerServerDrivenContent(
             ) {
                 OutlinedTextField(newFieldKey, { newFieldKey = it }, label = { Text("Clave del campo, ej: direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 OutlinedTextField(newFieldLabel, { newFieldLabel = it }, label = { Text("Etiqueta, ej: Direccion") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                var typeMenuOpen by remember { mutableStateOf(false) }
+                Text("Tipo de dato", color = AppTheme.colors.muted, style = MaterialTheme.typography.labelMedium)
+                Box {
+                    OutlinedButton(onClick = { typeMenuOpen = true }, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            customerFieldTypes.firstOrNull { it.first == newFieldType }?.second ?: "Texto",
+                            color = AppTheme.colors.text,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text("v", color = AppTheme.colors.muted)
+                    }
+                    DropdownMenu(expanded = typeMenuOpen, onDismissRequest = { typeMenuOpen = false }) {
+                        customerFieldTypes.forEach { (type, name) ->
+                            DropdownMenuItem(text = { Text(name) }, onClick = { newFieldType = type; typeMenuOpen = false })
+                        }
+                    }
+                }
                 androidx.compose.foundation.layout.Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = newFieldRequired, onCheckedChange = { newFieldRequired = it })
                     Text("Requerido")
@@ -474,11 +557,12 @@ private fun CustomerServerDrivenContent(
                         scope.launch {
                             try {
                                 ModuleApi(activeServerUrl).use { api ->
-                                    api.createCustomerField(token, companyCode, CreateCustomerFieldRequest(newFieldKey, newFieldLabel, "text", required = newFieldRequired))
+                                    api.createCustomerField(token, companyCode, CreateCustomerFieldRequest(newFieldKey, newFieldLabel, newFieldType, required = newFieldRequired))
                                 }
                                 newFieldKey = ""
                                 newFieldLabel = ""
                                 newFieldRequired = false
+                                newFieldType = "text"
                                 message = "Campo dinamico creado."
                                 loadAll()
                             } catch (exception: ModuleException) {

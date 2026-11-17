@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveGrid
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -262,7 +264,7 @@ fun CompanyProvisioningScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(bottom = 16.dp)
-                .contentWidth(ContentWidth.Content, 0.92f),
+                .contentWidth(ContentWidth.Max, 0.92f),
         ) {
             Surface(
                 modifier = Modifier
@@ -275,6 +277,11 @@ fun CompanyProvisioningScreen(
                     modifier = Modifier.padding(AdaptiveLayout.screenPadding - 2.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    // El alta de empresa conserva un ancho de formulario; la lista de empresas usa la cuadricula.
+                    Column(
+                        modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp),
+                    ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -444,7 +451,9 @@ fun CompanyProvisioningScreen(
                     if (isRefreshing) {
                         Text("Cargando empresas...", color = AppTheme.colors.muted)
                     }
+                    }
 
+                    AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 420.dp, gap = 12.dp, equalHeight = false) {
                     companies.forEach { company ->
                         // Renderiza cada tenant administrable con acciones de estado, borrado y modulos.
                         CompanyModulesRow(
@@ -638,6 +647,7 @@ fun CompanyProvisioningScreen(
                                 }
                             },
                         )
+                    }
                     }
 
                     Spacer(modifier = Modifier.height(2.dp))

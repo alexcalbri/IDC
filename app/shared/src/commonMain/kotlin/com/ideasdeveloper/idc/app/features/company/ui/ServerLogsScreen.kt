@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveGrid
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
@@ -100,7 +101,7 @@ fun ServerLogsScreen(
             modifier = Modifier
                 .align(Alignment.Center)
                 .padding(bottom = 16.dp)
-                .contentWidth(ContentWidth.Wide, 0.94f),
+                .contentWidth(ContentWidth.Max, 0.94f),
         ) {
             Column(
                 modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(AdaptiveLayout.screenPadding - 2.dp),
@@ -121,6 +122,7 @@ fun ServerLogsScreen(
                 if (!loading && error == null && errors.isEmpty()) {
                     Text("No hay errores registrados desde el inicio del servidor.", color = colors.muted)
                 }
+                AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 480.dp, gap = 12.dp) {
                 errors.forEach { entry ->
                     Surface(
                         modifier = Modifier.fillMaxWidth(),
@@ -140,6 +142,7 @@ fun ServerLogsScreen(
                             }
                         }
                     }
+                }
                 }
             }
         }

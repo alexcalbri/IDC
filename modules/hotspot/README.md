@@ -26,7 +26,12 @@ for UniFi networks managed through the UniFi Site Manager cloud API (`api.ui.com
     The customer must belong to the database where the portal runs and have a
     lead in the selected stage. If that lead has `target_start` and/or
     `target_end`, access starts one day before `target_start` and ends after
-    `target_end` (using the server time zone). The configurable CRM check runs
+    `target_end` (using the server time zone). Since CRM 0.22.0 those two columns
+    are a copy of the date fields the company chooses in the CRM under
+    *Configuracion > Integraciones > Fechas de estadia* (check-in and check-out;
+    the CRM migration chooses "Fecha de ingreso" and "Fecha de salida" for companies
+    that already had dates). Without that mapping the leads have no dates and the
+    window is not limited by dates. The configurable CRM check runs
     daily at the selected time (default 07:00) or at the selected interval
     (default 60 minutes), and disconnects devices when the lead leaves the
     selected stage or its date window ends. Failed disconnections are retried

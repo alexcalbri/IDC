@@ -9,6 +9,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import com.ideasdeveloper.idc.app.core.layout.AdaptiveGrid
+import com.ideasdeveloper.idc.app.core.layout.ContentWidth
 import com.ideasdeveloper.idc.app.core.ui.CopyableCode
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -83,6 +86,11 @@ fun CompanyUsersSection(
         }
     }
 
+    // El encabezado y el alta quedan en un ancho de formulario; la lista de usuarios usa la cuadricula.
+    Column(
+        modifier = Modifier.widthIn(max = ContentWidth.Form).fillMaxWidth(),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
     Text("Usuarios y permisos", style = MaterialTheme.typography.titleMedium, color = AppTheme.colors.accentText)
     Text(description, color = AppTheme.colors.muted)
     // El alta es independiente de la lista: empieza cerrada para ver los usuarios primero.
@@ -183,6 +191,8 @@ fun CompanyUsersSection(
     }
     message?.let { Text(it, color = AppTheme.colors.success) }
     error?.let { Text(it, color = AppTheme.colors.danger) }
+    }
+    AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 360.dp, gap = 12.dp, equalHeight = false) {
     users.forEach { user ->
         Column(
             modifier = Modifier
@@ -250,6 +260,7 @@ fun CompanyUsersSection(
                 }
             }
         }
+    }
     }
 }
 

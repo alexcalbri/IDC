@@ -92,8 +92,8 @@ object CrmMcpTools {
         "language" to McpSchema.string("Idioma de la persona."),
         "message" to McpSchema.string("Mensaje o consulta original."),
         "details" to McpSchema.string("Notas fijas o detalles del lead."),
-        "targetStart" to McpSchema.date("Fecha de inicio de lo que busca (por ejemplo llegada)."),
-        "targetEnd" to McpSchema.date("Fecha de fin de lo que busca."),
+        "targetStart" to McpSchema.date("Alias de la fecha de ingreso (check-in): escribe en el campo de fecha elegido como ingreso en Configuracion > Integraciones > Fechas de estadia (ver stayDates en list_pipeline). Si la empresa no eligio ninguno, da error. Tambien se puede enviar en customFields."),
+        "targetEnd" to McpSchema.date("Alias de la fecha de salida (check-out): escribe en el campo de fecha elegido como salida en Fechas de estadia. Debe ser igual o posterior al ingreso. Tambien se puede enviar en customFields."),
         "estimatedValue" to McpSchema.number("Valor estimado del negocio."),
         "followUpOn" to McpSchema.date("Proximo seguimiento."),
         "customFields" to buildJsonObject {
@@ -350,10 +350,20 @@ object CrmMcpTools {
                                 put("multiple", field.multiple)
                             }
                             put("required", field.required)
+                            put("section", CrmFieldSections.title(field, context.sections))
                         },
                     )
                 }
             }
+            // The date fields that are the check-in and check-out: targetStart and targetEnd write in them.
+            val stay = CrmStay.effective(context.stay, context.fields)
+            put(
+                "stayDates",
+                buildJsonObject {
+                    put("start", context.fields.firstOrNull { it.key == stay.startKey }?.label.orEmpty())
+                    put("end", context.fields.firstOrNull { it.key == stay.endKey }?.label.orEmpty())
+                },
+            )
             put("canAssign", context.canAssign)
             putJsonArray("owners") { context.users.forEach { add(JsonPrimitive(it.name)) } }
         }
@@ -479,8 +489,6 @@ object CrmMcpTools {
             "language" to lead.language,
             "message" to lead.message,
             "details" to lead.details,
-            "targetStart" to lead.targetStart?.toString().orEmpty(),
-            "targetEnd" to lead.targetEnd?.toString().orEmpty(),
             "estimatedValue" to lead.estimatedValue?.toPlainString().orEmpty(),
             "followUpOn" to lead.followUpOn?.toString().orEmpty(),
         )
@@ -734,7 +742,7 @@ object CrmMcpTools {
     }
 
     private fun parse(values: Map<String, String>, context: CrmScreens.Context, stored: JsonObject = JsonObject(emptyMap())): CrmLeadInput = try {
-        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users, context.fields, stored)
+        CrmForms.parseLead(values, context.stages, context.interests, context.interestsEnabled, context.users, context.fields, stored, context.stay)
     } catch (failure: CrmValidationException) {
         throw McpToolException(failure.message.orEmpty())
     }

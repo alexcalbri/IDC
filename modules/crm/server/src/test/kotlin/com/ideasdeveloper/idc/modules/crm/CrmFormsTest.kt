@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.modules.crm
 
+import kotlinx.serialization.json.JsonPrimitive
 import java.math.BigDecimal
 import java.time.LocalDate
 import java.util.UUID
@@ -17,15 +18,20 @@ class CrmFormsTest {
     private val ana = CrmUser(UUID.randomUUID(), "ana")
     private val base = mapOf("name" to " Megan Dravet ", "email" to "megan@example.com", "phone" to "+1 630 460 2072")
 
+    // The check-in and check-out are custom date fields chosen in Configuracion > Integraciones.
+    private val arrival = CrmField(UUID.randomUUID(), "fecha_ingreso", "Fecha de ingreso", CrmFieldType.Date)
+    private val departure = CrmField(UUID.randomUUID(), "fecha_salida", "Fecha de salida", CrmFieldType.Date)
+    private val stay = CrmStayMapping("fecha_ingreso", "fecha_salida")
+
     private fun parse(values: Map<String, String>, interestsEnabled: Boolean = true) =
-        CrmForms.parseLead(base + values, stages, listOf(surf), interestsEnabled, listOf(ana))
+        CrmForms.parseLead(base + values, stages, listOf(surf), interestsEnabled, listOf(ana), listOf(arrival, departure), stay = stay)
 
     @Test
     fun mapsDropdownNamesToIds() {
         val input = parse(
             mapOf(
                 "stage" to "Reservado", "interest" to "Surf", "owner" to "ana",
-                "targetStart" to "2026-12-25", "targetEnd" to "2027-01-03", "estimatedValue" to "1,250.50", "followUpOn" to "2026-11-02",
+                "fecha_ingreso" to "2026-12-25", "fecha_salida" to "2027-01-03", "estimatedValue" to "1,250.50", "followUpOn" to "2026-11-02",
             ),
         )
         assertEquals("Megan Dravet", input.name)
@@ -33,6 +39,8 @@ class CrmFormsTest {
         assertEquals(surf.id, input.interestId)
         assertEquals(listOf(ana.id), input.ownerUserIds)
         assertEquals(LocalDate.of(2027, 1, 3), input.targetEnd)
+        assertEquals(LocalDate.of(2026, 12, 25), input.targetStart)
+        assertEquals(JsonPrimitive("2027-01-03"), input.custom["fecha_salida"])
         assertEquals(BigDecimal("1250.50"), input.estimatedValue)
     }
 
@@ -62,7 +70,7 @@ class CrmFormsTest {
         assertFailsWith<CrmValidationException> { parse(mapOf("interest" to "Yoga")) }
         assertFailsWith<CrmValidationException> { parse(mapOf("owner" to "luis")) }
         assertFailsWith<CrmValidationException> { parse(mapOf("followUpOn" to "02/11/2026")) }
-        assertFailsWith<CrmValidationException> { parse(mapOf("targetStart" to "2026-12-25", "targetEnd" to "2026-12-20")) }
+        assertFailsWith<CrmValidationException> { parse(mapOf("fecha_ingreso" to "2026-12-25", "fecha_salida" to "2026-12-20")) }
         assertFailsWith<CrmValidationException> { parse(mapOf("estimatedValue" to "-5")) }
         assertFailsWith<CrmValidationException> { parse(mapOf("estimatedValue" to "1.234")) }
     }

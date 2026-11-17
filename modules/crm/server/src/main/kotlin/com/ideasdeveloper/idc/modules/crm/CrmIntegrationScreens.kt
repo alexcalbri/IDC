@@ -28,7 +28,41 @@ object CrmIntegrationScreens {
 
     fun integrations(context: CrmScreens.Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> =
         meta(context, submitted, pickers = params["numbers"], link = params["link"]) + encuentra24(context) + CrmWordPressScreens.settings(context, params["secret"]) +
-            CrmCloudbedsScreens.settings(context)
+            CrmCloudbedsScreens.settings(context) + staySettings(context)
+
+    // ---- Fechas de estadia ----
+
+    // Which custom date fields are the arrival and the departure: Cloudbeds, the hotspot, the exit automation and the pipeline cards use them.
+    private fun staySettings(context: CrmScreens.Context): List<UiNode> {
+        val options = CrmStay.options(context.fields)
+        return listOf(
+            UiText("Fechas de estadia", UiTextStyle.Subtitle),
+            UiCard(
+                listOf(
+                    UiText(
+                        "Elige cuales de tus campos de fecha son el ingreso y la salida del huesped (los campos y sus secciones se crean en Configuracion > General). " +
+                            "Cloudbeds los usa como fechas por defecto, la salida automatica archiva el lead al llegar la salida, las plantillas llenan {checkin} y {checkout}, " +
+                            "las tarjetas del pipeline los muestran y el hotspot de WiFi los lee para dar acceso durante la estadia. Sin elegir, esas funciones no ven fechas.",
+                    ),
+                    if (options.size == 1) UiText("Aun no hay campos de tipo fecha: crea uno en Configuracion > General.", tone = UiTone.Warning) else null,
+                    UiForm(
+                        "stay",
+                        listOf(
+                            UiField("start", "Campo de ingreso (check-in)", type = "dropdown", options = options),
+                            UiField("end", "Campo de salida (check-out)", type = "dropdown", options = options, help = "La salida debe ser igual o posterior al ingreso."),
+                        ),
+                        CrmStay.formValues(CrmStay.effective(context.stay, context.fields), context.fields),
+                        submit = UiButton("Guardar", UiRequest(
+                            UiRoute + "/integrations", params = mapOf("op" to "staySave"), formId = "stay",
+                            // Changing a mapping that is in use can clear the dates Cloudbeds, the hotspot and the exit automation read.
+                            confirm = CrmStay.ConfirmClear.takeIf { !CrmStay.effective(context.stay, context.fields).isEmpty },
+                        )),
+                        minFieldWidth = 220,
+                    ),
+                ).filterNotNull(),
+            ),
+        )
+    }
 
     // ---- Encuentra24 Leads API ----
 

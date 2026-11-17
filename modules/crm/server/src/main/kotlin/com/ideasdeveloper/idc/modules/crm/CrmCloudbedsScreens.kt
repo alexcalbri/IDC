@@ -173,6 +173,7 @@ object CrmCloudbedsScreens {
             UiCard(
                 listOf(
                     status,
+                    UiText("Fechas de la estadia (Fechas de estadia, mas abajo): ${CrmStay.summary(context.stay, context.fields)} Son las fechas que Cloudbeds propone al buscar habitaciones.", UiTextStyle.Caption),
                     UiText(
                         "Con la API key de la propiedad (permisos read:room, read:rate, read:reservation, write:reservation) el lead muestra las habitaciones libres en sus fechas; al confirmar se crea la reserva en Cloudbeds. " +
                             "El cobro se gestiona en Cloudbeds; el metodo de pago solo se envia porque Cloudbeds lo exige. Cada 30 minutos se lee el estado de las reservas.",

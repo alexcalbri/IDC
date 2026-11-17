@@ -164,3 +164,66 @@ Nada de lo que corre como root o postgres se lee de `source/`. La lógica del cl
 `build.gradle.kts` fuerza `resolution("qs", "6.16.1")` y `kotlin-js-store/yarn.lock` quedó regenerado.
 
 **Versiones de los cambios 3 a 6:** Core 0.5.0, app 0.5.0 y CRM 0.21.0.
+
+## 7. Diseño responsive: usar el ancho en vez de centrar una columna angosta (app)
+
+**Problema:** con el arreglo de `contentWidth`, las pantallas se limitan a 880 dp (o 1360 dp en los módulos) y dejan grandes espacios vacíos a los lados. Además, las tarjetas, secciones y elementos de lista siguen apilados uno debajo de otro aunque quepan varios lado a lado, y el pipeline muestra menos etapas de las que entran en la pantalla.
+
+**Objetivo:** en pantallas anchas, el contenido usa el ancho disponible y las tarjetas se acomodan en una cuadrícula adaptable, con el número de columnas según el ancho y un ancho mínimo por tarjeta. En pantallas angostas se mantiene una sola columna, como hoy.
+
+**Solución:**
+- **Ancho de las pantallas:**
+  - el login y los formularios cortos mantienen su ancho máximo (`Card` 420 y `Form` 640);
+  - las pantallas de listas y tarjetas (dashboard, Módulos del servidor, Empresa, personal, errores y los módulos sin interfaz propia) pasan a ocupar todo el ancho, con un margen lateral y un máximo alto, de unos 1600 dp;
+  - los módulos con interfaz propia (CRM) ocupan todo el ancho menos el margen, para que el pipeline muestre más etapas.
+- **Cuadrícula adaptable común:** un componente nuevo en `core/layout`, por ejemplo `AdaptiveGrid(minItemWidth, gap)`, con `FlowRow` o un cálculo de columnas por ancho y filas de igual alto. Lo usan:
+  - las tarjetas del dashboard;
+  - las tarjetas de "Módulos del servidor" y las listas de personal y empresas;
+  - en el renderizador de módulos, los nodos consecutivos de tipo tarjeta o sección, y los elementos de lista cuando el ancho alcanza para más de una columna.
+- **Sin romper:** las tablas, el tablero, los formularios y los gráficos siguen ocupando todo el ancho.
+
+**Ajuste del 7: una sola barra de scroll horizontal, fija abajo.** La barra arriba y abajo no sirve: a mitad del pipeline ninguna de las dos se ve. Queda una sola barra, pegada al borde inferior de la parte visible del panel del módulo, mientras el tablero o la tabla esté en pantalla, sin importar el scroll vertical. Va alineada con el ancho del contenido que desplaza, y si no hay un contenedor que la sostenga, queda debajo del contenido como antes.
+
+## 8. Secciones y campos personalizados del lead, fechas mapeables y calendario (CRM + app)
+
+**Pedido:**
+- "Lo que busca" deja de ser fijo: cada empresa arma sus secciones con nombre propio (p. ej. "Datos de la reserva") y pone en ellas sus campos (p. ej. "Fecha de ingreso" y "Fecha de salida").
+- Los campos de fecha tienen un selector de calendario.
+- Cloudbeds y el hotspot leen las fechas desde campos que se pueden elegir.
+- El campo "age", que creó la empresa en el CRM, se mueve a Clientes con sus valores.
+
+**Decisiones del usuario:**
+- Las fechas pasan a ser campos personalizados, y Cloudbeds y el hotspot permiten elegirlas.
+- Se agrega la acción "Mover a Clientes".
+- "age" se mueve tal cual, sin convertirlo a fecha de nacimiento.
+
+**CRM (migración V019):**
+- **Secciones:** tabla nueva `crm_field_sections` (id, nombre, posición), y `crm_field_definitions` gana `section_id`, que puede ir vacío.
+  - En Configuración > Campos se crean, renombran, ordenan y borran secciones. Borrar una sección deja sus campos sin sección, sin borrarlos.
+  - El formulario y el detalle del lead muestran cada sección con sus campos, en orden. Los campos sin sección van en "Campos personalizados".
+  - La sección fija "Lo que busca" desaparece. "Valor estimado" queda como campo fijo en la sección principal del lead.
+- **Fechas como campos personalizados:**
+  - La migración, en cada empresa que tenga leads con `target_start` o `target_end`, crea la sección "Datos de la reserva" con dos campos de fecha, `fecha_ingreso` ("Fecha de ingreso") y `fecha_salida` ("Fecha de salida"), copia los valores a `custom_fields` y deja hecho el mapeo de abajo. Las empresas sin fechas no reciben nada.
+  - `crm_settings` gana `stay_start_field` y `stay_end_field`: las claves de los campos de fecha que valen como ingreso y salida.
+  - Se configuran en Configuración > Integraciones, bloque "Fechas de estadía". El mismo mapeo se muestra en la configuración de Cloudbeds y lo explica la sección del hotspot.
+  - `target_start` y `target_end` quedan como copia interna: el repositorio las llena desde los campos mapeados cada vez que se guarda un lead (y quedan vacías sin mapeo). Así siguen funcionando sin cambios:
+    - el hotspot (`HotspotCrmPipeline`);
+    - la salida automática (`CrmExit`);
+    - `restoreSurvives`;
+    - la fecha por defecto de Cloudbeds;
+    - las variables `checkin` y `checkout` de las plantillas.
+  - Validación: si las dos fechas mapeadas existen, la de salida debe ser igual o posterior a la de ingreso.
+  - La tarjeta del pipeline "Fechas: X a Y" usa los campos mapeados, con sus etiquetas.
+  - La importación (las palabras check-in, entrada, salida...) escribe en los campos mapeados. Sin mapeo, ignora esas columnas y avisa.
+  - En MCP, `targetStart` y `targetEnd` quedan como alias, aceptados y documentados, que escriben en los campos mapeados. `customFields` sigue igual.
+- **"Mover a Clientes":** acción en la configuración de cada campo personalizado del CRM, con confirmación.
+  1. Crea el campo en Clientes (`customer_field_definitions`) con la misma clave, etiqueta y un tipo equivalente. Si la clave ya existe con otro tipo, se cancela con un mensaje.
+  2. Copia cada valor del lead a `customers.flexible_attributes` de su cliente, sin pisar valores que el cliente ya tenga. Si un cliente tiene varios leads, usa el más reciente.
+  3. Borra el campo del CRM y quita la clave de `custom_fields` de los leads.
+  - Todo va en una transacción entre esquemas, como ya hace la importación (`CrmImportTargets`). Requiere `crm.settings` y `clientes.fields.manage`.
+
+**App:**
+- **Selector de calendario:** los campos `date` muestran un botón con calendario (DatePicker de Material 3 en un diálogo), mantienen el valor `AAAA-MM-DD` y se pueden vaciar. Los campos `datetime` agregan la hora con TimePicker.
+- **Campos dinámicos de Clientes** (`ServerDrivenModuleScreen`): al crear un campo se puede elegir el tipo (texto, número, fecha, sí/no, lista) y no solo texto.
+
+**Versiones:** CRM 0.22.0. La app pasa a 0.6.0 e incluye el cambio 7, que todavía no tiene commit. El Core sigue en 0.5.0 porque el modelo de UI no cambia. Clientes no cambia, salvo que haga falta para los tipos.
