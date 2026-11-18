@@ -42,11 +42,25 @@ object ServerMcpTools {
             "hasta que el business owner la pone con el codigo que le llega a su correo (\"Olvidaste tu contrasena\" en el login) " +
             "o el dueno del servidor la pone desde la app (Empresas > Editar > Contrasena del business owner); avisale."
 
-    fun mcp(provisioning: CompanyProvisioningService): RegisteredModuleMcp =
-        RegisteredModuleMcp(ServerMcpModuleId, Name, Instructions, tools { provisioning }.map { RegisteredMcpTool(ServerMcpModuleId, Name, it) })
+    /**
+     * [extensions] adds more server tools (the extension tools); it receives the function that gives
+     * the role of the server owner of a call, and is built once at startup, so it must not touch
+     * the server until a tool runs.
+     */
+    fun mcp(
+        provisioning: CompanyProvisioningService,
+        extensions: ((McpToolCall) -> String) -> List<McpTool> = { emptyList() },
+        extensionInstructions: String = "",
+    ): RegisteredModuleMcp =
+        RegisteredModuleMcp(
+            ServerMcpModuleId, Name, if (extensionInstructions.isBlank()) Instructions else Instructions + "\n\n" + extensionInstructions,
+            toolsWith({ provisioning }, extensions).map { RegisteredMcpTool(ServerMcpModuleId, Name, it) },
+        )
 
     // [provisioning] is only called when a tool runs.
-    fun tools(provisioning: () -> CompanyProvisioningService): List<McpTool> {
+    fun tools(provisioning: () -> CompanyProvisioningService): List<McpTool> = toolsWith(provisioning) { emptyList() }
+
+    fun toolsWith(provisioning: () -> CompanyProvisioningService, extensions: ((McpToolCall) -> String) -> List<McpTool>): List<McpTool> {
         // Every change runs as the server owner's own role, like the app's requests.
         fun role(call: McpToolCall): String = call.permissions.userId?.let { provisioning().serverOwnerRole(it) }
             ?: throw McpToolException("Solo un dueno del servidor activo puede usar esta herramienta.")
@@ -264,7 +278,7 @@ object ServerMcpTools {
             ) { call ->
                 json.encodeToJsonElement(ServerModuleCatalogResponse.serializer(), run { provisioning().updateServerModuleCatalog(call.requiredString("url")) })
             },
-        )
+        ) + extensions(::role)
     }
 
     private fun companyJson(company: CompanySummaryResponse): JsonElement =

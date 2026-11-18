@@ -101,6 +101,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V008__add_company_owner_group.sql
     database/control/migrations/V009__add_server_owner_company_sessions.sql
     database/control/migrations/V010__create_core_update_requests.sql
+    database/control/migrations/V011__create_extensions.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -643,6 +644,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V007__add_audit_a
 apply_migration "$DB_NAME" control database/control/migrations/V008__add_company_owner_group.sql
 apply_migration "$DB_NAME" control database/control/migrations/V009__add_server_owner_company_sessions.sql
 apply_migration "$DB_NAME" control database/control/migrations/V010__create_core_update_requests.sql
+apply_migration "$DB_NAME" control database/control/migrations/V011__create_extensions.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
@@ -673,6 +675,9 @@ REVOKE INSERT ON core_update_requests FROM :"db_user";
 GRANT SELECT ON core_update_requests TO :"db_user";
 GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";
 GRANT USAGE ON SEQUENCE core_update_requests_id_seq TO :"db_user";
+GRANT SELECT, INSERT, UPDATE ON server_extensions, extension_operations, extension_operation_targets TO :"db_user";
+GRANT SELECT, INSERT ON extension_unsigned_authorizations TO :"db_user";
+GRANT USAGE ON SEQUENCE extension_unsigned_authorizations_id_seq, extension_operations_id_seq TO :"db_user";
 COMMIT;
 SQL
 PGPASSWORD="$DB_PASSWORD" psql -X -h 127.0.0.1 -U "$DB_USER" -d "$DB_NAME" \
@@ -701,6 +706,8 @@ install -d -m 700 "$CONFIG_DIR"
     # Optional GitHub token (fine-grained, read-only on public repositories) to avoid GitHub's
     # 60 requests/hour limit when listing and installing modules; edit and restart ideascore.
     printf 'MODULE_GITHUB_TOKEN=\n'
+    # Llave maestra que envuelve la llave de datos de cada empresa (secretos cifrados). Respaldala: nunca se regenera.
+    printf 'IDC_MASTER_KEY=%s\n' "$(openssl rand -base64 32)"
     printf 'VERSION_CATALOG_URL=\n'
     # Branch the root update helper follows (ideascore-core-update).
     printf 'CORE_UPDATE_REF=master\n'
@@ -711,6 +718,7 @@ install -d -m 700 "$CONFIG_DIR"
     printf 'SMTP_HOST=\nSMTP_PORT=587\nSMTP_USERNAME=\nSMTP_PASSWORD=\nSMTP_FROM=\nSMTP_SECURITY=starttls\n'
 } > "$CONFIG_DIR/server.env"
 chmod 600 "$CONFIG_DIR/server.env"
+printf 'Respalda IDC_MASTER_KEY (%s/server.env): sin ella no se pueden leer los secretos guardados.\n' "$CONFIG_DIR"
 unset DB_PASSWORD
 
 # The service runs with ProtectSystem=strict; these are its only writable paths.

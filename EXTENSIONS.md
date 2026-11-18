@@ -45,8 +45,6 @@ Every extension has a manifest at its root.
     "type": "github",
     "url": "https://github.com/alexcalbri/idc/tree/<commit>/extensions/monday_import"
   },
-  "packageSha256": "64_hex_characters",
-  "signature": { "keyId": "ideascore-2026", "value": "base64" },
   "permissions": [
     "network.outbound:api.monday.com",
     "secrets.write",
@@ -66,6 +64,30 @@ Every extension has a manifest at its root.
 }
 ```
 
+### Signature file: `extension.sig.json`
+
+The hash and the signature cannot live inside the manifest they cover, so they
+are stored next to it:
+
+```json
+{
+  "packageSha256": "64_hex_characters",
+  "signature": { "keyId": "ideascore-2026", "value": "base64" }
+}
+```
+
+- `packageSha256` is the tree hash of the extension folder. Files are taken in
+  order of their relative path (with `/`), leaving out `extension.sig.json`.
+  For each one, `path\n` + the hex SHA-256 of its content + `\n` is appended,
+  and the SHA-256 of the whole text is the hash.
+- `signature` is Ed25519 over the 32 bytes of that hash. The public key
+  `ideascore-2026` ships with the Core; the private key never enters the
+  repository (`scripts/extensions/keygen.sh` and `sign.sh`).
+- An unsigned package has no `signature` (see "Unsigned extensions").
+- Extensions shipped inside a module (`"source": {"type": "bundled"}`, such as
+  the CRM's Meta, Monday, WordPress, Encuentra24 and Cloudbeds integrations) are
+  covered by the module package and have no signature file.
+
 ### Validation
 
 - `id` matches `[a-z][a-z0-9_]{0,62}` and the folder name.
@@ -73,8 +95,12 @@ Every extension has a manifest at its root.
 - `minModuleVersion` is compared numerically, the same way module versions are.
 - `permissions` must come from the closed list. Any other value rejects the package.
 - HTTP routes must live under `/modules/<module>/extensions/<id>/`.
-- Migrations may only create or change tables owned by the extension. They must
-  not change core tables such as `customers` or the lead tables.
+- Migrations may only create or change tables owned by the extension, named
+  `ext_<id>__*` (two underscores, so extension `a` cannot reach the tables of
+  extension `a_b`). They must not change core tables such as `customers` or
+  the lead tables. The validator is a strict allow list (no quoted identifiers,
+  escapes, comments, `SELECT`, or function calls outside a short list), and the
+  migrations run with statement and lock timeouts.
 - `source.url` must point to a commit, never to a branch.
 
 ## Lifecycle
@@ -167,7 +193,11 @@ Meta is an extension of the CRM module. Its settings are split in two:
   belong to one company. A page or number can be connected to only one company
   at a time, and webhook events are routed to that company.
 
-The webhook route is `/modules/crm/extensions/meta/webhook`.
+The webhook route of the server's Meta app is
+`/modules/crm/extensions/meta/webhook`; a company with its own app uses
+`/modules/crm/extensions/meta/<company>/webhook`. The routes used before CRM
+0.25.0 (`/modules/crm/meta/...` and `/modules/crm/hooks/<company>/meta`) no
+longer answer, so the callback URL in the Meta console must be updated.
 
 ## Unsigned extensions
 
@@ -181,3 +211,11 @@ authorize an unsigned package, but only:
 An unsigned extension runs with the same privileges as the server. The JVM does
 not sandbox extension code, so the permission list is enforced by review, not by
 the runtime.
+
+**Trust boundary.** This applies to signed packages too: extension code runs in
+the server process and can reach what the server reaches (other companies'
+databases and the master key). The only real protection is the signature, or
+the server owner's authorization of one exact hash after reviewing that commit.
+Before authorizing, the app shows the commit, a link to it and the computed
+tree hash, and the authorization is refused if the package changed since then.
+Isolating extensions in their own process is future work.

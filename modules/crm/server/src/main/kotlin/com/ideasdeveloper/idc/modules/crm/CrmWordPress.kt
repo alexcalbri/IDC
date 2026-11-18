@@ -75,7 +75,8 @@ class CrmWordPressException(message: String) : Exception(message)
 /** Real Estate 7 websites through the IDC Connector plugin. */
 object CrmWordPress {
     const val Source = "wordpress"
-    const val PluginVersion = "0.2.0"
+    const val PluginVersion = "0.3.0"
+    private const val MaxResponseBytes = 1024 * 1024
     private const val MaxSkewSeconds = 300L
     private val json = Json { ignoreUnknownKeys = true }
     private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
@@ -88,7 +89,7 @@ object CrmWordPress {
     ).use { query ->
         query.executeQuery().use { rows ->
             rows.next()
-            CrmWordPressSettings(rows.getBoolean(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getTimestamp(5)?.toInstant(), rows.getString(6))
+            CrmWordPressSettings(rows.getBoolean(1), rows.getString(2), CrmSecrets.open(tenant, rows.getString(3)), rows.getString(4), rows.getTimestamp(5)?.toInstant(), rows.getString(6))
         }
     }
 
@@ -96,6 +97,14 @@ object CrmWordPress {
         val url = values["siteUrl"].orEmpty().trim().trimEnd('/').ifEmpty { null }
         if (url != null && !url.matches(Regex("^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\\s]*)?$"))) {
             throw CrmValidationException("Escribe la direccion del sitio con https://, por ejemplo https://mi-inmobiliaria.com.")
+        }
+        CrmExtensions.inactive(tenant, CrmExtensionIds.WordPress)?.let { throw CrmValidationException(it) }
+        if (url != null) {
+            try {
+                checkSite(url)
+            } catch (failure: CrmWordPressException) {
+                throw CrmValidationException(failure.message.orEmpty())
+            }
         }
         val enabled = values["enabled"] == "true"
         val secret = load(tenant).secret
@@ -111,7 +120,7 @@ object CrmWordPress {
     fun newSecret(tenant: Connection): String {
         val alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789"
         val secret = (1..48).map { alphabet[random.nextInt(alphabet.length)] }.joinToString("")
-        tenant.prepareStatement("UPDATE crm_wordpress_settings SET secret = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1").use { it.setString(1, secret); it.executeUpdate() }
+        tenant.prepareStatement("UPDATE crm_wordpress_settings SET secret = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1").use { it.setString(1, CrmSecrets.seal(tenant, secret)); it.executeUpdate() }
         return secret
     }
 
@@ -128,8 +137,8 @@ object CrmWordPress {
     // ---- Signatures ----
 
     fun sign(secret: String, timestamp: String, body: ByteArray): String {
-        val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(secret.toByteArray(), "HmacSHA256")) }
-        mac.update("$timestamp.".toByteArray())
+        val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(secret.toByteArray(Charsets.UTF_8), "HmacSHA256")) }
+        mac.update("$timestamp.".toByteArray(Charsets.UTF_8))
         return mac.doFinal(body).joinToString("") { "%02x".format(it) }
     }
 
@@ -143,9 +152,39 @@ object CrmWordPress {
 
     // ---- Plugin API (IDC -> website) ----
 
+    /** True for addresses a site must never resolve to: loopback, link-local, private (RFC1918), CGNAT 100.64/10, IPv6 ULA fc00::/7, multicast and "this network". */
+    fun blockedAddress(address: java.net.InetAddress): Boolean {
+        if (address.isLoopbackAddress || address.isAnyLocalAddress || address.isLinkLocalAddress || address.isSiteLocalAddress || address.isMulticastAddress) return true
+        val bytes = address.address
+        return when (bytes.size) {
+            4 -> bytes[0].toInt() == 0 || ((bytes[0].toInt() and 0xFF) == 100 && (bytes[1].toInt() and 0xC0) == 64)
+            16 -> (bytes[0].toInt() and 0xFE) == 0xFC
+            else -> true
+        }
+    }
+
+    /**
+     * The site must be a public host: with a dot, and every address it resolves to public. Checked when saving and before each call
+     * (so a name that later points inside the network is still refused). [resolve] is replaceable for tests.
+     */
+    fun checkSite(url: String, resolve: (String) -> List<java.net.InetAddress> = { host -> java.net.InetAddress.getAllByName(host).toList() }) {
+        val host = runCatching { URI.create(url).host }.getOrNull()?.lowercase()
+        if (host.isNullOrBlank() || !host.contains('.') || host.endsWith(".local") || host.endsWith(".internal") || host.endsWith(".localhost")) {
+            throw CrmWordPressException("La direccion del sitio debe ser un dominio publico (con punto).")
+        }
+        val addresses = try {
+            resolve(host)
+        } catch (failure: Exception) {
+            throw CrmWordPressException("No se encontro el sitio $host.")
+        }
+        if (addresses.isEmpty() || addresses.any(::blockedAddress)) throw CrmWordPressException("La direccion del sitio apunta a una red privada o local: no se permite.")
+    }
+
     internal fun rpc(settings: CrmWordPressSettings, action: String, extra: JsonObject = JsonObject(emptyMap())): JsonElement {
         val site = settings.siteUrl ?: throw CrmWordPressException("Escribe la direccion del sitio en Integraciones.")
-        val secret = settings.secret ?: throw CrmWordPressException("Genera el secreto y pegalo en el plugin.")
+        val secret = settings.secret?.takeIf { !CrmSecrets.isUnreadable(it) }
+            ?: throw CrmWordPressException(if (CrmSecrets.isUnreadable(settings.secret)) CrmSecrets.UnreadableText + ". Genera un secreto nuevo." else "Genera el secreto y pegalo en el plugin.")
+        checkSite(site)
         val body = JsonObject(mapOf("action" to JsonPrimitive(action)) + extra).toString().toByteArray()
         val timestamp = Instant.now().epochSecond.toString()
         val request = HttpRequest.newBuilder(URI.create("$site/wp-json/idc/v1/rpc"))
@@ -155,21 +194,34 @@ object CrmWordPress {
             .header("X-IDC-Signature", sign(secret, timestamp, body))
             .POST(HttpRequest.BodyPublishers.ofByteArray(body))
             .build()
-        val response = try {
-            http.send(request, HttpResponse.BodyHandlers.ofString())
+        val (status, text) = try {
+            val response = http.send(request, HttpResponse.BodyHandlers.ofInputStream())
+            // The answer of a site is never read whole beyond MaxResponseBytes.
+            val bytes = response.body().use { it.readNBytes(MaxResponseBytes + 1) }
+            if (bytes.size > MaxResponseBytes) throw CrmWordPressException("El sitio respondio algo demasiado grande.")
+            response.statusCode() to String(bytes, Charsets.UTF_8)
+        } catch (failure: CrmWordPressException) {
+            throw failure
         } catch (failure: Exception) {
             throw CrmWordPressException("No se pudo contactar el sitio $site.")
         }
-        val parsed = runCatching { json.parseToJsonElement(response.body()) }.getOrNull()
-        return when (response.statusCode()) {
+        val parsed = runCatching { json.parseToJsonElement(text) }.getOrNull()
+        return when (status) {
             in 200..299 -> parsed ?: throw CrmWordPressException("El sitio respondio algo que no es JSON.")
             401, 403 -> throw CrmWordPressException("El sitio rechazo la firma: revisa que el plugin IDC Connector este activo y tenga el mismo secreto.")
             404 -> throw CrmWordPressException((parsed as? JsonObject)?.get("error").str().ifEmpty { "El sitio no tiene el plugin IDC Connector (o ese recurso no existe)." })
-            else -> throw CrmWordPressException("El sitio respondio HTTP ${response.statusCode()}.")
+            else -> throw CrmWordPressException("El sitio respondio HTTP $status.")
         }
     }
 
+    /** Settings for a call to the website; fails when the extension is not active in the company. */
+    private fun checked(tenant: Connection): CrmWordPressSettings {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.WordPress)?.let { throw CrmWordPressException(it) }
+        return load(tenant)
+    }
+
     fun ping(tenant: Connection): String {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.WordPress)?.let { throw CrmWordPressException(it) }
         val result = rpc(load(tenant), "ping").obj()
         val name = result?.get("site").str()
         record(tenant, name, "")
@@ -179,6 +231,7 @@ object CrmWordPress {
     data class SearchResult(val total: Int, val items: List<WpListing>)
 
     fun search(tenant: Connection, text: String, filters: Map<String, String>, minPrice: String, maxPrice: String, page: Int): SearchResult {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.WordPress)?.let { throw CrmWordPressException(it) }
         val payload = buildJsonObject {
             put("search", text.take(100))
             put("page", page)
@@ -192,13 +245,13 @@ object CrmWordPress {
     }
 
     fun listing(tenant: Connection, id: Long): WpListing =
-        listing(rpc(load(tenant), "listing", buildJsonObject { put("id", id) })) ?: throw CrmWordPressException("Respuesta invalida del sitio.")
+        listing(rpc(checked(tenant), "listing", buildJsonObject { put("id", id) })) ?: throw CrmWordPressException("Respuesta invalida del sitio.")
 
     fun taxonomies(tenant: Connection): Map<String, List<String>> =
-        rpc(load(tenant), "taxonomies").obj()?.mapValues { (_, terms) -> terms.arr().mapNotNull { it.obj()?.get("name").str().ifEmpty { null } } }.orEmpty()
+        rpc(checked(tenant), "taxonomies").obj()?.mapValues { (_, terms) -> terms.arr().mapNotNull { it.obj()?.get("name").str().ifEmpty { null } } }.orEmpty()
 
     fun markSold(tenant: Connection, id: Long, price: BigDecimal?, date: LocalDate) {
-        rpc(load(tenant), "sold", buildJsonObject {
+        rpc(checked(tenant), "sold", buildJsonObject {
             put("id", id)
             put("price", price?.toPlainString().orEmpty())
             put("date", date.toString())
@@ -207,7 +260,7 @@ object CrmWordPress {
 
     /** Reads the agents of the website and keeps their IDC user (an email match links new ones). */
     fun syncAgents(tenant: Connection, users: List<CrmUser>, userEmails: Map<UUID, String>): Int {
-        val agents = rpc(load(tenant), "agents").arr().mapNotNull { it.obj() }
+        val agents = rpc(checked(tenant), "agents").arr().mapNotNull { it.obj() }
         agents.forEach { agent ->
             val id = agent["id"].str().toLongOrNull()?.takeIf { it > 0 } ?: return@forEach
             val email = agent["email"].str()

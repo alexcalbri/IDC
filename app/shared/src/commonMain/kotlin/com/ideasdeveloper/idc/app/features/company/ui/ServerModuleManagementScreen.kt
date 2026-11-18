@@ -44,6 +44,7 @@ import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.company.data.ServerModuleResponse
+import com.ideasdeveloper.idc.app.features.extensions.ui.ExtensionPackagesSection
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.AuthenticatedTopBar
 import com.ideasdeveloper.idc.app.features.shell.ui.ClosableView
@@ -331,6 +332,9 @@ fun ServerModuleManagementScreen(
                         )
                     }
                     }
+
+                    // Paquetes externos de extensiones del servidor: catalogo, instalar, quitar y autorizar sin firma.
+                    ExtensionPackagesSection(serverUrl = serverUrl, session = session)
 
                     Spacer(modifier = Modifier.height(2.dp))
                 }

@@ -292,6 +292,11 @@ class CrmAutomationsTest {
         assertEquals(listOf("integracion de Cloudbeds activa"), CrmAutomationRequirements.missing(reserve, facts(ready = false)))
         // The messages use the labels of the mapped fields.
         assertEquals(listOf("llegada"), CrmAutomationRequirements.missing(reserve, facts(start = null), CrmStayLabels("llegada", "partida")))
+        // Cloudbeds requires the guest's country; an automation takes the default of Integraciones > Cloudbeds.
+        assertEquals(
+            listOf("pais por defecto del huesped (Integraciones > Cloudbeds)"),
+            CrmAutomationRequirements.missing(reserve, facts().copy(guestCountry = false)),
+        )
     }
 
     @Test

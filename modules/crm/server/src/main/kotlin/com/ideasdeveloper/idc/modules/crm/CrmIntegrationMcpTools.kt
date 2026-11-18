@@ -37,7 +37,8 @@ object CrmIntegrationMcpTools {
             name = "get_integrations",
             title = "Integraciones del CRM",
             description = "Estado de las integraciones (Meta: WhatsApp, Messenger e Instagram; WordPress; Encuentra24; Cloudbeds) sin credenciales: " +
-                "solo si estan configuradas, mas los ultimos errores y los agentes del sitio WordPress.",
+                "solo si estan configuradas, mas los ultimos errores y los agentes del sitio WordPress. Cada integracion es una extension de la empresa: " +
+                "las demas herramientas de integraciones responden que la extension no esta activa si no esta instalada y activa en Empresa > Extensiones.",
             permission = CrmScreens.Settings,
             readOnly = true,
         ) { call -> integrations(call) },
@@ -57,27 +58,27 @@ object CrmIntegrationMcpTools {
                     "recordEchoes" to McpSchema.boolean("Guardar en el CRM los mensajes enviados desde la app de WhatsApp Business."),
                 ),
             ),
-        ) { call -> updateMeta(call) },
+        ) { call -> gated(call, CrmExtensionIds.Meta) { updateMeta(call) } },
         McpTool(
             name = "meta_connect_page",
             title = "Conectar pagina de Meta",
             description = "Conecta la pagina de Facebook configurada y su cuenta de Instagram con el token guardado y suscribe Instagram a los mensajes " +
                 "(con tokens propios, lee la cuenta de Instagram de la pagina del token de Instagram), para recibir y enviar mensajes.",
             permission = CrmScreens.Settings,
-        ) { call -> metaConnectPage(call) },
+        ) { call -> gated(call, CrmExtensionIds.Meta) { metaConnectPage(call) } },
         McpTool(
             name = "meta_fill_names",
             title = "Completar nombres desde Meta",
             description = "Pide a Meta el nombre de los contactos de Messenger e Instagram que llegaron sin nombre (hasta 100 por canal) y lo guarda. " +
                 "Nunca cambia un nombre existente.",
             permission = CrmScreens.Settings,
-        ) { call -> metaFillNames(call) },
+        ) { call -> gated(call, CrmExtensionIds.Meta) { metaFillNames(call) } },
         McpTool(
             name = "meta_connect_whatsapp",
             title = "Conectar WhatsApp",
             description = "Suscribe la app a la cuenta de WhatsApp Business y lista sus numeros. Con un solo numero y ninguno elegido, lo elige.",
             permission = CrmScreens.Settings,
-        ) { call -> metaConnectWhatsApp(call) },
+        ) { call -> gated(call, CrmExtensionIds.Meta) { metaConnectWhatsApp(call) } },
         McpTool(
             name = "update_wordpress",
             title = "Cambiar integracion WordPress",
@@ -90,19 +91,19 @@ object CrmIntegrationMcpTools {
                     "siteUrl" to McpSchema.string("Direccion del sitio con https://; vacio la quita."),
                 ),
             ),
-        ) { call -> updateWordPress(call) },
+        ) { call -> gated(call, CrmExtensionIds.WordPress) { updateWordPress(call) } },
         McpTool(
             name = "wordpress_test",
             title = "Probar conexion con WordPress",
             description = "Comprueba la conexion con el plugin del sitio y devuelve su nombre y versiones.",
             permission = CrmScreens.Settings,
-        ) { call -> wordPressTest(call) },
+        ) { call -> gated(call, CrmExtensionIds.WordPress) { wordPressTest(call) } },
         McpTool(
             name = "wordpress_sync_agents",
             title = "Sincronizar agentes del sitio",
             description = "Lee los agentes del sitio WordPress; los nuevos se vinculan al usuario del CRM con el mismo correo de avisos.",
             permission = CrmScreens.Settings,
-        ) { call -> wordPressSyncAgents(call) },
+        ) { call -> gated(call, CrmExtensionIds.WordPress) { wordPressSyncAgents(call) } },
         McpTool(
             name = "wordpress_map_agent",
             title = "Vincular agente del sitio",
@@ -115,7 +116,7 @@ object CrmIntegrationMcpTools {
                 ),
                 required = listOf("wpUserId", "user"),
             ),
-        ) { call -> wordPressMapAgent(call) },
+        ) { call -> gated(call, CrmExtensionIds.WordPress) { wordPressMapAgent(call) } },
         McpTool(
             name = "update_encuentra24",
             title = "Cambiar integracion Encuentra24",
@@ -127,14 +128,14 @@ object CrmIntegrationMcpTools {
                     "slug" to McpSchema.string("Slug de la empresa (como en su URL de Encuentra24)."),
                 ),
             ),
-        ) { call -> updateEncuentra24(call) },
+        ) { call -> gated(call, CrmExtensionIds.Encuentra24) { updateEncuentra24(call) } },
         McpTool(
             name = "encuentra24_sync",
             title = "Importar contactos de Encuentra24",
             description = "Importa ahora los contactos de los anuncios de Encuentra24 como leads, desde una fecha o desde la ultima importacion.",
             permission = CrmScreens.Settings,
             inputSchema = McpSchema.obj(mapOf("fromDate" to McpSchema.date("Importar desde este dia (opcional)."))),
-        ) { call -> encuentra24Sync(call) },
+        ) { call -> gated(call, CrmExtensionIds.Encuentra24) { encuentra24Sync(call) } },
         McpTool(
             name = "update_cloudbeds",
             title = "Cambiar integracion Cloudbeds",
@@ -151,15 +152,16 @@ object CrmIntegrationMcpTools {
                     "welcomeDaysBefore" to McpSchema.integer("Dias antes del check-in.", 0, 60),
                     "welcomeHour" to McpSchema.integer("Hora de envio (0 a 23).", 0, 23),
                     "archiveOnCheckout" to McpSchema.boolean("Archivar el lead cuando el huesped sale del hotel."),
+                    "defaultCountry" to McpSchema.string("Pais por defecto del huesped, codigo de 2 letras (US, NI); vacio lo quita. Lo usan las reservas automaticas."),
                 ),
             ),
-        ) { call -> updateCloudbeds(call) },
+        ) { call -> gated(call, CrmExtensionIds.Cloudbeds) { updateCloudbeds(call) } },
         McpTool(
             name = "cloudbeds_test",
             title = "Probar conexion con Cloudbeds",
             description = "Comprueba la conexion con Cloudbeds con la API key guardada.",
             permission = CrmScreens.Settings,
-        ) { call -> cloudbedsTest(call) },
+        ) { call -> gated(call, CrmExtensionIds.Cloudbeds) { cloudbedsTest(call) } },
 
         // ---- Lead items (crm.leads.manage, like the property and room screens) ----
         McpTool(
@@ -184,14 +186,14 @@ object CrmIntegrationMcpTools {
                     "page" to McpSchema.integer("Pagina.", 1, 100),
                 ),
             ),
-        ) { call -> searchProperties(call) },
+        ) { call -> gated(call, CrmExtensionIds.WordPress) { searchProperties(call) } },
         McpTool(
             name = "link_property",
             title = "Vincular propiedad a un lead",
             description = "Agrega una propiedad del sitio (id de search_properties) a los intereses de un lead visible.",
             permission = CrmScreens.Manage,
             inputSchema = McpSchema.obj(mapOf(leadId, "listing" to McpSchema.integer("Id de la propiedad en el sitio.", 1)), required = listOf("lead", "listing")),
-        ) { call -> linkProperty(call) },
+        ) { call -> gated(call, CrmExtensionIds.WordPress) { linkProperty(call) } },
         McpTool(
             name = "add_lead_item",
             title = "Agregar interes manual",
@@ -236,14 +238,14 @@ object CrmIntegrationMcpTools {
             permission = CrmScreens.Manage,
             readOnly = true,
             inputSchema = McpSchema.obj(stayArguments + leadId, required = listOf("lead")),
-        ) { call -> searchRooms(call) },
+        ) { call -> gated(call, CrmExtensionIds.Cloudbeds) { searchRooms(call) } },
         McpTool(
             name = "assign_room",
             title = "Asignar habitacion a un lead",
             description = "Asigna a un lead visible una habitacion libre (roomId de search_rooms) para la estadia. Las habitaciones de una reserva comparten fechas.",
             permission = CrmScreens.Manage,
             inputSchema = McpSchema.obj(stayArguments + leadId + ("roomId" to McpSchema.string("Id de la habitacion (search_rooms).")), required = listOf("lead", "roomId")),
-        ) { call -> assignRoom(call) },
+        ) { call -> gated(call, CrmExtensionIds.Cloudbeds) { assignRoom(call) } },
         McpTool(
             name = "create_reservation",
             title = "Crear reserva en Cloudbeds",
@@ -268,13 +270,13 @@ object CrmIntegrationMcpTools {
                             ),
                         )
                     },
-                    "country" to McpSchema.string("Pais del huesped, codigo de 2 letras (opcional)."),
+                    "country" to McpSchema.string("Pais del huesped, codigo de 2 letras; vacio usa el pais por defecto de Cloudbeds. Cloudbeds lo exige."),
                     "zip" to McpSchema.string("Codigo postal (opcional)."),
                     "payment" to McpSchema.string("Metodo de pago; por defecto el de la integracion.", CrmCloudbeds.paymentLabels.keys.toList()),
                 ),
                 required = listOf("lead", "rooms"),
             ),
-        ) { call -> reserve(call) },
+        ) { call -> gated(call, CrmExtensionIds.Cloudbeds) { reserve(call) } },
     )
 
     private val stayArguments: Map<String, JsonObject>
@@ -316,6 +318,12 @@ object CrmIntegrationMcpTools {
         throw McpToolException(failure.message.orEmpty())
     } catch (failure: CrmEncuentra24Exception) {
         throw McpToolException(failure.message.orEmpty())
+    }
+
+    // An integration tool fails with a clear message when its extension is not active in the company.
+    private inline fun gated(call: McpToolCall, extensionId: String, block: () -> JsonElement): JsonElement {
+        CrmExtensions.inactive(call.tenant, extensionId)?.let { throw McpToolException(it) }
+        return block()
     }
 
     private fun text(value: String?) = value?.let(::JsonPrimitive) ?: JsonNull
@@ -397,6 +405,7 @@ object CrmIntegrationMcpTools {
                 put("welcomeDaysBefore", cloudbeds.welcomeDaysBefore)
                 put("welcomeHour", cloudbeds.welcomeHour)
                 put("archiveOnCheckout", cloudbeds.archiveOnCheckout)
+                put("defaultCountry", cloudbeds.defaultCountry)
                 put("ready", cloudbeds.ready)
                 if (cloudbeds.lastError.isNotEmpty()) put("lastError", cloudbeds.lastError)
             })
@@ -527,7 +536,7 @@ object CrmIntegrationMcpTools {
     }
 
     private fun updateCloudbeds(call: McpToolCall): JsonElement {
-        val keys = listOf("enabled", "propertyId", "paymentMethod", "welcomeEnabled", "welcomeTemplate", "welcomeDaysBefore", "welcomeHour", "archiveOnCheckout")
+        val keys = listOf("enabled", "propertyId", "paymentMethod", "welcomeEnabled", "welcomeTemplate", "welcomeDaysBefore", "welcomeHour", "archiveOnCheckout", "defaultCountry")
         if (keys.none(call::has)) throw McpToolException("Envia al menos un campo a cambiar.")
         val tenant = call.tenant
         val current = CrmCloudbeds.load(tenant)
@@ -557,6 +566,7 @@ object CrmIntegrationMcpTools {
             put("welcomeDaysBefore", (if (call.has("welcomeDaysBefore")) call.int("welcomeDaysBefore", 1, 0..60) else current.welcomeDaysBefore).toString())
             put("welcomeHour", (if (call.has("welcomeHour")) call.int("welcomeHour", 9, 0..23) else current.welcomeHour).toString())
             put("archiveOnCheckout", flag("archiveOnCheckout", current.archiveOnCheckout))
+            put("defaultCountry", if (call.has("defaultCountry")) call.string("defaultCountry", 2) else current.defaultCountry)
         }
         checked { CrmCloudbeds.saveForm(tenant, values, templates) }
         return result("Cloudbeds guardado.")

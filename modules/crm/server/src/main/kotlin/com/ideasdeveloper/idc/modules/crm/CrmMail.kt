@@ -81,8 +81,8 @@ object CrmMail {
         query.executeQuery().use { rows ->
             rows.next()
             CrmMailSettings(
-                rows.getString(1), rows.getString(2), rows.getInt(3), rows.getString(4), rows.getString(5), rows.getString(6), rows.getString(7),
-                rows.getBoolean(8), rows.getString(9), rows.getInt(10), rows.getString(11), rows.getString(12), rows.getString(13), rows.getBoolean(14),
+                rows.getString(1), rows.getString(2), rows.getInt(3), rows.getString(4), CrmSecrets.open(tenant, rows.getString(5)), rows.getString(6), rows.getString(7),
+                rows.getBoolean(8), rows.getString(9), rows.getInt(10), rows.getString(11), CrmSecrets.open(tenant, rows.getString(12)), rows.getString(13), rows.getBoolean(14),
                 rows.getObject(15) as Long?, rows.getLong(16), rows.getTimestamp(17)?.toInstant(), rows.getString(18),
             )
         }
@@ -105,12 +105,12 @@ object CrmMail {
         "imapSsl" to settings.imapSsl.toString(),
     )
 
-    private fun masked(secret: String?) = if (secret.isNullOrBlank()) "" else SecretMask
+    private fun masked(secret: String?) = CrmSecrets.mask(secret)
 
     /** Applies the mail form; a blank or masked password keeps the saved one. */
     fun merge(current: CrmMailSettings, values: Map<String, String>): CrmMailSettings {
         fun text(key: String) = values[key]?.trim()?.takeIf { it.isNotEmpty() }
-        fun secret(key: String, saved: String?) = values[key]?.takeIf { it.isNotBlank() && it != SecretMask } ?: saved
+        fun secret(key: String, saved: String?) = values[key]?.takeIf { it.isNotBlank() && !CrmSecrets.isPlaceholder(it) } ?: saved
         fun port(key: String, label: String) = values[key].orEmpty().trim().toIntOrNull()?.takeIf { it in 1..65535 }
             ?: throw CrmValidationException("$label debe ser un numero entre 1 y 65535.")
         val security = values["smtpSecurity"].orEmpty().ifBlank { current.smtpSecurity }
@@ -156,14 +156,14 @@ object CrmMail {
             update.setString(2, settings.smtpHost)
             update.setInt(3, settings.smtpPort)
             update.setString(4, settings.smtpUsername)
-            update.setString(5, settings.smtpPassword)
+            update.setString(5, CrmSecrets.seal(tenant, settings.smtpPassword))
             update.setString(6, settings.smtpFrom)
             update.setString(7, settings.smtpSecurity)
             update.setBoolean(8, settings.imapEnabled)
             update.setString(9, settings.imapHost)
             update.setInt(10, settings.imapPort)
             update.setString(11, settings.imapUsername)
-            update.setString(12, settings.imapPassword)
+            update.setString(12, CrmSecrets.seal(tenant, settings.imapPassword))
             update.setString(13, settings.imapFolder)
             update.setBoolean(14, settings.imapSsl)
             update.setObject(15, settings.imapUidValidity)

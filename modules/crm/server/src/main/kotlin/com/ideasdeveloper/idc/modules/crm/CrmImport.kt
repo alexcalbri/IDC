@@ -171,14 +171,16 @@ object CrmImport {
 
     fun mondayToken(tenant: Connection): String? =
         tenant.prepareStatement("SELECT monday_token FROM crm_settings WHERE id = 1").use { query ->
-            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1)?.takeIf { it.isNotBlank() } else null }
+            query.executeQuery().use { rows -> if (rows.next()) CrmSecrets.open(tenant, rows.getString(1))?.takeIf { it.isNotBlank() } else null }
         }
 
     fun saveMondayToken(tenant: Connection, token: String?) {
+        // Borrar el token siempre se puede; guardarlo exige la extension activa.
+        if (token != null) CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
         tenant.prepareStatement(
             "INSERT INTO crm_settings (id, monday_token) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET monday_token = EXCLUDED.monday_token, updated_at = CURRENT_TIMESTAMP"
         ).use { update ->
-            update.setString(1, token?.trim()?.takeIf { it.isNotEmpty() })
+            update.setString(1, CrmSecrets.seal(tenant, token?.trim()?.takeIf { it.isNotEmpty() }))
             update.executeUpdate()
         }
     }
@@ -227,6 +229,7 @@ object CrmImport {
 
     /** Leads of CT Leads Pro read through the IDC Connector plugin (stage, agent, source, tags, notes, messages, listings). */
     fun fromLeadsPro(tenant: Connection): CrmTable {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.WordPress)?.let { throw CrmImportException(it) }
         val settings = CrmWordPress.load(tenant)
         if (!settings.ready) throw CrmImportException("Conecta primero el sitio en Integraciones > WordPress.")
         val rows = mutableListOf<Map<String, String>>()
@@ -305,6 +308,7 @@ object CrmImport {
 
     /** Queues monday boards for the import job, which reads them and leaves the job ready to map. */
     fun queueMonday(tenant: Connection, boardIds: List<String>, userId: UUID?): UUID {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
         if (boardIds.isEmpty() || boardIds.any { !it.matches(Regex("^[0-9]{1,20}$")) }) throw CrmImportException("Marca al menos un tablero.")
         val id = UUID.randomUUID()
         insertJob(tenant, id, "monday", "monday ${boardIds.joinToString()}", "reading", boardIds, userId)
@@ -315,6 +319,7 @@ object CrmImport {
     fun readQueued(tenant: Connection) {
         jobQuery(tenant, "WHERE status = 'reading' ORDER BY created_at").forEach { job ->
             val table = try {
+                CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
                 val token = mondayToken(tenant) ?: throw CrmImportException("Se borro el token de monday; guardalo de nuevo.")
                 fromMonday(token, job.boards).also { if (it.rows.isEmpty()) throw CrmImportException("Los tableros marcados no tienen elementos.") }
             } catch (failure: Exception) {
@@ -466,7 +471,10 @@ object CrmImport {
      * Returns the labels of the created fields.
      */
     fun saveMappingCreatingFields(tenant: Connection, job: CrmImportJob, mapping: CrmImportMapping): List<String> = transaction(tenant) {
-        val (columns, created) = CrmImportTargets.createMissing(tenant, mapping.columns, job.columnTypes) { column -> columnValues(tenant, job, column) }
+        val (columns, created) = CrmImportTargets.createMissing(
+            tenant, mapping.columns, job.columnTypes,
+            extensionId = CrmExtensionIds.MondayImport.takeIf { job.source == "monday" },
+        ) { column -> columnValues(tenant, job, column) }
         saveMapping(tenant, job, mapping.copy(columns = columns))
         created
     }
@@ -783,7 +791,10 @@ object CrmImport {
         val running = jobQuery(tenant, "WHERE status = 'running' ORDER BY created_at")
         val deadline = Instant.now().plus(budget)
         var done = 0
+        val mondayActive = CrmExtensions.isEnabled(tenant, CrmExtensionIds.MondayImport)
         running.forEach { job ->
+            // Las importaciones de monday esperan a que su extension vuelva a estar activa.
+            if (job.source == "monday" && !mondayActive) return@forEach
             val context = Context(
                 CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant), today, job.source,
                 CrmFields.all(tenant), CrmImportTargets.customerFields(tenant),

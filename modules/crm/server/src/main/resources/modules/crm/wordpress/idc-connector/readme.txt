@@ -1,7 +1,7 @@
 === IDC Connector ===
 Requires at least: 6.0
 Requires PHP: 8.0
-Stable tag: 0.2.0
+Stable tag: 0.3.0
 
 Conecta un sitio WordPress con el tema Real Estate 7 al CRM de IdeasCore.
 
@@ -16,3 +16,6 @@ Conecta un sitio WordPress con el tema Real Estate 7 al CRM de IdeasCore.
 == Configuracion ==
 Ajustes > IDC Connector: direccion de IDC, codigo de la empresa y el secreto generado en el CRM (Configuracion > Integraciones > WordPress).
 Los eventos que no llegan quedan en cola y se reintentan cada hora.
+
+== Cambios ==
+0.3.0: los eventos van a la direccion nueva de IDC (/modules/crm/extensions/wordpress/EMPRESA/hook). Actualiza el plugin; la direccion anterior ya no responde. La extension WordPress debe estar instalada y activa en la empresa (Empresa > Extensiones).

@@ -2,7 +2,7 @@
   "id": "crm",
   "displayName": "CRM",
   "description": "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-  "version": "0.24.0",
-  "minCoreVersion": "0.5.0",
-  "minAppVersion": "0.5.0"
+  "version": "0.25.0",
+  "minCoreVersion": "0.7.0",
+  "minAppVersion": "0.7.0"
 }

@@ -138,6 +138,8 @@ object CrmImportTargets {
         tenant: Connection,
         columns: Map<String, String>,
         types: Map<String, String>,
+        // Extension that asks for the fields (monday_import): the CRM fields it creates are marked so uninstalling it can offer to delete them.
+        extensionId: String? = null,
         distinct: (String) -> List<String>,
     ): Pair<Map<String, String>, List<String>> {
         val created = mutableListOf<String>()
@@ -163,6 +165,13 @@ object CrmImportTargets {
                 crmFields.firstOrNull { it.label.equals(label, ignoreCase = true) }?.let { return@mapValues CrmPrefix + it.key }
                 val position = (crmFields.maxOfOrNull { it.position } ?: -1) + 1
                 val field = CrmFields.save(tenant, null, CrmFieldInput(label, finalType, options, finalMultiple, false, position.coerceAtMost(999)), crmFields)
+                if (extensionId != null) {
+                    tenant.prepareStatement("UPDATE crm_field_definitions SET extension_id = ? WHERE id = ?").use { mark ->
+                        mark.setString(1, extensionId)
+                        mark.setObject(2, field.id)
+                        mark.executeUpdate()
+                    }
+                }
                 crmFields = crmFields + field
                 created += "$label (CRM)"
                 CrmPrefix + field.key

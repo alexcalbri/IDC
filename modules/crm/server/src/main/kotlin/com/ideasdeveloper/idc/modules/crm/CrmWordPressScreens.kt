@@ -24,7 +24,7 @@ import java.time.format.DateTimeFormatter
 /** Items of interest of a lead, the property search of the website and the WordPress settings. */
 object CrmWordPressScreens {
     private const val UiRoute = CrmScreens.UiRoute
-    const val PluginPath = "/modules/crm/wordpress/idc-connector.zip"
+    const val PluginPath = CrmWordPressExtension.PluginPath
     private const val Any = "Todos"
     private val timeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
@@ -40,7 +40,7 @@ object CrmWordPressScreens {
 
     fun items(context: CrmScreens.Context, lead: CrmLead, canEdit: Boolean): UiNode? {
         val items = CrmItems.list(context.tenant, lead.id)
-        val wordpress = CrmWordPress.load(context.tenant).ready
+        val wordpress = CrmWordPress.load(context.tenant).ready && CrmExtensions.isEnabled(context.tenant, CrmExtensionIds.WordPress)
         if (items.isEmpty() && !wordpress && !canEdit) return null
         val id = lead.id.toString()
         fun action(op: String, item: CrmItem, extra: Map<String, String> = emptyMap()) =

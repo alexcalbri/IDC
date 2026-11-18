@@ -495,6 +495,8 @@ data class CrmLeadFacts(
     // Statuses of the Cloudbeds reservations of the lead.
     val reservationStatuses: List<String> = emptyList(),
     val cloudbedsReady: Boolean = true,
+    // The automations have no form, so the reservation needs the default guest country of Integraciones > Cloudbeds.
+    val guestCountry: Boolean = true,
 )
 
 /** Names of the stay dates for the messages ("Fecha de ingreso", the label of the mapped field). */
@@ -517,6 +519,7 @@ object CrmAutomationRequirements {
                 add("habitacion elegida para las fechas del lead (${facts.startDate} a ${facts.endDate})")
             }
             if (!CrmContacts.isEmail(facts.email)) add("correo del lead")
+            if (!facts.guestCountry) add("pais por defecto del huesped (Integraciones > Cloudbeds)")
         }
         CrmActionKind.CloudbedsCheckIn -> buildList {
             if (!facts.cloudbedsReady) add("integracion de Cloudbeds activa")

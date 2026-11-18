@@ -30,6 +30,8 @@ data class CrmCloudbedsSettings(
     val welcomeHour: Int,
     val archiveOnCheckout: Boolean,
     val lastError: String,
+    // ISO code (e.g. "US") sent when the reservation does not say the guest's country; Cloudbeds requires one.
+    val defaultCountry: String = "",
 ) {
     val ready get() = enabled && !apiKey.isNullOrBlank()
 }
@@ -81,27 +83,33 @@ object CrmCloudbeds {
 
     // ---- Settings ----
 
+    /** A guest country as Cloudbeds takes it: ISO 3166-1 alpha-2. */
+    val CountryCode = Regex("^[A-Z]{2}$")
+
     fun load(tenant: Connection): CrmCloudbedsSettings = tenant.prepareStatement(
         """
         SELECT enabled, api_key, property_id, payment_method, welcome_enabled, welcome_template_id, welcome_days_before,
-               welcome_hour, archive_on_checkout, last_error
+               welcome_hour, archive_on_checkout, last_error, default_country
         FROM crm_cloudbeds_settings WHERE id = 1
         """.trimIndent()
     ).use { query ->
         query.executeQuery().use { rows ->
             rows.next()
             CrmCloudbedsSettings(
-                rows.getBoolean(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getBoolean(5),
-                rows.getObject(6, UUID::class.java), rows.getInt(7), rows.getInt(8), rows.getBoolean(9), rows.getString(10),
+                rows.getBoolean(1), CrmSecrets.open(tenant, rows.getString(2)), rows.getString(3), rows.getString(4), rows.getBoolean(5),
+                rows.getObject(6, UUID::class.java), rows.getInt(7), rows.getInt(8), rows.getBoolean(9), rows.getString(10), rows.getString(11),
             )
         }
     }
 
     fun saveForm(tenant: Connection, values: Map<String, String>, templates: List<CrmTemplate>) {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Cloudbeds)?.let { throw CrmValidationException(it) }
         val current = load(tenant)
-        val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && it != CrmMail.SecretMask } ?: current.apiKey
+        val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && !CrmSecrets.isPlaceholder(it) } ?: current.apiKey
         val property = values["propertyId"].orEmpty().trim().ifEmpty { null }
         if (property != null && !property.matches(Regex("^[0-9]{1,30}$"))) throw CrmValidationException("El ID de la propiedad solo lleva numeros.")
+        val country = values["defaultCountry"].orEmpty().trim().uppercase()
+        if (!country.matches(CountryCode) && country.isNotEmpty()) throw CrmValidationException("El pais por defecto es un codigo de 2 letras, por ejemplo US o NI.")
         val enabled = values["enabled"] == "true"
         if (enabled && key.isNullOrBlank()) throw CrmValidationException("Para activar Cloudbeds escribe la API key.")
         val payment = paymentLabels.entries.firstOrNull { it.value == values["paymentMethod"] }?.key ?: current.paymentMethod
@@ -115,12 +123,12 @@ object CrmCloudbeds {
         tenant.prepareStatement(
             """
             UPDATE crm_cloudbeds_settings SET enabled = ?, api_key = ?, property_id = ?, payment_method = ?, welcome_enabled = ?,
-                welcome_template_id = ?, welcome_days_before = ?, welcome_hour = ?, archive_on_checkout = ?, updated_at = CURRENT_TIMESTAMP
+                welcome_template_id = ?, welcome_days_before = ?, welcome_hour = ?, archive_on_checkout = ?, default_country = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
             """.trimIndent()
         ).use { update ->
             update.setBoolean(1, enabled)
-            update.setString(2, key)
+            update.setString(2, CrmSecrets.seal(tenant, key))
             update.setString(3, property)
             update.setString(4, payment)
             update.setBoolean(5, welcome)
@@ -128,6 +136,7 @@ object CrmCloudbeds {
             update.setInt(7, days)
             update.setInt(8, hour)
             update.setBoolean(9, values["archiveOnCheckout"] == "true")
+            update.setString(10, country)
             update.executeUpdate()
         }
     }
@@ -180,7 +189,11 @@ object CrmCloudbeds {
     private fun JsonElement?.str() = (this as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
     private fun JsonElement?.bool() = (this as? JsonPrimitive)?.let { it.booleanOrNull ?: it.contentOrNull?.let { text -> text == "1" || text == "true" } }
 
+    /** Cloudbeds configurado y con su extension activa en la empresa. */
+    fun active(tenant: Connection): Boolean = load(tenant).ready && CrmExtensions.isEnabled(tenant, CrmExtensionIds.Cloudbeds)
+
     fun test(tenant: Connection): String {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Cloudbeds)?.let { throw CrmCloudbedsException(it) }
         val settings = load(tenant)
         val types = get(settings, "getRoomTypes", emptyMap())["data"].arr().size
         recordError(tenant, "")
@@ -217,6 +230,7 @@ object CrmCloudbeds {
 
     /** Free rooms for the dates and guests, cheapest first; types without an available rate are left out. */
     fun availability(tenant: Connection, start: LocalDate, end: LocalDate, adults: Int, children: Int): List<CbRoom> {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Cloudbeds)?.let { throw CrmCloudbedsException(it) }
         if (!end.isAfter(start)) throw CrmValidationException("La salida debe ser despues de la entrada.")
         val settings = load(tenant)
         val dates = mapOf("startDate" to start.toString(), "endDate" to end.toString())
@@ -274,6 +288,7 @@ object CrmCloudbeds {
     }
 
     fun reserve(tenant: Connection, leadId: UUID, start: LocalDate, end: LocalDate, guest: CbGuest, rooms: List<CbRoomRequest>, payment: String? = null): CbReservationResult {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Cloudbeds)?.let { throw CrmCloudbedsException(it) }
         if (rooms.isEmpty()) throw CrmValidationException("Elige al menos una habitacion.")
         if (!CrmContacts.isEmail(guest.email)) throw CrmValidationException("Cloudbeds exige el correo del huesped: agregalo al lead.")
         // Check again: a room may have been taken since it was chosen.
@@ -317,6 +332,7 @@ object CrmCloudbeds {
      * for its check-in (confirmed or not confirmed).
      */
     fun checkIn(tenant: Connection, reservation: CrmReservation) {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Cloudbeds)?.let { throw CrmCloudbedsException(it) }
         val settings = load(tenant)
         if (!settings.ready) throw CrmCloudbedsException("Cloudbeds no esta activo: configuralo en Integraciones.")
         if (reservation.status !in CrmAutomationRequirements.CheckInStatuses) {
@@ -361,6 +377,7 @@ object CrmCloudbeds {
      * days away or less (and not past), once the welcome hour has come. Each goes out once.
      */
     fun sendWelcomes(tenant: Connection, now: LocalDateTime): Int {
+        if (!CrmExtensions.isEnabled(tenant, CrmExtensionIds.Cloudbeds)) return 0
         val settings = load(tenant)
         if (!settings.welcomeEnabled || now.hour < settings.welcomeHour) return 0
         val template = CrmMail.templates(tenant).firstOrNull { it.id == settings.welcomeTemplateId } ?: return 0
@@ -399,6 +416,7 @@ object CrmCloudbeds {
      * (when enabled); a canceled one is recorded in the activity.
      */
     fun syncStatuses(tenant: Connection, today: LocalDate): Int {
+        if (!CrmExtensions.isEnabled(tenant, CrmExtensionIds.Cloudbeds)) return 0
         val settings = load(tenant)
         if (!settings.ready) return 0
         val open = reservations(tenant, "status IN ('not_confirmed', 'confirmed', 'checked_in') AND start_date <= ?") { it.setObject(1, today.plusDays(60)) }

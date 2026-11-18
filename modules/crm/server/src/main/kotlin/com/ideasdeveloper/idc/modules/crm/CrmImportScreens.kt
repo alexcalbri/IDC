@@ -42,34 +42,39 @@ object CrmImportScreens {
                 action = UiNavigate("importjob", mapOf("job" to job.id.toString())),
             )
         }
-        val wordpress = CrmWordPress.load(context.tenant).ready
+        val wordpress = CrmWordPress.load(context.tenant).ready && CrmExtensions.isEnabled(context.tenant, CrmExtensionIds.WordPress)
+        val mondayMissing = CrmExtensions.missingNodes(context.tenant, CrmExtensionIds.MondayImport)
         val mondayToken = CrmImport.mondayToken(context.tenant)
+        // Sin la extension de monday activa, en su lugar se muestra el aviso para instalarla.
+        val mondayCards: List<UiNode> = mondayMissing ?: listOf(
+                UiCard(
+                    listOfNotNull(
+                        UiForm(
+                            "mondayToken",
+                            listOf(
+                                UiField("token", "Token de la API de monday", type = "password", required = mondayToken == null,
+                                    help = "monday > tu avatar > Developers > Mi token. Se guarda para la empresa."),
+                            ),
+                            mapOf("token" to CrmSecrets.mask(mondayToken)),
+                            submit = UiButton("Guardar y cargar tableros", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayToken"), formId = "mondayToken")),
+                        ),
+                        mondayToken?.let {
+                            UiRow(
+                                listOf(
+                                    UiButton("Cargar tableros", UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
+                                    UiButton("Quitar token", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayForget"), confirm = "Se borra el token de monday guardado. Continuar?"), style = "secondary"),
+                                ),
+                            )
+                        },
+                    ),
+                    title = "monday",
+                )
+        )
         return listOfNotNull(
             UiText("Cada importacion pasa por mapeo de columnas, vista previa y luego se aplica por lotes. Se busca a cada persona por correo o telefono; si el correo y el telefono son de clientes distintos la fila queda por revisar. Importar de nuevo actualiza los leads ya importados."),
             UiGrid(
                 listOf(
-                    UiCard(
-                        listOfNotNull(
-                            UiForm(
-                                "mondayToken",
-                                listOf(
-                                    UiField("token", "Token de la API de monday", type = "password", required = mondayToken == null,
-                                        help = "monday > tu avatar > Developers > Mi token. Se guarda para la empresa."),
-                                ),
-                                mapOf("token" to if (mondayToken == null) "" else CrmMail.SecretMask),
-                                submit = UiButton("Guardar y cargar tableros", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayToken"), formId = "mondayToken")),
-                            ),
-                            mondayToken?.let {
-                                UiRow(
-                                    listOf(
-                                        UiButton("Cargar tableros", UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
-                                        UiButton("Quitar token", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayForget"), confirm = "Se borra el token de monday guardado. Continuar?"), style = "secondary"),
-                                    ),
-                                )
-                            },
-                        ),
-                        title = "monday",
-                    ),
+                    *mondayCards.toTypedArray(),
                     UiCard(
                         listOf(
                             UiText("Lee los leads de CT Leads Pro del sitio conectado: etapa, agente, origen, etiquetas, notas, mensajes y propiedades de interes."),
@@ -100,7 +105,7 @@ object CrmImportScreens {
                 ),
                 minItemWidth = 300,
             ),
-            mondayToken?.takeIf { params["monday"] == "boards" }?.let { mondayBoards(it) },
+            mondayToken?.takeIf { params["monday"] == "boards" && mondayMissing == null }?.let { mondayBoards(it) },
             UiCard(listOf(UiList(jobs, emptyText = "Sin importaciones.")), title = "Importaciones"),
         )
     }

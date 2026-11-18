@@ -120,7 +120,8 @@ object CrmMcpTools {
             "Los nuevos leads pueden traer un usuario sugerido que, al aprobarlo, se anade a los asignados. Antes de enviar un mensaje a un lead, crear " +
             "una reserva o cambiar configuracion o integraciones, muestra lo que vas a hacer y espera la confirmacion del usuario. " +
             "Las credenciales de las integraciones y del correo (API keys, tokens, secretos, contrasenas) se configuran solo en la app; " +
-            "nunca las pidas ni las recibas. Las automatizaciones (list_automations) envian plantillas, cambian etapas o campos, avisan a usuarios y usan Cloudbeds " +
+            "nunca las pidas ni las recibas. Meta, WordPress, Encuentra24, Cloudbeds y la importacion desde monday son extensiones que cada empresa instala " +
+            "y activa en Empresa > Extensiones: si una herramienta responde que la extension no esta activa, dile al usuario que la instale o la active alli. Las automatizaciones (list_automations) envian plantillas, cambian etapas o campos, avisan a usuarios y usan Cloudbeds " +
             "cuando se dispara su evento o su fecha; los campos de tipo Boton de la ficha (press_lead_button) y las automatizaciones manuales (run_automation) " +
             "se ejecutan solo a pedido del usuario: muestra lo que haran y espera su confirmacion."
 

@@ -241,6 +241,11 @@ configure_server_env() {
     append_config_value MODULE_PACKAGES_ROOT "$APP_DIR/server-modules"
     append_config_value MODULE_GITHUB_TOKEN ''
     append_config_value VERSION_CATALOG_URL ''
+    # Llave maestra de los secretos cifrados: se genera una sola vez y nunca se regenera.
+    if ! config_has_key IDC_MASTER_KEY; then
+        append_config_value IDC_MASTER_KEY "$(openssl rand -base64 32)"
+        printf 'Respalda IDC_MASTER_KEY (%s): sin ella no se pueden leer los secretos guardados.\n' "$CONFIG_FILE"
+    fi
     append_config_value CORE_UPDATE_REF master
     if [[ -f $NGINX_SITE ]] && grep -Eq 'listen[[:space:]]+443' "$NGINX_SITE"; then
         append_config_value PUBLIC_SCHEME https
@@ -389,6 +394,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V009__add_server_owner_company_sessions.sql.'
     [[ -f database/control/migrations/V010__create_core_update_requests.sql ]] ||
         die 'No se encontro database/control/migrations/V010__create_core_update_requests.sql.'
+    [[ -f database/control/migrations/V011__create_extensions.sql ]] ||
+        die 'No se encontro database/control/migrations/V011__create_extensions.sql.'
     [[ -f database/core/migrations/V003__add_application_user_profile.sql ]] ||
         die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
     [[ -f database/core/migrations/V004__add_application_user_code.sql ]] ||
@@ -407,6 +414,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V008__add_company_owner_group.sql
     apply_migration "$db_name" control database/control/migrations/V009__add_server_owner_company_sessions.sql
     apply_migration "$db_name" control database/control/migrations/V010__create_core_update_requests.sql
+apply_migration "$db_name" control database/control/migrations/V011__create_extensions.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     apply_migration "$db_name" core database/core/migrations/V004__add_application_user_code.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
@@ -422,6 +430,9 @@ REVOKE INSERT ON core_update_requests FROM :"db_user";
 GRANT SELECT ON core_update_requests TO :"db_user";
 GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";
 GRANT USAGE ON SEQUENCE core_update_requests_id_seq TO :"db_user";
+GRANT SELECT, INSERT, UPDATE ON server_extensions, extension_operations, extension_operation_targets TO :"db_user";
+GRANT SELECT, INSERT ON extension_unsigned_authorizations TO :"db_user";
+GRANT USAGE ON SEQUENCE extension_unsigned_authorizations_id_seq, extension_operations_id_seq TO :"db_user";
 SQL
 
     [[ -f database/tenant/migrations/V004__create_application_permissions.sql ]] ||

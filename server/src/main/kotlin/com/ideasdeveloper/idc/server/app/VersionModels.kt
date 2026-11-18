@@ -2,7 +2,7 @@ package com.ideasdeveloper.idc.server.app
 
 import kotlinx.serialization.Serializable
 
-const val IdeasCoreVersion = "0.6.0"
+const val IdeasCoreVersion = "0.7.0"
 
 // El servidor no conoce la version de la app (cada cliente trae la suya): solo informa la ultima disponible.
 @Serializable

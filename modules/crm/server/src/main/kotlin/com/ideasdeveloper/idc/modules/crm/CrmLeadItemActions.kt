@@ -45,6 +45,7 @@ object CrmLeadItemActions {
      */
     fun assignRoom(context: CrmScreens.Context, lead: CrmLead, params: Map<String, String>, actor: CrmActor): String {
         val tenant = context.tenant
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Cloudbeds)?.let { throw CrmActionNotice(it, warning = true) }
         val stay = try {
             CrmCloudbedsScreens.stay(lead, params, context.today)
         } catch (failure: CrmValidationException) {
@@ -90,8 +91,10 @@ object CrmLeadItemActions {
             if (max > 0 && adults + children > max) throw CrmActionNotice("${room.title} admite hasta $max personas.")
             CbRoomRequest(room.externalId, room.data["roomTypeId"].orEmpty().ifEmpty { throw CrmActionNotice("Vuelve a asignar ${room.title}.") }, adults, children)
         }
-        val country = values["country"].orEmpty().trim().uppercase()
-        if (country.isNotEmpty() && !country.matches(Regex("^[A-Z]{2}$"))) throw CrmActionNotice("El pais es un codigo de 2 letras, por ejemplo NI o US.")
+        // Cloudbeds rejects a reservation without the guest's country; the automations rely on the default of Integraciones.
+        val country = values["country"].orEmpty().trim().uppercase().ifEmpty { CrmCloudbeds.load(tenant).defaultCountry }
+        if (country.isEmpty()) throw CrmActionNotice("Falta el pais del huesped: escribelo o pon un pais por defecto en Integraciones > Cloudbeds.", warning = true)
+        if (!country.matches(CrmCloudbeds.CountryCode)) throw CrmActionNotice("El pais es un codigo de 2 letras, por ejemplo NI o US.")
         val (first, last) = CrmContacts.splitName(lead.name)
         val guest = CbGuest(first, last, lead.email, CrmContacts.normalizePhone(lead.phone), country, values["zip"].orEmpty().trim().take(20))
         val result = try {

@@ -212,10 +212,10 @@ object CrmAutomationScreens {
         templates = CrmMail.templates(context.tenant),
         users = context.users,
         fields = context.fields,
-        cloudbedsReady = CrmCloudbeds.load(context.tenant).ready,
+        cloudbedsReady = CrmCloudbeds.active(context.tenant),
     )
 
-    private fun welcomeActive(context: CrmScreens.Context): Boolean = CrmCloudbeds.load(context.tenant).let { it.ready && it.welcomeEnabled }
+    private fun welcomeActive(context: CrmScreens.Context): Boolean = CrmCloudbeds.active(context.tenant) && CrmCloudbeds.load(context.tenant).welcomeEnabled
 
     private fun stayKeys(context: CrmScreens.Context): List<String> =
         CrmStay.effective(context.stay, context.fields).let { listOf(it.startKey, it.endKey).filter { key -> key.isNotEmpty() } }

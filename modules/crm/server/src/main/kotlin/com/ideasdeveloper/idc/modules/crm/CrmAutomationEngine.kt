@@ -119,7 +119,7 @@ object CrmAutomationEngine {
         templates = CrmMail.templates(tenant),
         users = CrmRepository.users(tenant),
         fields = CrmFields.all(tenant),
-        cloudbedsReady = CrmCloudbeds.load(tenant).ready,
+        cloudbedsReady = CrmCloudbeds.active(tenant),
     )
 
     /** The mapped stay fields' labels, for "falta la fecha de ingreso". */
@@ -137,6 +137,7 @@ object CrmAutomationEngine {
         return CrmLeadFacts(
             email = lead.email, startDate = lead.targetStart, endDate = lead.targetEnd, chosenRooms = rooms,
             reservationStatuses = CrmCloudbeds.forLead(tenant, lead.id).map { it.status }, cloudbedsReady = refs.cloudbedsReady,
+            guestCountry = CrmCloudbeds.load(tenant).defaultCountry.isNotEmpty(),
         )
     }
 
@@ -318,6 +319,7 @@ object CrmAutomationEngine {
                     put("adults_${room.id}", room.data["adults"].orEmpty().ifEmpty { "1" })
                     put("children_${room.id}", room.data["children"].orEmpty().ifEmpty { "0" })
                 }
+                // No country: CrmLeadItemActions.reserve uses the default guest country of Integraciones > Cloudbeds.
             }
             CrmLeadItemActions.reserve(tenant, refs.stages, lead, values, actor).message
         }

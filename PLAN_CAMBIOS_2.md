@@ -329,3 +329,97 @@ No se programan: son datos de configuración. Al probar el cambio 9, se crean de
 - **Revisar:** `VersionResponse` usa `IdeasCoreVersion` también como `appVersion` (VersionModels.kt:10). Hay que corregirlo si es un error.
 
 **Versiones:** Core 0.6.0 y app 0.6.1. Los módulos sin cambios de código no suben de versión; solo cambia su `module.json`.
+
+## 11. Extensiones por empresa (EXTENSIONS.md) — Core 0.7.0, app 0.7.0, CRM 0.25.0
+
+**Decisiones del usuario (2026-11-17):** todo de una vez (también paquetes externos firmados); llave maestra en `server.env`; las integraciones ya configuradas pasan solas a extensión instalada y activa; **solo rutas nuevas** (las viejas de Meta y WordPress dejan de responder: hay que cambiar la URL en la consola de Meta y en cada plugin de WordPress).
+
+**Decisiones de diseño (supervisor):**
+- Grupo vinculado = `companies.owner_group` (control V008), que ya existe. Se agrega la suspensión.
+- El hash y la firma no pueden ir dentro del `extension.json` que firman: van en `extension.sig.json` junto al manifiesto. `packageSha256` = SHA-256 del árbol: por cada archivo de la carpeta (en orden por ruta relativa con `/`, sin `extension.sig.json`) se suma `ruta\n` + sha256hex(contenido) + `\n`. La firma es Ed25519 sobre los 32 bytes del hash. La llave pública `ideascore-2026` va en el Core; la privada la tiene solo el usuario (scripts `scripts/extensions/keygen.sh` y `sign.sh`). Se actualiza EXTENSIONS.md.
+- Las extensiones del CRM (meta, monday_import, wordpress, encuentra24, cloudbeds) vienen dentro del módulo (`bundled`): no se descargan ni se firman, porque el paquete del módulo ya las trae.
+- Las rutas de una extensión se registran al arrancar (Ktor no acepta rutas después). El Core las monta bajo `/modules/<m>/extensions/<id>/` detrás de una compuerta que responde según `tenant_extensions.status`: 404 `extension_not_installed`, 403 `extension_disabled` o 409 `extension_incompatible`. Instalar un paquete nuevo pide reinicio, igual que los módulos. Instalar en otra empresa un paquete ya cargado no lo pide.
+
+### 11.1 Secretos cifrados (Core)
+- `IDC_MASTER_KEY` (32 bytes en base64) en `server.env`. `install.sh` y `update.sh` la generan si falta. Sin llave, el servidor arranca pero rechaza guardar secretos (`SECRETS_UNAVAILABLE`).
+- Cada empresa tiene su llave de datos en `tenant_data_keys` (V006 tenant), envuelta con AES-256-GCM usando la maestra. El espacio del servidor también tiene la suya.
+- `SecretBox` (server): `seal(connection, plain)` devuelve `enc:v1:<base64(nonce|cipher)>`; también `open(connection, sealed)`, `isSealed(value)` y `mask(value)` (`********`). Los secretos nunca van a los logs.
+- Se cifran **todos** los secretos que hoy están en texto plano: Meta (`crm_meta_settings`, `crm_meta_server_app`), Cloudbeds, Encuentra24, WordPress, `crm_settings.monday_token` y `translation_api_key`, y SMTP/IMAP de `crm_mail_settings`. Un trabajo al arrancar los cifra en cada empresa. Es idempotente: salta lo que ya empieza con `enc:v1:`. CRM V022 quita el CHECK de WordPress (V005).
+
+### 11.2 Tablas
+- **Control V011** (se añade a `migrations.sh`/`update.sh`):
+  - `server_extensions`: id, module_id, version, min_module_version, source_type `bundled|github`, source_url fijado a un commit, package_sha256, signed, key_id, installed_package_path, manifest jsonb, status `installed|pending_restart|removed` y fechas.
+  - `extension_unsigned_authorizations`: package_sha256 único, extension_id, source_url, actor, texto de confirmación y fecha.
+  - `extension_operations`: id, actor, operation `install|configure|enable|disable|uninstall|apply`, extension_id, source_company, status y fechas.
+  - `extension_operation_targets`: operation_id, company_code, status `pending|applied|failed|skipped`, reason, intentos y fechas.
+  - `companies.group_suspended boolean default false` y `companies.group_owner_email` (correo del business owner al vincular).
+- **Tenant V006** (se añade a la lista fija de `CompanyProvisioningService`):
+  - `tenant_data_keys`.
+  - `tenant_extensions`: extension_id PK, module_id, version, status `installed|enabled|disabled|incompatible|removed`, fechas e installed_by.
+  - `tenant_extension_settings`: extension_id, key, value, secret bool; PK compuesta.
+  - `tenant_extension_objects`: extension_id, kind, object_ref, option_id y created_at.
+- **CRM V022:** columna `extension_id` en los campos personalizados que cree una extensión; quita el CHECK de WordPress; marca de migración de integraciones.
+
+### 11.3 Contrato del Core (`server/.../extensions/`)
+- `ServerExtension`, que implementa cada extensión:
+  - `manifest: ExtensionManifest`, `migrationPaths`, `runtimeTables`, `jobs`;
+  - `routes(route, access)`;
+  - `uninstallPreview(ctx)`, `uninstall(ctx, choices)`, `onEnable(ctx)` y `validateSettings(settings)`.
+- `ServerExtensionProvider` para ServiceLoader. Un `ServerModule` puede declarar `bundledExtensions`.
+- `ExtensionManifest` es el `extension.json` de EXTENSIONS.md, sin el hash ni la firma.
+- Lista cerrada de permisos: `network.outbound:<host>`, `secrets.read`, `secrets.write`, `webhook.public` y los que publique el módulo en `ModuleDefinition.extensionPermissions` (p. ej. `crm.leads.create`, `crm.fields.create`, `crm.messages.write`).
+- `ExtensionService`:
+  - listar las extensiones disponibles y las instaladas por empresa;
+  - instalar y configurar (los secretos se cifran con SecretBox);
+  - activar (exige los ajustes `required`) y desactivar;
+  - vista previa de desinstalación y desinstalar: una transacción por empresa, borra ajustes y objetos según las opciones, y nunca borra leads ni clientes;
+  - marcar `incompatible` al actualizar un módulo y avisar al business owner con Notifications;
+  - aplicar a varias empresas del grupo (pasos 1-7 de EXTENSIONS.md), reintentando solo las fallidas.
+- Permisos: el business owner actúa en su empresa y en las de su grupo que no estén suspendidas. El server owner actúa en cualquier empresa que tenga el módulo. Todo se registra en `provisioning_audit_log` (`extension.*`).
+- Rutas:
+  - `/companies/current/extensions...`: business owner, con X-Company-Code;
+  - `/companies/{code}/extensions...`: server owner;
+  - `/server/extensions...`: paquetes (catálogo, instalar paquete, autorizar sin firma);
+  - `/companies/{code}/group...`: crear, quitar y revisar suspensión.
+- **Paquetes externos:**
+  - Catálogo en `EXTENSION_CATALOG_URL`: la carpeta `extensions/` de GitHub en un commit.
+  - Validación de EXTENSIONS.md: id igual a la carpeta, módulo instalado, `minModuleVersion`, permisos de la lista cerrada, rutas bajo el prefijo y `source.url` con un commit de 40 hex.
+  - Las migraciones solo pueden tocar tablas `ext_<id>__*` (validador de SQL). Además se verifican el hash del árbol y la firma.
+  - Sin firma, solo se instala si hay una autorización para ese hash.
+  - Compila con kotlinc igual que los módulos, carga con `ServerExtensionProvider` y pide reinicio.
+
+### 11.4 CRM (CRM 0.25.0, mínimos Core 0.7.0 / app 0.7.0)
+- Extensiones incluidas: `meta`, `monday_import`, `wordpress`, `encuentra24` y `cloudbeds`. Cada una trae su manifiesto, sus opciones de desinstalación y sus ajustes en las tablas que ya tiene; los secretos pasan por SecretBox.
+- Rutas nuevas (las viejas se quitan):
+  - Meta del servidor: `/modules/crm/extensions/meta/webhook`, `/deauthorize`, `/data-deletion`, `/deletion` y `/{step}`.
+  - Meta con app propia de una empresa: `/modules/crm/extensions/meta/{company}/webhook`.
+  - WordPress: `/modules/crm/extensions/wordpress/{company}/hook` y `/modules/crm/extensions/wordpress/idc-connector.zip`. Se actualiza la URL del plugin.
+- Migración automática: si una empresa ya tiene configurada la integración, se registra como `enabled`.
+- Una página o un número de Meta solo puede estar en una empresa: índice único en el servidor y un error claro.
+
+### 11.5 App (app 0.7.0) y MCP
+- Empresa → **Extensiones** (para el business owner, y para el server owner en cada empresa):
+  - lista por módulo con su estado;
+  - ajustes con los secretos enmascarados;
+  - activar o desactivar;
+  - desinstalar con vista previa y opciones;
+  - aplicar a empresas del grupo: vista previa, resultado por empresa y reintento de las fallidas.
+- Servidor → **Paquetes de extensiones**:
+  - catálogo e instalación de paquetes, con aviso de reinicio;
+  - autorizar un paquete sin firma, con confirmación escrita;
+  - revisión de las empresas suspendidas en su grupo.
+- Las pantallas de integraciones del CRM muestran "Instala la extensión X" cuando no está instalada.
+- MCP (`ServerMcpTools`): `servidor_list_extensions`, `servidor_install_extension`, `servidor_configure_extension`, `servidor_set_extension_enabled`, `servidor_preview_extension_uninstall`, `servidor_uninstall_extension` y `servidor_apply_extension_to_group`. Las respuestas no incluyen secretos.
+
+### Olas
+1. **Ola 1 (Core, 3 carriles sin archivos en común).** Antes, el supervisor escribe el contrato (interfaces).
+   - A, secretos: `server/.../security/` y scripts.
+   - B, tablas, ExtensionService, rutas, compuerta, grupos y operaciones: `server/.../extensions/`, V011 y V006.
+   - C, paquetes externos, catálogo, hash, firma y validador: `server/.../extensions/packages/` y `scripts/extensions/`.
+2. **Ola 2 (CRM):** extensiones incluidas, rutas nuevas, cifrado de secretos, V022 y plugin de WordPress.
+3. **Ola 3:** app y MCP.
+4. **Cierre:** compilación central, pruebas, ECC (kotlin + database + security), pase de compose-performance, versiones y README/EXTENSIONS.md.
+
+**Pendiente del usuario:**
+- Generar el par de llaves con `scripts/extensions/keygen.sh`. La llave privada nunca entra al repo.
+- Después del despliegue, cambiar las URL en la consola de Meta y en los plugins de WordPress.

@@ -112,7 +112,7 @@ object CrmTranslate {
         query.executeQuery().use { rows ->
             if (rows.next()) {
                 val map = runCatching { json.parseToJsonElement(rows.getString(5)).jsonObject.mapValues { it.value.jsonPrimitive.content } }.getOrDefault(emptyMap())
-                CrmTranslationSettings(rows.getString(1), rows.getString(2), rows.getString(3), rows.getString(4), map)
+                CrmTranslationSettings(rows.getString(1), CrmSecrets.open(tenant, rows.getString(2)).orEmpty(), rows.getString(3), rows.getString(4), map)
             } else {
                 CrmTranslationSettings()
             }
@@ -131,7 +131,7 @@ object CrmTranslate {
             """.trimIndent()
         ).use { update ->
             update.setString(1, settings.provider)
-            update.setString(2, settings.apiKey)
+            update.setString(2, CrmSecrets.seal(tenant, settings.apiKey).orEmpty())
             update.setString(3, settings.model)
             update.setString(4, settings.languageField)
             update.setString(5, map)
@@ -144,7 +144,7 @@ object CrmTranslate {
 
     fun toFormValues(settings: CrmTranslationSettings, fields: List<CrmField>): Map<String, String> = mapOf(
         "provider" to (providerLabels[settings.provider] ?: providerLabels.getValue("")),
-        "apiKey" to if (settings.apiKey.isBlank()) "" else CrmMail.SecretMask,
+        "apiKey" to CrmSecrets.mask(settings.apiKey),
         "model" to settings.effectiveModel,
         "languageField" to (languageFields(fields).firstOrNull { it.key == settings.languageField }?.label ?: NoField),
         "languageMap" to formatLanguageMap(settings.languageMap),
@@ -170,7 +170,7 @@ object CrmTranslate {
     /** Applies the form; a blank or masked key keeps the saved one. */
     fun merge(current: CrmTranslationSettings, values: Map<String, String>, fields: List<CrmField>): CrmTranslationSettings {
         val provider = providerLabels.entries.firstOrNull { it.value == values["provider"] }?.key ?: current.provider
-        val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && it != CrmMail.SecretMask } ?: current.apiKey
+        val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && !CrmSecrets.isPlaceholder(it) } ?: current.apiKey
         val model = values["model"].orEmpty().trim().takeIf { it != DefaultModel }.orEmpty()
         if (model.length > 100 || !model.all { it.isLetterOrDigit() || it in "-._:/" }) throw CrmValidationException("El modelo de IA no es valido.")
         if (provider.isNotEmpty() && key.isBlank()) throw CrmValidationException("Escribe la clave de API del traductor.")

@@ -91,11 +91,13 @@ object CrmMeta {
     ).use { query ->
         query.executeQuery().use { rows ->
             rows.next()
+            // Secrets are stored sealed (CrmSecrets): app secret, verify token, tokens of the system user, page, Messenger, Instagram and login.
+            fun secret(index: Int) = CrmSecrets.open(tenant, rows.getString(index))
             CrmMetaSettings(
-                rows.getBoolean(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getString(6),
-                rows.getString(7), rows.getString(8), rows.getString(9), rows.getString(10), rows.getBoolean(11),
-                rows.getBoolean(12), rows.getString(13), rows.getString(14), rows.getString(15),
-                rows.getString(16), rows.getString(17), rows.getString(18),
+                rows.getBoolean(1), secret(2), secret(3), secret(4), rows.getString(5), rows.getString(6),
+                secret(7), rows.getString(8), rows.getString(9), rows.getString(10), rows.getBoolean(11),
+                rows.getBoolean(12), secret(13), secret(14), rows.getString(15),
+                rows.getString(16), secret(17), rows.getString(18),
             )
         }
     }
@@ -111,22 +113,22 @@ object CrmMeta {
             """.trimIndent()
         ).use { update ->
             update.setBoolean(1, settings.enabled)
-            update.setString(2, settings.appSecret)
-            update.setString(3, settings.verifyToken)
-            update.setString(4, settings.systemToken)
+            update.setString(2, CrmSecrets.seal(tenant, settings.appSecret))
+            update.setString(3, CrmSecrets.seal(tenant, settings.verifyToken))
+            update.setString(4, CrmSecrets.seal(tenant, settings.systemToken))
             update.setString(5, settings.pageId)
             update.setString(6, settings.pageName)
-            update.setString(7, settings.pageToken)
+            update.setString(7, CrmSecrets.seal(tenant, settings.pageToken))
             update.setString(8, settings.instagramAccountId)
             update.setString(9, settings.wabaId)
             update.setString(10, settings.phoneNumberId)
             update.setBoolean(11, settings.recordEchoes)
             update.setBoolean(12, settings.sharedTokens)
-            update.setString(13, settings.messengerToken)
-            update.setString(14, settings.instagramToken)
+            update.setString(13, CrmSecrets.seal(tenant, settings.messengerToken))
+            update.setString(14, CrmSecrets.seal(tenant, settings.instagramToken))
             update.setString(15, settings.instagramUsername)
             update.setString(16, settings.connectionMode)
-            update.setString(17, settings.oauthToken)
+            update.setString(17, CrmSecrets.seal(tenant, settings.oauthToken))
             update.setString(18, settings.metaUserId)
             update.executeUpdate()
         }
@@ -135,7 +137,7 @@ object CrmMeta {
     fun toFormValues(settings: CrmMetaSettings): Map<String, String> = mapOf(
         "enabled" to settings.enabled.toString(),
         "appSecret" to mask(settings.appSecret),
-        "verifyToken" to settings.verifyToken.orEmpty(),
+        "verifyToken" to verifyShown(settings.verifyToken),
         "systemToken" to mask(settings.systemToken),
         "pageId" to settings.pageId.orEmpty(),
         "wabaId" to settings.wabaId.orEmpty(),
@@ -149,18 +151,21 @@ object CrmMeta {
         "instagramAccount" to (settings.instagramUsername?.let { "@$it" } ?: settings.instagramAccountId ?: "Sin cuenta vinculada"),
     )
 
-    private fun mask(secret: String?) = if (secret.isNullOrBlank()) "" else CrmMail.SecretMask
+    private fun mask(secret: String?) = CrmSecrets.mask(secret)
+
+    private fun verifyShown(token: String?) = if (CrmSecrets.isUnreadable(token)) CrmSecrets.UnreadableText else token.orEmpty()
 
     /** Applies the Meta form; blank or masked secrets keep the saved ones. */
     fun merge(current: CrmMetaSettings, values: Map<String, String>): CrmMetaSettings {
-        fun secret(key: String, saved: String?) = values[key]?.trim()?.takeIf { it.isNotEmpty() && it != CrmMail.SecretMask } ?: saved
+        fun secret(key: String, saved: String?) = values[key]?.trim()?.takeIf { it.isNotEmpty() && !CrmSecrets.isPlaceholder(it) } ?: saved
         fun id(key: String, label: String): String? {
             val value = values[key].orEmpty().trim().ifEmpty { return null }
             if (!numericId.matches(value)) throw CrmValidationException("$label solo lleva numeros.")
             return value
         }
-        val verify = values["verifyToken"].orEmpty().trim().ifEmpty { null }
-        if (verify != null && !verify.matches(Regex("^[A-Za-z0-9_.-]{8,100}$"))) {
+        // The verify token is shown, but one that cannot be read is kept as it is (never replaced by the notice).
+        val verify = values["verifyToken"].orEmpty().trim().ifEmpty { null }.let { if (CrmSecrets.isPlaceholder(it)) current.verifyToken else it }
+        if (verify != null && !CrmSecrets.isUnreadable(verify) && !verify.matches(Regex("^[A-Za-z0-9_.-]{8,100}$"))) {
             throw CrmValidationException("El verify token debe tener entre 8 y 100 letras, numeros, puntos, guiones o guiones bajos.")
         }
         val systemToken = secret("systemToken", current.systemToken)
@@ -217,7 +222,7 @@ object CrmMeta {
     /** X-Hub-Signature-256 = "sha256=" + HMAC-SHA256(raw body, App Secret), compared in constant time. */
     fun validSignature(appSecret: String?, header: String?, body: ByteArray): Boolean {
         if (appSecret.isNullOrBlank() || header == null || !header.startsWith("sha256=")) return false
-        val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(appSecret.toByteArray(), "HmacSHA256")) }
+        val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(appSecret.toByteArray(Charsets.UTF_8), "HmacSHA256")) }
         val expected = mac.doFinal(body).joinToString("") { "%02x".format(it) }
         return MessageDigest.isEqual(expected.toByteArray(), header.removePrefix("sha256=").lowercase().toByteArray())
     }
@@ -489,6 +494,7 @@ object CrmMeta {
      * stop the others.
      */
     fun setup(tenant: Connection, start: CrmMetaSettings, page: Boolean = true, whatsApp: Boolean = true): Setup {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Meta)?.let { throw CrmMetaException(it) }
         var settings = start
         val done = mutableListOf<String>()
         val problems = mutableListOf<String>()
@@ -603,6 +609,7 @@ object CrmMeta {
      * per platform). Names already set are never replaced.
      */
     fun fillNames(tenant: Connection, settings: CrmMetaSettings, limit: Int = 100): NameFill {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Meta)?.let { throw CrmMetaException(it) }
         var reviewed = 0
         var filled = 0
         listOf("messenger", "instagram").filter { settings.channelToken(it) != null }.forEach { platform ->
@@ -722,12 +729,14 @@ object CrmWhatsAppChannel : CrmChannel {
     override val label = "WhatsApp"
 
     override fun unavailable(context: CrmChannelContext, lead: CrmLead): String? = when {
+        CrmExtensions.inactive(context.tenant, CrmExtensionIds.Meta) != null -> CrmExtensions.inactiveMessage(CrmExtensionIds.Meta)
         !CrmMeta.load(context.tenant).whatsAppReady -> "Configura WhatsApp en Integraciones."
         CrmContacts.normalizePhone(lead.phone).isEmpty() -> "El lead no tiene un telefono valido."
         else -> null
     }
 
     override fun send(context: CrmChannelContext, lead: CrmLead, email: CrmEmail): String? = try {
+        CrmExtensions.inactive(context.tenant, CrmExtensionIds.Meta)?.let { throw CrmMetaException(it) }
         CrmMeta.sendWhatsApp(CrmMeta.load(context.tenant), CrmContacts.normalizePhone(lead.phone).removePrefix("+"), email.text)
     } catch (failure: CrmMetaException) {
         CrmMeta.log(context.tenant, "wa_envio_error", failure.message.orEmpty())
@@ -739,6 +748,7 @@ class CrmPageChannel(override val id: String, override val label: String) : CrmC
     override fun unavailable(context: CrmChannelContext, lead: CrmLead): String? {
         val settings = CrmMeta.load(context.tenant)
         return when {
+            CrmExtensions.inactive(context.tenant, CrmExtensionIds.Meta) != null -> CrmExtensions.inactiveMessage(CrmExtensionIds.Meta)
             !settings.ready(id) -> if (settings.sharedTokens) "Conecta la pagina de Facebook en Integraciones." else "Configura el token de $label en Integraciones."
             CrmInbox.identity(context.tenant, lead.customerId, id) == null -> "El lead no ha escrito por $label."
             else -> null
@@ -748,6 +758,7 @@ class CrmPageChannel(override val id: String, override val label: String) : CrmC
     override fun send(context: CrmChannelContext, lead: CrmLead, email: CrmEmail): String? {
         val recipient = CrmInbox.identity(context.tenant, lead.customerId, id) ?: throw CrmChannelException("El lead no ha escrito por $label.")
         return try {
+            CrmExtensions.inactive(context.tenant, CrmExtensionIds.Meta)?.let { throw CrmMetaException(it) }
             CrmMeta.sendPage(CrmMeta.load(context.tenant), recipient, email.text, id).also { CrmMeta.log(context.tenant, "enviado", "$label $recipient") }
         } catch (failure: CrmMetaException) {
             CrmMeta.log(context.tenant, "envio_error", "$label: ${failure.message}")

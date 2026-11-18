@@ -47,6 +47,10 @@ interface ServerModule {
     // identifies the original company outside the server (domains, webhook secrets, API keys).
     val duplicatedSettings: List<SettingsTable>
         get() = emptyList()
+    // Extensions shipped inside this module (EXTENSIONS.md, source "bundled"); each company installs
+    // them on its own. Override it with a getter so they are built when first read.
+    val bundledExtensions: List<com.ideasdeveloper.idc.server.extensions.ServerExtension>
+        get() = emptyList()
 
     fun routes(route: Route, access: ModuleAccessService) {
     }
@@ -73,6 +77,8 @@ data class ModuleDefinition(
     // Versiones minimas de Core y app que el modulo necesita (module.json); nulo = sin minimo.
     val minCoreVersion: String? = null,
     val minAppVersion: String? = null,
+    // Permissions this module lets its extensions declare (EXTENSIONS.md), e.g. "crm.leads.create".
+    val extensionPermissions: List<String> = emptyList(),
 )
 
 @Serializable

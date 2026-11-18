@@ -52,6 +52,8 @@ class ModuleAccessService(
     private val customerNotesReader: () -> CustomerNotesReader? = { null },
     // Notification center of the Core: modules notify users through it (see NotificationService).
     val notifications: NotificationService = NotificationService(),
+    // Encrypts secrets before modules store them (IDC_MASTER_KEY, see SecretBox).
+    val secrets: com.ideasdeveloper.idc.server.security.SecretBox = com.ideasdeveloper.idc.server.security.MasterKeySecretBox(null),
 ) {
     private val log = org.slf4j.LoggerFactory.getLogger(ModuleAccessService::class.java)
     private val tokenGenerator = SessionTokenGenerator()

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.modules.crm
 
+import com.ideasdeveloper.idc.server.extensions.ServerExtension
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
@@ -82,6 +83,8 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V019__field_sections_and_stay_dates.sql",
         "modules/crm/migrations/V020__system_sections.sql",
         "modules/crm/migrations/V021__automations_templates_translation.sql",
+        "modules/crm/migrations/V022__extensions_and_secrets.sql",
+        "modules/crm/migrations/V023__cloudbeds_default_country.sql",
     )
 
     override val runtimeTables = listOf(
@@ -130,11 +133,12 @@ object CrmServerModule : ServerModule {
      */
     override val duplicatedSettings = listOf(
         // The translation key is a credential of the integration: the copy connects it again.
-        SettingsTable("crm_settings", reset = mapOf("monday_token" to null, "digest_sent_on" to null, "translation_api_key" to "")),
+        SettingsTable("crm_settings", reset = mapOf("monday_token" to null, "digest_sent_on" to null, "translation_api_key" to "", "extensions_migrated_at" to null)),
         SettingsTable("crm_stages"),
         SettingsTable("crm_interests"),
         SettingsTable("crm_field_sections"),
-        SettingsTable("crm_field_definitions"),
+        // Fields created by an extension of the original company are the copy's own: its extensions start uninstalled.
+        SettingsTable("crm_field_definitions", reset = mapOf("extension_id" to null)),
         SettingsTable("crm_email_templates"),
         // Rules come off and forget who they notified (users are not copied); stages, templates and fields keep their ids, so the rest still points to them.
         SettingsTable("crm_automations", reset = mapOf("enabled" to false, "notify_user_ids" to "[]")),
@@ -142,11 +146,17 @@ object CrmServerModule : ServerModule {
         SettingsTable("crm_import_presets"),
     )
 
+    // Integrations of the CRM that each company installs on its own (EXTENSIONS.md).
+    override val bundledExtensions: List<ServerExtension>
+        get() = listOf(CrmMetaExtension, CrmMondayExtension, CrmWordPressExtension, CrmEncuentra24Extension, CrmCloudbedsExtension)
+
     override val mcp: ModuleMcp
         get() = CrmMcpTools.mcp
 
     override val customerTimeline: CustomerTimeline
         get() = CrmCustomerTimeline.timeline
+
+    private val secretsWarned = java.util.concurrent.atomic.AtomicBoolean(false)
 
     override val jobs = listOf(
         // Notifications, digests and scheduled emails queued in crm_outbox.
@@ -177,8 +187,18 @@ object CrmServerModule : ServerModule {
             CrmImport.runPending(context.tenant, 300, java.time.LocalDate.now(), context.access.files(context.companyCode, CrmModule.id))
         },
         ModuleJob("encuentra24", Duration.ofMinutes(5)) { context ->
-            if (CrmEncuentra24.load(context.tenant).ready) {
+            if (CrmExtensions.isEnabled(context.tenant, CrmExtensionIds.Encuentra24) && CrmEncuentra24.load(context.tenant).ready) {
                 runCatching { CrmEncuentra24.sync(context.tenant) { leadId -> CrmNotify.newLead(context.tenant, leadId) } }
+            }
+        },
+        // Once per company (and again until the master key exists): integrations already configured become enabled extensions and
+        // their plain-text secrets are sealed. The server workspace also seals the Meta app of the server owner.
+        ModuleJob("extensions-migration", Duration.ofMinutes(10)) { context ->
+            val (registered, sealed) = CrmExtensions.migrateTenant(context.tenant, context.access.secrets, CrmMetaServer.serverWorkspace() == context.companyCode)
+            if (registered > 0 || sealed > 0) {
+                org.slf4j.LoggerFactory.getLogger("CrmExtensions").info("CRM {}: {} integracion(es) registradas como extensiones, {} secreto(s) cifrados.", context.companyCode, registered, sealed)
+            } else if (!context.access.secrets.available && secretsWarned.compareAndSet(false, true)) {
+                org.slf4j.LoggerFactory.getLogger("CrmExtensions").warn("CRM: sin IDC_MASTER_KEY los secretos de las integraciones siguen sin cifrar.")
             }
         },
         // Stored files of removed attachments, deleted leads and forms never saved.
@@ -218,7 +238,9 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.24.0",
+        version = "0.25.0",
+        minCoreVersion = "0.7.0",
+        minAppVersion = "0.7.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas. Quien es mencionado en una nota puede leer ese lead y responder con notas sin este permiso."),
@@ -229,80 +251,17 @@ object CrmServerModule : ServerModule {
             ModulePermissionDefinition(CrmScreens.Settings, "Configurar CRM", "Permite cambiar etapas, intereses, correo, plantillas, anti-spam y avisos del equipo."),
         ),
         ui = ModuleUiEntry(type = "native", entry = CrmScreens.UiRoute, home = "home"),
+        extensionPermissions = CrmExtensionPermissions.all,
     )
 
     override fun routes(route: Route, access: ModuleAccessService) {
         CrmMetaServer.access = access
         CrmCustomerEvents.access = access
         CrmLeadEvents.access = access
-        metaServerRoutes(route, access)
-        // Public webhooks: the company comes from the URL and every call is authenticated by the integration.
-        // The IDC Connector plugin for WordPress, built from the module resources (it holds no secrets).
-        route.get(CrmWordPressScreens.PluginPath) {
-            if (!access.isInstalled(CrmModule.id)) return@get call.respond(HttpStatusCode.NotFound)
-            val zip = CrmPlugin.zip(CrmServerModule::class.java.classLoader)
-            call.response.header(HttpHeaders.ContentDisposition, ContentDisposition.Attachment.withParameter(ContentDisposition.Parameters.FileName, "idc-connector.zip").toString())
-            call.respondBytes(zip, ContentType.Application.Zip)
-        }
-
-        route.route("/modules/crm/hooks/{company}") {
-            post("/wordpress") {
-                val company = call.parameters["company"].orEmpty()
-                val body = call.receive<ByteArray>()
-                val timestamp = call.request.headers["X-IDC-Timestamp"]
-                val signature = call.request.headers["X-IDC-Signature"]
-                val answer = call.webhookTenant(access, company) { tenant ->
-                    val settings = CrmWordPress.load(tenant)
-                    if (!settings.enabled || !CrmWordPress.validSignature(settings.secret, timestamp, signature, body)) return@webhookTenant "no"
-                    try {
-                        CrmWordPress.handle(tenant, body.decodeToString()) { leadId -> CrmNotify.newLead(tenant, leadId) }
-                    } catch (failure: Exception) {
-                        CrmWordPress.recordError(tenant, failure.message ?: failure.javaClass.simpleName)
-                        return@webhookTenant "error"
-                    }
-                    "yes"
-                } ?: return@post
-                when (answer) {
-                    "yes" -> call.respond(HttpStatusCode.OK)
-                    "no" -> call.respond(HttpStatusCode.Forbidden)
-                    // The plugin keeps the event and retries it.
-                    else -> call.respond(HttpStatusCode.ServiceUnavailable)
-                }
-            }
-            get("/meta") {
-                val company = call.parameters["company"].orEmpty()
-                val query = call.request.queryParameters
-                val challenge = call.webhookTenant(access, company) { tenant ->
-                    val settings = CrmMeta.load(tenant)
-                    CrmMeta.verify(settings, query["hub.mode"], query["hub.verify_token"], query["hub.challenge"]).also {
-                        CrmMeta.log(tenant, if (it != null) "verificacion_ok" else "verificacion_rechazada")
-                    }
-                } ?: return@get
-                if (challenge.isEmpty()) return@get call.respond(HttpStatusCode.Forbidden)
-                call.respondText(challenge, ContentType.Text.Plain)
-            }
-            post("/meta") {
-                val company = call.parameters["company"].orEmpty()
-                val body = call.receive<ByteArray>()
-                val signature = call.request.headers["X-Hub-Signature-256"]
-                val accepted = call.webhookTenant(access, company) { tenant ->
-                    val settings = CrmMeta.load(tenant)
-                    if (!settings.enabled || !CrmMeta.validSignature(settings.appSecret, signature, body)) {
-                        CrmMeta.log(tenant, "firma_rechazada", if (settings.appSecret.isNullOrBlank()) "App Secret vacio" else "firma invalida o ausente")
-                        return@webhookTenant "no"
-                    }
-                    // Meta disables subscriptions that keep failing: errors of one message are logged, the answer stays 200.
-                    try {
-                        val stored = CrmMeta.handle(tenant, settings, CrmMeta.parse(body.decodeToString(), settings.instagramAccountId)) { leadId -> CrmNotify.newLead(tenant, leadId) }
-                        CrmMeta.log(tenant, "evento", "guardados=$stored")
-                    } catch (failure: Exception) {
-                        CrmMeta.log(tenant, "error", failure.message ?: failure.javaClass.simpleName)
-                    }
-                    "yes"
-                } ?: return@post
-                if (accepted == "yes") call.respond(HttpStatusCode.OK) else call.respond(HttpStatusCode.Forbidden)
-            }
-        }
+        // Secrets of the integrations are sealed with the key of each company database (CrmSecrets).
+        CrmSecrets.box = access.secrets
+        // The integrations are extensions (CrmMetaExtension, CrmWordPressExtension...): their public routes live under /modules/crm/extensions/<id>.
+        // The old /modules/crm/meta/..., /modules/crm/hooks/... and /modules/crm/wordpress/... routes no longer answer.
 
         route.route(CrmScreens.UiRoute) {
             // Files of the lead forms: uploads wait for the form to be saved (see CrmAttachments).
@@ -457,6 +416,17 @@ object CrmServerModule : ServerModule {
         fun visibleLead(key: String) = uuid(key)?.let { CrmRepository.lead(tenant, it) }?.takeIf { context.scope.canSee(it.interestId, it.ownerUserIds) }
         // Scope or an active mention: only to read the lead and add notes.
         fun readableLead(key: String) = uuid(key)?.let { CrmRepository.lead(tenant, it) }?.takeIf { context.readAccess(it).canRead }
+
+        // Every integration action needs its extension active in the company (saving settings included).
+        val operation = "$screen:${params["op"]}"
+        val extensionOfOperation = when {
+            operation.startsWith("integrations:meta") -> CrmExtensionIds.Meta
+            operation.startsWith("integrations:e24") -> CrmExtensionIds.Encuentra24
+            operation.startsWith("integrations:wp") -> CrmExtensionIds.WordPress
+            operation.startsWith("integrations:cb") -> CrmExtensionIds.Cloudbeds
+            else -> null
+        }
+        extensionOfOperation?.let { id -> CrmExtensions.inactive(tenant, id)?.let { return show("integrations", UiNotice(it, UiTone.Warning), emptyMap()) } }
 
         return try {
             when ("$screen:${params["op"]}") {
@@ -990,7 +960,8 @@ object CrmServerModule : ServerModule {
                     show("integrations", notice, emptyMap())
                 }
                 "import:mondayToken" -> {
-                    val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && it != CrmMail.SecretMask }
+                    CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { return show("import", UiNotice(it, UiTone.Warning), emptyMap()) }
+                    val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && !CrmSecrets.isPlaceholder(it) }
                     if (typed == null && CrmImport.mondayToken(tenant) == null) return show("import", UiNotice("Escribe el token de la API de monday.", UiTone.Danger), emptyMap())
                     typed?.let { CrmImport.saveMondayToken(tenant, it) }
                     show("import", UiNotice("Token de monday guardado.", UiTone.Success), mapOf("monday" to "boards"))
@@ -1000,6 +971,7 @@ object CrmServerModule : ServerModule {
                     show("import", UiNotice("Token de monday borrado.", UiTone.Success), emptyMap())
                 }
                 "import:monday" -> {
+                    CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { return show("import", UiNotice(it, UiTone.Warning), emptyMap()) }
                     // Reading a board takes minutes, longer than the app waits: the import job reads it.
                     if (CrmImport.mondayToken(tenant) == null) return show("import", UiNotice("Guarda primero el token de la API de monday.", UiTone.Danger), emptyMap())
                     val boards = values.filter { it.key.startsWith("board:") && it.value == "true" }.keys.map { it.removePrefix("board:") }
@@ -1209,160 +1181,6 @@ object CrmServerModule : ServerModule {
         val scheme = request.headers["X-Forwarded-Proto"]?.substringBefore(',')?.trim() ?: request.origin.scheme
         val host = request.headers["X-Forwarded-Host"]?.substringBefore(',')?.trim() ?: request.headers["Host"] ?: request.origin.serverHost
         return "$scheme://$host"
-    }
-
-    /**
-     * Opens the tenant of a webhook's company and runs [block]; answers 404 (and returns null) when
-     * the company is unknown or does not use the CRM. [block] returns what the route answers with.
-     */
-    /**
-     * Public routes of the server Meta app: its webhook (one URL for every company), the deauthorize
-     * and data deletion callbacks, and the connection page opened from Integraciones.
-     */
-    private fun metaServerRoutes(route: Route, access: ModuleAccessService) {
-        route.route("/modules/crm/meta") {
-            get("/webhook") {
-                if (!access.isInstalled(CrmModule.id)) return@get call.respond(HttpStatusCode.NotFound)
-                val query = call.request.queryParameters
-                val challenge = withContext(Dispatchers.IO) {
-                    runCatching {
-                        CrmMetaServer.withServerWorkspace { server ->
-                            CrmMetaServer.verify(CrmMetaServer.loadApp(server), query["hub.mode"], query["hub.verify_token"], query["hub.challenge"]).also {
-                                CrmMeta.log(server, if (it != null) "verificacion_ok" else "verificacion_rechazada", "app del servidor")
-                            }
-                        }
-                    }.getOrNull()
-                } ?: return@get call.respond(HttpStatusCode.Forbidden)
-                call.respondText(challenge, ContentType.Text.Plain)
-            }
-            post("/webhook") {
-                if (!access.isInstalled(CrmModule.id)) return@post call.respond(HttpStatusCode.NotFound)
-                val body = call.receive<ByteArray>()
-                val signature = call.request.headers["X-Hub-Signature-256"]
-                val status = withContext(Dispatchers.IO) { runCatching { CrmMetaServer.dispatch(body, signature) }.getOrDefault(500) }
-                call.respond(HttpStatusCode.fromValue(status))
-            }
-            // Meta calls these with a signed_request when a person removes the app or asks to delete their data.
-            post("/deauthorize") {
-                if (!access.isInstalled(CrmModule.id)) return@post call.respond(HttpStatusCode.NotFound)
-                val signed = call.receiveParameters()["signed_request"]
-                val forgotten = withContext(Dispatchers.IO) { runCatching { CrmMetaServer.forgetUser(signed) }.getOrNull() }
-                call.respond(if (forgotten == null) HttpStatusCode.BadRequest else HttpStatusCode.OK)
-            }
-            post("/data-deletion") {
-                if (!access.isInstalled(CrmModule.id)) return@post call.respond(HttpStatusCode.NotFound)
-                val signed = call.receiveParameters()["signed_request"]
-                withContext(Dispatchers.IO) { runCatching { CrmMetaServer.forgetUser(signed) }.getOrNull() }
-                    ?: return@post call.respond(HttpStatusCode.BadRequest)
-                val code = CrmMetaServer.confirmationCode()
-                val answer = buildJsonObject {
-                    put("url", "${call.publicBase()}${CrmMetaServer.DeletionStatusPath}?id=$code")
-                    put("confirmation_code", code)
-                }
-                call.respondText(answer.toString(), ContentType.Application.Json)
-            }
-            get("/deletion") {
-                call.respondText(
-                    "Los tokens y la conexion con Meta de esta persona se eliminaron del CRM. Codigo: " +
-                        call.request.queryParameters["id"].orEmpty().filter { it.isLetterOrDigit() }.take(40),
-                    ContentType.Text.Plain,
-                )
-            }
-            route("/connect/{company}") {
-                get {
-                    val company = call.parameters["company"].orEmpty()
-                    val ticket = call.request.queryParameters["t"].orEmpty()
-                    val page = call.connectTenant(access, company, ticket) { _, app -> CrmMetaServer.connectPage(app, company, ticket) } ?: return@get
-                    call.response.header("Cache-Control", "no-store")
-                    call.respondText(page, ContentType.Text.Html)
-                }
-                post("/{step}") {
-                    val company = call.parameters["company"].orEmpty()
-                    val values = runCatching { UiJson.parseToJsonElement(call.receiveText()).jsonObject.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } }
-                        .getOrNull().orEmpty()
-                    val outcome = call.connectTenant(access, company, values["t"]) { tenant, app ->
-                        try {
-                            when (call.parameters["step"]) {
-                                "pages" -> if (app.pagesConfigId == null) CrmMetaServer.Outcome(false, "Messenger e Instagram no estan habilitados en la app del servidor.")
-                                    else CrmMetaServer.connectLogin(tenant, company, app, values["code"].orEmpty())
-                                "page" -> CrmMetaServer.choosePage(tenant, company, values["pageId"].orEmpty())
-                                "whatsapp" -> if (app.whatsAppConfigId == null) CrmMetaServer.Outcome(false, "WhatsApp no esta habilitado en la app del servidor.")
-                                    else CrmMetaServer.connectWhatsApp(
-                                        tenant, company, app, values["code"].orEmpty(), values["wabaId"].orEmpty(),
-                                        values["phoneNumberId"].orEmpty(), values["pin"],
-                                    )
-                                else -> CrmMetaServer.Outcome(false, "Paso desconocido.")
-                            }
-                        } catch (failure: CrmMetaException) {
-                            CrmMeta.log(tenant, "conexion_error", failure.message.orEmpty())
-                            CrmMetaServer.Outcome(false, failure.message.orEmpty())
-                        }
-                    } ?: return@post
-                    val answer = buildJsonObject {
-                        put("ok", outcome.ok)
-                        put("message", outcome.message)
-                        put("pages", JsonArray(outcome.pages.map { page ->
-                            buildJsonObject {
-                                put("id", page.id)
-                                put("name", page.name)
-                                put("instagram", page.instagram)
-                            }
-                        }))
-                    }
-                    call.respondText(answer.toString(), ContentType.Application.Json)
-                }
-            }
-        }
-    }
-
-    // Tenant of a company for the connection page, after checking its link token and the server app.
-    private suspend fun <T> ApplicationCall.connectTenant(
-        access: ModuleAccessService,
-        company: String,
-        ticket: String?,
-        block: (Connection, CrmMetaServerApp) -> T,
-    ): T? {
-        if (!access.isInstalled(CrmModule.id)) {
-            respond(HttpStatusCode.NotFound)
-            return null
-        }
-        val app = withContext(Dispatchers.IO) { CrmMetaServer.app() }?.takeIf { it.ready }
-        if (app == null) {
-            respondText("La app de Meta del servidor no esta activa.", ContentType.Text.Plain, HttpStatusCode.NotFound)
-            return null
-        }
-        val connection = withContext(Dispatchers.IO) { access.tenantConnectionForWebhook(company, CrmModule.id) }
-        if (connection == null) {
-            respond(HttpStatusCode.NotFound)
-            return null
-        }
-        return try {
-            connection.use { tenant ->
-                withContext(Dispatchers.IO) {
-                    if (!CrmMetaServer.validTicket(tenant, ticket)) null else block(tenant, app)
-                }
-            } ?: run {
-                respondText("El enlace vencio o no es valido: abre otra vez la conexion desde Integraciones.", ContentType.Text.Plain, HttpStatusCode.Forbidden)
-                null
-            }
-        } catch (failure: SQLException) {
-            respond(HttpStatusCode.InternalServerError)
-            null
-        }
-    }
-
-    private suspend fun ApplicationCall.webhookTenant(access: ModuleAccessService, company: String, block: (Connection) -> String?): String? {
-        val connection = withContext(Dispatchers.IO) { access.tenantConnectionForWebhook(company, CrmModule.id) }
-            ?: run {
-                respond(HttpStatusCode.NotFound)
-                return null
-            }
-        return try {
-            connection.use { tenant -> withContext(Dispatchers.IO) { block(tenant) } }.orEmpty()
-        } catch (failure: SQLException) {
-            respond(HttpStatusCode.InternalServerError)
-            null
-        }
     }
 
     private suspend fun ApplicationCall.screenId(permissions: ModulePermissions, canonical: Boolean = true): String? {

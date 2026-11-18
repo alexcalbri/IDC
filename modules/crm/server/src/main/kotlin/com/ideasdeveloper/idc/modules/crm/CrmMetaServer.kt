@@ -46,11 +46,16 @@ data class CrmMetaServerApp(
  * (crm_meta_routes, in the server workspace). Messages are then handled as in the company's own app.
  */
 object CrmMetaServer {
-    const val WebhookPath = "/modules/crm/meta/webhook"
-    const val DeauthorizePath = "/modules/crm/meta/deauthorize"
-    const val DataDeletionPath = "/modules/crm/meta/data-deletion"
-    const val DeletionStatusPath = "/modules/crm/meta/deletion"
-    const val ConnectPath = "/modules/crm/meta/connect"
+    // Routes of the "meta" extension (the Core mounts them under /modules/crm/extensions/meta); the old /modules/crm/meta/... no longer answer.
+    const val ExtensionPath = "/modules/crm/extensions/meta"
+    const val WebhookPath = "$ExtensionPath/webhook"
+    const val DeauthorizePath = "$ExtensionPath/deauthorize"
+    const val DataDeletionPath = "$ExtensionPath/data-deletion"
+    const val DeletionStatusPath = "$ExtensionPath/deletion"
+    const val ConnectPath = "$ExtensionPath/connect"
+
+    /** Webhook of a company that uses its own Meta app. */
+    fun companyWebhookPath(company: String) = "$ExtensionPath/$company/webhook"
 
     // Set when the module registers its routes; null in tests (no server app).
     @Volatile
@@ -74,7 +79,7 @@ object CrmMetaServer {
     ).use { query ->
         query.executeQuery().use { rows ->
             if (!rows.next()) CrmMetaServerApp()
-            else CrmMetaServerApp(rows.getBoolean(1), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getString(6))
+            else CrmMetaServerApp(rows.getBoolean(1), rows.getString(2), CrmSecrets.open(tenant, rows.getString(3)), CrmSecrets.open(tenant, rows.getString(4)), rows.getString(5), rows.getString(6))
         }
     }
 
@@ -90,8 +95,8 @@ object CrmMetaServer {
         ).use { update ->
             update.setBoolean(1, app.enabled)
             update.setString(2, app.appId)
-            update.setString(3, app.appSecret)
-            update.setString(4, app.verifyToken)
+            update.setString(3, CrmSecrets.seal(tenant, app.appSecret))
+            update.setString(4, CrmSecrets.seal(tenant, app.verifyToken))
             update.setString(5, app.pagesConfigId)
             update.setString(6, app.whatsAppConfigId)
             update.executeUpdate()
@@ -101,8 +106,8 @@ object CrmMetaServer {
     fun appFormValues(app: CrmMetaServerApp): Map<String, String> = mapOf(
         "serverEnabled" to app.enabled.toString(),
         "serverAppId" to app.appId.orEmpty(),
-        "serverAppSecret" to if (app.appSecret.isNullOrBlank()) "" else CrmMail.SecretMask,
-        "serverVerifyToken" to app.verifyToken.orEmpty(),
+        "serverAppSecret" to CrmSecrets.mask(app.appSecret),
+        "serverVerifyToken" to if (CrmSecrets.isUnreadable(app.verifyToken)) CrmSecrets.UnreadableText else app.verifyToken.orEmpty(),
         "serverPagesConfigId" to app.pagesConfigId.orEmpty(),
         "serverWhatsAppConfigId" to app.whatsAppConfigId.orEmpty(),
     )
@@ -114,14 +119,14 @@ object CrmMetaServer {
             if (!numericId.matches(value)) throw CrmValidationException("$label solo lleva numeros.")
             return value
         }
-        val verify = values["serverVerifyToken"].orEmpty().trim().ifEmpty { null }
-        if (verify != null && !verify.matches(Regex("^[A-Za-z0-9_.-]{8,100}$"))) {
+        val verify = values["serverVerifyToken"].orEmpty().trim().ifEmpty { null }.let { if (CrmSecrets.isPlaceholder(it)) current.verifyToken else it }
+        if (verify != null && !CrmSecrets.isUnreadable(verify) && !verify.matches(Regex("^[A-Za-z0-9_.-]{8,100}$"))) {
             throw CrmValidationException("El verify token debe tener entre 8 y 100 letras, numeros, puntos, guiones o guiones bajos.")
         }
         val merged = CrmMetaServerApp(
             enabled = values["serverEnabled"] == "true",
             appId = id("serverAppId", "El App ID"),
-            appSecret = values["serverAppSecret"]?.trim()?.takeIf { it.isNotEmpty() && it != CrmMail.SecretMask } ?: current.appSecret,
+            appSecret = values["serverAppSecret"]?.trim()?.takeIf { it.isNotEmpty() && !CrmSecrets.isPlaceholder(it) } ?: current.appSecret,
             verifyToken = verify,
             pagesConfigId = id("serverPagesConfigId", "La configuracion de Messenger e Instagram"),
             whatsAppConfigId = id("serverWhatsAppConfigId", "La configuracion de WhatsApp"),
@@ -167,12 +172,14 @@ object CrmMetaServer {
             }
             if (owner != null && owner != company) return owner
         }
-        server.prepareStatement("INSERT INTO crm_meta_routes (asset_id, kind, company_code) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").use { insert ->
+        val inserted = server.prepareStatement("INSERT INTO crm_meta_routes (asset_id, kind, company_code) VALUES (?, ?, ?) ON CONFLICT DO NOTHING").use { insert ->
             insert.setString(1, assetId)
             insert.setString(2, kind)
             insert.setString(3, company)
             insert.executeUpdate()
         }
+        // Two companies connecting the same asset at once: the unique index lets one win; the other learns who has it.
+        if (kind != "user" && inserted == 0) companyOf(server, kind, assetId)?.takeIf { it != company }?.let { return it }
         return null
     }
 
@@ -201,7 +208,7 @@ object CrmMetaServer {
 
     // ---- Tickets: links that open the connection page ----
 
-    private fun hash(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray()).joinToString("") { "%02x".format(it) }
+    private fun hash(value: String) = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8)).joinToString("") { "%02x".format(it) }
 
     /** A new link token for the connection page of this company, valid for 30 minutes. */
     fun newTicket(tenant: Connection, createdBy: String, now: Instant = Instant.now()): String {
@@ -224,6 +231,12 @@ object CrmMetaServer {
             query.setTimestamp(2, Timestamp.from(now))
             query.executeQuery().use { it.next() }
         }
+    }
+
+    /** A link token is for one connection: it is deleted once a step connects (see the route). */
+    fun consumeTicket(tenant: Connection, ticket: String?) {
+        if (ticket.isNullOrBlank() || ticket.length > 100) return
+        tenant.prepareStatement("DELETE FROM crm_meta_tickets WHERE token_hash = ?").use { it.setString(1, hash(ticket)); it.executeUpdate() }
     }
 
     fun connectUrl(publicBase: String, company: String, ticket: String) = "$publicBase$ConnectPath/$company?t=$ticket"
@@ -300,78 +313,117 @@ object CrmMetaServer {
         }
     }
 
-    /** Connects [pageId] (from the saved login token) and its Instagram account to this company. */
+    private const val NoServerWorkspace = "El espacio del servidor no tiene el CRM activo: pide al dueno del servidor que lo active."
+
+    // The message never names the other company.
+    private fun takenMessage(what: String) = "$what ya esta conectada a otra empresa de este servidor."
+
+    /** True when [assetId] already belongs to another company (read only; claiming happens after the asset was verified and subscribed). */
+    private fun isTaken(server: Connection, kind: String, assetId: String, company: String) = companyOf(server, kind, assetId)?.let { it != company } == true
+
+    /**
+     * Connects [pageId] (from the saved login token) and its Instagram account to this company. The page comes from the list the token
+     * manages, so the token controls it; the routes are claimed only after Meta subscribed the app to the page, and a failing step
+     * leaves nothing claimed.
+     */
     fun choosePage(tenant: Connection, company: String, pageId: String): Outcome {
         val current = CrmMeta.load(tenant)
-        val token = current.oauthToken ?: return Outcome(false, "Inicia sesion con Facebook otra vez.")
+        val token = current.oauthToken?.takeIf { !CrmSecrets.isUnreadable(it) } ?: return Outcome(false, "Inicia sesion con Facebook otra vez.")
         val page = pagesOf(token).firstOrNull { it["id"].jStr() == pageId } ?: return Outcome(false, "La cuenta ya no administra esa pagina.")
         val pageToken = page["access_token"].jStr().ifEmpty { return Outcome(false, "Meta no devolvio el token de la pagina; revisa el permiso pages_messaging.") }
         val instagram = page["instagram_business_account"].jObj()
         val instagramId = instagram?.get("id").jStr().takeIf { numericId.matches(it) }
-        // "" when the routes are now this company's; null without server workspace (or without the CRM there).
-        val conflict = withServerWorkspace { server ->
-            companyOf(server, "page", pageId)?.takeIf { it != company }?.let { return@withServerWorkspace "La pagina ya esta conectada a otra empresa del servidor ($it)." }
-            if (instagramId != null) {
-                companyOf(server, "instagram", instagramId)?.takeIf { it != company }
-                    ?.let { return@withServerWorkspace "La cuenta de Instagram ya esta conectada a otra empresa del servidor ($it)." }
+        // "" when free or already this company's.
+        val taken = withServerWorkspace { server ->
+            when {
+                isTaken(server, "page", pageId, company) -> takenMessage("Esta pagina")
+                instagramId != null && isTaken(server, "instagram", instagramId, company) -> takenMessage("Esta cuenta de Instagram")
+                else -> ""
             }
-            claim(server, "page", pageId, company)
-            if (instagramId != null) claim(server, "instagram", instagramId, company)
-            // The previous page and Instagram of this company stop arriving here.
-            server.prepareStatement("DELETE FROM crm_meta_routes WHERE company_code = ? AND ((kind = 'page' AND asset_id <> ?) OR (kind = 'instagram' AND asset_id <> ?))").use { delete ->
+        } ?: NoServerWorkspace
+        if (taken.isNotEmpty()) return Outcome(false, taken)
+        // The page must subscribe the app: the app webhook alone does not send its messages.
+        val (subStatus, subBody) = CrmMeta.request("${CrmMeta.Graph}/$pageId/subscribed_apps?subscribed_fields=messages,standby", pageToken, "POST")
+        if (subStatus !in 200..299 || subBody["success"].jStr() != "true") {
+            CrmMeta.log(tenant, "pagina_error", CrmMeta.graphHint(subBody, subStatus))
+            return Outcome(false, "Meta no suscribio la pagina: ${CrmMeta.graphHint(subBody, subStatus)}.")
+        }
+        val claimed = withServerWorkspace { server ->
+            if (claim(server, "page", pageId, company) != null) return@withServerWorkspace takenMessage("Esta pagina")
+            // The previous page of this company stops arriving here.
+            server.prepareStatement("DELETE FROM crm_meta_routes WHERE company_code = ? AND kind = 'page' AND asset_id <> ?").use { delete ->
                 delete.setString(1, company)
                 delete.setString(2, pageId)
-                delete.setString(3, instagramId ?: "")
                 delete.executeUpdate()
             }
             ""
-        } ?: "El espacio del servidor no tiene el CRM activo: pide al dueno del servidor que lo active."
-        if (conflict.isNotEmpty()) return Outcome(false, conflict)
+        } ?: NoServerWorkspace
+        if (claimed.isNotEmpty()) return Outcome(false, claimed)
         var settings = current.copy(
             enabled = true, connectionMode = ServerMode, sharedTokens = true,
             pageId = pageId, pageName = page["name"].jStr(), pageToken = pageToken,
             instagramAccountId = instagramId, instagramUsername = instagram?.get("username").jStr().ifEmpty { null },
         )
-        CrmMeta.save(tenant, settings)
+        try {
+            CrmMeta.save(tenant, settings)
+        } catch (failure: Exception) {
+            withServerWorkspace { server -> release(server, company, setOf("page")) }
+            throw failure
+        }
         val done = mutableListOf("Pagina ${settings.pageName} conectada")
-        // The page must subscribe the app: the app webhook alone does not send its messages.
-        val (subStatus, subBody) = CrmMeta.request("${CrmMeta.Graph}/$pageId/subscribed_apps?subscribed_fields=messages,standby", pageToken, "POST")
-        if (subStatus !in 200..299 || subBody["success"].jStr() != "true") {
-            done += "pero Meta no suscribio la pagina: ${CrmMeta.graphHint(subBody, subStatus)}"
-            CrmMeta.log(tenant, "pagina_error", CrmMeta.graphHint(subBody, subStatus))
-        } else CrmMeta.log(tenant, "pagina_conectada", settings.pageName.orEmpty())
+        CrmMeta.log(tenant, "pagina_conectada", settings.pageName.orEmpty())
         if (instagramId != null) {
+            var instagramOk = false
             try {
                 CrmMeta.subscribeInstagram(settings)
-                CrmMeta.log(tenant, "instagram_suscrito", instagramId)
-                done += "Instagram ${settings.instagramUsername?.let { "@$it" } ?: instagramId} recibe mensajes"
+                // Instagram routes are claimed only once the subscription worked.
+                val instagramClaim = withServerWorkspace { server ->
+                    if (claim(server, "instagram", instagramId, company) != null) return@withServerWorkspace takenMessage("Esta cuenta de Instagram")
+                    server.prepareStatement("DELETE FROM crm_meta_routes WHERE company_code = ? AND kind = 'instagram' AND asset_id <> ?").use { delete ->
+                        delete.setString(1, company)
+                        delete.setString(2, instagramId)
+                        delete.executeUpdate()
+                    }
+                    ""
+                } ?: NoServerWorkspace
+                if (instagramClaim.isEmpty()) {
+                    instagramOk = true
+                    CrmMeta.log(tenant, "instagram_suscrito", instagramId)
+                    done += "Instagram ${settings.instagramUsername?.let { "@$it" } ?: instagramId} recibe mensajes"
+                } else done += instagramClaim
             } catch (failure: CrmMetaException) {
                 CrmMeta.log(tenant, "instagram_error", failure.message.orEmpty())
                 done += failure.message.orEmpty()
             }
-        } else done += "sin Instagram vinculado a la pagina"
+            if (!instagramOk) {
+                // Without its route and subscription the account would not receive anything: it is not kept as connected.
+                CrmMeta.save(tenant, settings.copy(instagramAccountId = null, instagramUsername = null))
+                withServerWorkspace { server -> release(server, company, setOf("instagram")) }
+            }
+        } else {
+            done += "sin Instagram vinculado a la pagina"
+            withServerWorkspace { server -> release(server, company, setOf("instagram")) }
+        }
         settings = CrmMeta.load(tenant)
         return Outcome(settings.ready("messenger"), done.joinToString(". ") + ".")
     }
 
     /**
      * WhatsApp Embedded Signup: the business token of the code, the WhatsApp Business Account and the
-     * number chosen in the dialog. Numbers already on the Cloud API (coexistence included) are never
-     * registered again; a new number is registered with the two-step [pin].
+     * number chosen in the dialog. First the token must prove it controls that account and number (the number is in the account's list);
+     * the route is claimed only after Meta accepted the subscription. Numbers already on the Cloud API (coexistence included)
+     * are never registered again; a new number is registered with the two-step [pin].
      */
     fun connectWhatsApp(tenant: Connection, company: String, app: CrmMetaServerApp, code: String, wabaId: String, phoneNumberId: String, pin: String?): Outcome {
         if (!numericId.matches(wabaId) || !numericId.matches(phoneNumberId)) return Outcome(false, "Meta no devolvio la cuenta o el numero de WhatsApp; termina el registro en la ventana de Meta.")
         val token = exchangeCode(app, code)
-        val conflict = withServerWorkspace { server ->
-            claim(server, "waba", wabaId, company)?.let { return@withServerWorkspace "La cuenta de WhatsApp ya esta conectada a otra empresa del servidor ($it)." }
-            server.prepareStatement("DELETE FROM crm_meta_routes WHERE company_code = ? AND kind = 'waba' AND asset_id <> ?").use { delete ->
-                delete.setString(1, company)
-                delete.setString(2, wabaId)
-                delete.executeUpdate()
-            }
-            ""
-        } ?: "El espacio del servidor no tiene el CRM activo: pide al dueno del servidor que lo active."
-        if (conflict.isNotEmpty()) return Outcome(false, conflict)
+        val (listStatus, list) = CrmMeta.request("${CrmMeta.Graph}/$wabaId/phone_numbers?fields=id&limit=100", token)
+        if (listStatus != 200 || list["data"].jArr().none { it.jObj()?.get("id").jStr() == phoneNumberId }) {
+            CrmMeta.log(tenant, "wa_no_verificado", "la cuenta de Meta no administra ese numero")
+            return Outcome(false, "Tu cuenta de Meta no administra esa cuenta o ese numero de WhatsApp.")
+        }
+        val taken = withServerWorkspace { server -> if (isTaken(server, "waba", wabaId, company)) takenMessage("Esta cuenta de WhatsApp") else "" } ?: NoServerWorkspace
+        if (taken.isNotEmpty()) return Outcome(false, taken)
         val (phoneStatus, phone) = CrmMeta.request(
             "${CrmMeta.Graph}/$phoneNumberId?fields=display_phone_number,verified_name,status,platform_type,is_on_biz_app", token,
         )
@@ -392,17 +444,45 @@ object CrmMetaServer {
         }
         val (subStatus, sub) = CrmMeta.request("${CrmMeta.Graph}/$wabaId/subscribed_apps", token, "POST")
         if (subStatus !in 200..299 || sub["success"].jStr() != "true") return Outcome(false, "Meta rechazo la suscripcion de la app: ${CrmMeta.graphHint(sub, subStatus)}")
-        CrmMeta.save(
-            tenant,
-            CrmMeta.load(tenant).copy(enabled = true, connectionMode = ServerMode, systemToken = token, wabaId = wabaId, phoneNumberId = phoneNumberId),
-        )
+        val claimed = withServerWorkspace { server ->
+            if (claim(server, "waba", wabaId, company) != null) return@withServerWorkspace takenMessage("Esta cuenta de WhatsApp")
+            server.prepareStatement("DELETE FROM crm_meta_routes WHERE company_code = ? AND kind = 'waba' AND asset_id <> ?").use { delete ->
+                delete.setString(1, company)
+                delete.setString(2, wabaId)
+                delete.executeUpdate()
+            }
+            ""
+        } ?: NoServerWorkspace
+        if (claimed.isNotEmpty()) return Outcome(false, claimed)
+        try {
+            CrmMeta.save(
+                tenant,
+                CrmMeta.load(tenant).copy(enabled = true, connectionMode = ServerMode, systemToken = token, wabaId = wabaId, phoneNumberId = phoneNumberId),
+            )
+        } catch (failure: Exception) {
+            withServerWorkspace { server -> release(server, company, setOf("waba")) }
+            throw failure
+        }
         CrmMeta.log(tenant, "wa_conectado", "WABA $wabaId, numero $number")
         return Outcome(true, "WhatsApp conectado con el numero $number${if (phone["is_on_biz_app"].jTrue()) " (coexistencia con la app de WhatsApp Business)" else ""}.")
+    }
+
+    private fun unsubscribe(tenant: Connection, assetId: String?, token: String?) {
+        if (assetId.isNullOrBlank() || token.isNullOrBlank() || CrmSecrets.isUnreadable(token) || !numericId.matches(assetId)) return
+        try {
+            val (status, _) = CrmMeta.request("${CrmMeta.Graph}/$assetId/subscribed_apps", token, "DELETE")
+            if (status !in 200..299) CrmMeta.log(tenant, "desuscripcion_error", "HTTP $status en $assetId")
+        } catch (failure: Exception) {
+            CrmMeta.log(tenant, "desuscripcion_error", failure.message ?: failure.javaClass.simpleName)
+        }
     }
 
     /** Forgets every Meta token and asset of the company and stops routing its webhooks. */
     fun disconnect(tenant: Connection, company: String) {
         val settings = CrmMeta.load(tenant)
+        // Best effort: Meta stops sending this page's and account's events to the app. A failure is only logged.
+        unsubscribe(tenant, settings.pageId, settings.pageToken)
+        unsubscribe(tenant, settings.wabaId, settings.systemToken)
         CrmMeta.save(
             tenant,
             settings.copy(
@@ -442,9 +522,8 @@ object CrmMetaServer {
         return groups.mapValues { (_, entries) -> JsonObject(payload + ("entry" to JsonArray(entries))).toString() }
     }
 
-    /** Handles one call to the server webhook; returns the HTTP status for Meta. */
-    fun dispatch(body: ByteArray, signature: String?): Int {
-        val service = access ?: return 404
+    /** Handles one call to the server webhook; returns the HTTP status for Meta. [enabledTenant] opens a company only when its "meta" extension is enabled. */
+    fun dispatch(body: ByteArray, signature: String?, enabledTenant: (company: String) -> Connection?): Int {
         val routed = withServerWorkspace { server ->
             val app = loadApp(server)
             if (!app.enabled || !CrmMeta.validSignature(app.appSecret, signature, body)) {
@@ -455,7 +534,8 @@ object CrmMetaServer {
         } ?: return 403
         routed.forEach { (company, part) ->
             runCatching {
-                service.tenantConnectionForWebhook(company, CrmModule.id)?.use { tenant ->
+                // Only companies that have the "meta" extension enabled receive the events of their page or number.
+                enabledTenant(company)?.use { tenant ->
                     val settings = CrmMeta.load(tenant)
                     if (!settings.serverMode || !settings.enabled) {
                         CrmMeta.log(tenant, "ignorado", "llego por la app del servidor sin estar conectada a ella")
@@ -483,7 +563,7 @@ object CrmMetaServer {
         if (parts.size != 2) return null
         val decoder = Base64.getUrlDecoder()
         val signature = runCatching { decoder.decode(parts[0]) }.getOrNull() ?: return null
-        val expected = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(appSecret.toByteArray(), "HmacSHA256")) }.doFinal(parts[1].toByteArray())
+        val expected = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(appSecret.toByteArray(Charsets.UTF_8), "HmacSHA256")) }.doFinal(parts[1].toByteArray())
         if (!MessageDigest.isEqual(signature, expected)) return null
         val payload = runCatching { json.parseToJsonElement(String(decoder.decode(parts[1]))) }.getOrNull().jObj() ?: return null
         return payload["user_id"].jStr().takeIf { numericId.matches(it) }

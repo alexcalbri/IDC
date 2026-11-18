@@ -23,12 +23,18 @@ object CrmIntegrationScreens {
     private const val UiRoute = CrmScreens.UiRoute
     private val timeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
-    // Public URL a service calls for this company, e.g. .../modules/crm/hooks/acme/meta.
-    fun hookUrl(context: CrmScreens.Context, name: String) = "${context.publicBase}/modules/crm/hooks/${context.permissions.companyCode}/$name"
+    // Public URL Meta calls for this company when it uses its own Meta app, e.g. .../modules/crm/extensions/meta/acme/webhook.
+    fun metaHookUrl(context: CrmScreens.Context) = "${context.publicBase}${CrmMetaServer.companyWebhookPath(context.permissions.companyCode)}"
 
-    fun integrations(context: CrmScreens.Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> =
-        meta(context, submitted, pickers = params["numbers"], link = params["link"]) + encuentra24(context) + CrmWordPressScreens.settings(context, params["secret"]) +
-            CrmCloudbedsScreens.settings(context) + staySettings(context) + translation(context, submitted)
+    // Each integration is an extension of the company: without it installed and active, its card only says how to install it.
+    fun integrations(context: CrmScreens.Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> {
+        fun extension(id: String, nodes: () -> List<UiNode>) = CrmExtensions.missingNodes(context.tenant, id) ?: nodes()
+        return extension(CrmExtensionIds.Meta) { meta(context, submitted, pickers = params["numbers"], link = params["link"]) } +
+            extension(CrmExtensionIds.Encuentra24) { encuentra24(context) } +
+            extension(CrmExtensionIds.WordPress) { CrmWordPressScreens.settings(context, params["secret"]) } +
+            extension(CrmExtensionIds.Cloudbeds) { CrmCloudbedsScreens.settings(context) } +
+            staySettings(context) + translation(context, submitted)
+    }
 
     // ---- Traduccion de plantillas ----
 
@@ -355,7 +361,7 @@ object CrmIntegrationScreens {
             UiCard(
                 listOf(
                     UiText("Callback URL de los webhooks, la misma para los tres canales:", UiTextStyle.Caption),
-                    UiText(hookUrl(context, "meta")),
+                    UiText(metaHookUrl(context)),
                     UiForm(
                         "meta", fields, CrmMeta.toFormValues(settings) + submitted.orEmpty(),
                         submit = UiButton("Guardar y conectar", UiRequest(UiRoute + "/integrations", params = mapOf("op" to "metaSave"), formId = "meta")),
@@ -382,7 +388,7 @@ object CrmIntegrationScreens {
                 "(para responder a cualquier persona Meta pide App Review de pages_messaging e instagram_manage_messages).",
             "3. Usuario del sistema: en Configuracion del negocio > Usuarios del sistema crea uno administrador, asignale la app, la pagina, " +
                 "Instagram y la cuenta de WhatsApp, y genera un token que no caduque con los permisos del paso 2.",
-            "4. Webhooks, con la Callback URL ${hookUrl(context, "meta")} y el mismo verify token: Messenger (objeto Page) suscribe messages y " +
+            "4. Webhooks, con la Callback URL ${metaHookUrl(context)} y el mismo verify token: Messenger (objeto Page) suscribe messages y " +
                 "standby; Instagram suscribe messages; WhatsApp suscribe messages y, si usan la app de WhatsApp Business en el mismo numero, smb_message_echoes.",
             "5. Aqui: escribe el App Secret, el verify token y el token del sistema; en WhatsApp, el WhatsApp Business Account ID. Pulsa Guardar y " +
                 "conectar: se obtiene el token de la pagina, se suscribe Instagram y la cuenta de WhatsApp. Envia un mensaje de prueba por cada canal " +

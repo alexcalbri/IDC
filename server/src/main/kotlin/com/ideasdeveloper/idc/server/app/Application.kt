@@ -36,6 +36,25 @@ import com.ideasdeveloper.idc.server.modules.ServerModule
 import com.ideasdeveloper.idc.server.modules.ServerModuleProvider
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import com.ideasdeveloper.idc.server.modules.moduleRoutes
+import com.ideasdeveloper.idc.server.extensions.ExtensionActors
+import com.ideasdeveloper.idc.server.extensions.ExtensionActorLookup
+import com.ideasdeveloper.idc.server.extensions.ExtensionMcpTools
+import com.ideasdeveloper.idc.server.extensions.packages.ExtensionManifestValidator
+import com.ideasdeveloper.idc.server.extensions.packages.ExtensionPackageBuilder
+import com.ideasdeveloper.idc.server.extensions.packages.ExtensionPackageService
+import com.ideasdeveloper.idc.server.extensions.packages.ExtensionSignatureVerifier
+import com.ideasdeveloper.idc.server.extensions.packages.JdbcExtensionPackageStore
+import com.ideasdeveloper.idc.server.extensions.packages.JdbcUnsignedAuthorizationStore
+import com.ideasdeveloper.idc.server.extensions.packages.RemoteExtensionCatalog
+import com.ideasdeveloper.idc.server.extensions.packages.extensionPackageRoutes
+import com.ideasdeveloper.idc.server.extensions.ExtensionConnections
+import com.ideasdeveloper.idc.server.extensions.ExtensionNotifier
+import com.ideasdeveloper.idc.server.extensions.ExtensionRegistry
+import com.ideasdeveloper.idc.server.extensions.ExtensionService
+import com.ideasdeveloper.idc.server.extensions.ExtensionStorage
+import com.ideasdeveloper.idc.server.extensions.extensionRoutes
+import com.ideasdeveloper.idc.server.security.MasterKeySecretBox
+import com.ideasdeveloper.idc.server.security.SecretBox
 import com.ideasdeveloper.idc.server.modules.notificationRoutes
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.*
@@ -97,6 +116,22 @@ fun Application.module() {
                     ?: call.request.local.remoteAddress
             }
         }
+        // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
+        // enough for webhook bursts, but it stops floods that would open a database connection each.
+        register(RateLimitName("extensions")) {
+            rateLimiter(
+                limit = 300,
+                refillPeriod = 60.seconds,
+            )
+            requestKey { call ->
+                val remoteAddress = call.request.local.remoteAddress
+                if (remoteAddress == "127.0.0.1") {
+                    call.request.headers["X-Real-IP"]?.takeIf { it.isNotBlank() } ?: remoteAddress
+                } else {
+                    remoteAddress
+                }
+            }
+        }
     }
     DatabaseFactory.init(environment.config)
     val modulePackagesRoot = Path.of(
@@ -141,6 +176,10 @@ fun Application.module() {
         tokenGenerator = SessionTokenGenerator(),
         sessionLifetimeSeconds = environment.config.property("auth.sessionLifetimeSeconds").getString().toLong(),
     )
+    // Secrets are sealed with IDC_MASTER_KEY (server.env); without it the server runs but cannot store new ones.
+    val secretBox: SecretBox = MasterKeySecretBox.fromEnvironment().also { box ->
+        if (!box.available) log.warn("IDC_MASTER_KEY is not configured; secrets cannot be stored until it is set in server.env.")
+    }
     val provisioningConfig = companyProvisioningConfig()
     val companyProvisioning = CompanyProvisioningService(
         central = DatabaseFactory.getDataSource(),
@@ -156,8 +195,23 @@ fun Application.module() {
     )
     // Applies migrations of newly loaded module versions to the companies that use them, without
     // delaying startup.
-    Thread({ companyProvisioning.applyPendingModuleMigrations() }, "module-migrations").apply { isDaemon = true }.start()
-    val serverMcp = ServerMcpTools.mcp(companyProvisioning)
+    // Extension compatibility is checked once those migrations (which create tenant_extensions) ran.
+    val migrationsDone = java.util.concurrent.CountDownLatch(1)
+    Thread({
+        try {
+            companyProvisioning.applyPendingModuleMigrations()
+        } finally {
+            migrationsDone.countDown()
+        }
+    }, "module-migrations").apply { isDaemon = true }.start()
+    // Built below; the server MCP reads them only when an extension tool runs.
+    lateinit var extensionService: ExtensionService
+    lateinit var extensionPackages: ExtensionPackageService
+    val serverMcp = ServerMcpTools.mcp(
+        companyProvisioning,
+        extensions = { role -> ExtensionMcpTools.tools({ extensionService }, { extensionPackages }, role) },
+        extensionInstructions = ExtensionMcpTools.Instructions,
+    )
     // Crea el servicio de autoservicio para perfil y ZIPs de empresas business_owner.
     val moduleAccessService = ModuleAccessService(
         DatabaseFactory.getDataSource(),
@@ -172,7 +226,69 @@ fun Application.module() {
         moduleRegistry::customerHistoryWriter,
         moduleRegistry::customerChangeListener,
         moduleRegistry::customerNotesReader,
+        secrets = secretBox,
     )
+    // Extensions installed per company (EXTENSIONS.md): bundled in the modules or loaded from packages.
+    val extensionConnections = ExtensionConnections.from(moduleAccessService)
+    val extensionStorage = ExtensionStorage(secretBox)
+    // Extension packages built on this server from the extension catalog (signed, or authorized by hash).
+    val remoteExtensionCatalog = RemoteExtensionCatalog(githubToken)
+    val extensionCatalogUrl = RemoteExtensionCatalog.effectiveUrl(
+        environment.config.propertyOrNull("extensions.catalogUrl")?.getString().orEmpty(),
+        environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
+    )
+    val extensionPackagesRoot = modulePackagesRoot.toAbsolutePath().resolveSibling("server-extensions")
+    val unsignedAuthorizations = JdbcUnsignedAuthorizationStore { DatabaseFactory.getDataSource().connection }
+    extensionPackages = ExtensionPackageService(
+        store = JdbcExtensionPackageStore { DatabaseFactory.getDataSource().connection },
+        packagesRoot = extensionPackagesRoot,
+        bundledIds = { serverModules.flatMap { module -> module.bundledExtensions.map { it.manifest.id } }.toSet() },
+        catalogSource = { remoteExtensionCatalog.extensions(extensionCatalogUrl) },
+        builder = ExtensionPackageBuilder.forRunningServer(
+            packagesRoot = extensionPackagesRoot,
+            validator = ExtensionManifestValidator(
+                installedModuleVersion = { id -> moduleRegistry.definition(id)?.version },
+                modulePermissions = { id -> moduleRegistry.availableDefinition(id)?.extensionPermissions.orEmpty() },
+            ),
+            verifier = ExtensionSignatureVerifier(),
+            authorizations = unsignedAuthorizations,
+            moduleJar = { id -> installedModuleJar(DatabaseFactory.getDataSource(), id) },
+            githubToken = githubToken,
+        ),
+        authorizations = unsignedAuthorizations,
+        requestRestart = ::restartToLoadModules,
+        audit = { role, action, company, module, details -> companyProvisioning.recordAudit(role, action, company, module, details) },
+    )
+    val packageExtensions = extensionPackages.loadInstalled(
+        moduleClassLoader = { id -> moduleRegistry.module(id)?.javaClass?.classLoader },
+    )
+    val extensionRegistry = ExtensionRegistry.of(serverModules, packageExtensions)
+    extensionService = ExtensionService(
+        connections = extensionConnections,
+        storage = extensionStorage,
+        registry = extensionRegistry,
+        modules = moduleRegistry,
+        notifier = ExtensionNotifier.from(moduleAccessService),
+        auditor = { role, action, company, module, details -> companyProvisioning.recordAudit(role, action, company, module, details) },
+        migrationRunner = { company, extension -> companyProvisioning.applyExtensionMigrations(company, extension) },
+    )
+    // A module loaded at a version below an extension's minimum leaves that extension incompatible.
+    Thread({
+        // Group operations cut by a restart end as failed, so their companies can be retried.
+        try {
+            extensionService.recoverInterrupted()
+        } catch (failure: Exception) {
+            log.error("Interrupted extension operations were not recovered", failure)
+        }
+        migrationsDone.await()
+        serverModules.map { it.definition }.filter { extensionRegistry.forModule(it.id).isNotEmpty() }.forEach { definition ->
+            try {
+                extensionService.markIncompatible(definition.id, definition.version)
+            } catch (failure: Exception) {
+                log.error("Extensions of module {} were not checked", definition.id, failure)
+            }
+        }
+    }, "extension-compatibility").apply { isDaemon = true }.start()
     // Name and email of each user and password recovery by email code.
     val accountService = AccountService(
         central = DatabaseFactory.getDataSource(),
@@ -210,6 +326,7 @@ fun Application.module() {
     monitor.subscribe(ApplicationStopped) {
         moduleJobs.stop()
         remoteModuleCatalog.close()
+        remoteExtensionCatalog.close()
         loginDatabases.close()
         DatabaseFactory.close()
     }
@@ -260,6 +377,22 @@ fun Application.module() {
         // Centro de notificaciones del Core: la campana de la app lee y marca las del usuario.
         notificationRoutes(moduleRegistry, moduleAccessService)
         moduleRoutes(moduleRegistry, moduleAccessService)
+        rateLimit(RateLimitName("admin")) {
+            extensionRoutes(
+                extensionService,
+                ExtensionActors(moduleAccessService, ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions), extensionConnections),
+            )
+        }
+        rateLimit(RateLimitName("admin")) {
+            val packageActors = ExtensionActors(moduleAccessService, ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions), extensionConnections)
+            extensionPackageRoutes(extensionPackages) { call ->
+                (packageActors.serverOwner(call) as? ExtensionActorLookup.Found)?.actor?.role
+            }
+        }
+        // Routes of every extension, mounted once behind ExtensionGate (status per company).
+        rateLimit(RateLimitName("extensions")) {
+            extensionRegistry.installRoutes(this, moduleAccessService, extensionStorage)
+        }
     }
 }
 
@@ -395,6 +528,18 @@ private fun loadPackagedModules(
 }
 
 // systemd (Restart=on-failure) starts the server again within seconds and the new package loads.
+// Jar of an optional module built on this server, which extension packages compile against; null for base modules.
+private fun installedModuleJar(central: DataSource, moduleId: String): Path? = try {
+    central.connection.use { connection ->
+        connection.prepareStatement("SELECT installed_package_path FROM server_modules WHERE module_id = ? AND installed_package_path LIKE '%.jar'").use { query ->
+            query.setString(1, moduleId)
+            query.executeQuery().use { rows -> if (rows.next()) Path.of(rows.getString(1)).takeIf { Files.isRegularFile(it) } else null }
+        }
+    }
+} catch (_: SQLException) {
+    null
+}
+
 private fun restartToLoadModules() {
     Thread({
         Thread.sleep(2_000)

@@ -2,13 +2,13 @@
 /**
  * Plugin Name: IDC Connector
  * Description: Conecta Real Estate 7 con el CRM de IdeasCore: propiedades, formularios, favoritos, busquedas guardadas y ventas.
- * Version: 0.2.0
+ * Version: 0.3.0
  * Requires PHP: 8.0
  * Author: IdeasCore
  * Text Domain: idc-connector
  *
  * IDC -> sitio: POST /wp-json/idc/v1/rpc {"action": ..., ...} firmado.
- * Sitio -> IDC: POST {idc}/modules/crm/hooks/{empresa}/wordpress con cada evento, firmado.
+ * Sitio -> IDC: POST {idc}/modules/crm/extensions/wordpress/{empresa}/hook con cada evento, firmado.
  * Firma: X-IDC-Timestamp (segundos) y X-IDC-Signature = hex(HMAC-SHA256(secreto, timestamp + "." + cuerpo)).
  * Se rechazan firmas con mas de 5 minutos de diferencia.
  */
@@ -17,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-const IDC_CONNECTOR_VERSION = '0.2.0';
+const IDC_CONNECTOR_VERSION = '0.3.0';
 const IDC_CONNECTOR_OPTION  = 'idc_connector_settings';
 const IDC_CONNECTOR_QUEUE   = 'idc_connector_queue';
 const IDC_CONNECTOR_CRON    = 'idc_connector_retry';
@@ -385,7 +385,7 @@ function idc_connector_send( array $event, bool $blocking = true ) {
 	$event['sent_at'] = gmdate( 'c' );
 	$body = wp_json_encode( $event, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 	$timestamp = (string) time();
-	$response = wp_remote_post( $settings['idc_url'] . '/modules/crm/hooks/' . rawurlencode( $settings['company'] ) . '/wordpress', [
+	$response = wp_remote_post( $settings['idc_url'] . '/modules/crm/extensions/wordpress/' . rawurlencode( $settings['company'] ) . '/hook', [
 		'timeout'     => $blocking ? 8 : 2,
 		'blocking'    => $blocking,
 		'redirection' => 0,

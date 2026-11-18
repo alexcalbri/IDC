@@ -232,6 +232,7 @@ object CrmImportMcpTools {
     }
 
     private fun mondayBoards(call: McpToolCall): JsonElement {
+        CrmExtensions.inactive(call.tenant, CrmExtensionIds.MondayImport)?.let { throw McpToolException(it) }
         val token = CrmImport.mondayToken(call.tenant) ?: throw McpToolException("Guarda primero el token de la API de monday en la app (Importar).")
         val boards = checked { CrmImport.mondayBoards(token) }
         return buildJsonObject {
@@ -249,6 +250,7 @@ object CrmImportMcpTools {
     }
 
     private fun importMonday(call: McpToolCall): JsonElement {
+        CrmExtensions.inactive(call.tenant, CrmExtensionIds.MondayImport)?.let { throw McpToolException(it) }
         if (CrmImport.mondayToken(call.tenant) == null) throw McpToolException("Guarda primero el token de la API de monday en la app (Importar).")
         val id = checked { CrmImport.queueMonday(call.tenant, strings(call, "boards"), actor(call).userId) }
         return buildJsonObject {

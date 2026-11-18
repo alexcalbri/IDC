@@ -1285,6 +1285,11 @@ class CompanyProvisioningService(
                     } catch (failure: Exception) {
                         log.error("Notifications migration failed for company {}", companyCode, failure)
                     }
+                    try {
+                        applyExtensionsMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Extensions migration failed for company {}", companyCode, failure)
+                    }
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
                     }
@@ -1554,6 +1559,19 @@ class CompanyProvisioningService(
         }
         applyUserProfileMigration(connection)
         applyNotificationsMigration(connection)
+        applyExtensionsMigration(connection)
+    }
+
+    // Encrypted secrets (SecretBox) and per-company extensions (tenant V006, EXTENSIONS.md); also
+    // brought to existing companies at startup.
+    private fun applyExtensionsMigration(connection: Connection) {
+        val relativePath = "database/tenant/migrations/V006__create_extensions.sql"
+        applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        connection.createStatement().use { statement ->
+            statement.executeUpdate("GRANT SELECT, INSERT ON tenant_data_keys TO ${quoteIdentifier(config.runtimeUser)}")
+            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE ON tenant_extensions TO ${quoteIdentifier(config.runtimeUser)}")
+            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_extension_settings, tenant_extension_objects TO ${quoteIdentifier(config.runtimeUser)}")
+        }
     }
 
     // Notification center (core V005); also brought to existing companies at startup.
@@ -1827,6 +1845,46 @@ class CompanyProvisioningService(
                     )
                 } else {
                     null
+                }
+            }
+        }
+    }
+
+    /** Audit entry written by other Core services (extensions); [details] is a JSON object. */
+    fun recordAudit(actorRole: String, action: String, companyCode: String?, moduleId: String?, details: String) {
+        central.connection.use { connection -> insertAudit(connection, actorRole, action, companyCode, moduleId, details) }
+    }
+
+    /**
+     * Applies the pending tenant migrations of an extension in one company with the provisioning
+     * role and grants its runtime tables (EXTENSIONS.md, install). Applied migrations are skipped.
+     */
+    fun applyExtensionMigrations(companyCode: String, extension: com.ideasdeveloper.idc.server.extensions.ServerExtension) {
+        if (extension.migrationPaths.isEmpty() && extension.runtimeTables.isEmpty()) return
+        val provisioningRole = firstServerOwnerRole() ?: throw CompanyProvisioningException("No hay un server owner activo para aplicar migraciones.")
+        val databaseName = central.connection.use { connection ->
+            connection.prepareStatement("SELECT database_name FROM companies WHERE code = ?").use { query ->
+                query.setString(1, companyCode)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+            }
+        } ?: throw CompanyProvisioningException("La empresa $companyCode no existe.")
+        val tenantConfig = loginDatabases.tenantConfig(databaseName) ?: throw CompanyProvisioningException("La base de datos de $companyCode no esta configurada.")
+        val migrationModule = "ext:${extension.manifest.id}"
+        tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+            // A migration of a package must not hang installs or startup (pg_sleep, long locks).
+            tenant.createStatement().use { statement ->
+                statement.execute("SET statement_timeout = '60s'")
+                statement.execute("SET lock_timeout = '10s'")
+            }
+            extension.migrationPaths.forEach { path ->
+                val sql = extension.javaClass.classLoader.getResourceAsStream(path)?.use { String(it.readBytes(), Charsets.UTF_8) }
+                    ?: throw CompanyProvisioningException("Falta la migracion $path de la extension ${extension.manifest.id}.")
+                applyMigration(tenant, migrationModule, path, sql)
+            }
+            if (extension.runtimeTables.isNotEmpty()) {
+                val tables = extension.runtimeTables.joinToString(", ") { quoteIdentifier(it) }
+                tenant.createStatement().use { statement ->
+                    statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON $tables TO ${quoteIdentifier(config.runtimeUser)}")
                 }
             }
         }

@@ -65,19 +65,20 @@ object CrmEncuentra24 {
     ).use { query ->
         query.executeQuery().use { rows ->
             rows.next()
-            CrmEncuentra24Settings(rows.getBoolean(1), rows.getString(2), rows.getString(3), rows.getTimestamp(4)?.toInstant(), rows.getString(5), rows.getString(6))
+            CrmEncuentra24Settings(rows.getBoolean(1), CrmSecrets.open(tenant, rows.getString(2)), rows.getString(3), rows.getTimestamp(4)?.toInstant(), rows.getString(5), rows.getString(6))
         }
     }
 
     fun toFormValues(settings: CrmEncuentra24Settings) = mapOf(
         "enabled" to settings.enabled.toString(),
-        "apiKey" to if (settings.apiKey.isNullOrBlank()) "" else CrmMail.SecretMask,
+        "apiKey" to CrmSecrets.mask(settings.apiKey),
         "slug" to settings.slug.orEmpty(),
     )
 
     fun saveForm(tenant: Connection, values: Map<String, String>) {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Encuentra24)?.let { throw CrmValidationException(it) }
         val current = load(tenant)
-        val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && it != CrmMail.SecretMask } ?: current.apiKey
+        val key = values["apiKey"]?.trim()?.takeIf { it.isNotEmpty() && !CrmSecrets.isPlaceholder(it) } ?: current.apiKey
         val slug = values["slug"].orEmpty().trim().lowercase().ifEmpty { null }
         if (slug != null && !slug.matches(Regex("^[a-z0-9][a-z0-9-]{0,99}$"))) {
             throw CrmValidationException("El slug lleva letras minusculas, numeros y guiones (como en la URL de la empresa).")
@@ -86,7 +87,7 @@ object CrmEncuentra24 {
         if (enabled && (key.isNullOrBlank() || slug == null)) throw CrmValidationException("Para activar Encuentra24 escribe la API key y el slug de la empresa.")
         tenant.prepareStatement("UPDATE crm_encuentra24_settings SET enabled = ?, api_key = ?, slug = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1").use { update ->
             update.setBoolean(1, enabled)
-            update.setString(2, key)
+            update.setString(2, CrmSecrets.seal(tenant, key))
             update.setString(3, slug)
             update.executeUpdate()
         }
@@ -212,6 +213,7 @@ object CrmEncuentra24 {
      * listing of each lead is linked to it. Encuentra24 leads never get a suggested responsible.
      */
     fun sync(tenant: Connection, fromDate: LocalDate? = null, onNewLead: (UUID) -> Unit = {}): SyncResult {
+        CrmExtensions.inactive(tenant, CrmExtensionIds.Encuentra24)?.let { throw CrmEncuentra24Exception(it) }
         val settings = load(tenant)
         if (settings.apiKey.isNullOrBlank() || settings.slug.isNullOrBlank()) throw CrmEncuentra24Exception("Falta la API key o el slug de Encuentra24.")
         val locked = tenant.prepareStatement("SELECT pg_try_advisory_lock(?)").use { query ->

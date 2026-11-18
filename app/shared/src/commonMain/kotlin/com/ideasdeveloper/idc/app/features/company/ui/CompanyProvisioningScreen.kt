@@ -19,6 +19,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import com.ideasdeveloper.idc.app.core.layout.AdaptiveGrid
+import com.ideasdeveloper.idc.app.features.extensions.data.ExtensionTarget
+import com.ideasdeveloper.idc.app.features.extensions.ui.ExtensionsScreen
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
@@ -123,6 +125,8 @@ fun CompanyProvisioningScreen(
     var editingCompanySecondaryColor by remember { mutableStateOf("#764BA2") }
     var editingCompanyAccentColor by remember { mutableStateOf("#FFFFFF") }
     var confirmReturnToDashboard by remember { mutableStateOf(false) }
+    // Empresa cuyas extensiones se estan administrando (pantalla completa).
+    var extensionsCompany by remember { mutableStateOf<CompanySummaryResponse?>(null) }
     val createCompanyHasChanges =
         isCreateCompanyExpanded &&
                 (code.isNotBlank() ||
@@ -221,6 +225,23 @@ fun CompanyProvisioningScreen(
         refreshCompanies()
     }
 
+    // Se crea antes del return temprano para conservar la posicion del scroll al volver de Extensiones.
+    val scrollState = rememberScrollState()
+
+    extensionsCompany?.let { company ->
+        ExtensionsScreen(
+            serverUrl = serverUrl,
+            session = session,
+            target = ExtensionTarget(company.code, asServerOwner = true),
+            companyName = company.name,
+            onSettings = onSettings,
+            onLogout = onLogout,
+            onClose = { extensionsCompany = null },
+            modifier = modifier,
+        )
+        return
+    }
+
     AuthenticatedScreen(
         modifier = modifier.background(colors.screenBrush),
         topBar = {
@@ -269,7 +290,7 @@ fun CompanyProvisioningScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(scrollState),
                 shape = MaterialTheme.shapes.medium,
                 color = AppTheme.colors.surface,
             ) {
@@ -499,6 +520,7 @@ fun CompanyProvisioningScreen(
                             },
                             linkedNames = company.linkedCompanies.map { code -> companies.firstOrNull { it.code == code }?.name ?: code },
                             onLink = { linkingCompany = company },
+                            onExtensions = { extensionsCompany = company },
                             onUnlink = { link(company, null) },
                             onCancelDelete = {
                                 companyPendingDeletion = null
@@ -671,6 +693,7 @@ private fun CompanyModulesRow(
     onDuplicate: () -> Unit,
     linkedNames: List<String>,
     onLink: () -> Unit,
+    onExtensions: () -> Unit,
     onUnlink: () -> Unit,
     isEditing: Boolean,
     editingName: String,
@@ -728,6 +751,10 @@ private fun CompanyModulesRow(
         if (!isEditing) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 TextButton(enabled = enabled, onClick = onLink) { Text("Vincular", color = AppTheme.colors.accentText) }
+                // Extensiones de los modulos de esa empresa y revision de su grupo.
+                if (company.isActive) {
+                    TextButton(enabled = enabled, onClick = onExtensions) { Text("Extensiones", color = AppTheme.colors.accentText) }
+                }
                 if (linkedNames.isNotEmpty()) {
                     TextButton(enabled = enabled, onClick = onUnlink) { Text("Desvincular", color = AppTheme.colors.danger) }
                 }

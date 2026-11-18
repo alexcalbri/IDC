@@ -3,6 +3,8 @@ package com.ideasdeveloper.idc.app.features.company.ui
 import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.idc.app.core.layout.ContentWidth
 import com.ideasdeveloper.idc.app.core.layout.contentWidth
+import com.ideasdeveloper.idc.app.features.extensions.data.ExtensionTarget
+import com.ideasdeveloper.idc.app.features.extensions.ui.ExtensionsScreen
 import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import com.ideasdeveloper.idc.app.core.theme.AppTheme
 import androidx.compose.foundation.background
@@ -83,6 +85,7 @@ fun CompanyManagementScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var confirmReturnToDashboard by remember { mutableStateOf(false) }
+    var showExtensions by remember { mutableStateOf(false) }
     val hasUnsavedChanges =
         name != savedName ||
                 logoUrl != savedLogoUrl ||
@@ -157,6 +160,27 @@ fun CompanyManagementScreen(
         }
     }
 
+    // Se crea antes del return temprano para conservar la posicion del scroll al volver de Extensiones.
+    val scrollState = rememberScrollState()
+
+    // Extensiones de la empresa: pantalla completa que reemplaza a esta hasta que se cierra.
+    if (showExtensions) {
+        val companyCode = session?.companyCode
+        if (companyCode != null) {
+            ExtensionsScreen(
+                serverUrl = serverUrl,
+                session = session,
+                target = ExtensionTarget(companyCode, asServerOwner = false),
+                companyName = name,
+                onSettings = onSettings,
+                onLogout = onLogout,
+                onClose = { showExtensions = false },
+                modifier = modifier,
+            )
+            return
+        }
+    }
+
     AuthenticatedScreen(
         // Vista previa en vivo de los colores de marca que se estan editando.
         modifier = modifier.background(AppTheme.colors.copy(accent = primaryCompose, accentSecondary = secondaryCompose).screenBrush),
@@ -205,7 +229,7 @@ fun CompanyManagementScreen(
             Surface(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(scrollState),
                 shape = MaterialTheme.shapes.medium,
                 color = AppTheme.colors.surface,
             ) {
@@ -248,6 +272,14 @@ fun CompanyManagementScreen(
                             colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryCompose),
                         ) {
                             Text("Volver al panel")
+                        }
+                        // Integraciones de los modulos de la empresa (Meta, WordPress, etc.).
+                        Button(
+                            onClick = { showExtensions = true },
+                            enabled = !isLoading && session?.companyCode != null,
+                            colors = ButtonDefaults.buttonColors(containerColor = AppTheme.colors.surfaceAlt, contentColor = primaryCompose),
+                        ) {
+                            Text("Extensiones")
                         }
                         Button(
                             enabled = !isLoading && serverUrl != null && session?.companyCode != null,

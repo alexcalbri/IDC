@@ -1,4 +1,4 @@
 // Version of every IdeasCore app (Android, iOS, desktop and web): change it only here.
 // Xcode includes this file (iosApp/Configuration/Config.xcconfig) and Gradle reads it as properties.
-APP_VERSION=0.6.1
-APP_BUILD=6
+APP_VERSION=0.7.0
+APP_BUILD=7
