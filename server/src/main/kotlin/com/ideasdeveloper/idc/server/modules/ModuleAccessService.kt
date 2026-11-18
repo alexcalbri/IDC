@@ -290,7 +290,9 @@ class ModuleAccessService(
             ?: call.request.cookies[TokenCookie]
         )
         ?.trim()
-        ?.takeIf { it.isNotBlank() }
+        // Un token con otro formato no puede ser una sesion: se rechaza (401) antes de abrir
+        // cualquier conexion a PostgreSQL, para que un Bearer basura no agote conexiones.
+        ?.takeIf { SessionTokenPattern.matches(it) }
 
     /**
      * Opens an active company's tenant database without a user session.
@@ -478,6 +480,8 @@ class ModuleAccessService(
     companion object {
         const val TokenCookie = "idc_module_token"
         const val CompanyCookie = "idc_module_company"
+        // Formato de un token de sesion de la app: 32 bytes en base64url sin relleno (43 caracteres).
+        private val SessionTokenPattern = Regex("^[A-Za-z0-9_-]{43}$")
         // Company codes as created by provisioning; anything else in a webhook URL is rejected early.
         private val CompanyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
     }

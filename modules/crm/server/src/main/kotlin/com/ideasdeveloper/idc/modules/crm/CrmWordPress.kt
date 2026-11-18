@@ -144,7 +144,8 @@ object CrmWordPress {
 
     /** Valid when the timestamp is within 5 minutes and the signature matches, compared in constant time. */
     fun validSignature(secret: String?, timestamp: String?, signature: String?, body: ByteArray, now: Instant = Instant.now()): Boolean {
-        if (secret.isNullOrBlank() || timestamp == null || signature == null) return false
+        // Un secreto ilegible (texto cifrado) cuenta como "sin secreto": falla cerrado.
+        if (secret.isNullOrBlank() || CrmSecrets.isUnreadable(secret) || timestamp == null || signature == null) return false
         val seconds = timestamp.toLongOrNull() ?: return false
         if (kotlin.math.abs(now.epochSecond - seconds) > MaxSkewSeconds) return false
         return MessageDigest.isEqual(sign(secret, timestamp, body).toByteArray(), signature.lowercase().toByteArray())
@@ -153,15 +154,7 @@ object CrmWordPress {
     // ---- Plugin API (IDC -> website) ----
 
     /** True for addresses a site must never resolve to: loopback, link-local, private (RFC1918), CGNAT 100.64/10, IPv6 ULA fc00::/7, multicast and "this network". */
-    fun blockedAddress(address: java.net.InetAddress): Boolean {
-        if (address.isLoopbackAddress || address.isAnyLocalAddress || address.isLinkLocalAddress || address.isSiteLocalAddress || address.isMulticastAddress) return true
-        val bytes = address.address
-        return when (bytes.size) {
-            4 -> bytes[0].toInt() == 0 || ((bytes[0].toInt() and 0xFF) == 100 && (bytes[1].toInt() and 0xC0) == 64)
-            16 -> (bytes[0].toInt() and 0xFE) == 0xFC
-            else -> true
-        }
-    }
+    fun blockedAddress(address: java.net.InetAddress): Boolean = com.ideasdeveloper.idc.server.modules.MailHostGuard.blockedAddress(address)
 
     /**
      * The site must be a public host: with a dot, and every address it resolves to public. Checked when saving and before each call

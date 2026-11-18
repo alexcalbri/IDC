@@ -125,7 +125,7 @@ object CrmMondayFiles {
         val uri = runCatching { URI.create(url) }.getOrNull()
         if (uri == null || uri.scheme != "https" || uri.host.isNullOrBlank()) throw CrmImportException("enlace de descarga invalido")
         val addresses = runCatching { InetAddress.getAllByName(uri.host).toList() }.getOrElse { throw CrmImportException("no se encontro ${uri.host}") }
-        if (addresses.any { it.isLoopbackAddress || it.isSiteLocalAddress || it.isLinkLocalAddress || it.isAnyLocalAddress || it.isMulticastAddress }) {
+        if (addresses.isEmpty() || addresses.any(CrmWordPress::blockedAddress)) {
             throw CrmImportException("el enlace apunta a una red privada")
         }
         val response = download.send(HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(5)).GET().build(), HttpResponse.BodyHandlers.ofInputStream())

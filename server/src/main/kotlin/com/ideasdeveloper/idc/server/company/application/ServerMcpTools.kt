@@ -37,7 +37,7 @@ object ServerMcpTools {
         "Administras el servidor como su dueno. Las empresas (servidor_list_companies) tienen cada una su propia base de datos; " +
             "el espacio del servidor no aparece en esa lista. Para trabajar dentro de una empresa con las herramientas de los modulos, " +
             "pasa su codigo en el argumento acting_company; el modulo debe estar activo en esa empresa (servidor_set_company_module). " +
-            "Un modulo debe estar instalado en el servidor (servidor_install_module) antes de poder activarlo en una empresa. " +
+            "Un modulo debe estar instalado en el servidor (desde la app; el agente no instala modulos) antes de poder activarlo en una empresa. " +
             "Las contrasenas nunca pasan por aqui: una empresa creada con servidor_create_company no tiene contrasena utilizable " +
             "hasta que el business owner la pone con el codigo que le llega a su correo (\"Olvidaste tu contrasena\" en el login) " +
             "o el dueno del servidor la pone desde la app (Empresas > Editar > Contrasena del business owner); avisale."
@@ -222,19 +222,8 @@ object ServerMcpTools {
                 permission = Permission,
                 readOnly = true,
             ) { json.encodeToJsonElement(ListSerializer(ServerModuleResponse.serializer()), provisioning().listServerModules()) },
-            McpTool(
-                name = "install_module",
-                title = "Instalar o actualizar modulo",
-                description = "Instala un modulo del catalogo o lo actualiza a su ultima version. Los modulos opcionales se compilan " +
-                    "en segundo plano y el servidor se reinicia al terminar (la conexion se corta un momento); " +
-                    "consulta el avance con servidor_list_modules. " +
-                    "Se rechaza si el Core del servidor es menor que el minimo del modulo; la version de la app no se puede comprobar desde aqui " +
-                    "(si el modulo pide una app minima, la respuesta lo avisa en 'warning').",
-                permission = Permission,
-                inputSchema = McpSchema.obj(mapOf(moduleId), required = listOf("module_id")),
-            ) { call ->
-                json.encodeToJsonElement(ServerModuleResponse.serializer(), run { provisioning().installServerModule(call.requiredString("module_id", 63)) })
-            },
+            // install_module no se expone por MCP: instalar un modulo compila y ejecuta codigo en el servidor
+            // y los modulos aun no tienen firma. Solo se hace desde la app.
             McpTool(
                 name = "remove_module",
                 title = "Quitar modulo del servidor",
@@ -269,15 +258,8 @@ object ServerMcpTools {
                 permission = Permission,
                 readOnly = true,
             ) { json.encodeToJsonElement(ServerModuleCatalogResponse.serializer(), provisioning().serverModuleCatalog()) },
-            McpTool(
-                name = "set_module_catalog",
-                title = "Cambiar catalogo de modulos",
-                description = "Cambia la URL del catalogo de modulos, por ejemplo https://github.com/owner/repo/tree/develop/modules.",
-                permission = Permission,
-                inputSchema = McpSchema.obj(mapOf("url" to McpSchema.string("URL del catalogo.")), required = listOf("url")),
-            ) { call ->
-                json.encodeToJsonElement(ServerModuleCatalogResponse.serializer(), run { provisioning().updateServerModuleCatalog(call.requiredString("url")) })
-            },
+            // set_module_catalog no se expone por MCP: cambiar el catalogo permite instalar codigo ajeno.
+            // Solo se hace desde la app.
         ) + extensions(::role)
     }
 

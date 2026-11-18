@@ -6,6 +6,11 @@ import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGe
 import com.ideasdeveloper.idc.server.modules.MailException
 import com.ideasdeveloper.idc.server.modules.MailSender
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 import org.postgresql.ds.PGSimpleDataSource
 import org.slf4j.LoggerFactory
@@ -18,6 +23,7 @@ import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.HexFormat
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.sql.DataSource
 
 class AccountException(val code: String, message: String) : Exception(message)
@@ -52,6 +58,8 @@ class AccountService(
     private val log = LoggerFactory.getLogger(AccountService::class.java)
     private val tokens = SessionTokenGenerator()
     private val random = SecureRandom()
+    private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val throttles = ConcurrentHashMap<String, Throttle>()
     private val codePattern = Regex("[0-9]{6}")
     private val identifierPattern = Regex("[a-z][a-z0-9_]{0,62}")
 
@@ -59,6 +67,10 @@ class AccountService(
         val CodeLifetime: Duration = Duration.ofMinutes(15)
         val ResendAfter: Duration = Duration.ofMinutes(1)
         const val MaxAttempts = 5
+        val Window: Duration = Duration.ofHours(24)
+        const val MaxCodesPerWindow = 5
+        const val MaxFailuresPerWindow = 15
+        const val MaxThrottleEntries = 10_000
     }
 
     private class Account(val id: UUID, val username: String, val displayName: String?, val email: String?, val userCode: String?) {
@@ -98,31 +110,67 @@ class AccountService(
             ?: throw AccountException("MAIL_NOT_CONFIGURED", "El servidor no tiene correo configurado. Pide al administrador que cambie tu contrasena.")
         val name = username.trim()
         if (!identifierPattern.matches(name) || (companyCode != null && !identifierPattern.matches(companyCode))) return
+        // Todo el trabajo (consulta, codigo y correo SMTP) va en segundo plano: la respuesta tarda
+        // lo mismo exista o no el usuario y tenga o no correo.
+        background.launch {
+            try {
+                issueResetCode(settings, name, companyCode)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                log.warn("Password reset request for {} failed", name, failure)
+            }
+        }
+    }
+
+    private fun issueResetCode(settings: SmtpSettings, name: String, companyCode: String?) {
         val (account, code) = databaseOrNull(companyCode)?.use { connection ->
             val account = accountByUsername(connection, name, companyCode == null)
                 ?.takeIf { it.email != null && UserProfileRules.validEmail(it.email) } ?: return@use null
             val now = clock()
-            val recent = connection.prepareStatement("SELECT created_at FROM password_reset_codes WHERE user_id = ?").use { query ->
-                query.setObject(1, account.id)
-                query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, OffsetDateTime::class.java).toInstant() else null }
+            // La entrada de contadores solo se crea si el usuario existe; con el mapa lleno se rechaza en silencio.
+            val throttle = throttle(throttleKey(name, companyCode), create = true) ?: return@use null
+            // Tope acumulado en la ventana: no se reinicia al pedir otro codigo y la espera crece con cada envio.
+            // La plaza se reserva en el mismo bloque que la comprobacion (atomico) y se devuelve si no se emite.
+            var previousLast: Instant? = null
+            synchronized(throttle) {
+                if (throttle.issued >= MaxCodesPerWindow) return@use null
+                val last = throttle.lastIssued
+                if (last != null && last.plus(ResendAfter.multipliedBy(1L shl (throttle.issued.coerceIn(1, 10) - 1))).isAfter(now)) return@use null
+                previousLast = last
+                throttle.issued++
+                throttle.lastIssued = now
             }
-            if (recent != null && recent.plus(ResendAfter).isAfter(now)) return@use null
-            val code = (0 until 6).joinToString("") { random.nextInt(10).toString() }
-            connection.prepareStatement(
-                """
-                INSERT INTO password_reset_codes (user_id, code_hash, expires_at, attempts, created_at)
-                VALUES (?, ?, ?, 0, ?)
-                ON CONFLICT (user_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at,
-                    attempts = 0, created_at = EXCLUDED.created_at
-                """.trimIndent()
-            ).use { upsert ->
-                upsert.setObject(1, account.id)
-                upsert.setString(2, codeHash(account.id, code))
-                upsert.setObject(3, now.plus(CodeLifetime).atOffset(ZoneOffset.UTC))
-                upsert.setObject(4, now.atOffset(ZoneOffset.UTC))
-                upsert.executeUpdate()
+            var kept = false
+            try {
+                val recent = connection.prepareStatement("SELECT created_at FROM password_reset_codes WHERE user_id = ?").use { query ->
+                    query.setObject(1, account.id)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, OffsetDateTime::class.java).toInstant() else null }
+                }
+                if (recent != null && recent.plus(ResendAfter).isAfter(now)) return@use null
+                val code = (0 until 6).joinToString("") { random.nextInt(10).toString() }
+                connection.prepareStatement(
+                    """
+                    INSERT INTO password_reset_codes (user_id, code_hash, expires_at, attempts, created_at)
+                    VALUES (?, ?, ?, 0, ?)
+                    ON CONFLICT (user_id) DO UPDATE SET code_hash = EXCLUDED.code_hash, expires_at = EXCLUDED.expires_at,
+                        attempts = 0, created_at = EXCLUDED.created_at
+                    """.trimIndent()
+                ).use { upsert ->
+                    upsert.setObject(1, account.id)
+                    upsert.setString(2, codeHash(account.id, code))
+                    upsert.setObject(3, now.plus(CodeLifetime).atOffset(ZoneOffset.UTC))
+                    upsert.setObject(4, now.atOffset(ZoneOffset.UTC))
+                    upsert.executeUpdate()
+                }
+                kept = true
+                account to code
+            } finally {
+                if (!kept) synchronized(throttle) {
+                    throttle.issued--
+                    throttle.lastIssued = previousLast
+                }
             }
-            account to code
         } ?: return
         try {
             MailSender.sendText(
@@ -135,7 +183,7 @@ class AccountService(
                     "Vence en ${CodeLifetime.toMinutes()} minutos. Si no lo pediste, ignora este correo; tu contrasena no cambia.\n",
             )
         } catch (failure: MailException) {
-            log.warn("Password reset code for {} could not be sent: {}", account.username, failure.message)
+            log.warn("Password reset code for {} could not be sent", account.username, failure)
         }
     }
 
@@ -150,6 +198,10 @@ class AccountService(
         if (companyCode == null && (newPassword.length < 16 || newPassword.any { it !in ' '..'~' })) {
             throw AccountException("WEAK_PASSWORD", "La contrasena del dueno del servidor debe tener al menos 16 caracteres ASCII.")
         }
+        // Tope acumulado de intentos fallidos por usuario en la ventana; pedir otro codigo no lo reinicia.
+        // Sin crear entrada: solo se consulta el contador si ya existe (las claves las controla quien llama).
+        val existing = throttle(throttleKey(name, companyCode), create = false)
+        if (existing != null && synchronized(existing) { existing.failures >= MaxFailuresPerWindow }) throw invalid
         val connection = databaseOrNull(companyCode) ?: throw invalid
         connection.use {
             val account = accountByUsername(connection, name, companyCode == null) ?: throw invalid
@@ -170,10 +222,37 @@ class AccountService(
                     update.setObject(1, account.id)
                     update.executeUpdate()
                 }
+                // La entrada se crea solo porque el usuario existe.
+                throttle(throttleKey(name, companyCode), create = true)?.let { synchronized(it) { it.failures++ } }
                 throw invalid
             }
             deleteCode(connection, account.id)
             setPassword(connection, account, companyCode, newPassword)
+            throttles.remove(throttleKey(name, companyCode))
+        }
+    }
+
+    // Contadores acumulados de una ventana de 24 h por usuario (en memoria; se pierden al reiniciar el servidor).
+    private class Throttle(val windowStart: Instant) {
+        var issued = 0
+        var failures = 0
+        var lastIssued: Instant? = null
+    }
+
+    private fun throttleKey(name: String, companyCode: String?) = "${companyCode.orEmpty()}:$name"
+
+    // Devuelve los contadores vigentes de la clave. Con create = false no crea nada; con create = true
+    // devuelve null si el mapa sigue lleno tras limpiar vencidos (tope duro contra crecimiento sin limite).
+    private fun throttle(key: String, create: Boolean): Throttle? {
+        val now = clock()
+        val current = throttles[key]?.takeIf { !it.windowStart.plus(Window).isBefore(now) }
+        if (current != null || !create) return current
+        if (throttles.size >= MaxThrottleEntries) {
+            throttles.entries.removeIf { it.value.windowStart.plus(Window).isBefore(now) }
+            if (throttles.size >= MaxThrottleEntries) return null
+        }
+        return throttles.compute(key) { _, old ->
+            if (old == null || old.windowStart.plus(Window).isBefore(now)) Throttle(now) else old
         }
     }
 

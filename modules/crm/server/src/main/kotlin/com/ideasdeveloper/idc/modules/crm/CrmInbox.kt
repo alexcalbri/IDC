@@ -423,6 +423,8 @@ object CrmEmailChannel : CrmChannel {
         try {
             MailSender.sendHtml(smtp, lead.email, email.subject, email.html, email.text)
         } catch (failure: MailException) {
+            // El mensaje de MailException ya es generico; el detalle tecnico queda en la causa.
+            org.slf4j.LoggerFactory.getLogger(CrmEmailChannel::class.java).warn("CRM: no se pudo enviar el correo: {}", failure.cause?.message ?: failure.message)
             throw CrmChannelException(failure.message ?: "No se pudo enviar el correo.")
         }
         return null

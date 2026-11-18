@@ -5,6 +5,7 @@ import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.http.*
@@ -90,6 +91,22 @@ class LoginApi(serverUrl: String) {
             throw LoginException(
                 "No se pudo comunicar con el servidor o su respuesta no es válida."
             )
+        }
+    }
+
+    // Cierra la sesion en el servidor para invalidar el token de inmediato (no solo en el cliente).
+    // Best-effort: si falla la red, el cierre local ocurre igual y no bloqueamos al usuario.
+    suspend fun logout(companyCode: String?, token: String) {
+        if (token.isBlank()) return
+        try {
+            client.post("$baseUrl/auth/logout") {
+                header(HttpHeaders.Authorization, "Bearer $token")
+                if (!companyCode.isNullOrBlank()) header("X-Company-Code", companyCode)
+            }
+        } catch (_: CancellationException) {
+            throw CancellationException()
+        } catch (_: Exception) {
+            // Ignorado a proposito: el token vencera por tiempo y la sesion local ya se limpio.
         }
     }
 

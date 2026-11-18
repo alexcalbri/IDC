@@ -27,6 +27,8 @@ fun Route.authRoutes(
     // Company switcher (LoginDatabases.switchTargets / switchTo); fromCode null means the server.
     switchTargets: ((fromCode: String?, token: String) -> SwitchTargetsResponse?)? = null,
     switchTo: ((fromCode: String?, token: String, toCode: String?) -> LoginSuccessResponse?)? = null,
+    // Cierra la sesion del token actual (LoginDatabases.logout); fromCode null es el servidor.
+    logout: ((fromCode: String?, token: String) -> Boolean)? = null,
 ) {
     val codePattern = Regex("[a-z][a-z0-9_]{0,62}")
     fun io.ktor.server.application.ApplicationCall.switchContext(): Pair<String?, String>? {
@@ -64,6 +66,20 @@ fun Route.authRoutes(
             return@post call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", "No se pudo cambiar de empresa. Intentalo mas tarde."))
         } ?: return@post call.respond(HttpStatusCode.Forbidden, AuthErrorResponse("SWITCH_REJECTED", "No puedes entrar ahi con tu sesion."))
         call.respond(HttpStatusCode.OK, response)
+    }
+
+    post("/auth/logout") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val close = logout ?: return@post call.respond(HttpStatusCode.NotFound)
+        val (fromCode, token) = call.switchContext()
+            ?: return@post call.respond(HttpStatusCode.BadRequest, AuthErrorResponse("INVALID_REQUEST", "Falta la sesion."))
+        try {
+            withContext(Dispatchers.IO) { close(fromCode, token) }
+        } catch (_: SQLException) {
+            return@post call.respond(HttpStatusCode.ServiceUnavailable, AuthErrorResponse("AUTH_UNAVAILABLE", "No se pudo cerrar la sesion. Intentalo mas tarde."))
+        }
+        // Idempotente: 204 aunque el token ya no existiera, para no revelar si era valido.
+        call.respond(HttpStatusCode.NoContent)
     }
 
     post("/auth/login") {

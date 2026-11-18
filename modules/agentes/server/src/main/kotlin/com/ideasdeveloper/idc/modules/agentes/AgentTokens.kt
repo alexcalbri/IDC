@@ -181,7 +181,7 @@ object AgentTokens {
         val id = tenant.prepareStatement(
             """
             UPDATE agent_tokens
-            SET token_hash = ?, refresh_hash = ?, access_expires_at = ?, last_used_at = CURRENT_TIMESTAMP
+            SET token_hash = ?, previous_refresh_hash = refresh_hash, previous_rotated_at = CURRENT_TIMESTAMP, refresh_hash = ?, access_expires_at = ?, last_used_at = CURRENT_TIMESTAMP
             WHERE refresh_hash = ? AND oauth_client = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
             RETURNING id
             """.trimIndent()
@@ -192,7 +192,23 @@ object AgentTokens {
             update.setString(4, hash(refreshToken))
             update.setString(5, clientId)
             update.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
-        } ?: return null
+        }
+        if (id == null) {
+            // Un refresh token ya rotado que vuelve a presentarse es un reuso (se filtro o se copio): se revoca la conexion.
+            // Dentro de 30 s de la rotacion se tolera (refresh concurrente o reintento del cliente legitimo tras un timeout): solo se rechaza.
+            tenant.prepareStatement(
+                """
+                UPDATE agent_tokens SET revoked_at = CURRENT_TIMESTAMP, revoked_by = 'reuso de refresh token'
+                WHERE previous_refresh_hash = ? AND oauth_client = ? AND revoked_at IS NULL
+                  AND (previous_rotated_at IS NULL OR previous_rotated_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds')
+                """.trimIndent()
+            ).use { revoke ->
+                revoke.setString(1, hash(refreshToken))
+                revoke.setString(2, clientId)
+                revoke.executeUpdate()
+            }
+            return null
+        }
         return OAuthTokens(find(tenant, id)!!, access, refresh)
     }
 

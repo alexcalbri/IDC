@@ -82,7 +82,7 @@ object CrmImport {
             val uri = runCatching { URI.create(current) }.getOrNull()
             if (uri == null || uri.scheme != "https" || uri.host.isNullOrBlank()) throw CrmImportException("Usa una direccion https:// publica.")
             val addresses = runCatching { InetAddress.getAllByName(uri.host).toList() }.getOrElse { throw CrmImportException("No se encontro ${uri.host}.") }
-            if (addresses.any { it.isLoopbackAddress || it.isSiteLocalAddress || it.isLinkLocalAddress || it.isAnyLocalAddress || it.isMulticastAddress }) {
+            if (addresses.isEmpty() || addresses.any(CrmWordPress::blockedAddress)) {
                 throw CrmImportException("Esa direccion apunta a una red privada.")
             }
             val response = try {
@@ -171,7 +171,7 @@ object CrmImport {
 
     fun mondayToken(tenant: Connection): String? =
         tenant.prepareStatement("SELECT monday_token FROM crm_settings WHERE id = 1").use { query ->
-            query.executeQuery().use { rows -> if (rows.next()) CrmSecrets.open(tenant, rows.getString(1))?.takeIf { it.isNotBlank() } else null }
+            query.executeQuery().use { rows -> if (rows.next()) CrmSecrets.open(tenant, rows.getString(1))?.takeIf { it.isNotBlank() && !CrmSecrets.isUnreadable(it) } else null }
         }
 
     fun saveMondayToken(tenant: Connection, token: String?) {

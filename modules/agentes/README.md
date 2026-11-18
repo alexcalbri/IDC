@@ -87,10 +87,10 @@ Implements the MCP authorization spec (2025-06-18) with OAuth 2.1:
 | Endpoint | Purpose |
 |---|---|
 | `GET /.well-known/oauth-protected-resource[/modules/agentes/mcp]` | Protected resource metadata (RFC 9728). The MCP endpoint's 401 points to it in `WWW-Authenticate: Bearer resource_metadata="..."`. |
-| `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414); the issuer is the server origin. |
+| `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414). The issuer is `IDC_PUBLIC_BASE_URL` (set by `install.sh`/`update.sh`), falling back to the request `Host`; it never trusts `X-Forwarded-Host`. |
 | `POST /modules/agentes/oauth/register` | Dynamic client registration (RFC 7591). Stateless: the client id carries the client metadata signed with HMAC; confidential clients get a secret derived from it. Redirect URIs must be HTTPS or loopback HTTP. |
 | `GET/POST /modules/agentes/oauth/authorize` | Authorization code with mandatory PKCE S256. Sign-in page (rate limited per IP, no session is left behind) and consent page. `resource` (RFC 8707), when sent, must be the MCP endpoint. |
-| `POST /modules/agentes/oauth/token` | `authorization_code` and `refresh_token` grants. Access tokens last 1 hour; refresh tokens rotate on every use and are bound to their client. A refresh fails (and the connection is revoked) when the user lost access. |
+| `POST /modules/agentes/oauth/token` | `authorization_code` and `refresh_token` grants. Access tokens last 1 hour; refresh tokens rotate on every use and are bound to their client. A refresh fails (and the connection is revoked) when the user lost access. Reusing an already-rotated refresh token revokes the connection (reuse detection), except within a ~30 s grace window for a client retrying after a lost response. |
 | `POST /modules/agentes/oauth/revoke` | Token revocation (RFC 7009), only for tokens issued to the calling client. |
 
 The HMAC key is created on first use in `server_settings` (`agentes.oauth.signing_key`); deleting it

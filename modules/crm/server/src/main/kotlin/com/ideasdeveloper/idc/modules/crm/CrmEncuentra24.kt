@@ -185,6 +185,8 @@ object CrmEncuentra24 {
         val query = (mapOf("slug" to settings.slug.orEmpty()) + params).entries.joinToString("&") { (key, value) ->
             "$key=${URLEncoder.encode(value, Charsets.UTF_8)}"
         }
+        // Una llave ilegible (cifrada que no se pudo abrir) nunca se envia: cuenta como sin llave.
+        if (CrmSecrets.isUnreadable(settings.apiKey)) throw CrmEncuentra24Exception(CrmSecrets.UnreadableText)
         val request = HttpRequest.newBuilder(URI.create("$Endpoint?$query"))
             .timeout(Duration.ofSeconds(20))
             .header("x-api-key", settings.apiKey.orEmpty())
@@ -215,7 +217,7 @@ object CrmEncuentra24 {
     fun sync(tenant: Connection, fromDate: LocalDate? = null, onNewLead: (UUID) -> Unit = {}): SyncResult {
         CrmExtensions.inactive(tenant, CrmExtensionIds.Encuentra24)?.let { throw CrmEncuentra24Exception(it) }
         val settings = load(tenant)
-        if (settings.apiKey.isNullOrBlank() || settings.slug.isNullOrBlank()) throw CrmEncuentra24Exception("Falta la API key o el slug de Encuentra24.")
+        if (settings.apiKey.isNullOrBlank() || CrmSecrets.isUnreadable(settings.apiKey) || settings.slug.isNullOrBlank()) throw CrmEncuentra24Exception("Falta la API key o el slug de Encuentra24.")
         val locked = tenant.prepareStatement("SELECT pg_try_advisory_lock(?)").use { query ->
             query.setLong(1, LockKey)
             query.executeQuery().use { it.next() && it.getBoolean(1) }

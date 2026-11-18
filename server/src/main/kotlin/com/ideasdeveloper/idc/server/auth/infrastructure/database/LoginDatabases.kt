@@ -205,6 +205,25 @@ class LoginDatabases(
         }
     }
 
+    /**
+     * Cierra una sesion: la revoca en su base ([fromCode] null: el servidor) para que el token deje
+     * de servir de inmediato. Es idempotente. Tambien borra la sesion de dueno-en-empresa si la hay.
+     * Devuelve false solo si [fromCode] no corresponde a una empresa activa.
+     */
+    fun logout(fromCode: String?, token: String): Boolean {
+        val scope = if (fromCode == null) serverScope else activeDatabase(fromCode)?.let { tenantScope(it) } ?: return false
+        scope.revoke(token)
+        if (fromCode != null) {
+            central.connection.use { connection ->
+                connection.prepareStatement("DELETE FROM server_owner_company_sessions WHERE token_hash = ?").use {
+                    it.setString(1, tokens.hash(token))
+                    it.executeUpdate()
+                }
+            }
+        }
+        return true
+    }
+
     // Active companies (no server workspace): all of them, or those of the owner group of [groupOf].
     private fun companies(groupOf: String?): List<SwitchTarget> = central.connection.use { connection ->
         val filter = if (groupOf == null) "" else "AND owner_group = (SELECT owner_group FROM companies WHERE code = ?)"

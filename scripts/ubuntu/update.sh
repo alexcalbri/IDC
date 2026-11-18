@@ -132,7 +132,7 @@ readonly KEEP_LOGS=10
 # Same limits as install.sh: the production webpack build needs extra memory for Node.
 readonly UPDATE_SWAP_SIZE_MB=4096
 readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
-readonly NODE_OPTIONS_VALUE="--max-old-space-size=2048"
+readonly NODE_OPTIONS_VALUE="--max-old-space-size=3072"
 readonly APP_PORT=8080
 UPDATE_SWAP_CREATED=false
 
@@ -251,6 +251,13 @@ configure_server_env() {
         append_config_value PUBLIC_SCHEME https
     else
         append_config_value PUBLIC_SCHEME http
+    fi
+    # Base publica fija para los metadatos OAuth de agentes; evita confiar en la cabecera Host del cliente.
+    if [[ -f $NGINX_SITE ]]; then
+        local public_scheme public_domain
+        public_scheme=$(config_value PUBLIC_SCHEME)
+        public_domain=$(awk '/server_name/{print $2; exit}' "$NGINX_SITE" | tr -d ';')
+        [[ -n $public_domain ]] && append_config_value IDC_PUBLIC_BASE_URL "${public_scheme}://${public_domain}"
     fi
     append_config_value ACME_EMAIL ''
     append_config_value SMTP_HOST ''

@@ -214,14 +214,14 @@ object CrmMeta {
 
     /** GET verification: the challenge to answer, or null when the token does not match. */
     fun verify(settings: CrmMetaSettings, mode: String?, token: String?, challenge: String?): String? {
-        val expected = settings.verifyToken ?: return null
+        val expected = settings.verifyToken?.takeUnless { CrmSecrets.isUnreadable(it) } ?: return null
         if (mode != "subscribe" || token == null || challenge == null || !challenge.matches(Regex("^[A-Za-z0-9_-]{1,255}$"))) return null
         return if (MessageDigest.isEqual(expected.toByteArray(), token.toByteArray())) challenge else null
     }
 
     /** X-Hub-Signature-256 = "sha256=" + HMAC-SHA256(raw body, App Secret), compared in constant time. */
     fun validSignature(appSecret: String?, header: String?, body: ByteArray): Boolean {
-        if (appSecret.isNullOrBlank() || header == null || !header.startsWith("sha256=")) return false
+        if (appSecret.isNullOrBlank() || CrmSecrets.isUnreadable(appSecret) || header == null || !header.startsWith("sha256=")) return false
         val mac = Mac.getInstance("HmacSHA256").apply { init(SecretKeySpec(appSecret.toByteArray(Charsets.UTF_8), "HmacSHA256")) }
         val expected = mac.doFinal(body).joinToString("") { "%02x".format(it) }
         return MessageDigest.isEqual(expected.toByteArray(), header.removePrefix("sha256=").lowercase().toByteArray())
@@ -409,6 +409,8 @@ object CrmMeta {
     // ---- Graph API ----
 
     internal fun request(url: String, token: String, method: String = "GET", body: JsonObject? = null): Pair<Int, JsonObject> {
+        // Un token ilegible (cifrado que no se pudo abrir) nunca se envia a Meta.
+        if (CrmSecrets.isUnreadable(token)) return 401 to JsonObject(emptyMap())
         val builder = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(15)).header("Authorization", "Bearer $token")
         if (body != null) builder.header("Content-Type", "application/json")
         builder.method(method, body?.let { HttpRequest.BodyPublishers.ofString(it.toString()) } ?: HttpRequest.BodyPublishers.noBody())

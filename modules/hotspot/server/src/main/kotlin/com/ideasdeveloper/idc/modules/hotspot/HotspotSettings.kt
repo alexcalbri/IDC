@@ -1,5 +1,7 @@
 package com.ideasdeveloper.idc.modules.hotspot
 
+import com.ideasdeveloper.idc.server.modules.MailException
+import com.ideasdeveloper.idc.server.modules.MailHostGuard
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -186,6 +188,14 @@ object HotspotSettingsRepository {
         }
         if (settings.smtpMode !in setOf("servidor", "empresa")) throw HotspotValidationException("El origen del correo debe ser servidor o empresa.")
         if (settings.smtpSecurity !in setOf("starttls", "ssl", "none")) throw HotspotValidationException("La seguridad SMTP debe ser starttls, ssl o none.")
+        // El servidor SMTP propio lo escribe el usuario: puerto de correo y host publico (evita SSRF hacia la red interna).
+        if (settings.smtpMode == "empresa" && !settings.smtpHost.isNullOrBlank()) {
+            try {
+                MailHostGuard.check(settings.smtpHost, settings.smtpPort)
+            } catch (failure: MailException) {
+                throw HotspotValidationException(failure.message.orEmpty())
+            }
+        }
         settings.smtpFrom?.let {
             if (!emailPattern.matches(it.substringAfterLast('<').removeSuffix(">").trim())) throw HotspotValidationException("El remitente SMTP no es un correo valido.")
         }

@@ -153,7 +153,8 @@ object CrmCloudbeds {
     private fun encode(value: String) = URLEncoder.encode(value, Charsets.UTF_8)
 
     private fun send(settings: CrmCloudbedsSettings, request: HttpRequest.Builder): JsonObject {
-        val key = settings.apiKey ?: throw CrmCloudbedsException("Escribe la API key de Cloudbeds en Integraciones.")
+        // Una llave ilegible (cifrada que no se pudo abrir) no se envia: cuenta como sin llave.
+        val key = settings.apiKey?.takeUnless { CrmSecrets.isUnreadable(it) } ?: throw CrmCloudbedsException("Escribe la API key de Cloudbeds en Integraciones.")
         val response = try {
             http.send(request.timeout(Duration.ofSeconds(25)).header("x-api-key", key).header("Accept", "application/json").build(), HttpResponse.BodyHandlers.ofString())
         } catch (failure: Exception) {

@@ -67,8 +67,21 @@ class ExtensionRegistry(extensions: List<ServerExtension>) {
                     onCall { call ->
                         // A company-scoped route names it in the path ({company}), never in the query string.
                         // The others use X-Company-Code or the cookie. When both come they must match.
-                        val decision = withContext(Dispatchers.IO) {
-                            gate.decide(manifest.module, manifest.id, (call as? io.ktor.server.routing.RoutingPipelineCall)?.pathParameters?.get("company"), access.companyCode(call))
+                        val routingCall = call as? io.ktor.server.routing.RoutingPipelineCall
+                        val pathCompany = routingCall?.pathParameters?.get("company")
+                        // Falla cerrado: si la ruta resuelta declara {company} y no se pudo leer (o no hay
+                        // llamada de enrutamiento), no se abre la compuerta como si fuera una ruta de servidor.
+                        val companyUnreadable = routingCall == null ||
+                            (pathCompany.isNullOrBlank() && routingCall.route.toString().contains("{company}"))
+                        val decision = if (companyUnreadable) {
+                            ExtensionGateDecision.Closed(
+                                HttpStatusCode.Forbidden,
+                                ModuleAccessErrorResponse("company_unreadable", "No se pudo determinar la empresa de la ruta."),
+                            )
+                        } else {
+                            withContext(Dispatchers.IO) {
+                                gate.decide(manifest.module, manifest.id, pathCompany, access.companyCode(call))
+                            }
                         }
                         if (decision is ExtensionGateDecision.Closed) {
                             call.respond(decision.status, decision.body)

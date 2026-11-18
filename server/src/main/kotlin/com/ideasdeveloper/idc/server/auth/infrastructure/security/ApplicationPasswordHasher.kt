@@ -6,7 +6,8 @@ import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.PBEKeySpec
 
 object ApplicationPasswordHasher {
-    const val Iterations: Int = 120_000
+    // Cada hash guarda sus iteraciones; los antiguos (120000) se verifican con las suyas y se re-hashean al iniciar sesion.
+    const val Iterations: Int = 600_000
     private const val KeyLengthBits: Int = 256
     private val random = SecureRandom()
     private val encoder = Base64.getEncoder()

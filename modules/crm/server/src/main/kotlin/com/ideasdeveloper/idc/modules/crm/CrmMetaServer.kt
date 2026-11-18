@@ -258,6 +258,8 @@ object CrmMetaServer {
     /** Exchanges the code of the login dialog (JS SDK) for a token of the person or of the business. */
     fun exchangeCode(app: CrmMetaServerApp, code: String): String {
         if (code.isBlank() || code.length > 2000) throw CrmMetaException("Meta no devolvio el codigo de autorizacion.")
+        // Un secreto ilegible (cifrado que no se pudo abrir) nunca se envia a Meta.
+        if (CrmSecrets.isUnreadable(app.appSecret)) throw CrmMetaException(CrmSecrets.UnreadableText)
         val base = "${CrmMeta.Graph}/oauth/access_token?client_id=${app.appId}&client_secret=${encode(app.appSecret.orEmpty())}&code=${encode(code)}"
         var (status, body) = get(base)
         // Codes of the JS SDK are sometimes bound to an empty redirect_uri.
@@ -273,6 +275,7 @@ object CrmMetaServer {
 
     // A user token becomes long-lived (its page tokens then do not expire); business tokens are kept as they are.
     private fun longLived(app: CrmMetaServerApp, token: String): String {
+        if (CrmSecrets.isUnreadable(app.appSecret)) return token
         val (status, body) = get(
             "${CrmMeta.Graph}/oauth/access_token?grant_type=fb_exchange_token&client_id=${app.appId}" +
                 "&client_secret=${encode(app.appSecret.orEmpty())}&fb_exchange_token=${encode(token)}",
@@ -558,7 +561,7 @@ object CrmMetaServer {
 
     /** Meta user id of a valid signed_request (HMAC-SHA256 with the App Secret), or null. */
     fun signedUser(appSecret: String?, signedRequest: String?): String? {
-        if (appSecret.isNullOrBlank() || signedRequest.isNullOrBlank()) return null
+        if (appSecret.isNullOrBlank() || CrmSecrets.isUnreadable(appSecret) || signedRequest.isNullOrBlank()) return null
         val parts = signedRequest.split('.')
         if (parts.size != 2) return null
         val decoder = Base64.getUrlDecoder()

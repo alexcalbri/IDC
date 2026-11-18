@@ -7,7 +7,14 @@ plugins {
 
 kotlin {
     js {
-        browser()
+        browser {
+            // Sin source maps en el empaquetado: generarlos hacia que webpack se quedara sin memoria
+            // en el servidor (limite de 2 GB de update.sh) y ademas publicaba el codigo fuente.
+            // El servidor de desarrollo (jsBrowserDevelopmentRun) los conserva.
+            webpackTask {
+                sourceMaps = false
+            }
+        }
         binaries.executable()
     }
 

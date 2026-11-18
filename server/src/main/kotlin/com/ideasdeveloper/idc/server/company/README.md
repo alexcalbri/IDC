@@ -52,8 +52,9 @@ instalado en un servidor, el servidor conserva su paquete local y su fila de
 `server_modules` hasta que el `server_owner` decida removerlo.
 
 `module.json` puede declarar `minCoreVersion` y `minAppVersion`. Al instalar o
-actualizar (`POST /server/modules/{id}/install` y la herramienta MCP
-`install_module`) se rechaza con 409 `MODULE_NEEDS_CORE` si el Core es menor, o
+actualizar (`POST /server/modules/{id}/install`; instalar modulos y cambiar el
+catalogo ya no se exponen por MCP, solo desde la app) se rechaza con 409
+`MODULE_NEEDS_CORE` si el Core es menor, o
 `MODULE_NEEDS_APP` si la app (header `X-App-Version`) es menor; sin header solo
 se avisa. El minimo se revisa con el catalogo y otra vez con el `module.json`
 del paquete. Los minimos de un modulo instalado se leen del `module.json`

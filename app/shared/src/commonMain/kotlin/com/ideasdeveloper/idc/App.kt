@@ -7,17 +7,20 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.savedstate.read
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.config.ClientConfigurationStore
 import com.ideasdeveloper.idc.app.core.session.SessionStore
 import com.ideasdeveloper.idc.app.core.theme.IdeasCoreTheme
 import com.ideasdeveloper.idc.app.core.theme.ThemeStore
+import com.ideasdeveloper.idc.app.features.auth.data.LoginApi
 import com.ideasdeveloper.idc.app.features.auth.ui.LoginScreen
 import com.ideasdeveloper.idc.app.features.auth.ui.ProfileDialog
 import com.ideasdeveloper.idc.app.features.company.ui.CompanyManagementScreen
@@ -48,6 +51,7 @@ fun App(initialServerUrl: String = "") {
         val currentSession = session
         val sessionExpired by SessionStore.expired.collectAsState()
         var confirmingLogout by remember { mutableStateOf(false) }
+        val scope = rememberCoroutineScope()
         remember { CompanyIdentityStore.restore() }
         var clientConfiguration by remember { mutableStateOf(ClientConfigurationStore.load()) }
         // Trae los temas de los modulos instalados en el servidor configurado.
@@ -73,8 +77,20 @@ fun App(initialServerUrl: String = "") {
             }
         }
 
-        // Cierra la sesion local y deja al usuario en la pantalla de login.
+        // Cierra la sesion: primero avisa al servidor para invalidar el token (best-effort), luego limpia local.
         fun logout() {
+            val current = SessionStore.session.value
+            val url = clientConfiguration?.serverUrl
+            if (current != null && !url.isNullOrBlank()) {
+                scope.launch {
+                    val api = LoginApi(url)
+                    try {
+                        api.logout(current.companyCode, current.accessToken)
+                    } finally {
+                        api.close()
+                    }
+                }
+            }
             SessionStore.clear()
             openLogin()
         }

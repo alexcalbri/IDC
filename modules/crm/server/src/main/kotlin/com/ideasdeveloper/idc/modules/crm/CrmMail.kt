@@ -1,5 +1,7 @@
 package com.ideasdeveloper.idc.modules.crm
 
+import com.ideasdeveloper.idc.server.modules.MailException
+import com.ideasdeveloper.idc.server.modules.MailHostGuard
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import jakarta.mail.Folder
 import jakarta.mail.Multipart
@@ -35,12 +37,13 @@ data class CrmMailSettings(
     // SMTP the CRM sends with: the server's or the company's own, null when none is usable.
     fun smtp(serverMail: SmtpSettings?): SmtpSettings? =
         if (smtpMode == "empresa") {
-            SmtpSettings(smtpHost.orEmpty(), smtpPort, smtpUsername.orEmpty(), smtpPassword.orEmpty(), smtpFrom.orEmpty(), smtpSecurity)
+            // Una contrasena ilegible (cifrada que no se pudo abrir) nunca se envia como credencial: queda vacia.
+            SmtpSettings(smtpHost.orEmpty(), smtpPort, smtpUsername.orEmpty(), smtpPassword.takeUnless { CrmSecrets.isUnreadable(it) }.orEmpty(), smtpFrom.orEmpty(), smtpSecurity)
         } else {
             serverMail
         }?.takeIf { it.isUsable }
 
-    val imapReady get() = imapEnabled && !imapHost.isNullOrBlank() && !imapUsername.isNullOrBlank() && !imapPassword.isNullOrBlank()
+    val imapReady get() = imapEnabled && !imapHost.isNullOrBlank() && !imapUsername.isNullOrBlank() && !imapPassword.isNullOrBlank() && !CrmSecrets.isUnreadable(imapPassword)
 }
 
 // baseLanguage: language the text is written in; translate: translate it to the guest's language when sending (see CrmTemplateMailer).
@@ -131,6 +134,9 @@ object CrmMail {
             imapFolder = text("imapFolder") ?: "INBOX",
             imapSsl = values["imapSsl"] == "true",
         )
+        // El servidor de correo lo escribe el usuario: puerto de correo y host publico (evita SSRF hacia la red interna).
+        if (merged.smtpMode == "empresa") checkMailHost(merged.smtpHost, merged.smtpPort)
+        if (merged.imapEnabled) checkMailHost(merged.imapHost, merged.imapPort)
         merged.smtpFrom?.let { if (!CrmContacts.isEmail(it)) throw CrmValidationException("El remitente debe ser un correo valido.") }
         if (merged.smtpMode == "empresa" && (merged.smtpHost == null || merged.smtpFrom == null)) {
             throw CrmValidationException("Con cuenta propia escribe el servidor SMTP y el remitente.")
@@ -141,6 +147,15 @@ object CrmMail {
         // Another mailbox starts from its newest message instead of importing the whole inbox.
         val sameMailbox = merged.imapHost == current.imapHost && merged.imapUsername == current.imapUsername && merged.imapFolder == current.imapFolder
         return if (sameMailbox) merged else merged.copy(imapUidValidity = null, imapLastUid = 0)
+    }
+
+    private fun checkMailHost(host: String?, port: Int) {
+        if (host == null) return // Los campos obligatorios se validan despues con su propio mensaje.
+        try {
+            MailHostGuard.check(host, port)
+        } catch (failure: MailException) {
+            throw CrmValidationException(failure.message.orEmpty())
+        }
     }
 
     fun save(tenant: Connection, settings: CrmMailSettings) {
@@ -304,6 +319,9 @@ object CrmMail {
             put("mail.imaps.timeout", "20000")
             put("mail.imaps.ssl.checkserveridentity", "true")
         }
+        // Se vuelve a validar justo antes de conectar (el nombre pudo cambiar de destino desde que se guardo).
+        MailHostGuard.check(settings.imapHost.orEmpty(), settings.imapPort)
+        if (CrmSecrets.isUnreadable(settings.imapPassword)) throw MailException("La contrasena IMAP guardada no se puede leer.")
         val store = Session.getInstance(properties).getStore(if (settings.imapSsl) "imaps" else "imap")
         store.connect(settings.imapHost, settings.imapPort, settings.imapUsername, settings.imapPassword)
         try {
@@ -358,7 +376,8 @@ object CrmMail {
         ).use { update ->
             update.setObject(1, validity)
             update.setObject(2, lastUid)
-            update.setString(3, error.take(500))
+            // Mensaje generico: el detalle de la conexion (hosts, puertos, respuestas) no se muestra al usuario.
+            update.setString(3, if (error.isBlank()) "" else "No se pudo leer el buzon. Revisa el servidor, el puerto y las credenciales IMAP.")
             update.executeUpdate()
         }
     }

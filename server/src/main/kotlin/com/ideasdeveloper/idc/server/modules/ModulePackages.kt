@@ -87,6 +87,10 @@ data class BuiltModule(val jar: Path, val version: String, val sha256: String)
  * The module is compiled with the Kotlin compiler shipped in the distribution (compiler/) against
  * the classpath of the running server, so it uses exactly the installed core API. A module that
  * does not fit the installed core fails to compile and nothing is changed.
+ *
+ * TODO(seguridad): los modulos aun no se firman; compilar y cargar un paquete ejecuta codigo en el
+ * servidor. Deberian exigir la misma compuerta de firma/commit fijado que las extensiones antes de
+ * instalarse o actualizarse.
  */
 class ModulePackageBuilder(
     private val packagesRoot: Path,

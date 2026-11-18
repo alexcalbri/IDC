@@ -184,10 +184,11 @@ object AgentesScreens {
         val form = UiForm(
             id = "connection",
             fields = listOf(
-                UiField("url", "URL del servidor MCP"),
-                UiField("token", "Token (cabecera Authorization: Bearer ...)"),
-                UiField("claude", "Claude Code", "textarea"),
-                UiField("json", "Configuracion JSON (Cursor, VS Code, Claude Desktop con mcp-remote y otros)", "textarea"),
+                // Solo lectura con boton de copiar: son valores para copiar, no para editar.
+                UiField("url", "URL del servidor MCP", readOnly = true),
+                UiField("token", "Token (cabecera Authorization: Bearer ...)", readOnly = true),
+                UiField("claude", "Claude Code", "textarea", readOnly = true),
+                UiField("json", "Configuracion JSON (Cursor, VS Code, Claude Desktop con mcp-remote y otros)", "textarea", readOnly = true),
             ),
             values = mapOf(
                 "url" to context.endpoint,

@@ -111,7 +111,7 @@ readonly ACME_ROOT=/var/www/ideascore-acme
 readonly INSTALL_SWAP_FILE=$APP_DIR/install.swap
 readonly INSTALL_SWAP_SIZE_MB=4096
 readonly GRADLE_JVM_ARGS="-Xmx1536M -Dfile.encoding=UTF-8"
-readonly NODE_OPTIONS_VALUE="--max-old-space-size=2048"
+readonly NODE_OPTIONS_VALUE="--max-old-space-size=3072"
 readonly COMPANY_BACKUPS_DIR=$APP_DIR/company-backups
 # Files modules store per company (CRM attachments...); back it up with the databases.
 readonly COMPANY_FILES_DIR=$APP_DIR/company-files
@@ -713,6 +713,8 @@ install -d -m 700 "$CONFIG_DIR"
     printf 'CORE_UPDATE_REF=master\n'
     # Read by the root domain helper (hotspot portals and other module domains).
     printf 'PUBLIC_SCHEME=%s\n' "$PUBLIC_SCHEME"
+    # Base publica fija para los metadatos OAuth de agentes; evita confiar en la cabecera Host del cliente.
+    printf 'IDC_PUBLIC_BASE_URL=%s://%s\n' "$PUBLIC_SCHEME" "$DOMAIN"
     printf 'ACME_EMAIL=%s\n' "${ACME_EMAIL:-}"
     # Server-wide SMTP used by modules that send email; edit and restart ideascore to enable.
     printf 'SMTP_HOST=\nSMTP_PORT=587\nSMTP_USERNAME=\nSMTP_PASSWORD=\nSMTP_FROM=\nSMTP_SECURITY=starttls\n'
@@ -796,6 +798,13 @@ server {
     server_name $DOMAIN;
     root $APP_DIR/web;
     index index.html;
+    server_tokens off;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Content-Security-Policy "frame-ancestors 'none'" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
     location /auth/ {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
@@ -803,6 +812,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     location /companies {
         proxy_pass http://127.0.0.1:$APP_PORT;
@@ -811,6 +821,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     location /server {
         proxy_pass http://127.0.0.1:$APP_PORT;
@@ -819,6 +830,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     # OAuth discovery for AI agents (claude.ai custom connectors); the module answers 404 when not installed.
     location /.well-known/oauth- {
@@ -828,6 +840,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     location /modules {
         client_max_body_size 30m;
@@ -837,10 +850,22 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+    }
+    # No publicar los source maps: exponen la estructura del codigo fuente.
+    location ~ \.map\$ {
+        return 404;
     }
     location / {
         try_files \$uri \$uri/ /index.html;
-        add_header Cache-Control "no-cache";
+        # Se repiten aqui porque un add_header en el location anula la herencia del server.
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Alt-Svc 'h3=":443"; ma=86400' always;
+        add_header Cache-Control "no-cache" always;
     }
 }
 NGINX
@@ -874,12 +899,23 @@ server {
 server {
     listen 443 ssl;
     listen [::]:443 ssl;
+    listen 443 quic reuseport;
+    listen [::]:443 quic reuseport;
+    http2 on;
+    http3 on;
     server_name $DOMAIN;
     ssl_certificate /etc/letsencrypt/live/$CERT_NAME/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$CERT_NAME/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
     root $APP_DIR/web;
     index index.html;
+    server_tokens off;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Content-Security-Policy "frame-ancestors 'none'" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Alt-Svc 'h3=":443"; ma=86400' always;
     location /auth/ {
         proxy_pass http://127.0.0.1:$APP_PORT;
         proxy_http_version 1.1;
@@ -887,6 +923,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     location /companies {
         proxy_pass http://127.0.0.1:$APP_PORT;
@@ -895,6 +932,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     location /server {
         proxy_pass http://127.0.0.1:$APP_PORT;
@@ -903,6 +941,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     # OAuth discovery for AI agents (claude.ai custom connectors); the module answers 404 when not installed.
     location /.well-known/oauth- {
@@ -912,6 +951,7 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
     }
     location /modules {
         client_max_body_size 30m;
@@ -921,10 +961,22 @@ server {
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+    }
+    # No publicar los source maps: exponen la estructura del codigo fuente.
+    location ~ \.map\$ {
+        return 404;
     }
     location / {
         try_files \$uri \$uri/ /index.html;
-        add_header Cache-Control "no-cache";
+        # Se repiten aqui porque un add_header en el location anula la herencia del server.
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "frame-ancestors 'none'" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+        add_header Alt-Svc 'h3=":443"; ma=86400' always;
+        add_header Cache-Control "no-cache" always;
     }
 }
 NGINX

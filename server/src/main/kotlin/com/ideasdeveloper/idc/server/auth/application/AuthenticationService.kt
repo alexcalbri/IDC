@@ -11,17 +11,22 @@ class AuthenticationService(
 ) {
 
     fun authenticate(credentials: LoginCredentials): ApplicationUser? {
-        if (!credentialVerifier.verify(credentials) &&
+        val user = userRepository.findByPostgresRole(
+            credentials.username,
+        )
+
+        // Un rol de PostgreSQL es global al servidor: su contrasena solo vale aqui si el usuario
+        // es dueno de esta base; si no, podria entrar a otra empresa con el mismo nombre de rol.
+        val viaPostgres = credentialVerifier.verify(credentials) &&
+            user != null && userRepository.isOwner(user.id)
+
+        if (!viaPostgres &&
             !userRepository.verifyApplicationPassword(credentials.username, credentials.password)
         ) {
             return null
         }
 
-        val user = userRepository.findByPostgresRole(
-            credentials.username,
-        ) ?: return null
-
-        if (!user.isActive) {
+        if (user == null || !user.isActive) {
             return null
         }
 

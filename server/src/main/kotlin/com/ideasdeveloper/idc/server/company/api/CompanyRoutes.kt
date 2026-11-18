@@ -211,6 +211,13 @@ fun Route.companyRoutes(
             call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
             return@post
         }
+        // Autoriza de verdad (sesion de business_owner) ANTES de leer el cuerpo multipart.
+        try {
+            withContext(Dispatchers.IO) { service.listBackups(context.companyCode, context.token) }
+        } catch (exception: CompanySelfException) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            return@post
+        }
         var fileName: String? = null
         var bytes: ByteArray? = null
         // Extrae el archivo enviado en multipart bajo el campo file.

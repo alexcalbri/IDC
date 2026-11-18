@@ -87,7 +87,56 @@ class HotspotPortal(private val access: ModuleAccessService) {
         respondHtml(html)
     }
 
+    // Limite por IP de origen (la MAC y el correo los controla el cliente, la IP no tanto): en memoria, ventana deslizante.
+    private val ipHits = java.util.concurrent.ConcurrentHashMap<String, java.util.ArrayDeque<Long>>()
+    private val ipWindowMillis = Duration.ofMinutes(10).toMillis()
+    // Holgados a proposito: un hotel o local comparte una sola IP publica (NAT) entre muchos huespedes.
+    private val maxRegisterPerIp = 60
+    private val maxCodePerIp = 120
+    private val maxTrackedIps = 50_000
+    private val lastIpCleanup = java.util.concurrent.atomic.AtomicLong(0)
+
+    // IPv6: se agrupa por /64 (un cliente controla todo su /64); IPv4 queda igual.
+    private fun ipGroup(ip: String): String {
+        if (!ip.contains(':')) return ip
+        // Los primeros 8 bytes de la direccion (literal, sin consulta DNS) forman el /64.
+        val address = runCatching { java.net.InetAddress.getByName(ip.substringBefore('%')).address }.getOrNull() ?: return ip
+        if (address.size != 16) return ip
+        return address.take(8).joinToString("") { "%02x".format(it.toInt() and 0xFF) } + "/64"
+    }
+
+    // Misma regla que el resto del servidor: detras de nginx (127.0.0.1) la IP real viene en X-Real-IP.
+    private fun ApplicationCall.clientIp(): String {
+        val remote = request.local.remoteAddress
+        return if (remote == "127.0.0.1") request.headers["X-Real-IP"]?.takeIf { it.isNotBlank() }?.take(64) ?: remote else remote
+    }
+
+    // True si esta IP ya agoto sus intentos de [action] en la ventana; si no, cuenta este.
+    private fun overIpLimit(ip: String, action: String, max: Int): Boolean {
+        val now = System.currentTimeMillis()
+        // Limpieza de entradas vencidas como mucho una vez por minuto.
+        if (now - lastIpCleanup.get() > 60_000 && lastIpCleanup.getAndSet(now) != now) {
+            ipHits.entries.removeIf { (_, hits) -> synchronized(hits) { hits.peekLast()?.let { now - it > ipWindowMillis } ?: true } }
+        }
+        val key = "$action|${ipGroup(ip)}"
+        // Tope duro: con el mapa lleno (ataque con muchas IPs) las IPs nuevas se rechazan en vez de crecer la memoria.
+        if (ipHits.size >= maxTrackedIps && !ipHits.containsKey(key)) return true
+        val hits = ipHits.computeIfAbsent(key) { java.util.ArrayDeque() }
+        synchronized(hits) {
+            while (hits.isNotEmpty() && now - hits.peekFirst() > ipWindowMillis) hits.pollFirst()
+            if (hits.size >= max) return true
+            hits.addLast(now)
+            return false
+        }
+    }
+
+    private suspend fun ApplicationCall.tooManyRequests() = respondHtml(
+        HotspotPortalPages.message(null, "Demasiados intentos", "Espera unos minutos y vuelve a intentarlo.", retry = false),
+        HttpStatusCode.TooManyRequests,
+    )
+
     private suspend fun ApplicationCall.register() {
+        if (overIpLimit(clientIp(), "register", maxRegisterPerIp)) return tooManyRequests()
         val form = receiveParameters()
         val guest = guestContext(form)
         val values = FormValues(
@@ -116,6 +165,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
     }
 
     private suspend fun ApplicationCall.customerCode() {
+        if (overIpLimit(clientIp(), "code", maxCodePerIp)) return tooManyRequests()
         val form = receiveParameters()
         val guest = guestContext(form)
         val code = HotspotNetworks.normalizeCustomerCode(form["code"].orEmpty().take(40))
@@ -184,7 +234,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
                 """.trimIndent(),
             )
         } catch (failure: MailException) {
-            log.warn("Hotspot {}: no se pudo enviar el codigo a {}: {}", target.companyCode, values.email, failure.message)
+            log.warn("Hotspot {}: no se pudo enviar el codigo a {}: {}", target.companyCode, values.email, failure.cause?.message ?: failure.message)
             connection.prepareStatement("DELETE FROM hotspot_codes WHERE id = ?").use { delete ->
                 delete.setObject(1, codeId)
                 delete.executeUpdate()

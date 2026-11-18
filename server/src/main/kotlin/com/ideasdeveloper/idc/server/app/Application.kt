@@ -61,6 +61,7 @@ import io.ktor.server.application.*
 import io.ktor.server.netty.*
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.server.plugins.ratelimit.RateLimit
+import kotlinx.coroutines.sync.withLock
 import io.ktor.server.plugins.ratelimit.RateLimitName
 import io.ktor.server.plugins.ratelimit.rateLimit
 import io.ktor.server.response.*
@@ -82,7 +83,6 @@ fun Application.module() {
     install(ContentNegotiation) {
         json(kotlinx.serialization.json.Json { encodeDefaults = true })
     }
-    val sessionKeyHasher = SessionTokenGenerator()
     install(RateLimit) {
         register(RateLimitName("login")) {
             rateLimiter(
@@ -104,17 +104,22 @@ fun Application.module() {
         }
         register(RateLimitName("admin")) {
             rateLimiter(
-                limit = 20,
+                limit = 60,
                 refillPeriod = 60.seconds,
             )
 
-            // A hash of the session, never the token itself: the rate limiter logs its keys.
-            requestKey { call ->
-                call.request.headers["Authorization"]
-                    ?.takeIf { it.isNotBlank() }
-                    ?.let { "session:" + sessionKeyHasher.hash(it) }
-                    ?: call.request.local.remoteAddress
-            }
+            // Siempre por IP: una clave derivada de la cabecera Authorization se evade rotando el
+            // token (basta con enviar uno distinto en cada peticion) y haria crecer el mapa sin tope.
+            requestKey { call -> clientAddress(call) }
+        }
+        // Lecturas del Core (/version, /modules, /notifications): por IP, holgado para el uso normal
+        // de la app pero evita inundaciones que abririan una conexion a la base de datos cada una.
+        register(RateLimitName("public")) {
+            rateLimiter(
+                limit = 300,
+                refillPeriod = 60.seconds,
+            )
+            requestKey { call -> clientAddress(call) }
         }
         // Routes of extensions, including public webhooks (Meta, WordPress): per client IP, generous
         // enough for webhook bursts, but it stops floods that would open a database connection each.
@@ -335,15 +340,21 @@ fun Application.module() {
         get("/") {
             call.respondText(sayHello("Ktor"))
         }
-        get("/version") {
-            call.respond(
-                versionResponse(
-                    catalogUrl = environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty(),
-                    central = DatabaseFactory.getDataSource(),
-                    remoteModuleCatalog = remoteModuleCatalog,
-                    defaultModuleCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
+        rateLimit(RateLimitName("public")) {
+            get("/version") {
+                // En cache unos minutos: la consulta hace peticiones HTTP salientes y no debe poder
+                // amplificarse desde fuera.
+                call.respond(
+                    versionCache.get {
+                        versionResponse(
+                            catalogUrl = environment.config.propertyOrNull("version.catalogUrl")?.getString().orEmpty(),
+                            central = DatabaseFactory.getDataSource(),
+                            remoteModuleCatalog = remoteModuleCatalog,
+                            defaultModuleCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
+                        )
+                    }
                 )
-            )
+            }
         }
 
         rateLimit(RateLimitName("login")) {
@@ -351,6 +362,7 @@ fun Application.module() {
                 loginService = loginDatabases.service,
                 switchTargets = loginDatabases::switchTargets,
                 switchTo = loginDatabases::switchTo,
+                logout = loginDatabases::logout,
             )
             passwordResetRoutes(accountService)
         }
@@ -375,8 +387,10 @@ fun Application.module() {
             )
         }
         // Centro de notificaciones del Core: la campana de la app lee y marca las del usuario.
-        notificationRoutes(moduleRegistry, moduleAccessService)
-        moduleRoutes(moduleRegistry, moduleAccessService)
+        rateLimit(RateLimitName("public")) {
+            notificationRoutes(moduleRegistry, moduleAccessService)
+            moduleRoutes(moduleRegistry, moduleAccessService)
+        }
         rateLimit(RateLimitName("admin")) {
             extensionRoutes(
                 extensionService,
@@ -395,6 +409,54 @@ fun Application.module() {
         }
     }
 }
+
+// IP del cliente; detras del proxy local se toma X-Real-IP.
+private fun clientAddress(call: ApplicationCall): String {
+    val remoteAddress = call.request.local.remoteAddress
+    // Solo se confia en X-Real-IP cuando la peticion llega del proxy local (IPv4 o IPv6).
+    val fromLocalProxy = remoteAddress == "127.0.0.1" || remoteAddress == "::1" || remoteAddress == "0:0:0:0:0:0:0:1"
+    if (!fromLocalProxy) return remoteAddress
+    // Tope de longitud y solo caracteres de una IP: la cabecera es del cliente y es clave del limitador.
+    return call.request.headers["X-Real-IP"]
+        ?.trim()
+        ?.take(64)
+        ?.takeIf { it.isNotEmpty() && it.all { char -> char.isLetterOrDigit() || char == '.' || char == ':' } }
+        ?: remoteAddress
+}
+
+// Valor en memoria con expiracion: evita recalcular (y repetir peticiones salientes) en cada llamada.
+// Un fallo tambien se guarda, con un TTL corto, para no reintentar la carga en cada peticion.
+private class ExpiringCache<T : Any>(private val ttlMillis: Long, private val failureTtlMillis: Long) {
+    private val mutex = kotlinx.coroutines.sync.Mutex()
+    private var value: T? = null
+    private var failure: Throwable? = null
+    private var expiresAt = 0L
+
+    suspend fun get(load: () -> T): T = mutex.withLock {
+        val now = System.currentTimeMillis()
+        if (now < expiresAt) {
+            value?.let { return@withLock it }
+            failure?.let { throw it }
+        }
+        try {
+            // La carga hace HTTP bloqueante: fuera de los hilos del dispatcher de peticiones.
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { load() }.also {
+                value = it
+                failure = null
+                expiresAt = now + ttlMillis
+            }
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (error: Exception) {
+            value = null
+            failure = error
+            expiresAt = now + failureTtlMillis
+            throw error
+        }
+    }
+}
+
+private val versionCache = ExpiringCache<VersionResponse>(ttlMillis = 5 * 60_000L, failureTtlMillis = 45_000L)
 
 private fun versionResponse(
     catalogUrl: String,
@@ -582,6 +644,9 @@ private fun Application.serverMailSettings(): SmtpSettings? {
         password = environment.config.propertyOrNull("mail.password")?.getString().orEmpty(),
         from = value("from"),
         security = value("security").ifBlank { "starttls" },
+        // SMTP del servidor (lo configura el dueno del servidor): se permite un relay local o interno,
+        // a diferencia del SMTP por empresa que valida el host contra redes privadas (anti-SSRF).
+        trusted = true,
     ).takeIf { it.isUsable }
 }
 

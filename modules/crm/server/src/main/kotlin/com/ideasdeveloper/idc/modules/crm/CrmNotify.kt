@@ -347,6 +347,7 @@ object CrmNotify {
                 sent++
                 null
             } catch (failure: MailException) {
+                org.slf4j.LoggerFactory.getLogger(CrmNotify::class.java).warn("CRM: no se pudo enviar un aviso por correo: {}", failure.cause?.message ?: failure.message)
                 failure.message.orEmpty()
             }
             tenant.prepareStatement(

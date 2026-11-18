@@ -938,12 +938,24 @@ private fun ModuleField(
     Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
         when {
             field.readOnly -> {
-                Text(field.label, color = colors.muted, fontSize = 12.sp)
-                Text(
-                    (if (field.multiple) UiFieldValues.options(value).joinToString(", ") else value).ifBlank { "-" },
-                    color = colors.text,
-                    modifier = Modifier.fillMaxWidth().background(colors.surfaceAlt, RoundedCornerShape(10.dp)).padding(12.dp),
-                )
+                val display = if (field.multiple) UiFieldValues.options(value).joinToString(", ") else value
+                if (field.multiple || display.isBlank()) {
+                    Text(field.label, color = colors.muted, fontSize = 12.sp)
+                    Text(
+                        display.ifBlank { "-" },
+                        color = colors.text,
+                        modifier = Modifier.fillMaxWidth().background(colors.surfaceAlt, RoundedCornerShape(10.dp)).padding(12.dp),
+                    )
+                } else {
+                    // Valor de solo lectura (token, codigo, enlace...): seleccionable y con boton de copiar.
+                    CopyableCode(
+                        label = field.label,
+                        code = display,
+                        labelColor = colors.muted,
+                        codeColor = colors.text,
+                        modifier = Modifier.fillMaxWidth().background(colors.surfaceAlt, RoundedCornerShape(10.dp)).padding(12.dp),
+                    )
+                }
             }
             field.type == "boolean" -> Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(

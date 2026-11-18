@@ -62,6 +62,7 @@ object AgentesServerModule : ServerModule {
 
     override val migrationPaths = listOf(
         "modules/agentes/migrations/V001__create_agent_tokens.sql",
+        "modules/agentes/migrations/V002__refresh_reuse_detection.sql",
     )
 
     override val runtimeTables = listOf("agent_tokens", "agent_activity")
@@ -74,7 +75,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.3.0",
+        version = "0.3.2",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,

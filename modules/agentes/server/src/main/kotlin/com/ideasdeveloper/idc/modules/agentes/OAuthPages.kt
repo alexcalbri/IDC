@@ -84,7 +84,18 @@ object OAuthPages {
 
     private fun returnNote(request: OAuthRequest): String {
         val host = runCatching { URI(request.redirectUri).host }.getOrNull().orEmpty()
-        return "<p class=\"hint\">Al terminar volveras a <strong>${esc(host)}</strong>.</p>"
+        // El nombre del cliente lo escribe quien lo registra: el dominio de retorno es lo unico fiable, y se avisa si no es de un servicio conocido.
+        val warning = if (isKnownRedirectHost(host)) "" else
+            "<p class=\"error\">Atencion: <strong>${esc(host)}</strong> no es un servicio de IA conocido. Continua solo si reconoces ese dominio.</p>"
+        return "<p class=\"hint\">Al terminar volveras a <strong>${esc(host)}</strong>.</p>$warning"
+    }
+
+    // Dominios de los clientes MCP habituales; localhost es el de las aplicaciones de escritorio.
+    private val knownRedirectHosts = listOf("claude.ai", "claude.com", "anthropic.com", "chatgpt.com", "openai.com", "localhost", "127.0.0.1")
+
+    internal fun isKnownRedirectHost(host: String): Boolean {
+        val name = host.lowercase()
+        return knownRedirectHosts.any { name == it || name.endsWith(".$it") }
     }
 
     private fun hiddenInput(name: String, value: String) = "<input type=\"hidden\" name=\"${esc(name)}\" value=\"${esc(value)}\">"

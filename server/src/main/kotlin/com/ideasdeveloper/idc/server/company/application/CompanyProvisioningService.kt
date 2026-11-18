@@ -101,12 +101,15 @@ class CompanyProvisioningService(
             if (admin.existsDatabase(databaseName)) {
                 throw CompanyProvisioningException("La base de datos de la empresa ya existe.")
             }
-            if (admin.existsRole(ownerUsername)) {
+            if (admin.existsRole(ownerUsername) || roleUsedInAnyCompany(ownerUsername)) {
                 throw CompanyProvisioningException("El usuario PostgreSQL del business owner ya existe.")
             }
 
             admin.createStatement().use { statement ->
+                silenceStatementLog(statement)
                 statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
+                // Por defecto PUBLIC puede conectarse a cualquier base: solo el runtime y el owner.
+                statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
                 statement.executeUpdate(
                     "CREATE ROLE ${quoteIdentifier(ownerUsername)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(ownerPassword)}"
                 )
@@ -390,12 +393,17 @@ class CompanyProvisioningService(
                 admin.autoCommit = true
                 if (admin.existsDatabase(databaseName)) throw CompanyProvisioningException("La base de datos de la empresa ya existe.")
                 if (newOwnerInput != null) {
-                    if (admin.existsRole(owner.role)) throw CompanyProvisioningException("El usuario PostgreSQL del business owner ya existe.")
+                    if (admin.existsRole(owner.role) || roleUsedInAnyCompany(owner.role)) {
+                        throw CompanyProvisioningException("El usuario PostgreSQL del business owner ya existe.")
+                    }
                 } else if (!admin.existsRole(owner.role)) {
                     throw CompanyProvisioningException("No existe el usuario PostgreSQL del business owner.")
                 }
                 admin.createStatement().use { statement ->
+                    silenceStatementLog(statement)
                     statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
+                    // Por defecto PUBLIC puede conectarse a cualquier base: solo el runtime y el owner.
+                    statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
                     if (newOwnerInput != null) {
                         statement.executeUpdate(
                             "CREATE ROLE ${quoteIdentifier(owner.role)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(newOwnerInput.password)}"
@@ -670,6 +678,7 @@ class CompanyProvisioningService(
         adminConnection(role).use { admin ->
             admin.autoCommit = true
             admin.createStatement().use { statement ->
+                silenceStatementLog(statement)
                 statement.executeUpdate("ALTER ROLE ${quoteIdentifier(role)} PASSWORD ${quoteLiteral(password)}")
             }
         }
@@ -712,6 +721,7 @@ class CompanyProvisioningService(
         adminConnection(provisioningRole).use { admin ->
             admin.autoCommit = true
             admin.createStatement().use { statement ->
+                silenceStatementLog(statement)
                 statement.executeUpdate("ALTER ROLE ${quoteIdentifier(ownerRole)} PASSWORD ${quoteLiteral(password)}")
             }
         }
@@ -730,6 +740,45 @@ class CompanyProvisioningService(
         }
         central.connection.use { connection ->
             insertAudit(connection, provisioningRole, auditAction, normalizedCompanyCode, null, """{"businessOwnerUsername":"$ownerRole"}""")
+        }
+    }
+
+    /** True si [username] ya es `postgres_role` de algun usuario en cualquier empresa. */
+    private fun roleUsedInAnyCompany(username: String): Boolean =
+        companyTenants().any { tenant -> roleUsedInTenant(tenant, username) }
+
+    /**
+     * Falla cerrado: solo una tabla inexistente (SQLState 42P01, empresa aun sin esquema) cuenta como
+     * "no usado". Cualquier otro error (base inaccesible, conexion, permisos) impide verificar la
+     * unicidad y se rechaza la operacion.
+     */
+    private fun roleUsedInTenant(tenant: TenantDatabaseConfig, username: String): Boolean =
+        try {
+            tenantRuntimeConnection(tenant).use { it.exists("application_users", "postgres_role", username) }
+        } catch (failure: java.sql.SQLException) {
+            if (failure.sqlState == "42P01") false
+            else {
+                log.warn("No se pudo verificar la unicidad del usuario en una empresa", failure)
+                throw CompanyProvisioningException("No se pudo verificar la unicidad del usuario")
+            }
+        } catch (failure: Exception) {
+            log.warn("No se pudo verificar la unicidad del usuario en una empresa", failure)
+            throw CompanyProvisioningException("No se pudo verificar la unicidad del usuario")
+        }
+
+    /**
+     * Evita que PostgreSQL registre en su log el DDL con contrasena en texto. Se hace por sesion (la
+     * conexion de aprovisionamiento es de un solo uso). Si el rol no puede cambiar el parametro se
+     * avisa en el log: el silencio NO esta activo y las contrasenas pueden quedar registradas.
+     *
+     * TODO(seguridad): lo robusto es enviar el verificador SCRAM-SHA-256 ya calculado
+     * (ALTER ROLE ... PASSWORD 'SCRAM-SHA-256$...') para que el texto plano nunca viaje ni se registre.
+     */
+    private fun silenceStatementLog(statement: java.sql.Statement) {
+        try {
+            statement.execute("SET log_statement = 'none'")
+        } catch (failure: java.sql.SQLException) {
+            log.warn("No se pudo desactivar log_statement: las contrasenas del DDL pueden quedar en el log de PostgreSQL", failure)
         }
     }
 
@@ -769,13 +818,14 @@ class CompanyProvisioningService(
         val ownerTenants = tenants.filter { tenant -> ownerRoleIn(tenant, owner.role) }
         if (renamed) {
             val taken = adminConnection(provisioningRole).use { it.existsRole(username) } ||
-                tenants.any { tenant -> runCatching { tenantRuntimeConnection(tenant).use { it.exists("application_users", "postgres_role", username) } }.getOrDefault(false) }
+                tenants.any { tenant -> roleUsedInTenant(tenant, username) }
             if (taken) throw CompanyProvisioningException("Ya existe un usuario con ese nombre.")
         }
 
         adminConnection(provisioningRole).use { admin ->
             admin.autoCommit = true
             admin.createStatement().use { statement ->
+                silenceStatementLog(statement)
                 if (renamed) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(owner.role)} RENAME TO ${quoteIdentifier(username)}")
                 if (password.isNotEmpty()) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} PASSWORD ${quoteLiteral(password)}")
             }
@@ -1174,6 +1224,7 @@ class CompanyProvisioningService(
             if (!admin.existsDatabase(databaseName)) {
                 admin.createStatement().use { statement ->
                     statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
+                    statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
                     statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
                 }
             }
