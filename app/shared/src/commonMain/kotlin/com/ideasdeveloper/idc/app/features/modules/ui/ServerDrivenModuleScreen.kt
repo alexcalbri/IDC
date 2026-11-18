@@ -1,6 +1,8 @@
 package com.ideasdeveloper.idc.app.features.modules.ui
 
 import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
+import com.ideasdeveloper.idc.app.core.version.ClientVersion
+import com.ideasdeveloper.idc.app.core.version.isAppOlderThan
 import androidx.compose.foundation.layout.widthIn
 import com.ideasdeveloper.idc.app.core.layout.AdaptiveLayout
 import com.ideasdeveloper.idc.app.core.layout.ContentWidth
@@ -188,6 +190,45 @@ fun ServerDrivenModuleScreen(
     val companyCode = session?.companyCode ?: session?.workspaceCompanyCode
     val callContext = remember(serverUrl, session?.accessToken, companyCode) {
         if (serverUrl != null && session != null && companyCode != null) ModuleCallContext(serverUrl, session.accessToken, companyCode) else null
+    }
+
+    // El modulo pide una app mas nueva que esta: se avisa en lugar de mostrar su interfaz.
+    val appTooOld = remember(definition?.minAppVersion) { isAppOlderThan(definition?.minAppVersion) }
+    if (definition != null && appTooOld) {
+        AuthenticatedScreen(
+            modifier = modifier.background(colors.screenBrush),
+            topBar = {
+                AuthenticatedTopBar(
+                    title = definition.displayName,
+                    subtitle = switchMessage ?: definition.description,
+                    primaryColor = primaryColor,
+                    onReturnToDashboard = onReturnToDashboard,
+                    onSettings = onSettings,
+                    onLogout = onLogout,
+                    titleMenu = titleMenu,
+                )
+            },
+        ) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(16.dp)
+                    .contentWidth(ContentWidth.Max, 0.9f)
+                    .background(colors.surface, RoundedCornerShape(18.dp))
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Este modulo necesita la app ${definition.minAppVersion} o superior. Tu app es $ClientVersion. Actualiza la app.",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = colors.text,
+                )
+                Button(onClick = onReturnToDashboard, colors = accentButtonColors()) {
+                    Text("Volver al inicio")
+                }
+            }
+        }
+        return
     }
 
     if (ui != null && callContext != null && (ui.type == "native" || ui.type == "web")) {

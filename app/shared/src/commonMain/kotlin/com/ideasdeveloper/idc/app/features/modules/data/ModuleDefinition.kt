@@ -14,6 +14,9 @@ data class ModuleDefinition(
     val views: List<ModuleViewDefinition> = emptyList(),
     // Como mostrar el modulo: piezas nativas (UiScreen) o paginas web propias del modulo.
     val ui: ModuleUiEntry? = null,
+    // Versiones minimas de Core y app que el modulo necesita para funcionar (null = sin minimo).
+    val minCoreVersion: String? = null,
+    val minAppVersion: String? = null,
 )
 
 @Serializable

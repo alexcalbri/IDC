@@ -70,6 +70,9 @@ data class ModuleDefinition(
     val permissions: List<ModulePermissionDefinition> = emptyList(),
     // How clients show the module: native pieces (UiScreen) or the module's own web pages.
     val ui: ModuleUiEntry? = null,
+    // Versiones minimas de Core y app que el modulo necesita (module.json); nulo = sin minimo.
+    val minCoreVersion: String? = null,
+    val minAppVersion: String? = null,
 )
 
 @Serializable
@@ -118,6 +121,8 @@ class ModuleRegistry(
     installedModuleIds: Set<String> = modules.filter { it.definition.locked }.map { it.definition.id }.toSet(),
     // Modules loaded from packages built on this server (not compiled into the distribution).
     private val packagedModuleIds: Set<String> = emptySet(),
+    // Minimos leidos del module.json de cada paquete instalado; sobreescriben los de la definicion en codigo.
+    private val packageRequirements: Map<String, ModuleRequirements> = emptyMap(),
 ) {
     private val modulesById = modules.associateBy { it.definition.id }.toMutableMap()
     private val externalDefinitionsById = ConcurrentHashMap<String, ModuleDefinition>()
@@ -277,6 +282,12 @@ class ModuleRegistry(
             .map { it.copy(id = "$moduleId.${it.id}") }
     }
 
-    private fun definitionOrExternal(moduleId: String): ModuleDefinition? =
-        modulesById[moduleId]?.definition ?: externalDefinitionsById[moduleId]
+    private fun definitionOrExternal(moduleId: String): ModuleDefinition? {
+        val definition = modulesById[moduleId]?.definition ?: return externalDefinitionsById[moduleId]
+        val requirements = packageRequirements[moduleId] ?: return definition
+        return definition.copy(
+            minCoreVersion = requirements.minCoreVersion ?: definition.minCoreVersion,
+            minAppVersion = requirements.minAppVersion ?: definition.minAppVersion,
+        )
+    }
 }

@@ -28,6 +28,7 @@ import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleJobScheduler
 import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
 import com.ideasdeveloper.idc.server.modules.ModulePackageLoader
+import com.ideasdeveloper.idc.server.modules.ModuleRequirements
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.idc.server.modules.ServerMcpModuleId
@@ -107,13 +108,15 @@ fun Application.module() {
         Path.of(environment.config.propertyOrNull("company.filesRoot")?.getString() ?: "build/company-files")
     )
     val classpathModules = loadServerModules()
-    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet())
+    val packageRequirements = mutableMapOf<String, ModuleRequirements>()
+    val packagedModules = loadPackagedModules(DatabaseFactory.getDataSource(), classpathModules.map { it.definition.id }.toSet(), packageRequirements)
     val serverModules = (classpathModules + packagedModules).sortedBy { it.definition.id }
     val installedServerModules = loadInstalledServerModuleDefinitions(DatabaseFactory.getDataSource(), serverModules)
     val moduleRegistry = ModuleRegistry(
         modules = serverModules,
         installedModuleIds = installedServerModules.map { it.id }.toSet(),
         packagedModuleIds = packagedModules.map { it.definition.id }.toSet(),
+        packageRequirements = packageRequirements,
     ).also { registry ->
         installedServerModules.forEach { definition ->
             registry.registerInstalled(definition)
@@ -352,7 +355,11 @@ private fun loadServerModules() =
  * Loads the packages built on this server for installed optional modules. A package that fails to
  * load (for example after a core update that broke it) is skipped so the server still starts.
  */
-private fun loadPackagedModules(central: DataSource, classpathModuleIds: Set<String>): List<ServerModule> {
+private fun loadPackagedModules(
+    central: DataSource,
+    classpathModuleIds: Set<String>,
+    requirements: MutableMap<String, ModuleRequirements>,
+): List<ServerModule> {
     val log = LoggerFactory.getLogger("ModulePackages")
     val packages = try {
         central.connection.use { connection ->
@@ -378,6 +385,7 @@ private fun loadPackagedModules(central: DataSource, classpathModuleIds: Set<Str
             }
             else -> try {
                 ModulePackageLoader.load(jar).filter { it.definition.id == moduleId }
+                    .also { loaded -> if (loaded.isNotEmpty()) requirements[moduleId] = ModulePackageLoader.readRequirements(jar, moduleId) }
             } catch (failure: Throwable) {
                 log.error("Package of module {} could not be loaded; reinstall it for this server version.", moduleId, failure)
                 emptyList()

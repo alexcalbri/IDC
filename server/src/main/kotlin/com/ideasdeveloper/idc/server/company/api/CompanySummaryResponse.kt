@@ -46,6 +46,15 @@ data class ServerModuleResponse(
     val newerThanCatalog: Boolean = false,
     // Enabled in the server workspace, where server owners and staff use modules without a company.
     val usedByServer: Boolean = false,
+    // Versiones minimas de Core y app de la version instalada y de la disponible en el catalogo.
+    val minCoreVersion: String? = null,
+    val minAppVersion: String? = null,
+    val latestMinCoreVersion: String? = null,
+    val latestMinAppVersion: String? = null,
+    // Por que no se puede instalar o actualizar (p. ej. el Core del servidor es menor que el minimo).
+    val installBlockedReason: String? = null,
+    // Aviso al instalar: p. ej. no se pudo comprobar la version de la app.
+    val warning: String? = null,
 )
 
 @Serializable

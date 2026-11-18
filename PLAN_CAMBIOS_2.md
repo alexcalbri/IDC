@@ -306,3 +306,26 @@ No se programan: son datos de configuración. Al probar el cambio 9, se crean de
 5. **Mensaje nuevo de un lead:** aviso en la app y por correo a los asignados. Lo cubre 9.3; se revisa que llegue.
 6. **Seguimiento que vence:** aviso en la app y por correo a los asignados a la hora del seguimiento. Lo cubre 9.3.
 7. **Check-in en Cloudbeds** (botón, con la integración activa): disparador manual; acción: hacer el check-in, o avisar si no hay reserva.
+
+## 10. Versión mínima de Core y app por módulo (Core 0.6.0, app 0.6.1, todos los módulos)
+
+**Pedido:** al instalar o actualizar un módulo, verificar que el Core y la app tengan la versión mínima que el módulo necesita para funcionar.
+
+**Contrato:**
+- **`module.json`:** cada módulo declara `"minCoreVersion": "X.Y.Z"` y `"minAppVersion": "X.Y.Z"`. Se comparan con `ModuleVersion` (core `ModuleVersion.kt`). Si no vienen, no hay mínimo.
+  - Valores iniciales: CRM `0.5.0`/`0.5.0`; hotspot y agentes `0.5.0`/`0.5.0`.
+  - Los módulos base (clientes, empresa) van con el Core y no se revisan.
+- **Servidor:**
+  - `RemoteModuleDefinition` y `ModuleDefinition` llevan `minCoreVersion: String? = null` y `minAppVersion: String? = null`, leídos del `module.json` del catálogo y del paquete instalado.
+  - `ServerModuleResponse` expone los mínimos de la versión instalada y de la disponible: `minCoreVersion`, `minAppVersion`, `latestMinCoreVersion`, `latestMinAppVersion`, `installBlockedReason: String?`.
+- **Verificación al instalar o actualizar** (`installServerModule`, ruta POST `/server/modules/{id}/install` y MCP `install_module`), antes de descargar y otra vez al validar el paquete en `ModulePackages.validate` (por si el catálogo y el paquete no coinciden):
+  - si el Core instalado (`IdeasCoreVersion`) es menor que `minCoreVersion`: 409 `MODULE_NEEDS_CORE`, "Este modulo necesita el Core X o superior; el servidor tiene Y. Actualiza el servidor primero.";
+  - si la app de quien instala, que manda el header `X-App-Version`, es menor que `minAppVersion`: 409 `MODULE_NEEDS_APP`, "Este modulo necesita la app X o superior; tu app es Y. Actualizala antes de instalar.";
+  - si no llega el header (app vieja o MCP), no se bloquea por la app, pero la respuesta lleva un aviso.
+- **App:**
+  - Todas las peticiones (`CompanyApi`, `ModuleApi`, `VersionApi` y demás clientes HTTP) mandan `X-App-Version: <ClientVersion>`.
+  - En "Módulos del servidor", cada tarjeta muestra "Requiere Core ≥ X · App ≥ Y". Si `installBlockedReason` viene, o si la app es más vieja que el mínimo, el botón Instalar o Actualizar se desactiva y se muestra el motivo.
+  - Al abrir un módulo cuyo `minAppVersion` es mayor que `ClientVersion`, la app muestra "Este modulo necesita la app X o superior. Actualiza la app." en lugar de la pantalla del módulo.
+- **Revisar:** `VersionResponse` usa `IdeasCoreVersion` también como `appVersion` (VersionModels.kt:10). Hay que corregirlo si es un error.
+
+**Versiones:** Core 0.6.0 y app 0.6.1. Los módulos sin cambios de código no suben de versión; solo cambia su `module.json`.

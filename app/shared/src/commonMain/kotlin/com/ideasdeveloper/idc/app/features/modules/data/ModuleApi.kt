@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.modules.data
 
+import com.ideasdeveloper.idc.app.core.version.installAppVersionHeader
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -52,6 +53,7 @@ class ModuleApi(serverUrl: String) {
 
     // Cliente Ktor ligero para obtener definiciones de modulo.
     private val client = HttpClient {
+        installAppVersionHeader()
         expectSuccess = false
         followRedirects = false
         install(SessionExpiry)

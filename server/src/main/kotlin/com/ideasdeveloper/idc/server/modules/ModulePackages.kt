@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.server.modules
 
+import com.ideasdeveloper.idc.server.app.IdeasCoreVersion
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -93,6 +94,8 @@ class ModulePackageBuilder(
     private val compileClasspath: String,
     private val javaExecutable: String,
     private val githubToken: String? = null,
+    // Core instalado: un paquete que pide un Core mayor no se compila.
+    private val coreVersion: String = IdeasCoreVersion,
 ) {
     private val log = LoggerFactory.getLogger(ModulePackageBuilder::class.java)
     private val http = HttpClient.newBuilder()
@@ -191,6 +194,9 @@ class ModulePackageBuilder(
         if (manifest["id"]?.jsonPrimitive?.contentOrNull != moduleId) problems += "module.json debe tener id '$moduleId'."
         if (manifest["version"]?.jsonPrimitive?.contentOrNull.isNullOrBlank()) problems += "module.json requiere version."
         if (manifest["bundled"]?.jsonPrimitive?.booleanOrNull == true) problems += "es un modulo base; ya viene con el servidor."
+        // El catalogo y el paquete pueden no coincidir: el module.json del paquete tambien se revisa.
+        ModuleRequirementGate.coreProblem(manifest["minCoreVersion"]?.jsonPrimitive?.contentOrNull, coreVersion)
+            ?.let { throw ModuleBuildException(it.message) }
 
         val kotlinRoot = moduleDir.resolve("server/src/main/kotlin")
         val packagePath = "com/ideasdeveloper/idc/modules/$moduleId/"
@@ -319,6 +325,18 @@ class ModulePackageBuilder(
 /** Loads module packages, each in its own class loader on top of the server's. */
 object ModulePackageLoader {
     private val log = LoggerFactory.getLogger(ModulePackageLoader::class.java)
+
+    /** Minimos de Core y app del module.json guardado dentro del paquete; vacios si no lo trae. */
+    fun readRequirements(jar: Path, moduleId: String): ModuleRequirements = runCatching {
+        java.util.jar.JarFile(jar.toFile()).use { file ->
+            val entry = file.getJarEntry("modules/$moduleId/module.json") ?: return@use ModuleRequirements()
+            val manifest = Json.parseToJsonElement(file.getInputStream(entry).readBytes().decodeToString()).jsonObject
+            ModuleRequirements(
+                minCoreVersion = manifest["minCoreVersion"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() },
+                minAppVersion = manifest["minAppVersion"]?.jsonPrimitive?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() },
+            )
+        }
+    }.getOrDefault(ModuleRequirements())
 
     fun load(jar: Path, parent: ClassLoader = ModulePackageLoader::class.java.classLoader): List<ServerModule> {
         val loader = URLClassLoader(arrayOf(jar.toUri().toURL()), parent)

@@ -15,6 +15,7 @@ import kotlinx.serialization.json.Json
 class VersionApi(serverUrl: String) {
     private val baseUrl = serverUrl.trim().trimEnd('/')
     private val client = HttpClient {
+        installAppVersionHeader()
         expectSuccess = false
         install(ContentNegotiation) {
             json(Json { ignoreUnknownKeys = true })
@@ -42,7 +43,6 @@ class VersionApi(serverUrl: String) {
 @Serializable
 data class VersionResponse(
     val coreVersion: String = ClientVersion,
-    val appVersion: String = ClientVersion,
     val latestCoreVersion: String? = null,
     val latestAppVersion: String? = null,
     val moduleUpdates: List<ModuleVersionUpdate> = emptyList(),

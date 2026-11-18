@@ -220,6 +220,8 @@ data class RemoteModuleDefinition(
     val packageUrl: String? = null,
     val packageSha256: String? = null,
     val bundled: Boolean = false,
+    val minCoreVersion: String? = null,
+    val minAppVersion: String? = null,
 ) {
     fun toDefinition(): ModuleDefinition = ModuleDefinition(
         id = id,
@@ -229,5 +231,7 @@ data class RemoteModuleDefinition(
         locked = false,
         views = views,
         permissions = permissions,
+        minCoreVersion = minCoreVersion?.trim()?.takeIf { it.isNotEmpty() },
+        minAppVersion = minAppVersion?.trim()?.takeIf { it.isNotEmpty() },
     )
 }

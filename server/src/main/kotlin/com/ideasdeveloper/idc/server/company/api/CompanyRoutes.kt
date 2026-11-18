@@ -450,12 +450,12 @@ fun Route.companyRoutes(
         val moduleId = call.parameters["moduleId"].orEmpty()
         val response = try {
             withContext(Dispatchers.IO) {
-                service.installServerModule(moduleId)
+                service.installServerModule(moduleId, call.request.headers["X-App-Version"])
             }
         } catch (exception: CompanyProvisioningException) {
             call.respond(
                 HttpStatusCode.Conflict,
-                CompanyErrorResponse("SERVER_MODULE_NOT_INSTALLED", exception.message ?: "No se pudo instalar el modulo del servidor."),
+                CompanyErrorResponse(exception.code ?: "SERVER_MODULE_NOT_INSTALLED", exception.message ?: "No se pudo instalar el modulo del servidor."),
             )
             return@post
         }

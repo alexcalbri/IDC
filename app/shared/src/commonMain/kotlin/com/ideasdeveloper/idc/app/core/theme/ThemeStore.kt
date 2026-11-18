@@ -4,6 +4,7 @@ import com.ideasdeveloper.idc.ui.UiAppTheme
 import com.ideasdeveloper.idc.ui.UiAppThemes
 import com.ideasdeveloper.idc.ui.UiJson
 import com.ideasdeveloper.idc.ui.isValid
+import com.ideasdeveloper.idc.app.core.version.installAppVersionHeader
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.request.get
@@ -36,6 +37,7 @@ object ThemeStore {
     suspend fun refresh(serverUrl: String?) {
         val baseUrl = serverUrl?.trim()?.trimEnd('/')?.takeIf { it.isNotBlank() } ?: return
         val client = HttpClient {
+            installAppVersionHeader()
             expectSuccess = false
             install(HttpTimeout) {
                 requestTimeoutMillis = 8_000

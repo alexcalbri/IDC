@@ -213,7 +213,9 @@ object ServerMcpTools {
                 title = "Instalar o actualizar modulo",
                 description = "Instala un modulo del catalogo o lo actualiza a su ultima version. Los modulos opcionales se compilan " +
                     "en segundo plano y el servidor se reinicia al terminar (la conexion se corta un momento); " +
-                    "consulta el avance con servidor_list_modules.",
+                    "consulta el avance con servidor_list_modules. " +
+                    "Se rechaza si el Core del servidor es menor que el minimo del modulo; la version de la app no se puede comprobar desde aqui " +
+                    "(si el modulo pide una app minima, la respuesta lo avisa en 'warning').",
                 permission = Permission,
                 inputSchema = McpSchema.obj(mapOf(moduleId), required = listOf("module_id")),
             ) { call ->

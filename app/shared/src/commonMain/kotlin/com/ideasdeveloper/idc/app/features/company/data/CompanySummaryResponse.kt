@@ -49,6 +49,14 @@ data class ServerModuleResponse(
     val newerThanCatalog: Boolean = false,
     // Activo en el espacio del servidor (uso del server_owner y su personal sin una empresa).
     val usedByServer: Boolean = false,
+    // Minimos de la version instalada y de la disponible; installBlockedReason explica por que no se puede instalar.
+    val minCoreVersion: String? = null,
+    val minAppVersion: String? = null,
+    val latestMinCoreVersion: String? = null,
+    val latestMinAppVersion: String? = null,
+    val installBlockedReason: String? = null,
+    // Aviso del servidor tras instalar (por ejemplo, no llego la version de la app y no se pudo validar).
+    val warning: String? = null,
 )
 
 @Serializable

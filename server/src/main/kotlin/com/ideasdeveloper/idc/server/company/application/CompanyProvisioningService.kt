@@ -18,6 +18,8 @@ import com.ideasdeveloper.idc.server.company.api.ServerModuleCatalogResponse
 import com.ideasdeveloper.idc.server.company.api.ServerModuleResponse
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyRequest
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
+import com.ideasdeveloper.idc.server.modules.ModuleRequirementGate
+import com.ideasdeveloper.idc.server.app.IdeasCoreVersion
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import com.ideasdeveloper.idc.server.modules.RemoteModuleCatalog
 import com.ideasdeveloper.idc.server.modules.RemoteModulePackage
@@ -40,7 +42,8 @@ import java.util.UUID
 import javax.sql.DataSource
 import kotlin.io.path.name
 
-class CompanyProvisioningException(message: String) : Exception(message)
+// [code] opcional: las rutas lo devuelven en lugar del codigo generico (p. ej. MODULE_NEEDS_CORE).
+class CompanyProvisioningException(message: String, val code: String? = null) : Exception(message)
 
 class CompanyProvisioningService(
     private val central: DataSource,
@@ -1014,6 +1017,16 @@ class CompanyProvisioningService(
             updateAvailable = comparable && ModuleVersion.isNewer(catalogVersion!!, installedVersion),
             newerThanCatalog = comparable && ModuleVersion.isNewer(installedVersion, catalogVersion!!),
             usedByServer = installed && serverUsage != null && (definition.locked || definition.id in serverUsage),
+            minCoreVersion = definition.minCoreVersion,
+            minAppVersion = definition.minAppVersion,
+            latestMinCoreVersion = remotePackage?.definition?.minCoreVersion,
+            latestMinAppVersion = remotePackage?.definition?.minAppVersion,
+            // Solo se bloquea por el Core del servidor; la app la compara el cliente con su propia version.
+            installBlockedReason = if (definition.locked || remotePackage == null) {
+                null
+            } else {
+                ModuleRequirementGate.coreProblem(remotePackage.definition.minCoreVersion, IdeasCoreVersion)?.message
+            },
         )
     }
 
@@ -1071,7 +1084,7 @@ class CompanyProvisioningService(
      * modules are downloaded from the configured catalog branch and built in the background; when
      * the package is ready the server restarts to load it. The response reports the progress.
      */
-    fun installServerModule(moduleId: String): ServerModuleResponse {
+    fun installServerModule(moduleId: String, appVersion: String? = null): ServerModuleResponse {
         val normalizedModuleId = moduleId.trim()
         val remotePackages = syncRemoteAvailableModules()
         val definition = moduleRegistry.availableDefinition(normalizedModuleId)
@@ -1085,9 +1098,18 @@ class CompanyProvisioningService(
         val loadedVersion = moduleRegistry.loadedVersion(definition.id)
         val update = moduleRegistry.isPackaged(definition.id) && remotePackage != null && loadedVersion != null &&
             ModuleVersion.isNewer(remotePackage.definition.version, loadedVersion)
-        if (moduleRegistry.hasCode(definition.id) && !update) {
+        val building = !moduleRegistry.hasCode(definition.id) || update
+        // Versiones minimas: antes de activar o descargar nada. Se revisa lo que se va a quedar instalado.
+        val target = if (building) remotePackage?.definition ?: definition else definition
+        if (!definition.locked) {
+            (ModuleRequirementGate.coreProblem(target.minCoreVersion, IdeasCoreVersion)
+                ?: ModuleRequirementGate.appProblem(target.minAppVersion, appVersion))
+                ?.let { throw CompanyProvisioningException(it.message, it.code) }
+        }
+        val warning = ModuleRequirementGate.missingAppVersionWarning(target.minAppVersion, appVersion)
+        if (!building) {
             activateLoadedModule(definition)
-            return moduleResponse(definition, remotePackage)
+            return moduleResponse(definition, remotePackage).copy(warning = warning)
         }
 
         val builder = modulePackageBuilder
@@ -1096,7 +1118,7 @@ class CompanyProvisioningService(
             ?: throw CompanyProvisioningException("${definition.displayName} no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.")
         installStates[definition.id] = ModuleInstallState(InstallStatus.Installing, "En cola para compilar")
         buildExecutor.execute { buildAndInstall(definition, builder, source) }
-        return moduleResponse(definition, remotePackage)
+        return moduleResponse(definition, remotePackage).copy(warning = warning)
     }
 
     private fun activateLoadedModule(definition: ModuleDefinition) {

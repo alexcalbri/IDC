@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.app.features.auth.data
 
+import com.ideasdeveloper.idc.app.core.version.installAppVersionHeader
 import io.ktor.client.HttpClient
 import io.ktor.client.call.body
 import io.ktor.client.plugins.HttpTimeout
@@ -35,6 +36,7 @@ class LoginApi(serverUrl: String) {
 
     // Cliente Ktor con JSON tolerante a campos nuevos enviados por el servidor.
     private val client = HttpClient {
+        installAppVersionHeader()
         expectSuccess = false
         followRedirects = false
 

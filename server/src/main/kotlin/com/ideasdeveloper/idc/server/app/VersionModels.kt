@@ -2,20 +2,18 @@ package com.ideasdeveloper.idc.server.app
 
 import kotlinx.serialization.Serializable
 
-const val IdeasCoreVersion = "0.5.0"
+const val IdeasCoreVersion = "0.6.0"
 
+// El servidor no conoce la version de la app (cada cliente trae la suya): solo informa la ultima disponible.
 @Serializable
 data class VersionResponse(
     val coreVersion: String = IdeasCoreVersion,
-    val appVersion: String = IdeasCoreVersion,
     val latestCoreVersion: String? = null,
     val latestAppVersion: String? = null,
     val moduleUpdates: List<ModuleVersionUpdate> = emptyList(),
 ) {
     val coreUpdateAvailable: Boolean
         get() = !latestCoreVersion.isNullOrBlank() && latestCoreVersion != coreVersion
-    val appUpdateAvailable: Boolean
-        get() = !latestAppVersion.isNullOrBlank() && latestAppVersion != appVersion
     val modulesUpdateAvailable: Boolean
         get() = moduleUpdates.isNotEmpty()
 }

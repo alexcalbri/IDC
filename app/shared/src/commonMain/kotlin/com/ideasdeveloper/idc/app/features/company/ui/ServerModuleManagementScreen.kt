@@ -38,6 +38,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
 import com.ideasdeveloper.idc.app.core.session.SessionStore
+import com.ideasdeveloper.idc.app.core.version.ClientVersion
+import com.ideasdeveloper.idc.app.core.version.isAppOlderThan
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyApi
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
@@ -254,6 +256,8 @@ fun ServerModuleManagementScreen(
                                                     "Instalando ${installed.displayName}: el servidor descarga y compila el modulo y luego se reinicia unos segundos."
                                                 "failed" -> null
                                                 else -> "Modulo ${installed.displayName} instalado."
+                                            }?.let { text ->
+                                                installed.warning?.takeIf { it.isNotBlank() }?.let { "$text $it" } ?: text
                                             }
                                             if (installed.status == "failed") error = installed.statusMessage
                                         } catch (exception: CompanyException) {
@@ -335,6 +339,13 @@ fun ServerModuleManagementScreen(
     }
 }
 
+// Minimos de Core y app de la version a instalar y, si aplica, el motivo por el que no se puede instalar.
+private data class ModuleRequirement(
+    val minCore: String?,
+    val minApp: String?,
+    val blockedReason: String?,
+)
+
 @Composable
 // Renderiza un modulo instalado en el servidor y permite eliminarlo si ninguna empresa lo usa.
 private fun ServerModuleRow(
@@ -350,7 +361,20 @@ private fun ServerModuleRow(
 ) {
     val inProgress = module.status == "installing" || module.status == "restarting"
     val updateAvailable = module.updateAvailable
-    val canInstall = enabled && !inProgress && (!module.installed || updateAvailable)
+    // Minimos de la version que se va a instalar (la disponible al instalar o actualizar; si no, la instalada).
+    val requirement = remember(module) {
+        val installing = !module.installed || module.updateAvailable
+        val minCore = if (installing) module.latestMinCoreVersion ?: module.minCoreVersion else module.minCoreVersion
+        val minApp = if (installing) module.latestMinAppVersion ?: module.minAppVersion else module.minAppVersion
+        val blockedReason = module.installBlockedReason?.takeIf { it.isNotBlank() }
+            ?: if (installing && isAppOlderThan(minApp)) {
+                "Este modulo necesita la app $minApp o superior; tu app es $ClientVersion. Actualizala antes de instalar."
+            } else {
+                null
+            }
+        ModuleRequirement(minCore, minApp, blockedReason)
+    }
+    val canInstall = enabled && !inProgress && (!module.installed || updateAvailable) && requirement.blockedReason == null
     val canDelete = enabled && module.installed && !module.locked && module.activeCompanyCount == 0
     Column(
         modifier = Modifier
@@ -377,6 +401,13 @@ private fun ServerModuleRow(
                 AppTheme.colors.muted
             },
         )
+        if (requirement.minCore != null || requirement.minApp != null) {
+            Text(
+                text = "Requiere Core ≥ ${requirement.minCore ?: "-"} · App ≥ ${requirement.minApp ?: "-"}",
+                style = MaterialTheme.typography.bodySmall,
+                color = AppTheme.colors.muted,
+            )
+        }
         Text(
             text = when {
                 module.locked -> "Modulo base del sistema"
@@ -414,6 +445,11 @@ private fun ServerModuleRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = if (module.status == "failed" || module.status == "attention") AppTheme.colors.danger else AppTheme.colors.accent,
             )
+        }
+        if (!module.installed || updateAvailable) {
+            requirement.blockedReason?.let { reason ->
+                Text(reason, style = MaterialTheme.typography.bodySmall, color = AppTheme.colors.danger)
+            }
         }
         Row(
             modifier = Modifier.fillMaxWidth(),
