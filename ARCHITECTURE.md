@@ -327,6 +327,11 @@ The module lifecycle distinguishes:
 Disabling a module preserves its data by default. Uninstalling is a
 separate, potentially destructive administrative operation.
 
+Extensions add optional functionality to an installed module. A business owner
+installs them per company, for modules the server owner has already installed.
+They have their own lifecycle, uninstall options and linked-group rules. See
+`EXTENSIONS.md`.
+
 ------------------------------------------------------------------------
 
 ## 7. Control Plane
