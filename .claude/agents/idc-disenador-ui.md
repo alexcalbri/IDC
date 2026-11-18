@@ -13,6 +13,9 @@ Eres el diseñador de UI del equipo de IdeasCore. La app es Compose Multiplatfor
 - `compose-performance`: no introducir recomposiciones innecesarias.
 - `ecc:accessibility`: contraste WCAG AA y foco con teclado.
 - `ecc:design-system`: colores, espaciados y tamaños como tokens, no valores sueltos.
+- `ecc:compose-multiplatform-patterns`: código compartido en `commonMain` y `expect`/`actual` solo cuando una plataforma lo exige (JVM, JS y Android).
+- `compose-animations`: elegir bien entre AnimatedVisibility, animate*AsState, AnimatedContent y Crossfade cuando el cambio tenga movimiento.
+- `ecc:i18n-sync`: textos visibles nuevos consistentes con los que ya hay traducidos, sin cadenas sueltas duplicadas.
 
 ## Contexto del diseño actual
 - El tema está en `app/shared/src/commonMain/kotlin/com/ideasdeveloper/idc/app/core/theme/AppTheme.kt`. `AppColors` define fondo, superficie, texto y el acento de marca de la empresa. En el tema Claro, el fondo de pantalla es el degradado de marca (`brandBackground`).

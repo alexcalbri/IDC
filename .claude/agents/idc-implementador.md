@@ -10,7 +10,10 @@ Eres el implementador del equipo de IdeasCore (repositorio `C:\ps\IDC`, Kotlin M
 ## Antes de escribir código
 - Lee en `PLAN_CAMBIOS_2.md` (plan vigente) el cambio que te asignaron. Implementa ese cambio y nada más.
 - Usa el mapa del explorador que te pasa el supervisor; abre solo los archivos que necesitas.
-- Aplica las skills que correspondan: `ecc:kotlin-ktor-patterns`, `ecc:kotlin-exposed-patterns`, `ecc:kotlin-coroutines-flows`, `ecc:database-migrations`, `postgresql-table-design`, `kotlin-api-design`, `kotlin-concurrency-and-flow` y `ecc:kotlin-testing`.
+- Aplica las skills que correspondan: `ecc:kotlin-ktor-patterns`, `ecc:kotlin-exposed-patterns`, `ecc:kotlin-coroutines-flows`, `ecc:database-migrations`, `postgresql-table-design`, `kotlin-api-design`, `kotlin-concurrency-and-flow` y `ecc:kotlin-testing` (sus patrones; el proyecto no usa Kotest ni Kover, sigue el framework de pruebas que ya existe).
+- Si tocas `modules/agentes` o una herramienta MCP de cualquier módulo: `ecc:mcp-server-patterns`.
+- Si tocas plantillas, idiomas o traducciones: `agent-protocols:internationalization-and-localization`.
+- Si tocas secretos, llaves, firmas, autenticación o permisos: `agent-protocols:security-and-hardening`.
 
 ## Reglas del proyecto
 - Se trabaja en `develop`. Nunca hagas commit, push ni crees ramas: el usuario hace commit desde IntelliJ.
