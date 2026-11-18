@@ -6,8 +6,12 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.put
 import java.math.BigDecimal
+import java.math.BigInteger
+import java.math.RoundingMode
 import java.net.URI
 import java.net.URLEncoder
 import java.net.http.HttpClient
@@ -253,6 +257,9 @@ object CrmCloudbeds {
         rooms: List<CbRoomRequest>,
         // Chosen on the lead; the default is the one of Integraciones.
         payment: String = settings.paymentMethod,
+        // Valor estimado del lead: si viene (> 0), la reserva se crea con ese total (tarifa por noche = valor / noches),
+        // repartido entre las habitaciones. Si es null, Cloudbeds usa su tarifa.
+        estimatedValue: BigDecimal? = null,
     ): List<Pair<String, String>> {
         val form = mutableListOf(
             "startDate" to start.toString(),
@@ -280,7 +287,31 @@ object CrmCloudbeds {
             form += "children[$index][quantity]" to room.children.toString()
             form += "children[$index][roomID]" to room.roomId
         }
+        // Precio: si el lead trae valor estimado, se fija la tarifa por noche para que el total de la reserva sea ese valor.
+        if (estimatedValue != null && estimatedValue.signum() > 0 && rooms.isNotEmpty()) {
+            val nights = (end.toEpochDay() - start.toEpochDay()).toInt().coerceAtLeast(1)
+            val perRoom = splitEvenly(estimatedValue, rooms.size)
+            rooms.forEachIndexed { index, _ ->
+                val perNight = splitEvenly(perRoom[index], nights)
+                val detailed = buildJsonObject {
+                    for (n in 0 until nights) put(start.plusDays(n.toLong()).toString(), perNight[n])
+                }
+                form += "rooms[$index][rateDetailed]" to detailed.toString()
+            }
+        }
         return form
+    }
+
+    /** Reparte [total] en [parts] montos de 2 decimales que suman exactamente [total] (los centavos sobrantes van primero). */
+    fun splitEvenly(total: BigDecimal, parts: Int): List<BigDecimal> {
+        if (parts <= 0) return emptyList()
+        val cents = total.movePointRight(2).setScale(0, RoundingMode.HALF_UP).toBigInteger()
+        val partsBig = BigInteger.valueOf(parts.toLong())
+        val base = cents / partsBig
+        val extra = (cents % partsBig).toInt()
+        return (0 until parts).map { i ->
+            BigDecimal((if (i < extra) base + BigInteger.ONE else base)).movePointLeft(2)
+        }
     }
 
     fun parseReservation(body: JsonObject): CbReservationResult {
@@ -288,7 +319,7 @@ object CrmCloudbeds {
         return CbReservationResult(id, body["status"].str().ifEmpty { "confirmed" }, body["grandTotal"].str().toBigDecimalOrNull(), body["unassigned"].arr().size)
     }
 
-    fun reserve(tenant: Connection, leadId: UUID, start: LocalDate, end: LocalDate, guest: CbGuest, rooms: List<CbRoomRequest>, payment: String? = null): CbReservationResult {
+    fun reserve(tenant: Connection, leadId: UUID, start: LocalDate, end: LocalDate, guest: CbGuest, rooms: List<CbRoomRequest>, payment: String? = null, estimatedValue: BigDecimal? = null): CbReservationResult {
         CrmExtensions.inactive(tenant, CrmExtensionIds.Cloudbeds)?.let { throw CrmCloudbedsException(it) }
         if (rooms.isEmpty()) throw CrmValidationException("Elige al menos una habitacion.")
         if (!CrmContacts.isEmail(guest.email)) throw CrmValidationException("Cloudbeds exige el correo del huesped: agregalo al lead.")
@@ -298,7 +329,7 @@ object CrmCloudbeds {
             throw CrmValidationException("Ya no estan libres: ${taken.joinToString { it.roomId }}. Busca de nuevo las habitaciones.")
         }
         val settings = load(tenant)
-        return parseReservation(post(settings, "postReservation", reservationForm(settings, leadId, start, end, guest, rooms, payment ?: settings.paymentMethod)))
+        return parseReservation(post(settings, "postReservation", reservationForm(settings, leadId, start, end, guest, rooms, payment ?: settings.paymentMethod, estimatedValue)))
     }
 
     fun saveReservation(tenant: Connection, leadId: UUID, result: CbReservationResult, start: LocalDate, end: LocalDate, rooms: String, email: String) {

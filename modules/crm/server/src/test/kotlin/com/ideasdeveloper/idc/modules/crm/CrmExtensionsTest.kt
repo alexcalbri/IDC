@@ -125,7 +125,7 @@ class CrmExtensionsTest {
 
     @Test
     fun manifestsRequireTheModuleVersionThatShipsThem() {
-        assertEquals("0.26.0", CrmServerModule.definition.version)
+        assertEquals("0.26.1", CrmServerModule.definition.version)
         CrmServerModule.bundledExtensions.forEach { assertEquals(CrmServerModule.definition.version, it.manifest.minModuleVersion) }
         assertEquals(CrmExtensions.MinModuleVersion, CrmServerModule.definition.version)
         assertEquals("0.8.0", CrmServerModule.definition.minCoreVersion)

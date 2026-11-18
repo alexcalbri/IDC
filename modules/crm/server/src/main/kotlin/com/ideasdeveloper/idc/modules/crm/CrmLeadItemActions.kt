@@ -99,7 +99,7 @@ object CrmLeadItemActions {
         val guest = CbGuest(first, last, lead.email, CrmContacts.normalizePhone(lead.phone), country, values["zip"].orEmpty().trim().take(20))
         val result = try {
             val payment = CrmCloudbeds.paymentLabels.entries.firstOrNull { it.value == values["payment"] }?.key
-            CrmCloudbeds.reserve(tenant, lead.id, start, end, guest, requests, payment)
+            CrmCloudbeds.reserve(tenant, lead.id, start, end, guest, requests, payment, lead.estimatedValue)
         } catch (failure: CrmCloudbedsException) {
             throw CrmActionNotice("La reserva no se creo: ${failure.message}")
         } catch (failure: CrmValidationException) {
