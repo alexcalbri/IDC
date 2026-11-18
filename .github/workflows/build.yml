@@ -1,0 +1,132 @@
+# CI de IdeasCore: compila y prueba, y publica la webApp ya compilada para que el servidor
+# (4 GB de RAM) no tenga que correr webpack al actualizar. Lo consume scripts/ubuntu/update.sh.
+name: Build
+
+on:
+  push:
+    branches: [develop, main, master]
+  pull_request:
+    branches: [develop, main, master]
+  workflow_dispatch:
+
+# Un solo build por rama/PR: un push nuevo cancela el anterior que sigue corriendo.
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Sin demonio ni consola interactiva: es lo que espera un runner efimero.
+  GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.console=plain
+
+jobs:
+  server:
+    name: Pruebas del servidor
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      # Mismo JDK que gradle/gradle-daemon-jvm.properties, para que Gradle no descargue otro.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: liberica
+          java-version: 21
+      # Las pruebas del servidor no usan base de datos (no hace falta un servicio PostgreSQL).
+      # En ramas que no son develop/main/master solo se lee la cache, no se escribe.
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.ref_name != 'develop' && github.ref_name != 'main' && github.ref_name != 'master' }}
+      - run: ./gradlew :server:test --continue
+      - name: Reporte de pruebas
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-pruebas-servidor
+          path: server/build/reports/tests
+          retention-days: 7
+
+  app:
+    name: Compilacion de la app (JVM, JS, Android)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: liberica
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.ref_name != 'develop' && github.ref_name != 'main' && github.ref_name != 'master' }}
+      # El SDK de Android viene en la imagen ubuntu-latest (ANDROID_HOME) con las licencias aceptadas.
+      - run: ./gradlew :app:shared:compileKotlinJvm :app:shared:compileKotlinJs :app:shared:compileAndroidMain --continue
+
+  web-dist:
+    name: Distribucion web de produccion
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Escribir en el release "web-dist" solo se hace en pushes; en un PR solo se compila y se sube el artifact.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: liberica
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-read-only: ${{ github.ref_name != 'develop' && github.ref_name != 'main' && github.ref_name != 'master' }}
+      # Misma invocacion que update.sh (-PwebOnly): sin Android ni servidor, solo lo que necesita la web.
+      # El runner tiene 16 GB, de sobra para webpack; las source maps ya estan desactivadas en el build.
+      - run: ./gradlew -PwebOnly=true :app:webApp:jsBrowserDistribution
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+      - name: Validar y empaquetar
+        id: pack
+        run: |
+          set -euo pipefail
+          dist=app/webApp/build/dist/js/productionExecutable
+          test -f "$dist/index.html" || { echo "Falta index.html"; exit 1; }
+          test -f "$dist/webApp.js" || { echo "Falta webApp.js"; exit 1; }
+          if find "$dist" -name '*.map' | grep -q .; then echo "Hay source maps en la distribucion"; exit 1; fi
+          # El nombre lleva el sha completo del commit: update.sh lo pide por sha.
+          name="web-${GITHUB_SHA}.tar.gz"
+          # Sin propietario y con orden fijo, para que el paquete sea reproducible.
+          tar -C "$dist" --sort=name --owner=0 --group=0 --numeric-owner --mtime='UTC 2020-01-01' -czf "$name" .
+          sha256sum "$name" > "$name.sha256"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: web-dist-${{ github.sha }}
+          path: |
+            ${{ steps.pack.outputs.name }}
+            ${{ steps.pack.outputs.name }}.sha256
+          retention-days: 14
+          if-no-files-found: error
+      # Release rodante "web-dist" (prerelease, sin cambiar de commit ni de rama): conserva los paquetes de
+      # los ultimos commits publicados. Un release es publico y se descarga sin token; un artifact de
+      # Actions exige token incluso en repositorios publicos.
+      - name: Publicar en el release web-dist
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NAME: ${{ steps.pack.outputs.name }}
+          KEEP: '10'
+        run: |
+          set -euo pipefail
+          if ! gh release view web-dist >/dev/null 2>&1; then
+            gh release create web-dist --prerelease --target "$GITHUB_SHA" \
+              --title 'Distribucion web compilada' \
+              --notes 'Paquetes de la webApp compilados por CI (web-<sha>.tar.gz + .sha256). Los consume scripts/ubuntu/update.sh. No es una version.'
+          fi
+          gh release upload web-dist "$NAME" "$NAME.sha256" --clobber
+          # Deja solo los KEEP paquetes mas recientes (por fecha de subida).
+          gh release view web-dist --json assets \
+            --jq '.assets | map(select(.name|endswith(".tar.gz"))) | sort_by(.createdAt) | reverse | .['"$KEEP"':] | .[].name' |
+            while read -r old; do
+              gh release delete-asset web-dist "$old" --yes || true
+              gh release delete-asset web-dist "$old.sha256" --yes || true
+            done

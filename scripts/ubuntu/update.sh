@@ -589,6 +589,43 @@ prune_old() {
     done < <(find "$dir" -mindepth 1 -maxdepth 1 -name "$pattern" -printf '%T@ %p\n' | sort -rn | tail -n "+$((keep + 1))" | cut -d' ' -f2-)
 }
 
+# Opcional (opt-in): en vez de compilar la webapp (webpack no cabe en 4 GB de RAM), descarga la
+# distribucion que el CI (.github/workflows/build.yml) publico para este mismo commit en el release
+# "web-dist" de GitHub. Se activa con WEB_DIST_FROM_CI=true en /etc/ideascore/server.env (o en el
+# entorno). Si algo falla (sin paquete para ese sha, sin red, checksum o contenido invalidos) devuelve 1
+# y el llamador compila como siempre. Deja la ruta en WEB_DIST.
+# Todo se descarga y se extrae como ideascore (nunca como root); copy_dist_as_ideascore revisa despues
+# que no haya enlaces ni archivos especiales antes de copiar a un directorio de root.
+fetch_ci_web_dist() {
+    local sha=$1 base name dir
+    base=$(config_value WEB_DIST_BASE_URL)
+    base=${base:-https://github.com/alexcalbri/IDC/releases/download/web-dist}
+    [[ $base =~ ^https://[A-Za-z0-9./_-]+$ ]] || { printf 'AVISO: WEB_DIST_BASE_URL invalida.\n' >&2; return 1; }
+    command -v curl >/dev/null 2>&1 || { printf 'AVISO: no hay curl para descargar la webapp del CI.\n' >&2; return 1; }
+    name=web-$sha.tar.gz
+    dir=$BUILD_DIR/web-ci
+    rm -rf --one-file-system -- "$dir"
+    install -d -m 755 -o ideascore -g ideascore "$dir" || return 1
+    printf 'Descargando la webapp compilada por el CI (%s)...\n' "$name"
+    # --fail: un 404 (el CI aun no publica ese commit) cuenta como error y se compila.
+    runuser -u ideascore -- curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 600 --max-filesize 209715200 \
+        -o "$dir/$name" "$base/$name" || return 1
+    runuser -u ideascore -- curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+        --retry 3 --retry-delay 5 --connect-timeout 15 --max-time 60 --max-filesize 1048576 \
+        -o "$dir/$name.sha256" "$base/$name.sha256" || return 1
+    # El .sha256 debe nombrar exactamente este paquete; se compara el hash, no solo el nombre.
+    local expected actual
+    expected=$(awk -v n="$name" '$2 == n || $2 == "*" n { print $1; exit }' "$dir/$name.sha256")
+    [[ $expected =~ ^[0-9a-f]{64}$ ]] || { printf 'AVISO: checksum del CI ilegible.\n' >&2; return 1; }
+    actual=$(runuser -u ideascore -- sha256sum "$dir/$name" | awk '{print $1}')
+    [[ $actual == "$expected" ]] || { printf 'AVISO: el checksum de la webapp del CI no coincide.\n' >&2; return 1; }
+    install -d -m 755 -o ideascore -g ideascore "$dir/dist" || return 1
+    runuser -u ideascore -- tar -xzf "$dir/$name" -C "$dir/dist" --no-same-owner || return 1
+    [[ -f $dir/dist/index.html && -f $dir/dist/webApp.js ]] || { printf 'AVISO: la webapp del CI esta incompleta.\n' >&2; return 1; }
+    WEB_DIST=$dir/dist
+}
+
 [[ -d $SOURCE_DIR/.git ]] || die "No se encontro el repositorio en $SOURCE_DIR."
 [[ -d $APP_RUNTIME_DIR && -x $APP_RUNTIME_DIR/bin/server ]] || die "No se encontro el servidor instalado en $APP_RUNTIME_DIR."
 [[ -d $WEB_RUNTIME_DIR ]] || die "No se encontro la webapp instalada en $WEB_RUNTIME_DIR."
@@ -694,11 +731,22 @@ if [[ $UPDATE_TARGET == server || $UPDATE_TARGET == ambos ]]; then
     [[ -x $BUILD_DIR/server/build/install/server/bin/server ]] || die 'No se genero la distribucion del servidor.'
 fi
 if [[ $UPDATE_TARGET == webapp || $UPDATE_TARGET == ambos ]]; then
-    # build/js keeps the yarn.lock of the previous build; when kotlin-js-store/yarn.lock changed,
-    # kotlinStoreYarnLock fails with "Lock file was changed". It is only a build cache.
-    runuser -u ideascore -- rm -rf -- "$BUILD_DIR/build/js"
-    run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution 2>&1 | tee "$WEB_BUILD_LOG"
-    WEB_DIST="$BUILD_DIR/app/webApp/build/dist/js/productionExecutable"
+    WEB_DIST=''
+    WEB_FROM_CI=${WEB_DIST_FROM_CI:-$(config_value WEB_DIST_FROM_CI)}
+    if [[ $WEB_FROM_CI == true ]]; then
+        # Conserva el exito o fallo sin que set -e corte el script: si falla se compila.
+        if ! fetch_ci_web_dist "$BUILD_SHA"; then
+            printf 'AVISO: no se pudo usar la webapp del CI; se compilara aqui.\n' >&2
+            WEB_DIST=''
+        fi
+    fi
+    if [[ -z $WEB_DIST ]]; then
+        # build/js keeps the yarn.lock of the previous build; when kotlin-js-store/yarn.lock changed,
+        # kotlinStoreYarnLock fails with "Lock file was changed". It is only a build cache.
+        runuser -u ideascore -- rm -rf -- "$BUILD_DIR/build/js"
+        run_gradle -PwebOnly=true :app:webApp:jsBrowserDistribution 2>&1 | tee "$WEB_BUILD_LOG"
+        WEB_DIST="$BUILD_DIR/app/webApp/build/dist/js/productionExecutable"
+    fi
     [[ -f $WEB_DIST/index.html && -f $WEB_DIST/webApp.js ]] || die 'No se genero la distribucion web completa.'
 fi
 

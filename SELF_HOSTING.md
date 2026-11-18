@@ -799,6 +799,26 @@ deployment build and sets Kotlin compiler execution through
 afterward. This avoids depending on the Kotlin daemon socket and gives the
 Kotlin/JS production compiler enough memory on small servers.
 
+### Webapp compilada por el CI (opcional)
+
+En servidores de 4 GB, webpack puede quedarse sin memoria. El workflow
+`.github/workflows/build.yml` compila la webapp de produccion en GitHub y, en
+cada push a `develop`, `main` o `master`, sube `web-<sha>.tar.gz` y su
+`.sha256` al release rodante `web-dist` (se conservan los 10 mas recientes). Para
+que `update.sh` los use, agrega a `/etc/ideascore/server.env`:
+
+```
+WEB_DIST_FROM_CI=true
+```
+
+`update.sh` descarga el paquete del mismo commit que va a instalar
+(`https://github.com/alexcalbri/IDC/releases/download/web-dist/web-<sha>.tar.gz`,
+cambiable con `WEB_DIST_BASE_URL`), verifica el checksum, que existan
+`index.html` y `webApp.js`, y lo despliega igual que una compilacion local. No
+necesita token mientras el repositorio sea publico. Si el CI aun no publico ese
+commit, o algo falla, compila en el servidor como siempre. Sin
+`WEB_DIST_FROM_CI=true` el comportamiento no cambia.
+
 ### Actualizar desde la app
 
 El server owner puede actualizar el Core desde la app (dashboard, "Actualizar
