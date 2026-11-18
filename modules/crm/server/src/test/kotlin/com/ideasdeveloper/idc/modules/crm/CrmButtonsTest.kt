@@ -15,7 +15,7 @@ import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
-/** Button fields (change 9.4) and the Cloudbeds check-in request (change 9.2). */
+/** Button fields (change 9.4) and the statuses that allow a check-in (change 9.2). */
 class CrmButtonsTest {
     private val confirmation = CrmTemplate(UUID.randomUUID(), "Confirmacion", "Reserva", "Texto")
     private val reserveRule = manual("Confirmar y reservar")
@@ -158,19 +158,7 @@ class CrmButtonsTest {
         assertEquals(listOf(reserveRule.id), CrmButtons.read(edited.config).automationIds)
     }
 
-    // ---- Cloudbeds check-in ----
-
-    private fun settings(property: String?) = CrmCloudbedsSettings(true, "key", property, "cash", false, null, 1, 9, true, "")
-
-    @Test
-    fun `the check-in request marks the reservation as checked in`() {
-        assertEquals(
-            listOf("propertyID" to "123", "reservationID" to "R-77", "status" to "checked_in"),
-            CrmCloudbeds.checkInForm(settings("123"), "R-77"),
-        )
-        // A key of one property needs no propertyID.
-        assertEquals(listOf("reservationID" to "R-77", "status" to "checked_in"), CrmCloudbeds.checkInForm(settings(null), "R-77"))
-    }
+    // ---- Check-in ----
 
     @Test
     fun `only reservations waiting for the check-in can check in`() {

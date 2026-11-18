@@ -64,6 +64,17 @@ Every extension has a manifest at its root.
 }
 ```
 
+`source.type` is `bundled`, `github`, `zip` or `url`. Only `github` requires `source.url` pinned to a 40-hex
+commit. A package installed from an uploaded ZIP (`zip`) or from an https URL (`url`) can carry any
+informative `source.url`; the server owner installs it with `POST /server/extensions/upload` (multipart `id`
++ `file`) or `POST /server/extensions/from-url` (`{id, url}`), which store and inspect the ZIP and return a
+`stagingToken` and the package hash, then `POST /server/extensions/staged/{token}/authorize-unsigned` (unsigned
+only) and `POST /server/extensions/staged/{token}/install`. The same gate applies as for GitHub: Ed25519
+signature or the owner's authorization of the package hash, manifest validation, `ext_<id>__*` migrations and
+no downgrades. URL downloads are https-only (port 443), pinned to a validated public IP (no private, local or
+link-local ranges, redirects re-validated) and limited to 50 MB. These four ZIP/URL routes are disabled by
+default (403 `FEATURE_DISABLED`); enable them with the service variable `EXTENSION_UPLOAD_ENABLED=true` and restart. Authorizing an unsigned staged package requires the confirmation text to include the first 8 hex characters of its hash.
+
 ### Signature file: `extension.sig.json`
 
 The hash and the signature cannot live inside the manifest they cover, so they
@@ -84,9 +95,29 @@ are stored next to it:
   `ideascore-2026` ships with the Core; the private key never enters the
   repository (`scripts/extensions/keygen.sh` and `sign.sh`).
 - An unsigned package has no `signature` (see "Unsigned extensions").
-- Extensions shipped inside a module (`"source": {"type": "bundled"}`, such as
-  the CRM's Meta, Monday, WordPress, Encuentra24 and Cloudbeds integrations) are
-  covered by the module package and have no signature file.
+- Extensions shipped inside a module (`"source": {"type": "bundled"}`) are
+  covered by the module package and have no signature file. The CRM no longer
+  bundles any: its Meta, Cloudbeds, Monday, Encuentra24 and WordPress
+  integrations are each a separate `"source": {"type": "github"}`
+  package (`extensions/meta/`, `extensions/cloudbeds/`, `extensions/monday/`,
+  `extensions/encuentra24/`, `extensions/wordpress/`), versioned and deployed on
+  its own, so updating one does not require reinstalling the CRM.
+  - `wordpress` (`extensions/wordpress/`): public routes under
+    `/modules/crm/extensions/wordpress/` (`GET idc-connector.zip`, the plugin built
+    from the package resources, and `POST /{company}/hook`, signed with the shared
+    secret). Tables: `ext_wordpress__settings` (site, sealed secret) and
+    `ext_wordpress__agents`. It also provides the `leadspro` import source
+    (CT Leads Pro) and the `import_leadspro` agent tool, read through the same
+    site and secret.
+
+  - `meta` (`extensions/meta/`): public routes under
+    `/modules/crm/extensions/meta/` (the server app's `webhook`, `deauthorize`,
+    `data-deletion`, `deletion`, the `connect/{company}` page, and the company's own
+    `{company}/webhook`). Tables: `ext_meta__settings` (connection and sealed
+    secrets), `ext_meta__log`, `ext_meta__server_app` (server workspace),
+    `ext_meta__routes` (server workspace) and `ext_meta__tickets`. The CRM keeps
+    the reply channels (WhatsApp, Messenger, Instagram) and reaches the extension
+    through `MetaProvider` and `CrmHost`.
 
 ### Validation
 
@@ -184,7 +215,7 @@ chose. An uninstall that fails leaves the extension as it was.
 
 ## Meta extension
 
-Meta is an extension of the CRM module. Its settings are split in two:
+Meta is a package extension of the CRM module (`extensions/meta/`, tables `ext_meta__*`). Its settings are split in two:
 
 - **App configuration** (app ID, app secret, verify token): can be shared within
   a linked group, as an encrypted copy per company. A company outside the group

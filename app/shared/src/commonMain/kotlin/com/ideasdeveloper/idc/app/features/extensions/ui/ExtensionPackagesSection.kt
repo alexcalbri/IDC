@@ -44,7 +44,10 @@ import com.ideasdeveloper.idc.app.core.theme.accentButtonColors
 import com.ideasdeveloper.idc.app.features.auth.data.LoginResponse
 import com.ideasdeveloper.idc.app.features.company.data.CompanyException
 import com.ideasdeveloper.idc.app.features.extensions.data.ExtensionApi
+import com.ideasdeveloper.idc.app.core.platform.PickedFile
+import com.ideasdeveloper.idc.app.core.platform.rememberFilePicker
 import com.ideasdeveloper.idc.app.features.extensions.data.ExtensionPackageEntry
+import com.ideasdeveloper.idc.app.features.extensions.data.ExtensionPackageStagedInspection
 import com.ideasdeveloper.idc.app.features.shell.ui.CollapsibleSection
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -172,6 +175,19 @@ private fun ExtensionPackagesContent(serverUrl: String?, session: LoginResponse?
         }
         error?.let { Text(it, color = colors.danger) }
         message?.let { Text(it, color = colors.success) }
+        // Instalar desde un ZIP o una URL, sin pasar por el catalogo.
+        ManualInstallPanel(
+            canWork = canWork,
+            stageZip = { id, file -> withApi { uploadPackage(it, id, file.name, file.bytes ?: ByteArray(0)) } },
+            stageUrl = { id, url -> withApi { packageFromUrl(it, id, url) } },
+            authorize = { stagingToken, text, sha -> withApi { authorizeStaged(it, stagingToken, text, sha) } },
+            install = { stagingToken -> withApi { installStaged(it, stagingToken) } },
+            onInstalled = { text ->
+                message = text
+                error = null
+                reloadTick += 1
+            },
+        )
         if (!loading && entries.isEmpty() && error == null) Text("El catalogo no tiene paquetes.", color = colors.muted)
 
         AdaptiveGrid(modifier = Modifier.fillMaxWidth(), minItemWidth = 420.dp, gap = 12.dp, equalHeight = false) {
@@ -423,6 +439,281 @@ private fun AuthorizeUnsignedDialog(
                             } else {
                                 error = exception.message
                             }
+                            busy = false
+                        }
+                    }
+                },
+            ) { Text(if (busy) "Autorizando..." else "Autorizar", color = if (matches) colors.danger else colors.muted) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss, enabled = !busy) { Text("Cancelar") } },
+    )
+}
+
+// Limite del servidor para un ZIP de extension; se avisa en el cliente antes de leerlo y subirlo.
+private const val MaxZipBytes = 50L * 1024 * 1024
+
+// Mensaje claro segun el codigo HTTP del servidor; en los demas casos, el mensaje del propio servidor.
+private fun stagedErrorMessage(exception: CompanyException): String = when (exception.status) {
+    413 -> "El archivo es demasiado grande: el limite es de 50 MB."
+    502 -> "No se pudo descargar el paquete desde esa URL (el servidor no respondio, o la direccion es interna o no esta permitida)."
+    409 -> "El paquete cambio desde que lo revisaste. Vuelve a subirlo o descargarlo para revisarlo de nuevo."
+    404 -> "La sesion de instalacion caduco (dura 30 minutos). Vuelve a subir o descargar el paquete."
+    else -> exception.message ?: "No se pudo completar la operacion."
+}
+
+/**
+ * Instalar una extension desde un ZIP o una URL (solo server owner). El servidor deja el paquete en
+ * preparacion y devuelve su inspeccion; si no esta firmado el dueno lo autoriza revisando el hash y
+ * despues lo instala. La preparacion caduca a los 30 minutos.
+ */
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun ManualInstallPanel(
+    canWork: Boolean,
+    stageZip: suspend (id: String, file: PickedFile) -> ExtensionPackageStagedInspection,
+    stageUrl: suspend (id: String, url: String) -> ExtensionPackageStagedInspection,
+    authorize: suspend (stagingToken: String, text: String, sha256: String) -> Unit,
+    install: suspend (stagingToken: String) -> Unit,
+    onInstalled: (String) -> Unit,
+) {
+    val colors = AppTheme.colors
+    val scope = rememberCoroutineScope()
+    var id by remember { mutableStateOf("") }
+    var url by remember { mutableStateOf("") }
+    var zip by remember { mutableStateOf<PickedFile?>(null) }
+    var staged by remember { mutableStateOf<ExtensionPackageStagedInspection?>(null) }
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var notice by remember { mutableStateOf<String?>(null) }
+    var authorizing by remember { mutableStateOf(false) }
+
+    val picker = rememberFilePicker(MaxZipBytes) { picked ->
+        val file = picked.firstOrNull() ?: return@rememberFilePicker
+        zip = null
+        error = null
+        when {
+            !file.name.endsWith(".zip", ignoreCase = true) -> error = "Elige un archivo .zip."
+            file.bytes == null -> error = "El archivo pesa ${file.size / (1024 * 1024)} MB y supera el limite de 50 MB."
+            else -> zip = file
+        }
+    }
+
+    // Prepara el paquete en el servidor (subida o descarga) y muestra su inspeccion.
+    fun stage(block: suspend () -> ExtensionPackageStagedInspection) {
+        busy = true
+        error = null
+        notice = null
+        staged = null
+        scope.launch {
+            try {
+                staged = block()
+            } catch (exception: CompanyException) {
+                error = stagedErrorMessage(exception)
+            } finally {
+                busy = false
+            }
+        }
+    }
+
+    // Una sesion caducada (404) o un paquete cambiado (409) obligan a empezar de nuevo.
+    fun fail(exception: CompanyException) {
+        error = stagedErrorMessage(exception)
+        if (exception.status == 404 || exception.status == 409) staged = null
+    }
+
+    Column(
+        modifier = Modifier.fillMaxWidth().background(colors.surfaceAlt, MaterialTheme.shapes.small).padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text("Instalar desde archivo o URL", style = MaterialTheme.typography.titleSmall, color = colors.accentText)
+        Text(
+            "Sube un ZIP (hasta 50 MB) o indica una URL de descarga. Antes de instalar veras el hash del paquete; uno sin firma necesita tu autorizacion expresa.",
+            color = colors.muted,
+            modifier = Modifier.widthIn(max = ContentWidth.Form),
+        )
+        OutlinedTextField(
+            value = id,
+            onValueChange = { id = it },
+            label = { Text("Id de la extension") },
+            singleLine = true,
+            enabled = !busy,
+            colors = appFieldColors(),
+            modifier = Modifier.fillMaxWidth().widthIn(max = ContentWidth.Form),
+        )
+        Text("Desde archivo (ZIP)", style = MaterialTheme.typography.labelLarge, color = colors.text)
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(
+                enabled = canWork && !busy && picker.supported,
+                onClick = { picker.pickFiles() },
+                colors = ButtonDefaults.buttonColors(containerColor = colors.surface, contentColor = colors.accentText),
+            ) { Text("Elegir ZIP") }
+            Button(
+                enabled = canWork && !busy && zip != null && id.isNotBlank(),
+                onClick = { zip?.let { file -> stage { stageZip(id.trim(), file) } } },
+                colors = accentButtonColors(),
+            ) { Text("Subir y revisar") }
+        }
+        Text(zip?.let { "${it.name} (${it.size / 1024} KB)" } ?: "Ningun archivo elegido", color = colors.muted)
+        if (!picker.supported) Text("Esta plataforma aun no permite elegir archivos.", color = colors.warning)
+        Text("Desde URL", style = MaterialTheme.typography.labelLarge, color = colors.text)
+        OutlinedTextField(
+            value = url,
+            onValueChange = { url = it },
+            label = { Text("URL del paquete (https://...)") },
+            singleLine = true,
+            enabled = !busy,
+            colors = appFieldColors(),
+            modifier = Modifier.fillMaxWidth().widthIn(max = ContentWidth.Form),
+        )
+        Button(
+            enabled = canWork && !busy && url.isNotBlank() && id.isNotBlank(),
+            onClick = { stage { stageUrl(id.trim(), url.trim()) } },
+            colors = accentButtonColors(),
+        ) { Text("Descargar y revisar") }
+        if (busy) Text("Trabajando...", color = colors.muted)
+        error?.let { Text(it, color = colors.danger) }
+        notice?.let { Text(it, color = colors.success) }
+
+        staged?.let { current ->
+            Column(
+                modifier = Modifier.fillMaxWidth().background(colors.surface, MaterialTheme.shapes.small).padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("Paquete listo para revisar: ${current.id}", style = MaterialTheme.typography.titleSmall, color = colors.accentText)
+                Text(
+                    "Origen: " + (if (current.source == "url") "URL" else "archivo ZIP") + (current.sourceUrl?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.muted,
+                )
+                Text(
+                    if (current.signed) "Firmado" + (current.keyId?.let { " con la clave $it" } ?: "") else "Sin firma",
+                    color = if (current.signed) colors.success else colors.warning,
+                )
+                current.signatureProblem?.let {
+                    Text("La firma del paquete no vale ($it). No se puede autorizar ni instalar.", color = colors.danger)
+                }
+                CopyableCode(label = "Hash del paquete", code = current.packageSha256)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End), verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                    TextButton(enabled = !busy, onClick = { staged = null }) { Text("Descartar") }
+                    if (current.installable) {
+                        Button(
+                            enabled = canWork && !busy,
+                            colors = accentButtonColors(),
+                            onClick = {
+                                busy = true
+                                error = null
+                                scope.launch {
+                                    try {
+                                        install(current.stagingToken)
+                                        staged = null
+                                        id = ""
+                                        url = ""
+                                        zip = null
+                                        notice = null
+                                        onInstalled("Instalando ${current.id}: el servidor compila el paquete y luego se reinicia.")
+                                    } catch (exception: CompanyException) {
+                                        fail(exception)
+                                    } finally {
+                                        busy = false
+                                    }
+                                }
+                            },
+                        ) { Text("Instalar") }
+                    } else if (current.signatureProblem == null) {
+                        Button(
+                            enabled = canWork && !busy,
+                            onClick = { authorizing = true },
+                            colors = ButtonDefaults.buttonColors(containerColor = colors.surface, contentColor = colors.warning),
+                            border = BorderStroke(1.dp, colors.warning),
+                        ) { Text("Autorizar paquete sin firma") }
+                    }
+                }
+            }
+        }
+    }
+
+    val reviewed = staged
+    if (authorizing && reviewed != null) {
+        AuthorizeStagedDialog(
+            inspection = reviewed,
+            authorize = { text -> authorize(reviewed.stagingToken, text, reviewed.packageSha256) },
+            onAuthorized = {
+                authorizing = false
+                // Autorizado el hash, el paquete ya se puede instalar con el boton Instalar.
+                staged = reviewed.copy(installable = true)
+                notice = "Paquete autorizado sin firma. Pulsa Instalar para continuar."
+                error = null
+            },
+            onFailed = { exception ->
+                authorizing = false
+                fail(exception)
+            },
+            onDismiss = { authorizing = false },
+        )
+    }
+}
+
+@Composable
+/**
+ * Autorizar un paquete sin firma ya inspeccionado: se muestra el hash y la frase de confirmacion lleva
+ * sus primeros 8 caracteres, para que se confirme exactamente lo revisado.
+ */
+private fun AuthorizeStagedDialog(
+    inspection: ExtensionPackageStagedInspection,
+    authorize: suspend (text: String) -> Unit,
+    onAuthorized: () -> Unit,
+    onFailed: (CompanyException) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val colors = AppTheme.colors
+    val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var typed by remember { mutableStateOf("") }
+    val phrase = "autorizar ${inspection.id} ${inspection.packageSha256.take(8).lowercase()}"
+    val matches = typed.trim().equals(phrase, ignoreCase = true)
+
+    AlertDialog(
+        onDismissRequest = { if (!busy) onDismiss() },
+        title = { Text("Autorizar paquete sin firma") },
+        text = {
+            Column(
+                modifier = Modifier.fillMaxWidth().verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Text(
+                    "${inspection.id} no tiene una firma valida, asi que nadie garantiza su origen. Una vez instalado, su codigo corre con los privilegios del servidor: puede leer y escribir datos de todas las empresas.",
+                    color = colors.text,
+                )
+                Text("Autoriza solo paquetes que hayas revisado y de una fuente de confianza.", color = colors.warning)
+                Text("Hash ${inspection.packageSha256.take(12)}...", color = colors.text)
+                CopyableCode(label = "Hash completo", code = inspection.packageSha256)
+                Text("Para confirmar escribe: $phrase", color = colors.text)
+                OutlinedTextField(
+                    value = typed,
+                    onValueChange = { typed = it },
+                    label = { Text("Texto de confirmacion") },
+                    singleLine = true,
+                    enabled = !busy,
+                    colors = appFieldColors(),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let { Text(it, color = colors.danger) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = matches && !busy,
+                onClick = {
+                    busy = true
+                    error = null
+                    scope.launch {
+                        try {
+                            authorize(typed.trim())
+                            onAuthorized()
+                        } catch (exception: CompanyException) {
+                            // 404 y 409 invalidan la preparacion: se cierra el dialogo y se explica fuera.
+                            if (exception.status == 404 || exception.status == 409) onFailed(exception) else error = exception.message
                             busy = false
                         }
                     }

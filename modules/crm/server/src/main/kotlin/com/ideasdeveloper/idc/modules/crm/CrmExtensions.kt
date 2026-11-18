@@ -25,12 +25,12 @@ import kotlinx.coroutines.withContext
 /** Ids de las extensiones incluidas en el CRM (EXTENSIONS.md). */
 object CrmExtensionIds {
     const val Meta = "meta"
-    const val MondayImport = "monday_import"
+    const val MondayImport = "monday"
     const val WordPress = "wordpress"
     const val Encuentra24 = "encuentra24"
     const val Cloudbeds = "cloudbeds"
 
-    val all = listOf(Meta, MondayImport, WordPress, Encuentra24, Cloudbeds)
+    val all = listOf(Meta, WordPress, Cloudbeds)
 }
 
 /** Permisos propios del CRM que sus extensiones pueden declarar (ModuleDefinition.extensionPermissions). */
@@ -51,7 +51,7 @@ object CrmExtensions {
     const val ManifestVersion = "1.0.0"
 
     /** Version del CRM que trae las extensiones (igual a la del modulo; una prueba lo comprueba). */
-    const val MinModuleVersion = "0.26.1"
+    const val MinModuleVersion = "0.27.0"
 
     private val names = mapOf(
         CrmExtensionIds.Meta to "Meta (WhatsApp, Messenger e Instagram)",
@@ -185,21 +185,12 @@ object CrmExtensions {
 
     // ---- Trabajo de arranque: integraciones activas -> extensiones, y secretos cifrados ----
 
-    /** Integraciones ya configuradas en la empresa, por extension (token, pagina, clave o la integracion activa). */
-    fun configuredIntegrations(tenant: Connection): Set<String> {
-        fun has(sql: String) = count(tenant, sql) > 0
-        return buildSet {
-            if (has(
-                    "SELECT count(*) FROM crm_meta_settings WHERE enabled OR coalesce(system_token, '') <> '' OR coalesce(page_id, '') <> '' " +
-                        "OR coalesce(waba_id, '') <> '' OR coalesce(oauth_token, '') <> '' OR coalesce(messenger_token, '') <> '' OR coalesce(instagram_token, '') <> ''",
-                )
-            ) add(CrmExtensionIds.Meta)
-            if (has("SELECT count(*) FROM crm_settings WHERE coalesce(monday_token, '') <> ''")) add(CrmExtensionIds.MondayImport)
-            if (has("SELECT count(*) FROM crm_wordpress_settings WHERE enabled OR coalesce(secret, '') <> '' OR coalesce(site_url, '') <> ''")) add(CrmExtensionIds.WordPress)
-            if (has("SELECT count(*) FROM crm_encuentra24_settings WHERE enabled OR coalesce(api_key, '') <> ''")) add(CrmExtensionIds.Encuentra24)
-            if (has("SELECT count(*) FROM crm_cloudbeds_settings WHERE enabled OR coalesce(api_key, '') <> ''")) add(CrmExtensionIds.Cloudbeds)
-        }
-    }
+    /**
+     * Integraciones ya configuradas en la empresa, por extension. Meta, WordPress, Cloudbeds, Encuentra24 y monday viven en paquetes con
+     * sus propias tablas (ext_<id>__*): ya no hay tablas del CRM que revisar, asi que no hay nada que registrar automaticamente.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun configuredIntegrations(tenant: Connection): Set<String> = emptySet()
 
     /** Registra [ids] como extensiones instaladas y activas (installed_by "migration"); lo que ya esta registrado no se toca. */
     fun registerEnabled(tenant: Connection, ids: Collection<String>): Int = ids.sumOf { id ->
@@ -222,15 +213,15 @@ object CrmExtensions {
      * los secretos que sigan en claro. Idempotente. Sin llave maestra solo registra y la marca queda pendiente, para cifrar despues.
      * Devuelve cuantas extensiones registro y cuantos secretos cifro.
      */
-    fun migrateTenant(tenant: Connection, secrets: com.ideasdeveloper.idc.server.security.SecretBox, includeServerApp: Boolean = false): Pair<Int, Int> {
+    fun migrateTenant(tenant: Connection, secrets: com.ideasdeveloper.idc.server.security.SecretBox): Pair<Int, Int> {
         val done = tenant.prepareStatement("SELECT extensions_migrated_at IS NOT NULL FROM crm_settings WHERE id = 1").use { query ->
             query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
         }
         if (done) return 0 to 0
         val registered = registerEnabled(tenant, configuredIntegrations(tenant))
         if (!secrets.available) return registered to 0
-        // La app de Meta del dueno del servidor vive en el espacio del servidor.
-        val sealed = CrmSecrets.sealAll(tenant, secrets, CrmSecrets.tenantColumns + if (includeServerApp) CrmSecrets.serverColumns else emptyList())
+        // Los secretos de las extensiones (p. ej. Meta) los sella cada extension al guardar.
+        val sealed = CrmSecrets.sealAll(tenant, secrets, CrmSecrets.tenantColumns)
         tenant.prepareStatement(
             "INSERT INTO crm_settings (id, extensions_migrated_at) VALUES (1, CURRENT_TIMESTAMP) ON CONFLICT (id) DO UPDATE SET extensions_migrated_at = CURRENT_TIMESTAMP"
         ).use { it.executeUpdate() }

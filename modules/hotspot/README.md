@@ -57,8 +57,12 @@ for UniFi networks managed through the UniFi Site Manager cloud API (`api.ui.com
 - **Integraciones** (business owner or server owner only), defined by the module
   in `hotspot_integrations`:
   - *Controlador de red*: exactly one network ecosystem authorizes guests
-    (`NetworkController`). UniFi is the only one today and stays enabled for
-    existing companies; MikroTik or others plug in as new implementations.
+    (`NetworkController`). Controllers are supplied by installed extensions
+    through `NetworkControllerProvider` (`HotspotModuleExtensions`), so the module
+    itself no longer carries any controller code. UniFi ships as the deployable
+    extension `extensions/unifi` (installed per company, like Cloudbeds for the
+    CRM); MikroTik or others plug in as further extensions. A company that has not
+    installed a controller extension sees no network controller to enable.
   - *Usuarios*: enables the "Codigo de usuario" access mode.
 - **Accesos WiFi** (`hotspot.view`): every user sees their own WiFi code; the
   business owner and server owner can revoke or restore users' WiFi access.

@@ -2,6 +2,7 @@ package com.ideasdeveloper.idc.server.extensions.packages
 
 import com.ideasdeveloper.idc.server.extensions.ExtensionManifest
 import com.ideasdeveloper.idc.server.extensions.ExtensionSignatureFile
+import com.ideasdeveloper.idc.server.extensions.ExtensionSourceType
 import com.ideasdeveloper.idc.server.extensions.ServerExtensionProvider
 import com.ideasdeveloper.idc.server.modules.GitHubAuth
 import com.ideasdeveloper.idc.server.modules.GitHubLocation
@@ -42,6 +43,8 @@ data class BuiltExtension(
     val jarSha256: String,
     /** server_extensions.status: instalar un paquete nuevo pide reinicio. */
     val status: String = "pending_restart",
+    /** Origen del paquete: github (catalogo), zip (subido) o url. Se guarda en server_extensions.source_type. */
+    val sourceType: String = ExtensionSourceType.GitHub,
 )
 
 /**
@@ -63,6 +66,33 @@ data class InspectedPackage(
 interface ExtensionPackageBuilding {
     fun build(extensionId: String, source: GitHubLocation, progress: (String) -> Unit): BuiltExtension
     fun inspect(extensionId: String, source: GitHubLocation): InspectedPackage
+
+    /**
+     * Instala desde un ZIP ya en disco. [sourceUrl] y [sourceType] dicen de donde vino ("zip:<nombre>" y zip por
+     * defecto; la URL y url cuando el ZIP se descargo antes). Pasa por el mismo verify (firma o hash autorizado).
+     */
+    fun buildFromZip(
+        extensionId: String,
+        zip: Path,
+        progress: (String) -> Unit,
+        sourceUrl: String = ExtensionPackageBuilder.zipLabel(zip.fileName?.toString()),
+        sourceType: String = ExtensionSourceType.Zip,
+    ): BuiltExtension = throw ExtensionPackageException("Este servidor no puede instalar paquetes desde un ZIP.")
+
+    /** Descarga el ZIP de [url] (https, anclado anti-SSRF) y lo instala como [buildFromZip]. */
+    fun buildFromUrl(extensionId: String, url: String, progress: (String) -> Unit): BuiltExtension =
+        throw ExtensionPackageException("Este servidor no puede instalar paquetes desde una URL.")
+
+    /** Calcula hash y firma de un ZIP ya en disco, sin exigir firma ni autorizacion. */
+    fun inspectZip(
+        extensionId: String,
+        zip: Path,
+        sourceUrl: String = ExtensionPackageBuilder.zipLabel(zip.fileName?.toString()),
+    ): InspectedPackage = throw ExtensionPackageException("Este servidor no puede revisar paquetes desde un ZIP.")
+
+    /** Descarga [url] en [target] con el cliente anclado anti-SSRF (solo https, tamano acotado). */
+    fun downloadZip(url: String, target: Path): Path =
+        throw ExtensionPackageException("Este servidor no puede descargar paquetes desde una URL.")
 }
 
 /** Resultado de comprobar hash y firma de una carpeta de extension. */
@@ -113,23 +143,83 @@ class ExtensionPackageBuilder(
         try {
             val archive = download("https://codeload.github.com/${source.owner}/${source.repo}/zip/${source.ref}", work.resolve("source.zip"))
             val packageDir = extract(archive, "${source.path.trim('/')}/$extensionId", work.resolve("source"))
-            val hash = ExtensionTreeHash.compute(packageDir)
-            val signature = packageDir.resolve(ExtensionTreeHash.SignatureFileName).takeIf { Files.isRegularFile(it) }
-                ?.let { runCatching { json.decodeFromString(ExtensionSignatureFile.serializer(), it.readText()) }.getOrNull() }
-                ?.takeIf { it.signature != null }
-            val problem = when {
-                signature == null -> null
-                !signature.packageSha256.equals(hash, ignoreCase = true) -> "el hash de extension.sig.json no coincide con el contenido"
-                else -> verifier.verify(hash, signature.signature!!)
-            }
-            return InspectedPackage(
-                packageSha256 = hash,
-                signed = signature != null && problem == null,
-                sourceUrl = "https://github.com/${source.owner}/${source.repo}/tree/${source.ref}/${source.path.trim('/')}/$extensionId",
-                commit = source.ref,
-                keyId = signature?.signature?.keyId,
-                signatureProblem = problem,
-            )
+            return inspectDirectory(packageDir, "https://github.com/${source.owner}/${source.repo}/tree/${source.ref}/${source.path.trim('/')}/$extensionId", source.ref)
+        } finally {
+            work.toFile().deleteRecursively()
+        }
+    }
+
+    /** Hash del arbol y estado de la firma de una carpeta ya extraida. */
+    private fun inspectDirectory(packageDir: Path, sourceUrl: String, commit: String): InspectedPackage {
+        val hash = ExtensionTreeHash.compute(packageDir)
+        val signature = packageDir.resolve(ExtensionTreeHash.SignatureFileName).takeIf { Files.isRegularFile(it) }
+            ?.let { runCatching { json.decodeFromString(ExtensionSignatureFile.serializer(), it.readText()) }.getOrNull() }
+            ?.takeIf { it.signature != null }
+        val problem = when {
+            signature == null -> null
+            !signature.packageSha256.equals(hash, ignoreCase = true) -> "el hash de extension.sig.json no coincide con el contenido"
+            else -> verifier.verify(hash, signature.signature!!)
+        }
+        return InspectedPackage(
+            packageSha256 = hash,
+            signed = signature != null && problem == null,
+            sourceUrl = sourceUrl,
+            commit = commit,
+            keyId = signature?.signature?.keyId,
+            signatureProblem = problem,
+        )
+    }
+
+    private fun checkId(extensionId: String) {
+        if (!com.ideasdeveloper.idc.server.extensions.ExtensionIdPattern.matches(extensionId)) {
+            throw ExtensionPackageException("Identificador de extension invalido.")
+        }
+    }
+
+    /** Extrae el ZIP con las protecciones de [ExtensionPackageSafety] y convierte los errores de ZIP en un mensaje claro. */
+    private fun extractZip(zip: Path, extensionId: String, target: Path): Path = try {
+        ExtensionPackageSafety.extractGeneric(zip, extensionId, target)
+    } catch (failure: java.io.IOException) {
+        throw ExtensionPackageException("El archivo no es un ZIP valido o esta danado.", failure)
+    }
+
+    override fun inspectZip(extensionId: String, zip: Path, sourceUrl: String): InspectedPackage {
+        checkId(extensionId)
+        val work = Files.createDirectories(packagesRoot.resolve(extensionId)).resolve("inspect-${System.currentTimeMillis()}")
+        Files.createDirectories(work)
+        try {
+            return inspectDirectory(extractZip(zip, extensionId, work.resolve("source")), sourceUrl, "")
+        } finally {
+            work.toFile().deleteRecursively()
+        }
+    }
+
+    override fun downloadZip(url: String, target: Path): Path =
+        ExtensionUrlDownloader.download(url, target, ExtensionUrlDownloader.DefaultMaxBytes)
+
+    override fun buildFromZip(extensionId: String, zip: Path, progress: (String) -> Unit, sourceUrl: String, sourceType: String): BuiltExtension {
+        checkId(extensionId)
+        // No hay commit que comprobar: la garantia real es verify (firma Ed25519 o autorizacion del dueno por hash).
+        val work = Files.createDirectories(packagesRoot.resolve(extensionId)).resolve("build-${System.currentTimeMillis()}")
+        Files.createDirectories(work)
+        try {
+            progress("Extrayendo el ZIP")
+            val packageDir = extractZip(zip, extensionId, work.resolve("source"))
+            return buildFromDirectory(extensionId, packageDir, work, sourceUrl, progress).copy(sourceType = sourceType)
+        } finally {
+            work.toFile().deleteRecursively()
+        }
+    }
+
+    override fun buildFromUrl(extensionId: String, url: String, progress: (String) -> Unit): BuiltExtension {
+        checkId(extensionId)
+        ExtensionUrlDownloader.validate(url)
+        val work = Files.createDirectories(packagesRoot.resolve(extensionId)).resolve("download-${System.currentTimeMillis()}")
+        Files.createDirectories(work)
+        try {
+            progress("Descargando el paquete")
+            val archive = downloadZip(url.trim(), work.resolve("package.zip"))
+            return buildFromZip(extensionId, archive, progress, url.trim(), ExtensionSourceType.Url)
         } finally {
             work.toFile().deleteRecursively()
         }
@@ -324,6 +414,13 @@ class ExtensionPackageBuilder(
     companion object {
         private const val MaxArchiveBytes = 300L * 1024 * 1024
         private val CommitPattern = Regex("[0-9a-f]{40}")
+        private val UnsafeLabelChars = Regex("[^A-Za-z0-9._-]")
+
+        /** Etiqueta de origen de un ZIP subido: "zip:<nombre>" solo con A-Za-z0-9._- y hasta 80 caracteres. */
+        fun zipLabel(fileName: String?): String {
+            val name = fileName.orEmpty().substringAfterLast('/').substringAfterLast('\\')
+            return "zip:" + name.replace(UnsafeLabelChars, "_").take(80).ifBlank { "paquete.zip" }
+        }
 
         fun providerClassName(extensionId: String): String =
             "com.ideasdeveloper.idc.extensions.$extensionId." +

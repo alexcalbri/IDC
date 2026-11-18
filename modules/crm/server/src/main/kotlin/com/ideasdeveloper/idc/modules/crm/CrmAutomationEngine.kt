@@ -119,7 +119,7 @@ object CrmAutomationEngine {
         templates = CrmMail.templates(tenant),
         users = CrmRepository.users(tenant),
         fields = CrmFields.all(tenant),
-        cloudbedsReady = CrmCloudbeds.active(tenant),
+        cloudbedsReady = CrmModuleExtensions.hasAction("cloudbeds_reserve") && CrmModuleExtensions.cloudbedsActive(tenant),
     )
 
     /** The mapped stay fields' labels, for "falta la fecha de ingreso". */
@@ -133,11 +133,11 @@ object CrmAutomationEngine {
     /** What the lead has; the Cloudbeds data is only read when some action needs it. */
     fun facts(tenant: Connection, lead: CrmLead, actions: List<CrmAction>, refs: CrmAutomationRefs): CrmLeadFacts {
         if (actions.none { it.kind.isCloudbeds }) return CrmLeadFacts(email = lead.email, startDate = lead.targetStart, endDate = lead.targetEnd, cloudbedsReady = refs.cloudbedsReady)
-        val rooms = CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }.map { it.startsOn to it.endsOn }
+        val rooms = CrmHost.chosenRooms(tenant, lead.id).map { it.startsOn to it.endsOn }
         return CrmLeadFacts(
             email = lead.email, startDate = lead.targetStart, endDate = lead.targetEnd, chosenRooms = rooms,
-            reservationStatuses = CrmCloudbeds.forLead(tenant, lead.id).map { it.status }, cloudbedsReady = refs.cloudbedsReady,
-            guestCountry = CrmCloudbeds.load(tenant).defaultCountry.isNotEmpty(),
+            reservationStatuses = CrmHost.reservationsForLead(tenant, lead.id).map { it.status }, cloudbedsReady = refs.cloudbedsReady,
+            guestCountry = CrmHost.cloudbedsSettings(tenant).defaultCountry.isNotEmpty(),
         )
     }
 
@@ -313,22 +313,10 @@ object CrmAutomationEngine {
             val told = CrmAutomationNotices.deliver(tenant, notifier, lead, who, title, "${lead.name}: $text")
             if (told == 0) "Aviso sin destinatarios (nadie asignado o elegido)." else "Aviso enviado a $told usuario(s)."
         }
-        CrmActionKind.CloudbedsReserve -> {
-            val values = buildMap<String, String> {
-                CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }.forEach { room ->
-                    put("adults_${room.id}", room.data["adults"].orEmpty().ifEmpty { "1" })
-                    put("children_${room.id}", room.data["children"].orEmpty().ifEmpty { "0" })
-                }
-                // No country: CrmLeadItemActions.reserve uses the default guest country of Integraciones > Cloudbeds.
-            }
-            CrmLeadItemActions.reserve(tenant, refs.stages, lead, values, actor).message
-        }
-        CrmActionKind.CloudbedsCheckIn -> {
-            val reservation = CrmCloudbeds.forLead(tenant, lead.id).firstOrNull { it.status in CrmAutomationRequirements.CheckInStatuses }
-                ?: throw CrmValidationException("El lead no tiene una reserva de Cloudbeds pendiente de check-in.")
-            CrmCloudbeds.checkIn(tenant, reservation)
-            CrmRepository.addActivity(tenant, lead.id, "item", "Check-in hecho en Cloudbeds: reserva ${reservation.reservationId}.", actor)
-            "Check-in hecho en la reserva ${reservation.reservationId}."
+        CrmActionKind.CloudbedsReserve, CrmActionKind.CloudbedsCheckIn -> {
+            val provider = CrmModuleExtensions.providerFor(action.kind.id)
+                ?: throw CrmValidationException(CrmCloudbedsMissing)
+            provider.execute(action.kind.id, CrmActionContext(tenant, lead.id, lead, refs.stages, actor)).message
         }
     }
 

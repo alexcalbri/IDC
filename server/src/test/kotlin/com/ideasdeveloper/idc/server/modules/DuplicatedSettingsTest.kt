@@ -32,10 +32,9 @@ class DuplicatedSettingsTest {
     @Test
     fun integrationCredentialsAreNeverCopied() {
         val crm = modules.first { it.definition.id == "crm" }.duplicatedSettings.map { it.name }
-        // Mail, Meta, WordPress, Encuentra24 and Cloudbeds hold credentials: the copy connects them again.
-        listOf("crm_mail_settings", "crm_meta_settings", "crm_wordpress_settings", "crm_encuentra24_settings", "crm_cloudbeds_settings")
+        // Mail, Meta, WordPress and Encuentra24 hold credentials: the copy connects them again.
+        listOf("crm_mail_settings", "crm_meta_settings", "crm_wordpress_settings", "crm_encuentra24_settings")
             .forEach { assertTrue(it !in crm, "$it no debe copiarse") }
-        assertEquals(null, modules.first { it.definition.id == "crm" }.duplicatedSettings.first { it.name == "crm_settings" }.reset.getValue("monday_token"))
         val hotspot = modules.first { it.definition.id == "hotspot" }.duplicatedSettings.first { it.name == "hotspot_settings" }.reset
         listOf("unifi_api_key", "smtp_password", "domain").forEach { assertTrue(it in hotspot && hotspot[it] == null, "$it debe quedar vacio") }
     }

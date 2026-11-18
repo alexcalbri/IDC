@@ -51,30 +51,16 @@ object CrmImportTargets {
      * same name, the lead's files for file columns, a new customer field for personal data, a new
      * CRM field for anything else with values, and nothing for empty columns.
      */
-    fun propose(column: String, mondayType: String?, hasValues: Boolean, crmFields: List<CrmField>, customerFields: List<CustomerField>): String {
+    fun propose(column: String, columnType: String?, hasValues: Boolean, crmFields: List<CrmField>, customerFields: List<CustomerField>): String {
         crmFields.firstOrNull { it.type != CrmFieldType.Button && it.label.equals(column.trim(), ignoreCase = true) }?.let { return CrmPrefix + it.key }
         customerFields.firstOrNull { it.label.equals(column.trim(), ignoreCase = true) }?.let { return CustomerPrefix + it.key }
-        if (mondayType == "file") return Files
+        // [columnType] es el tipo que informo la fuente (solo las fuentes externas lo informan); "file" es una columna de archivos.
+        if (columnType == "file") return Files
         if (!hasValues) return ""
         return if (personal.containsMatchIn(column)) NewCustomer else NewCrm
     }
 
     // ---- Types ----
-
-    // CRM field type for a monday column type.
-    fun crmType(mondayType: String?): Pair<CrmFieldType, Boolean> = when (mondayType) {
-        "long_text" -> CrmFieldType.Textarea to false
-        "numbers" -> CrmFieldType.Number to false
-        "email" -> CrmFieldType.Email to false
-        "phone" -> CrmFieldType.Phone to false
-        "link" -> CrmFieldType.Url to false
-        "date" -> CrmFieldType.Date to false
-        "checkbox" -> CrmFieldType.Boolean to false
-        "status" -> CrmFieldType.Dropdown to false
-        "dropdown" -> CrmFieldType.Dropdown to true
-        "file" -> CrmFieldType.Files to false
-        else -> CrmFieldType.Text to false
-    }
 
     // Clientes field type (ClientesModule.fieldTypes) for a CRM field type.
     fun customerType(type: CrmFieldType, multiple: Boolean): String = when (type) {
@@ -130,16 +116,17 @@ object CrmImportTargets {
     }
 
     /**
-     * Creates the fields of the columns mapped to "new:crm" / "new:cliente" (typed from the monday
-     * column, dropdown options from the values of the rows) and returns the mapping pointing to
-     * them, with the labels of what was created. A file column always becomes a CRM field.
+     * Creates the fields of the columns mapped to "new:crm" / "new:cliente" (typed from the type the source
+     * reported for the column through [fieldType], text by default; dropdown options from the values of the rows)
+     * and returns the mapping pointing to them, with the labels of what was created. A file column always becomes a CRM field.
      */
     fun createMissing(
         tenant: Connection,
         columns: Map<String, String>,
         types: Map<String, String>,
-        // Extension that asks for the fields (monday_import): the CRM fields it creates are marked so uninstalling it can offer to delete them.
+        // Extension que pide los campos: los campos del CRM que crea se marcan para que desinstalarla pueda ofrecer borrarlos.
         extensionId: String? = null,
+        fieldType: (String?) -> Pair<CrmFieldType, Boolean> = { CrmFieldType.Text to false },
         distinct: (String) -> List<String>,
     ): Pair<Map<String, String>, List<String>> {
         val created = mutableListOf<String>()
@@ -147,7 +134,7 @@ object CrmImportTargets {
         var customerFields = customerFields(tenant)
         val mapped = columns.mapValues { (column, target) ->
             if (target != NewCrm && target != NewCustomer) return@mapValues target
-            val (type, multiple) = crmType(types[column])
+            val (type, multiple) = fieldType(types[column])
             val label = column.trim().take(80).ifEmpty { "Campo" }
             val options = if (type == CrmFieldType.Dropdown) {
                 distinct(column).flatMap { value -> if (multiple) value.split(",") else listOf(value) }
@@ -182,7 +169,7 @@ object CrmImportTargets {
 
     // ---- Values ----
 
-    /** The monday text of a column turned into the form value a field of [type] expects; "" when unusable. */
+    /** The source text of a column turned into the form value a field of [type] expects; "" when unusable. */
     fun formValue(text: String, type: CrmFieldType, multiple: Boolean): String {
         val value = text.trim()
         if (value.isEmpty()) return ""

@@ -240,6 +240,8 @@ configure_server_env() {
     append_config_value MODULE_CATALOG_URL 'https://github.com/alexcalbri/IDC/tree/master/modules'
     append_config_value MODULE_PACKAGES_ROOT "$APP_DIR/server-modules"
     append_config_value MODULE_GITHUB_TOKEN ''
+    # Instalar extensiones desde un ZIP o una URL queda apagado por seguridad; pon true y reinicia ideascore para activarlo.
+    append_config_value EXTENSION_UPLOAD_ENABLED false
     append_config_value VERSION_CATALOG_URL ''
     # Llave maestra de los secretos cifrados: se genera una sola vez y nunca se regenera.
     if ! config_has_key IDC_MASTER_KEY; then
@@ -403,6 +405,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V010__create_core_update_requests.sql.'
     [[ -f database/control/migrations/V011__create_extensions.sql ]] ||
         die 'No se encontro database/control/migrations/V011__create_extensions.sql.'
+    [[ -f database/control/migrations/V012__extension_zip_url_sources.sql ]] ||
+        die 'No se encontro database/control/migrations/V012__extension_zip_url_sources.sql.'
     [[ -f database/core/migrations/V003__add_application_user_profile.sql ]] ||
         die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
     [[ -f database/core/migrations/V004__add_application_user_code.sql ]] ||
@@ -422,6 +426,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V009__add_server_owner_company_sessions.sql
     apply_migration "$db_name" control database/control/migrations/V010__create_core_update_requests.sql
 apply_migration "$db_name" control database/control/migrations/V011__create_extensions.sql
+apply_migration "$db_name" control database/control/migrations/V012__extension_zip_url_sources.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     apply_migration "$db_name" core database/core/migrations/V004__add_application_user_code.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'

@@ -146,7 +146,7 @@ object CrmIntegrationMcpTools {
                 mapOf(
                     "enabled" to McpSchema.boolean("Activar Cloudbeds."),
                     "propertyId" to McpSchema.string("ID numerico de la propiedad; vacio usa la de la API key."),
-                    "paymentMethod" to McpSchema.string("Metodo de pago de las reservas.", CrmCloudbeds.paymentLabels.keys.toList()),
+                    "paymentMethod" to McpSchema.string("Metodo de pago de las reservas.", CrmCloudbedsStore.paymentLabels.keys.toList()),
                     "welcomeEnabled" to McpSchema.boolean("Enviar correo de bienvenida antes del check-in."),
                     "welcomeTemplate" to McpSchema.string("Nombre de la plantilla de mensaje del correo de bienvenida."),
                     "welcomeDaysBefore" to McpSchema.integer("Dias antes del check-in.", 0, 60),
@@ -272,7 +272,7 @@ object CrmIntegrationMcpTools {
                     },
                     "country" to McpSchema.string("Pais del huesped, codigo de 2 letras; vacio usa el pais por defecto de Cloudbeds. Cloudbeds lo exige."),
                     "zip" to McpSchema.string("Codigo postal (opcional)."),
-                    "payment" to McpSchema.string("Metodo de pago; por defecto el de la integracion.", CrmCloudbeds.paymentLabels.keys.toList()),
+                    "payment" to McpSchema.string("Metodo de pago; por defecto el de la integracion.", CrmCloudbedsStore.paymentLabels.keys.toList()),
                 ),
                 required = listOf("lead", "rooms"),
             ),
@@ -339,10 +339,10 @@ object CrmIntegrationMcpTools {
     private fun integrations(call: McpToolCall): JsonElement {
         val context = context(call)
         val tenant = call.tenant
-        val meta = CrmMeta.load(tenant)
-        val wordPress = CrmWordPress.load(tenant)
-        val e24 = CrmEncuentra24.load(tenant)
-        val cloudbeds = CrmCloudbeds.load(tenant)
+        val meta = CrmHost.metaSettings(tenant)
+        val wordPress = CrmHost.wordpressSettings(tenant)
+        val e24 = CrmHost.encuentra24Settings(tenant)
+        val cloudbeds = CrmHost.cloudbedsSettings(tenant)
         val templates = CrmMail.templates(tenant)
         return buildJsonObject {
             put("meta", buildJsonObject {
@@ -376,7 +376,7 @@ object CrmIntegrationMcpTools {
                 put("lastEventAt", text(wordPress.lastEventAt?.toString()))
                 if (wordPress.lastError.isNotEmpty()) put("lastError", wordPress.lastError)
                 putJsonArray("agents") {
-                    CrmWordPress.agents(tenant).forEach { agent ->
+                    CrmHost.wordpressAgents(tenant).forEach { agent ->
                         add(buildJsonObject {
                             put("wpUserId", agent.wpUserId)
                             put("name", agent.name)
@@ -416,9 +416,9 @@ object CrmIntegrationMcpTools {
         val keys = listOf("enabled", "pageId", "wabaId", "phoneNumberId", "recordEchoes", "sharedPageAccess")
         if (keys.none(call::has)) throw McpToolException("Envia al menos un campo a cambiar.")
         val tenant = call.tenant
-        val current = CrmMeta.load(tenant)
+        val current = CrmHost.metaSettings(tenant)
         if (current.serverMode) throw McpToolException("La empresa usa la app de Meta del servidor: se conecta desde Configuracion > Integraciones con Conectar con Meta.")
-        // CrmMeta.merge reads the whole form: blank secrets keep the stored ones, the verify token is sent back as stored.
+        // CrmHost.metaMerge reads the whole form: blank secrets keep the stored ones, the verify token is sent back as stored.
         val values = mutableMapOf(
             "enabled" to current.enabled.toString(),
             "verifyToken" to current.verifyToken.orEmpty(),
@@ -431,24 +431,24 @@ object CrmIntegrationMcpTools {
         if (call.has("recordEchoes")) values["recordEchoes"] = call.boolean("recordEchoes").toString()
         if (call.has("sharedPageAccess")) values["sharedTokens"] = call.boolean("sharedPageAccess").toString()
         listOf("pageId", "wabaId", "phoneNumberId").forEach { key -> if (call.has(key)) values[key] = call.string(key, 64) }
-        val merged = checked { CrmMeta.merge(current, values) }
-        CrmMeta.save(tenant, merged)
+        val merged = checked { CrmHost.metaMerge(current, values) }
+        CrmHost.saveMeta(tenant, merged)
         // Same as the screen: saving connects the page, Instagram and the WhatsApp account.
         if (!merged.enabled || merged.systemToken == null) return result("Meta guardado.")
-        return result("Meta guardado. ${CrmMeta.setup(tenant, merged).notice}".trim())
+        return result("Meta guardado. ${CrmHost.metaSetup(tenant, merged).notice}".trim())
     }
 
     private fun metaConnectPage(call: McpToolCall): JsonElement {
-        if (CrmMeta.load(call.tenant).serverMode) throw McpToolException("La empresa usa la app de Meta del servidor: se conecta desde Configuracion > Integraciones con Conectar con Meta.")
-        val setup = CrmMeta.setup(call.tenant, CrmMeta.load(call.tenant), whatsApp = false)
+        if (CrmHost.metaSettings(call.tenant).serverMode) throw McpToolException("La empresa usa la app de Meta del servidor: se conecta desde Configuracion > Integraciones con Conectar con Meta.")
+        val setup = CrmHost.metaSetup(call.tenant, CrmHost.metaSettings(call.tenant), whatsApp = false)
         if (setup.done.isEmpty()) throw McpToolException(setup.notice.ifEmpty { "No hay nada que conectar: revisa el token y la cuenta de Instagram." })
         return result(setup.notice)
     }
 
     private fun metaFillNames(call: McpToolCall): JsonElement {
-        val settings = CrmMeta.load(call.tenant)
+        val settings = CrmHost.metaSettings(call.tenant)
         if (!settings.ready("messenger") && !settings.ready("instagram")) throw McpToolException("Conecta Messenger o Instagram antes de completar los nombres.")
-        val names = CrmMeta.fillNames(call.tenant, settings)
+        val names = CrmHost.metaFillNames(call.tenant, settings)
         return buildJsonObject {
             put("result", "$names.")
             put("reviewed", names.reviewed)
@@ -458,9 +458,9 @@ object CrmIntegrationMcpTools {
     }
 
     private fun metaConnectWhatsApp(call: McpToolCall): JsonElement {
-        val settings = CrmMeta.load(call.tenant)
+        val settings = CrmHost.metaSettings(call.tenant)
         if (settings.wabaId == null) throw McpToolException("Guarda primero el WhatsApp Business Account ID con update_meta (wabaId).")
-        val setup = CrmMeta.setup(call.tenant, settings, page = false)
+        val setup = CrmHost.metaSetup(call.tenant, settings, page = false)
         if (setup.problems.isNotEmpty()) throw McpToolException(setup.notice)
         val numbers = setup.numbers
         val chosen = setup.settings.phoneNumberId
@@ -483,55 +483,55 @@ object CrmIntegrationMcpTools {
 
     private fun updateWordPress(call: McpToolCall): JsonElement {
         if (!call.has("enabled") && !call.has("siteUrl")) throw McpToolException("Envia al menos un campo a cambiar.")
-        val current = CrmWordPress.load(call.tenant)
+        val current = CrmHost.wordpressSettings(call.tenant)
         val values = mapOf(
             "enabled" to (if (call.has("enabled")) call.boolean("enabled") else current.enabled).toString(),
             "siteUrl" to if (call.has("siteUrl")) call.string("siteUrl", 500) else current.siteUrl.orEmpty(),
         )
-        checked { CrmWordPress.saveForm(call.tenant, values) }
+        checked { CrmHost.saveWordPressForm(call.tenant, values) }
         return result("WordPress guardado.")
     }
 
     private fun wordPressTest(call: McpToolCall): JsonElement = try {
-        result("Conexion correcta: ${CrmWordPress.ping(call.tenant)}.")
+        result("Conexion correcta: ${CrmHost.wordpressPing(call.tenant)}.")
     } catch (failure: CrmWordPressException) {
-        CrmWordPress.recordError(call.tenant, failure.message.orEmpty())
+        CrmHost.recordWordPressError(call.tenant, failure.message.orEmpty())
         throw McpToolException(failure.message.orEmpty())
     }
 
     private fun wordPressSyncAgents(call: McpToolCall): JsonElement {
         val context = context(call)
         val emails = CrmNotify.userSettings(call.tenant).mapValues { it.value.email }
-        val count = checked { CrmWordPress.syncAgents(call.tenant, context.users, emails) }
+        val count = checked { CrmHost.wordpressSyncAgents(call.tenant, context.users, emails) }
         return result("$count agente(s) del sitio sincronizados.")
     }
 
     private fun wordPressMapAgent(call: McpToolCall): JsonElement {
         val context = context(call)
         val wpUserId = call.int("wpUserId", 0, 0..Int.MAX_VALUE).toLong()
-        val agent = CrmWordPress.agents(call.tenant).firstOrNull { it.wpUserId == wpUserId }
+        val agent = CrmHost.wordpressAgents(call.tenant).firstOrNull { it.wpUserId == wpUserId }
             ?: throw McpToolException("No existe ese agente del sitio; usa wordpress_sync_agents y get_integrations.")
         val wanted = call.string("user", 200)
         val target = wanted.takeIf { it.isNotEmpty() }?.let { user(context, it) }
-        CrmWordPress.mapAgent(call.tenant, agent.wpUserId, target?.id)
+        CrmHost.wordpressMapAgent(call.tenant, agent.wpUserId, target?.id)
         return result(target?.let { "${agent.name} vinculado a ${it.name}." } ?: "${agent.name} sin usuario vinculado.")
     }
 
     private fun updateEncuentra24(call: McpToolCall): JsonElement {
         if (!call.has("enabled") && !call.has("slug")) throw McpToolException("Envia al menos un campo a cambiar.")
-        val current = CrmEncuentra24.load(call.tenant)
+        val current = CrmHost.encuentra24Settings(call.tenant)
         // Without "apiKey" the stored key is kept.
         val values = mapOf(
             "enabled" to (if (call.has("enabled")) call.boolean("enabled") else current.enabled).toString(),
             "slug" to if (call.has("slug")) call.string("slug", 100) else current.slug.orEmpty(),
         )
-        checked { CrmEncuentra24.saveForm(call.tenant, values) }
+        checked { CrmHost.saveEncuentra24Form(call.tenant, values) }
         return result("Encuentra24 guardado.")
     }
 
     private fun encuentra24Sync(call: McpToolCall): JsonElement {
         val from = call.date("fromDate")
-        val outcome = checked { CrmEncuentra24.sync(call.tenant, from) { leadId -> CrmNotify.newLead(call.tenant, leadId) } }
+        val outcome = checked { CrmHost.encuentra24Sync(call.tenant, from) }
         return result("Encuentra24: $outcome.")
     }
 
@@ -539,13 +539,14 @@ object CrmIntegrationMcpTools {
         val keys = listOf("enabled", "propertyId", "paymentMethod", "welcomeEnabled", "welcomeTemplate", "welcomeDaysBefore", "welcomeHour", "archiveOnCheckout", "defaultCountry")
         if (keys.none(call::has)) throw McpToolException("Envia al menos un campo a cambiar.")
         val tenant = call.tenant
-        val current = CrmCloudbeds.load(tenant)
+        val provider = cloudbedsProvider()
+        val current = provider.settings(CrmHost, tenant)
         val templates = CrmMail.templates(tenant)
         fun flag(key: String, saved: Boolean) = (if (call.has(key)) call.boolean(key) else saved).toString()
         val payment = if (call.has("paymentMethod")) {
             val wanted = call.string("paymentMethod", 40)
-            CrmCloudbeds.paymentLabels.entries.firstOrNull { it.key == wanted || it.value.equals(wanted, ignoreCase = true) }?.key
-                ?: throw McpToolException("Metodo de pago desconocido. Opciones: ${CrmCloudbeds.paymentLabels.keys.joinToString()}.")
+            CrmCloudbedsStore.paymentLabels.entries.firstOrNull { it.key == wanted || it.value.equals(wanted, ignoreCase = true) }?.key
+                ?: throw McpToolException("Metodo de pago desconocido. Opciones: ${CrmCloudbedsStore.paymentLabels.keys.joinToString()}.")
         } else {
             current.paymentMethod
         }
@@ -556,11 +557,11 @@ object CrmIntegrationMcpTools {
         } else {
             templates.firstOrNull { it.id == current.welcomeTemplateId }?.name
         }
-        // CrmCloudbeds.saveForm reads the whole form; without "apiKey" the stored key is kept.
+        // saveSettings reads the whole form; without "apiKey" the stored key is kept.
         val values = buildMap {
             put("enabled", flag("enabled", current.enabled))
             put("propertyId", if (call.has("propertyId")) call.string("propertyId", 30) else current.propertyId.orEmpty())
-            put("paymentMethod", CrmCloudbeds.paymentLabels[payment].orEmpty())
+            put("paymentMethod", CrmCloudbedsStore.paymentLabels[payment].orEmpty())
             put("welcomeEnabled", flag("welcomeEnabled", current.welcomeEnabled))
             template?.let { put("welcomeTemplate", it) }
             put("welcomeDaysBefore", (if (call.has("welcomeDaysBefore")) call.int("welcomeDaysBefore", 1, 0..60) else current.welcomeDaysBefore).toString())
@@ -568,12 +569,18 @@ object CrmIntegrationMcpTools {
             put("archiveOnCheckout", flag("archiveOnCheckout", current.archiveOnCheckout))
             put("defaultCountry", if (call.has("defaultCountry")) call.string("defaultCountry", 2) else current.defaultCountry)
         }
-        checked { CrmCloudbeds.saveForm(tenant, values, templates) }
+        checked { provider.saveSettings(CrmHost, tenant, values, templates) }
         return result("Cloudbeds guardado.")
     }
 
-    private fun cloudbedsTest(call: McpToolCall): JsonElement =
-        result("Conexion correcta con Cloudbeds: ${checked { CrmCloudbeds.test(call.tenant) }}.")
+    private fun cloudbedsTest(call: McpToolCall): JsonElement {
+        val provider = cloudbedsProvider()
+        return result("Conexion correcta con Cloudbeds: ${checked { provider.test(CrmHost, call.tenant) }}.")
+    }
+
+    /** El proveedor de Cloudbeds; sin la extensión instalada la herramienta responde con un error claro. */
+    private fun cloudbedsProvider(): CloudbedsProvider =
+        CrmModuleExtensions.cloudbeds() ?: throw McpToolException("La extensión Cloudbeds no está instalada.")
 
     // ---- Lead items ----
 
@@ -600,10 +607,10 @@ object CrmIntegrationMcpTools {
                 }
             }
             putJsonArray("reservations") {
-                CrmCloudbeds.forLead(call.tenant, lead.id).forEach { reservation ->
+                CrmHost.reservationsForLead(call.tenant, lead.id).forEach { reservation ->
                     add(buildJsonObject {
                         put("reservationId", reservation.reservationId)
-                        put("status", CrmCloudbeds.statusLabels[reservation.status] ?: reservation.status)
+                        put("status", CrmReservations.statusLabels[reservation.status] ?: reservation.status)
                         put("start", reservation.startDate.toString())
                         put("end", reservation.endDate.toString())
                         put("rooms", reservation.rooms)
@@ -617,7 +624,7 @@ object CrmIntegrationMcpTools {
 
     private fun searchProperties(call: McpToolCall): JsonElement {
         val found = checked {
-            CrmWordPress.search(
+            CrmHost.wordpressSearch(
                 call.tenant, call.string("query", 100), emptyMap(),
                 call.decimal("minPrice")?.toPlainString().orEmpty(), call.decimal("maxPrice")?.toPlainString().orEmpty(), call.int("page", 1, 1..100),
             )
@@ -643,8 +650,8 @@ object CrmIntegrationMcpTools {
         val context = context(call)
         val lead = visibleLead(call, context)
         val listingId = call.int("listing", 0, 0..Int.MAX_VALUE).toLong().takeIf { it > 0 } ?: throw McpToolException("Propiedad invalida.")
-        val listing = checked { CrmWordPress.listing(call.tenant, listingId) }
-        CrmWordPress.linkListing(call.tenant, lead.id, listing, "Propiedad vinculada por ${actor(call).name}: ${listing.title}.")
+        val listing = checked { CrmHost.wordpressListing(call.tenant, listingId) }
+        CrmHost.wordpressLinkListing(call.tenant, lead.id, listing, "Propiedad vinculada por ${actor(call).name}: ${listing.title}.")
         return result("${listing.title} vinculada a ${lead.name}.")
     }
 
@@ -698,7 +705,8 @@ object CrmIntegrationMcpTools {
         val context = context(call)
         val lead = visibleLead(call, context)
         val stay = checked { CrmCloudbedsScreens.stay(lead, stayParams(call), context.today) }
-        val rooms = checked { CrmCloudbeds.availability(call.tenant, stay.start, stay.end, stay.adults, stay.children) }
+        val provider = cloudbedsProvider()
+        val rooms = checked { provider.availability(CrmHost, call.tenant, stay.start, stay.end, stay.adults, stay.children) }
         return buildJsonObject {
             put("start", stay.start.toString())
             put("end", stay.end.toString())
@@ -725,7 +733,8 @@ object CrmIntegrationMcpTools {
         val stay = checked { CrmCloudbedsScreens.stay(lead, params, context.today) }
         // Names, rate and capacity come from Cloudbeds again, never from the agent.
         val roomId = call.requiredString("roomId", 60)
-        val room = checked { CrmCloudbeds.availability(call.tenant, stay.start, stay.end, stay.adults, stay.children) }.firstOrNull { it.roomId == roomId }
+        val provider = cloudbedsProvider()
+        val room = checked { provider.availability(CrmHost, call.tenant, stay.start, stay.end, stay.adults, stay.children) }.firstOrNull { it.roomId == roomId }
             ?: throw McpToolException("Esa habitacion no esta libre para esas fechas y huespedes; usa search_rooms.")
         val roomParams = params + mapOf(
             "start" to stay.start.toString(), "end" to stay.end.toString(), "adults" to stay.adults.toString(), "children" to stay.children.toString(),
@@ -750,9 +759,10 @@ object CrmIntegrationMcpTools {
         }
         if (call.has("payment")) {
             val wanted = call.string("payment", 40)
-            values["payment"] = CrmCloudbeds.paymentLabels.entries.firstOrNull { it.key == wanted || it.value.equals(wanted, ignoreCase = true) }?.value
-                ?: throw McpToolException("Metodo de pago desconocido. Opciones: ${CrmCloudbeds.paymentLabels.keys.joinToString()}.")
+            values["payment"] = CrmCloudbedsStore.paymentLabels.entries.firstOrNull { it.key == wanted || it.value.equals(wanted, ignoreCase = true) }?.value
+                ?: throw McpToolException("Metodo de pago desconocido. Opciones: ${CrmCloudbedsStore.paymentLabels.keys.joinToString()}.")
         }
+        cloudbedsProvider()
         val reservation = checked { CrmLeadItemActions.reserve(context, lead, values, actor(call)) }
         return result(reservation.message)
     }

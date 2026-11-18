@@ -70,7 +70,7 @@ Tabs of **Configuracion**:
 | Plantillas | `templates` | Message templates. |
 | Anti-spam | `spam` | Anti-spam rules. |
 | Integraciones | `integrations` | Meta, WordPress, Encuentra24, Cloudbeds. |
-| Importar | `import` (and `importjob`) | monday, CSV, LeadsPro, URL and the import history. |
+| Importar | `import` (and `importjob`) | monday, CSV, URL, CT Leads Pro (from the `wordpress` extension) and the import history. |
 
 Old routes that still open (`CrmScreens.canonical`, `forcedView`, `settingsTabOf`):
 
@@ -266,18 +266,18 @@ sent by job `outbox` every minute with up to 5 attempts.
 ## Extensions and encrypted secrets (V022, 0.25.0)
 
 The integrations are **extensions** (EXTENSIONS.md) that each company installs and enables in **Empresa > Extensiones**.
-They ship inside the module (`bundledExtensions`, `source: bundled`; no download, no signature) and keep their
-settings in the CRM tables they already had. Declared in `CrmServerModule.bundledExtensions`; permissions the CRM lets
+All of them are standalone packages under `extensions/` (none ships inside the module: `CrmServerModule.bundledExtensions` is empty); each keeps
+its data in its own `ext_<id>__*` tables and the CRM reaches it through a provider interface (`CrmActions.kt`) and the `CrmHost` facade. Permissions the CRM lets
 them declare are in `ModuleDefinition.extensionPermissions` (`crm.leads.create`, `crm.leads.update`, `crm.fields.create`,
 `crm.messages.write`, `crm.items.write`, `crm.reservations.write`).
 
 | Id | File | What it covers | Uninstall options |
 | --- | --- | --- | --- |
-| `meta` | `CrmMetaExtension.kt` | WhatsApp, Messenger, Instagram (own app or server app) | none: connections, tokens and the event log are always deleted; messages and conversations of leads are always kept |
-| `monday_import` | `CrmMondayExtension.kt` | Reading monday boards and importing them | `created_fields` (ask: CRM fields created by the import), `import_history` (delete) |
-| `wordpress` | `CrmWordPressExtension.kt` | IDC Connector plugin, property search | `linked_properties` (keep) |
-| `encuentra24` | `CrmEncuentra24Extension.kt` | Leads API import | `ads` (keep) |
-| `cloudbeds` | `CrmCloudbedsExtension.kt` | Rooms, reservations, check-in, welcome email | `reservations` (keep), `rooms` (keep), `default_country` (ask) |
+| `meta` | `extensions/meta/` (standalone package, not bundled) | WhatsApp, Messenger, Instagram (own app or server app); tables `ext_meta__settings`, `ext_meta__log`, `ext_meta__server_app`, `ext_meta__routes`, `ext_meta__tickets`; the CRM reaches it through `MetaProvider` and the `CrmHost.meta*` methods; the reply channels (`CrmMetaChannels.kt`) and the models (`CrmMetaModels.kt`) stay in the CRM | none: connections, tokens and the event log are always deleted; messages and conversations of leads are always kept |
+| `wordpress` | `extensions/wordpress/` (standalone package, not bundled) | IDC Connector plugin, property search; also the `leadspro` `CrmImportSource` (CT Leads Pro; settings and agents in `ext_wordpress__settings` / `ext_wordpress__agents`; the CRM reaches it through `WordPressProvider` and the `CrmHost.wordpress*` methods) | `linked_properties` (keep) |
+| `monday` | `extensions/monday/` (standalone package, not bundled) | Reading monday boards and importing them; it is a `CrmImportSource` (token in `ext_monday__settings`) | `created_fields` (ask: CRM fields created by the import), `import_history` (delete) |
+| `encuentra24` | `extensions/encuentra24/` (standalone package, not bundled) | Leads API import (settings in `ext_encuentra24__settings`) | `ads` (keep) |
+| `cloudbeds` | `extensions/cloudbeds/` (standalone package, not bundled) | Rooms, reservations, check-in, welcome email | `reservations` (keep), `rooms` (keep), `default_country` (ask) |
 
 Uninstalling never deletes leads or customers: it clears the extension's settings and, per option, the objects it created
 (`crm_field_definitions.extension_id` marks the CRM fields created by the monday import).
@@ -295,7 +295,7 @@ Uninstalling never deletes leads or customers: it clears the extension's setting
 app, and the company webhook of each own app) and in every WordPress site (update the IDC Connector plugin to 0.3.0, which posts to the new
 address). The server webhook sends each event to the company that connected the page, Instagram account or WhatsApp account, and only if its
 `meta` extension is enabled there. A page, Instagram account or WhatsApp account belongs to one company only (unique index
-`crm_meta_routes_asset_idx`): connecting it elsewhere answers "Esta pagina ya esta conectada a otra empresa de este servidor." (the other company is never named). Routes are claimed only after the token proved it controls the page / WhatsApp account and Meta accepted the subscription; a failing step releases them, and disconnecting also asks Meta to remove the subscription (best effort, logged). Connection links (`crm_meta_tickets`) are bound to the company database and are deleted once a step connects.
+`ext_meta__routes_asset_idx`): connecting it elsewhere answers "Esta pagina ya esta conectada a otra empresa de este servidor." (the other company is never named). Routes are claimed only after the token proved it controls the page / WhatsApp account and Meta accepted the subscription; a failing step releases them, and disconnecting also asks Meta to remove the subscription (best effort, logged). Connection links (`ext_meta__tickets`) are bound to the company database and are deleted once a step connects.
 
 **Outside the routes:** jobs and actions check `tenant_extensions.status` (`CrmExtensions.isEnabled`) and fail with "La extension X no esta activa
 en esta empresa." (Encuentra24 sync, Cloudbeds welcome/sync/availability/reserve/check-in, monday read/import, Meta sending, WordPress search and
@@ -303,20 +303,17 @@ sold, and the integration MCP tools). The Integraciones and Importar screens sho
 of the card of an extension that is not enabled.
 
 **Encrypted secrets:** every read goes through `CrmSecrets.open` and every write through `CrmSecrets.seal` (`SecretBox` of the Core, data key of
-the database of the connection); screens and tools still show only the mask. Sealed columns: `crm_meta_settings` (app secret, verify token, system,
-page, Messenger, Instagram and login tokens), `crm_meta_server_app` (server workspace), `crm_wordpress_settings.secret`, `crm_encuentra24_settings.api_key`,
-`crm_cloudbeds_settings.api_key`, `crm_settings.monday_token` and `translation_api_key`, and `crm_mail_settings.imap_password` (the SMTP password of 0.25.x moved to the company SMTP in 0.26.0).
-Without `IDC_MASTER_KEY` nothing is sealed and saving a secret is refused ("falta la llave maestra"). V022 drops the old CHECKs of the WordPress
-secret and the monday token (a sealed value does not fit them).
+the database of the connection); screens and tools still show only the mask. Sealed columns: `crm_settings.translation_api_key`, and `crm_mail_settings.imap_password` (the SMTP password of 0.25.x moved to the company SMTP in 0.26.0).
+Without `IDC_MASTER_KEY` nothing is sealed and saving a secret is refused ("falta la llave maestra"). The Meta secrets (`ext_meta__settings`: app secret, verify token, system, page, Messenger, Instagram and login tokens; `ext_meta__server_app` in the server workspace), the monday token (`ext_monday__settings`) and the WordPress secret (`ext_wordpress__settings`, no format CHECK) are sealed the same way by their extension packages.
 
 **Unreadable secrets:** if a sealed secret cannot be opened (missing or different master key) it is read as `unreadable:<raw>`, never as empty: screens show "No se puede leer el secreto guardado (revisa IDC_MASTER_KEY)" and any later save rewrites the raw value untouched. Without a `SecretBox` or key nothing is saved in plain text.
 
 **Hardening:** the WordPress site address must be a public domain (with a dot; every resolved address is checked, at save and at each call, against loopback, link-local, RFC1918, CGNAT, ULA and multicast) and its answers are capped at 1 MB; incoming webhook bodies (Meta, WordPress) are capped at 1 MB, and the public webhooks answer 403 both for an unknown company and for a bad signature. Saving settings of an integration requires its extension to be active. The Meta uninstall frees the server routes in `afterUninstall` (after the commit).
 
-**Startup migration:** job `extensions-migration` (10 min, every company with the CRM) registers each integration that is already configured
-(token, page, API key or enabled) as an enabled extension (`installed_by = 'migration'`, `ON CONFLICT DO NOTHING`) and seals the plain-text
-secrets with `SecretMigration.sealColumns` (idempotent). It then sets `crm_settings.extensions_migrated_at`; without the master key it only
-registers and tries again later. The server workspace also seals `crm_meta_server_app`.
+**Startup migration:** job `extensions-migration` (10 min, every company with the CRM) seals the plain-text secrets of the CRM tables
+(`crm_settings`, `crm_mail_settings`) with `SecretMigration.sealColumns` (idempotent) and sets `crm_settings.extensions_migrated_at`; without the master
+key it tries again later. Since every integration is a package with its own tables, it no longer registers integrations as extensions
+(`CrmExtensions.configuredIntegrations` is empty): install and enable them from **Empresa > Extensiones**. Secrets of the extensions are sealed by each extension when it saves them.
 
 ## Jobs
 
@@ -338,7 +335,11 @@ registers and tries again later. The server workspace also seals `crm_meta_serve
 | `import` | 1 min | Apply 300 rows of running imports. |
 | `attachments-cleanup` | 15 min | Delete stored files of removed attachments, deleted leads and uploads never saved (after a day); move V010 contents out of the database. |
 
-## Meta: WhatsApp, Messenger and Instagram (V003, V013)
+## Meta: WhatsApp, Messenger and Instagram (extension `meta`)
+
+Since 0.27.0 Meta is the extension package `extensions/meta/` (the CRM migrations V003, V013 and V014 no longer create its tables; the extension
+creates `ext_meta__*` in `extensions/meta/migrations/V001__settings.sql`). Existing `crm_meta_*` tables are not read any more: reconnect Meta after
+installing the extension.
 
 **Configuracion > Integraciones > Meta Business** with one Meta app per company
 (each company's own app and Meta Business portfolio). The screen follows the
@@ -397,7 +398,7 @@ that only ask to log in:
   `https://<server>/modules/crm/extensions/meta/webhook`, plus
   `/modules/crm/extensions/meta/deauthorize` and `/modules/crm/extensions/meta/data-deletion`.
 - **Company**: **Usar la app del servidor** (`connection_mode = 'server'`) and
-  **Conectar con Meta** create a 30-minute link (`crm_meta_tickets`, hashed)
+  **Conectar con Meta** create a 30-minute link (`ext_meta__tickets`, hashed)
   that opens `/modules/crm/extensions/meta/connect/<company>` in the browser. The page
   uses the JS SDK of the server app: Facebook login gives a token whose pages
   are listed (one is connected directly, several are offered to choose), the
@@ -407,7 +408,7 @@ that only ask to log in:
   Cloud API (coexistence included, or used by another system such as the
   WordPress plugin) are never registered again; a new number is registered
   with the two-step PIN typed on the page. **Desconectar** forgets the tokens.
-- **Routing** (`crm_meta_routes`, in the server workspace): page, Instagram
+- **Routing** (`ext_meta__routes`, in the server workspace): page, Instagram
   account and WhatsApp Business Account of each company, unique per asset, and
   the Meta user who connected. The server webhook checks the signature with the
   server App Secret, splits the entries by company and hands each part to the
@@ -440,7 +441,10 @@ conversation, and explain the 24-hour window (subcodes 2018278 / 2534022),
 unavailable people (551), expired tokens (190) and missing permissions (10, 200,
 230), saying when the first parts were already sent. Send errors are logged.
 
-## Encuentra24 (V004)
+## Encuentra24 (extension package `extensions/encuentra24`)
+
+The settings live in the extension table `ext_encuentra24__settings` (V004 of the CRM no longer creates `crm_encuentra24_settings`); the CRM keeps
+the screens, the MCP tools, the job shell and the listing-link detection, and reaches the code through `Encuentra24Provider` / `CrmHost`.
 
 **Integraciones > Encuentra24**: API key and company slug. Job `encuentra24`
 every 5 minutes calls the Leads API (`/api.php/v1/crm/index`, `x-api-key`) from
@@ -464,9 +468,9 @@ without duplicating it.
 ## WordPress / Real Estate 7 (V005)
 
 Integration through the **IDC Connector** plugin
-(`server/src/main/resources/modules/crm/wordpress/idc-connector/`), downloaded
+(`extensions/wordpress/server/src/main/resources/extensions/wordpress/idc-connector/`), downloaded
 from **Integraciones > WordPress** (`/modules/crm/extensions/wordpress/idc-connector.zip`,
-built from the module resources). A plugin is used instead of database access:
+built from the resources of the `wordpress` extension package). A plugin is used instead of database access:
 MySQL is rarely reachable from outside the hosting, would give IDC the whole
 WordPress database, and Real Estate 7 data (postmeta `_ct_*`, 11 taxonomies,
 serialized values) and its forms only exist inside WordPress.
@@ -546,6 +550,12 @@ recently archived first. V015 adds the partial indexes `crm_leads_exit_due_idx` 
 
 ## Cloudbeds (V006)
 
+The settings now live in the Cloudbeds extension, in its own table `ext_cloudbeds__settings`
+(`extensions/cloudbeds/migrations/V001__settings.sql`); the CRM reads and writes them only through
+`CrmHost` and the `CloudbedsProvider` of the extension (without the extension they read as disabled).
+The CRM no longer creates a settings table for Cloudbeds (V006 only creates `crm_reservations`; V023 was removed),
+and the extension seals the API key itself when it saves. `crm_reservations` stays core.
+
 **Integraciones > Cloudbeds**: API key of the property (scopes `read:room`,
 `read:rate`, `read:reservation`, `write:reservation`), optional property ID,
 the payment method sent to Cloudbeds (required by `postReservation`; payments
@@ -559,7 +569,7 @@ hour) and archiving after check-out.
   `cloudbeds`, status Elegida); the rooms of one reservation share dates.
 - **Confirmar reserva**: guests per room, country (2 letters) and zip;
   Cloudbeds requires the country and the lead's email. An empty country uses the
-  default guest country of Integraciones > Cloudbeds (`default_country`, V023),
+  default guest country of Integraciones > Cloudbeds (`default_country`, kept in the extension),
   which the automations always use; without one the reservation stops before
   calling Cloudbeds and the automation reports the missing data. Availability is checked again,
   `postReservation` creates one reservation with every room (`roomID` per
@@ -592,7 +602,7 @@ confirmed.
 **Configuracion > Importar** reads rows from:
 
 - **monday** (GraphQL API with a personal token): the token is saved for the
-  company (`crm_settings.monday_token`, V008) and the active boards it can read
+  company (`ext_monday__settings.token`, extension package `extensions/monday/`) and the active boards it can read
   are listed by workspace, each with a checkbox (subitem boards and docs are
   left out). For every marked board: every column as text with its monday
   type, the group, the board (mapped to the interest), the creation date,
@@ -601,7 +611,8 @@ confirmed.
   longer than the app waits for a response, so marking boards only queues the
   import (status `reading`, V009); the `import` job reads them on its next
   minute and leaves the import ready to map, or `failed` with the reason.
-- **CT Leads Pro** through the IDC Connector plugin (0.2.0, action `leads`):
+- **CT Leads Pro** (a `CrmImportSource` with id `leadspro` provided by the `wordpress` extension, `WordPressImport`; it reads synchronously
+  through the IDC Connector plugin, 0.2.0, action `leads`, with the site and secret of the extension, and its jobs wait while the extension is not enabled):
   name, email, phone, pipeline stage, assigned agent, source, tags, notes,
   messages and interested listings (linked as properties).
 - **Files**: a CSV pasted as text or a CSV/XLSX from a public https URL (private
@@ -874,8 +885,9 @@ Import and bulk tools (`CrmImportMcpTools.kt`):
 | Tool | Permission | Does |
 |---|---|---|
 | `crm_list_imports`, `crm_get_import` | `crm.settings` | Imports with status and totals, mappable fields, saved mappings; one import's columns, sample rows, values to map, preview and failed rows. |
-| `crm_import_csv`, `crm_import_from_url`, `crm_import_leadspro` | `crm.settings` | Read a source into an import waiting for its mapping. |
-| `crm_list_monday_boards`, `crm_import_monday` | `crm.settings` | monday.com boards with the token saved in the app (the token is never offered). |
+| `crm_import_csv`, `crm_import_from_url` | `crm.settings` | Read a source into an import waiting for its mapping. |
+| `crm_import_leadspro` (extension package `extensions/wordpress/`: `WordPressImport.kt`) | `crm.settings` | Read the leads of CT Leads Pro into an import waiting for its mapping. |
+| `crm_list_monday_boards`, `crm_import_monday` (extension package `extensions/monday/`: `MondayMcpTools.kt`, the source `MondayImport.kt`) | `crm.settings` | monday.com boards with the token saved in the app (the token is never offered). |
 | `crm_map_import`, `crm_apply_import_preset`, `crm_start_import`, `crm_cancel_import` | `crm.settings` | Column and value mapping (optionally saved), start and cancel. |
 | `crm_bulk_update_leads` | `crm.leads.manage` (+ assign / delete permissions) | Move, change the assigned users (`action: assign` with `owners` + `ownersMode` add / remove / replace, or the old `owner`, which also takes several names; sending neither is an error, an empty `owners` list or `owner: "Sin asignar"` leaves nobody) or delete up to 500 visible leads, with `CrmBulkActions` (the same code as the bulk bar of the Lista view). |
 

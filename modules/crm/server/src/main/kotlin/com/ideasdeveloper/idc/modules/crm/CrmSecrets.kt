@@ -70,18 +70,12 @@ object CrmSecrets {
 
     /** Todas las columnas con secretos de la base de una empresa. */
     val tenantColumns = listOf(
-        Column("crm_meta_settings", listOf("id"), listOf("app_secret", "verify_token", "system_token", "page_token", "messenger_token", "instagram_token", "oauth_token")),
-        Column("crm_wordpress_settings", listOf("id"), listOf("secret")),
-        Column("crm_encuentra24_settings", listOf("id"), listOf("api_key")),
-        Column("crm_cloudbeds_settings", listOf("id"), listOf("api_key")),
-        Column("crm_settings", listOf("id"), listOf("monday_token", "translation_api_key")),
+        Column("crm_settings", listOf("id"), listOf("translation_api_key")),
         Column("crm_mail_settings", listOf("id"), listOf("imap_password")),
     )
 
-    /** Columnas del espacio del servidor (la app de Meta del dueno del servidor). */
-    val serverColumns = listOf(
-        Column("crm_meta_server_app", listOf("id"), listOf("app_secret", "verify_token")),
-    )
+    /** Columnas del espacio del servidor: ninguna (la app de Meta del dueno del servidor vive en la extension meta, que la sella al guardar). */
+    val serverColumns: List<Column> = emptyList()
 
     /** Cifra lo que siga en claro en [columns]; devuelve cuantos valores cifro. Sin llave no hace nada. */
     fun sealAll(tenant: Connection, secrets: SecretBox, columns: List<Column>): Int {

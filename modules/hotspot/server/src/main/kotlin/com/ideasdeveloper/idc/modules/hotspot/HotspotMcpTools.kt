@@ -567,11 +567,16 @@ object HotspotMcpTools {
 
     // The UniFi console and site are picked with the API key saved in the app; the key never reaches the agent.
     private fun unifiSettings(call: McpToolCall): Pair<HotspotSettings, String> {
-        if (HotspotIntegrations.controller(call.tenant) != UnifiController) throw McpToolException("Activa la integracion UniFi en Integraciones.")
+        if (HotspotIntegrations.controller(call.tenant)?.id != HotspotIntegrations.NetworkUnifi) throw McpToolException("Activa la integracion UniFi en Integraciones.")
         val settings = HotspotSettingsRepository.load(call.tenant)
         val apiKey = settings.unifiApiKey?.takeIf { it.isNotBlank() } ?: throw McpToolException("Escribe la API key de UniFi en la app (Configuracion) y vuelve a intentar.")
         return settings to apiKey
     }
+
+    // La extension del controlador UniFi aporta el descubrimiento de consolas y sitios.
+    private fun unifiProvider(): NetworkControllerProvider =
+        HotspotModuleExtensions.providerFor(HotspotIntegrations.NetworkUnifi)
+            ?: throw McpToolException("Instala la extension UniFi para usar estas herramientas.")
 
     private fun store(call: McpToolCall, settings: HotspotSettings, vararg changes: Pair<String, String>): HotspotSettings {
         val updated = try {
@@ -585,32 +590,33 @@ object HotspotMcpTools {
 
     private inline fun <T> unifi(block: () -> T): T = try {
         block()
-    } catch (failure: UnifiException) {
+    } catch (failure: NetworkControllerException) {
         throw McpToolException(failure.message.orEmpty())
     }
 
     private fun consoles(call: McpToolCall): JsonElement {
-        val (settings, apiKey) = unifiSettings(call)
-        val consoles = unifi { UnifiClient.consoles(apiKey) }
+        val (settings, _) = unifiSettings(call)
+        val provider = unifiProvider()
+        val consoles = unifi { provider.consoles(settings) }
         return buildJsonObject {
             put("selected", settings.unifiConsoleId?.let(::JsonPrimitive) ?: JsonNull)
             put("consoles", JsonArray(consoles.map { console ->
                 buildJsonObject {
                     put("id", console.id)
                     put("name", console.name)
-                    put("model", console.model)
-                    put("state", console.state)
+                    put("detail", console.detail)
                 }
             }))
         }
     }
 
     private fun chooseConsole(call: McpToolCall): JsonElement {
-        val (settings, apiKey) = unifiSettings(call)
+        val (settings, _) = unifiSettings(call)
+        val provider = unifiProvider()
         val consoleId = call.requiredString("consoleId", 200)
         // Same as the screen: another console clears the site.
         var saved = if (consoleId != settings.unifiConsoleId) store(call, settings, "unifiConsoleId" to consoleId, "unifiSiteId" to "") else settings
-        val sites = unifi { UnifiClient.sites(apiKey, consoleId) }
+        val sites = unifi { provider.sites(saved, consoleId) }
         if (sites.size == 1) {
             saved = store(call, saved, "unifiSiteId" to sites.single().id)
             return buildJsonObject { put("result", "Consola guardada y sitio \"${sites.single().name}\" seleccionado. UniFi quedo configurado.") }
@@ -621,7 +627,7 @@ object HotspotMcpTools {
                 buildJsonObject {
                     put("id", site.id)
                     put("name", site.name)
-                    put("reference", site.reference)
+                    put("detail", site.detail)
                 }
             }))
         }

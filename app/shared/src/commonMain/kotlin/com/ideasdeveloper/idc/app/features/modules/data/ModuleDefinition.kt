@@ -17,6 +17,8 @@ data class ModuleDefinition(
     // Versiones minimas de Core y app que el modulo necesita para funcionar (null = sin minimo).
     val minCoreVersion: String? = null,
     val minAppVersion: String? = null,
+    // El modulo admite extensiones por empresa: su Configuracion ofrece la entrada "Extensiones".
+    val supportsExtensions: Boolean = false,
 )
 
 @Serializable

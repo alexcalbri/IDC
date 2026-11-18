@@ -110,8 +110,9 @@ object CrmInbox {
             }
             // The listing button of Encuentra24 adds its link to the message: the listing joins the lead.
             // (Encuentra24 leads link their listing by id; their text only carries the chat link.)
-            if (inbound.channel != CrmEncuentra24.Source) {
-                CrmEncuentra24.adFromText(inbound.message)?.let { ad -> CrmEncuentra24.rememberAd(tenant, leadId, ad.id, ad.url, "") }
+            // Sin la extension instalada no se detecta (degradado).
+            if (inbound.channel != CrmEncuentra24Ads.Source) {
+                CrmModuleExtensions.encuentra24()?.detectAd(CrmHost, tenant, leadId, inbound.message)
             }
             if (created) CrmIntakeResult.Created(leadId) else CrmIntakeResult.Updated(leadId)
         }.also { result ->
@@ -160,7 +161,7 @@ object CrmInbox {
     /** Origin of a new lead; one that writes with the link of an Encuentra24 listing comes from Encuentra24. */
     fun leadSource(inbound: CrmInbound): String {
         val source = inbound.source.ifBlank { label(inbound.channel) }
-        val fromListing = inbound.channel != CrmEncuentra24.Source && !source.startsWith("Encuentra24") && CrmEncuentra24.adFromText(inbound.message) != null
+        val fromListing = inbound.channel != CrmEncuentra24Ads.Source && !source.startsWith("Encuentra24") && CrmEncuentra24Ads.fromText(inbound.message) != null
         return (if (fromListing) "Encuentra24 ($source)" else source).take(120)
     }
 

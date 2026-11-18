@@ -26,15 +26,6 @@ class CrmImportTargetsTest {
     }
 
     @Test
-    fun mondayTypesBecomeCrmTypes() {
-        assertEquals(CrmFieldType.Dropdown to false, CrmImportTargets.crmType("status"))
-        assertEquals(CrmFieldType.Dropdown to true, CrmImportTargets.crmType("dropdown"))
-        assertEquals(CrmFieldType.Boolean to false, CrmImportTargets.crmType("checkbox"))
-        assertEquals(CrmFieldType.Text to false, CrmImportTargets.crmType("people"))
-        assertEquals(CrmFieldType.Text to false, CrmImportTargets.crmType(null))
-    }
-
-    @Test
     fun mondayTextsAreConvertedToFormValues() {
         assertEquals("true", CrmImportTargets.formValue("v", CrmFieldType.Boolean, false))
         assertEquals("false", CrmImportTargets.formValue("no", CrmFieldType.Boolean, false))
@@ -56,16 +47,5 @@ class CrmImportTargetsTest {
         assertEquals(JsonArray(listOf(JsonPrimitive("a"), JsonPrimitive("b"))), CrmImportTargets.customerValue("a, b", cedula.copy(type = "multi_select")))
         assertNull(CrmImportTargets.customerValue("mucho", cedula.copy(type = "number")))
         assertNull(CrmImportTargets.customerValue("", cedula))
-    }
-
-    @Test
-    fun mondayFileColumnsKeepOnlyTheirAssets() {
-        val value = """{"files":[{"fileType":"ASSET","assetId":123,"name":"contrato.pdf"},{"fileType":"GOOGLE_DRIVE","linkToFile":"https://drive","name":"x"}]}"""
-        val files = CrmMondayFiles.fromColumnValue("Contratos", value)
-        assertEquals(listOf(CrmMondayFile("123", "contrato.pdf", column = "Contratos")), files)
-        // Encoded with the row and read back when applying it.
-        val update = CrmMondayFile("456", "foto.jpg", update = "2024-05-01")
-        assertEquals(files + update, CrmMondayFiles.decode(CrmMondayFiles.encode(files + update)))
-        assertEquals(emptyList(), CrmMondayFiles.fromColumnValue("Contratos", "no es json"))
     }
 }

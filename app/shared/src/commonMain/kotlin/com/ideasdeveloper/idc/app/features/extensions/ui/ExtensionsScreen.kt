@@ -79,6 +79,8 @@ fun ExtensionsScreen(
     onLogout: () -> Unit,
     onClose: () -> Unit,
     modifier: Modifier = Modifier,
+    // Si viene, solo se muestran las extensiones de ese modulo (entrada desde su Configuracion); null = todas.
+    moduleId: String? = null,
 ) {
     val colors = AppTheme.colors
     val scope = rememberCoroutineScope()
@@ -100,7 +102,7 @@ fun ExtensionsScreen(
     var dialog by remember { mutableStateOf<ExtensionDialog?>(null) }
 
     // Extensiones agrupadas por modulo, en el orden del servidor; solo se recalcula si cambia la lista.
-    val grouped by remember { derivedStateOf { extensions.groupBy { it.module }.toList() } }
+    val grouped by remember { derivedStateOf { extensions.filter { moduleId == null || it.module == moduleId }.groupBy { it.module }.toList() } }
     // Empresas del grupo distintas de esta: a ellas se puede aplicar la extension.
     val otherMembers by remember { derivedStateOf { group?.members.orEmpty().filter { it.code != target.companyCode } } }
     val thisSuspended by remember { derivedStateOf { group?.members.orEmpty().any { it.code == target.companyCode && it.suspended } } }
@@ -156,7 +158,7 @@ fun ExtensionsScreen(
         topBar = {
             AuthenticatedTopBar(
                 title = "Extensiones",
-                subtitle = companyName?.takeIf { it.isNotBlank() } ?: target.companyCode,
+                subtitle = listOfNotNull(moduleId?.moduleTitle(), companyName?.takeIf { it.isNotBlank() } ?: target.companyCode).joinToString(" · "),
                 primaryColor = colors.accent,
                 onReturnToDashboard = onClose,
                 onSettings = onSettings,
@@ -220,7 +222,7 @@ fun ExtensionsScreen(
                             )
                         }
                     }
-                    if (!loading && extensions.isEmpty() && error == null) {
+                    if (!loading && grouped.isEmpty() && error == null) {
                         item(key = "empty") {
                             Text("Los modulos activos de esta empresa no tienen extensiones disponibles.", color = colors.muted)
                         }

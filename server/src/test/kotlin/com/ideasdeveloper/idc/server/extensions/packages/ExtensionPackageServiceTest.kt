@@ -9,12 +9,16 @@ import java.util.concurrent.Executor
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ExtensionPackageServiceTest {
     private val commit = "b".repeat(40)
     private val sha = "c".repeat(64)
+
+    // Confirmacion valida para el flujo ZIP/URL: incluye los primeros 8 hex del hash, como manda la app.
+    private val confirmation = "autorizar monday_import ${"c".repeat(8)}"
 
     private fun manifest(id: String = "monday_import") = ExtensionManifest(
         id = id, module = "crm", displayName = "Monday", version = "0.1.0",
@@ -32,7 +36,7 @@ class ExtensionPackageServiceTest {
         override fun all() = rows.values.toList()
         override fun upsert(built: BuiltExtension) {
             rows[built.manifest.id] = StoredExtensionPackage(
-                built.manifest.id, built.manifest.module, built.manifest.version, "github", "pending_restart",
+                built.manifest.id, built.manifest.module, built.manifest.version, built.sourceType, "pending_restart",
                 built.jar.toString(), built.packageSha256, built.signed,
             )
         }
@@ -41,7 +45,7 @@ class ExtensionPackageServiceTest {
             rows[id] = row.copy(status = "removed")
             return true
         }
-        override fun loadable() = rows.values.filter { it.sourceType == "github" && it.status in setOf("installed", "pending_restart") }
+        override fun loadable() = rows.values.filter { it.sourceType in setOf("github", "zip", "url") && it.status in setOf("installed", "pending_restart") }
         override fun markInstalled(ids: Collection<String>) {
             ids.forEach { id -> rows[id]?.let { rows[id] = it.copy(status = "installed") } }
         }
@@ -67,6 +71,34 @@ class ExtensionPackageServiceTest {
         }
         override fun inspect(extensionId: String, source: GitHubLocation) =
             InspectedPackage(inspectedSha, signed, "https://github.com/acme/idc/tree/${source.ref}/extensions/$extensionId", source.ref, signatureProblem = signatureProblem)
+
+        // ZIP y URL: igual que el builder real, sin firma solo sigue si el hash esta autorizado.
+        var isAuthorized: (String) -> Boolean = { false }
+        var downloadFailure: String? = null
+        val downloaded = mutableListOf<String>()
+        val builtFrom = mutableListOf<List<String>>()
+
+        override fun inspectZip(extensionId: String, zip: java.nio.file.Path, sourceUrl: String) =
+            InspectedPackage(inspectedSha, signed, sourceUrl, "", signatureProblem = signatureProblem)
+
+        override fun downloadZip(url: String, target: java.nio.file.Path): java.nio.file.Path {
+            downloadFailure?.let { throw ExtensionPackageException(it) }
+            downloaded += url
+            Files.writeString(target, "zip")
+            return target
+        }
+
+        override fun buildFromZip(extensionId: String, zip: java.nio.file.Path, progress: (String) -> Unit, sourceUrl: String, sourceType: String): BuiltExtension {
+            failure?.let { throw ExtensionPackageException(it) }
+            if (!signed && !isAuthorized(inspectedSha)) {
+                throw ExtensionPackageException("La extension '$extensionId' no esta firmada. El dueno del servidor debe autorizar el hash $inspectedSha antes de instalarla.")
+            }
+            builtFrom += listOf(sourceType, sourceUrl)
+            return BuiltExtension(
+                jar = jar, manifest = ExtensionManifest(id = extensionId, module = "crm", displayName = "M", version = version),
+                packageSha256 = inspectedSha, signed = signed, keyId = null, sourceUrl = sourceUrl, jarSha256 = "d".repeat(64), sourceType = sourceType,
+            )
+        }
     }
 
     private class FakeAuthorizations : UnsignedAuthorizationStore {
@@ -293,5 +325,148 @@ class ExtensionPackageServiceTest {
         assertEquals(commit, inspection.commit)
         assertEquals("e".repeat(64), inspection.packageSha256)
         assertEquals(false, inspection.signed)
+    }
+
+    // --- Paquetes desde un ZIP subido o una URL ---
+
+    private val zipBytes = "zip".toByteArray()
+
+    private fun external(builder: FakeBuilder = FakeBuilder()): Harness {
+        val h = Harness(builder, emptyList())
+        builder.isAuthorized = { h.authorizations.isAuthorized(it) }
+        return h
+    }
+
+    private fun code(block: () -> Unit) = assertFailsWith<ExtensionPackageServiceException> { block() }.code
+
+    @Test
+    fun `a signed zip is inspected stored as zip source audited and the staged file is removed`() {
+        val h = external(FakeBuilder(signed = true))
+        val inspection = h.service.inspectZip("monday_import", "mi paquete.zip", zipBytes)
+        assertEquals("zip", inspection.source)
+        assertEquals("zip:mi_paquete.zip", inspection.sourceUrl)
+        assertTrue(inspection.signed && inspection.installable)
+        assertEquals(null, h.store.find("monday_import"))
+
+        val status = h.service.installStaged(inspection.stagingToken, "owner_role")
+        assertEquals("pending_restart", status.status)
+        val row = h.store.find("monday_import")!!
+        assertEquals("zip", row.sourceType)
+        assertEquals(1, h.restarts)
+        assertEquals("extension.package.install", h.audit.single()[1])
+        assertTrue(h.audit.single()[4]!!.contains("zip:mi_paquete.zip"))
+        assertTrue(Files.list(h.root.resolve("_staging")).use { it.toList().isEmpty() })
+        assertEquals("NOT_FOUND", code { h.service.installStaged(inspection.stagingToken, "owner_role") })
+    }
+
+    @Test
+    fun `an unsigned zip fails to install until the owner authorizes its hash`() {
+        val builder = FakeBuilder(signed = false)
+        val h = external(builder)
+        val inspection = h.service.inspectZip("monday_import", "p.zip", zipBytes)
+        assertFalse(inspection.installable)
+
+        val failed = h.service.installStaged(inspection.stagingToken, "owner_role")
+        assertEquals("error", failed.status)
+        assertTrue(failed.message!!.contains("no esta firmada") && failed.message!!.contains(sha))
+        assertEquals(null, h.store.find("monday_import"))
+        assertEquals(0, h.restarts)
+
+        assertEquals("CONFIRMATION_REQUIRED", code { h.service.authorizeStaged(inspection.stagingToken, "owner_role", "ok", sha) })
+        assertEquals("EXPECTED_REQUIRED", code { h.service.authorizeStaged(inspection.stagingToken, "owner_role", confirmation, "") })
+        // Sin los 8 hex del hash en la confirmacion se rechaza, aunque el texto sea largo.
+        assertEquals("CONFIRMATION_HASH_REQUIRED", code { h.service.authorizeStaged(inspection.stagingToken, "owner_role", "Confirmo la autorizacion", sha) })
+        assertEquals("CONFIRMATION_HASH_REQUIRED", code { h.service.authorizeStaged(inspection.stagingToken, "owner_role", "Confirmo la autorizacion ffffffff", sha) })
+        assertEquals("PACKAGE_CHANGED", code { h.service.authorizeStaged(inspection.stagingToken, "owner_role", "Confirmo la autorizacion ffffffff", "f".repeat(64)) })
+        assertTrue(h.authorizations.saved.isEmpty())
+
+        // Acepta el hash corto en mayusculas o minusculas.
+        val authorized = h.service.authorizeStaged(inspection.stagingToken, "owner_role", "  $confirmation  ".uppercase(), sha)
+        assertEquals(sha, authorized.packageSha256)
+        assertEquals(listOf(sha, "monday_import", "zip:p.zip", "owner_role", confirmation.uppercase()), h.authorizations.saved.single())
+        assertEquals("extension.package.authorize_unsigned", h.audit.single()[1])
+
+        assertEquals("pending_restart", h.service.installStaged(inspection.stagingToken, "owner_role").status)
+        assertEquals("zip", h.store.find("monday_import")?.sourceType)
+    }
+
+    @Test
+    fun `a signed or invalidly signed zip cannot be authorized`() {
+        val signed = external(FakeBuilder(signed = true))
+        val one = signed.service.inspectZip("monday_import", "p.zip", zipBytes)
+        assertEquals("ALREADY_SIGNED", code { signed.service.authorizeStaged(one.stagingToken, "r", confirmation, sha) })
+        val invalid = external(FakeBuilder(signed = false, signatureProblem = "invalid signature"))
+        val two = invalid.service.inspectZip("monday_import", "p.zip", zipBytes)
+        assertEquals("SIGNATURE_INVALID", code { invalid.service.authorizeStaged(two.stagingToken, "r", confirmation, sha) })
+        assertTrue(signed.authorizations.saved.isEmpty() && invalid.authorizations.saved.isEmpty())
+    }
+
+    @Test
+    fun `zip and url sources refuse bundled ids bad ids empty or huge files and servers without a builder`() {
+        val h = external()
+        assertEquals("INVALID_ID", code { h.service.inspectZip("Bad-Id", "p.zip", zipBytes) })
+        assertEquals("INVALID_ZIP", code { h.service.inspectZip("monday_import", "p.zip", ByteArray(0)) })
+        assertEquals("PAYLOAD_TOO_LARGE", code { h.service.inspectZip("monday_import", "p.zip", ByteArray(ExtensionPackageService.MaxZipBytes + 1)) })
+        assertEquals("NOT_FOUND", code { h.service.installStaged("no-existe", "r") })
+        assertEquals("NOT_FOUND", code { h.service.authorizeStaged("no-existe", "r", confirmation, sha) })
+
+        val bundled = Harness(FakeBuilder(), emptyList(), bundled = setOf("monday_import"))
+        assertEquals("ALREADY_BUNDLED", code { bundled.service.inspectZip("monday_import", "p.zip", zipBytes) })
+        assertEquals("ALREADY_BUNDLED", code { bundled.service.installFromUrl("monday_import", "https://example.com/p.zip", "r") })
+
+        val none = Harness(null, emptyList())
+        assertEquals("BUILDER_UNAVAILABLE", code { none.service.inspectZip("monday_import", "p.zip", zipBytes) })
+        assertEquals("BUILDER_UNAVAILABLE", code { none.service.inspectUrl("monday_import", "https://example.com/p.zip") })
+    }
+
+    @Test
+    fun `a url is validated downloaded inspected and installed as url source`() {
+        val builder = FakeBuilder(signed = true)
+        val h = external(builder)
+        listOf("http://example.com/p.zip", "https://user:x@example.com/p.zip", "https://example.com:8443/p.zip", "no es url").forEach {
+            assertEquals("URL_REJECTED", code { h.service.inspectUrl("monday_import", it) }, it)
+        }
+        assertTrue(builder.downloaded.isEmpty())
+
+        builder.downloadFailure = "El servidor apunta a una red privada o local: no se permite."
+        assertEquals("PACKAGE_UNAVAILABLE", code { h.service.inspectUrl("monday_import", "https://example.com/p.zip") })
+        assertTrue(!Files.exists(h.root.resolve("_staging")) || Files.list(h.root.resolve("_staging")).use { it.toList().isEmpty() })
+
+        builder.downloadFailure = null
+        val inspection = h.service.inspectUrl("monday_import", " https://example.com/p.zip ")
+        assertEquals(listOf("https://example.com/p.zip"), builder.downloaded)
+        assertEquals("url", inspection.source)
+        assertEquals("https://example.com/p.zip", inspection.sourceUrl)
+        assertEquals("pending_restart", h.service.installStaged(inspection.stagingToken, "owner_role").status)
+        assertEquals(listOf("url", "https://example.com/p.zip"), builder.builtFrom.single())
+        assertEquals("url", h.store.find("monday_import")?.sourceType)
+    }
+
+    @Test
+    fun `installFromZip and installFromUrl keep the signature gate the downgrade rule and the shared queue`() {
+        val builder = FakeBuilder(signed = false)
+        val h = external(builder)
+        val zip = Files.createTempFile(h.root, "p", ".zip")
+        assertEquals("error", h.service.installFromZip("monday_import", zip, "r").status)
+        assertEquals("URL_REJECTED", code { h.service.installFromUrl("monday_import", "http://example.com/p.zip", "r") })
+
+        // Con el hash autorizado instala; una version menor que la instalada no se guarda.
+        h.authorizations.authorize(sha, "monday_import", "zip:p.zip", "r", "Confirmo la autorizacion")
+        h.store.rows["monday_import"] = StoredExtensionPackage("monday_import", "crm", "0.5.0", "zip", "installed", null, sha, false, "d".repeat(64))
+        val downgrade = h.service.installFromZip("monday_import", zip, "r")
+        assertEquals("error", downgrade.status)
+        assertEquals("0.5.0", h.store.find("monday_import")?.version)
+
+        builder.version = "0.6.0"
+        assertEquals("pending_restart", h.service.installFromZip("monday_import", zip, "r").status)
+        assertEquals(1, h.restarts)
+    }
+
+    @Test
+    fun `a package installed from a zip or url can be removed`() {
+        val h = external(FakeBuilder(signed = true))
+        h.service.installFromZip("monday_import", Files.createTempFile(h.root, "p", ".zip"), "r")
+        assertEquals("removed", h.service.remove("monday_import", "r").status)
+        assertTrue(h.store.loadable().isEmpty())
     }
 }

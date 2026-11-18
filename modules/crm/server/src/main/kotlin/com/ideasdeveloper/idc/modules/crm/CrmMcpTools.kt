@@ -108,7 +108,7 @@ object CrmMcpTools {
 
     // What this module tells agents about itself (see ModuleMcp): leads, settings and integrations.
     val mcp: ModuleMcp
-        get() = ModuleMcp(Instructions, tools + CrmSettingsMcpTools.tools + CrmAutomationMcpTools.tools + CrmIntegrationMcpTools.tools + CrmImportMcpTools.tools)
+        get() = ModuleMcp(Instructions, tools + CrmSettingsMcpTools.tools + CrmAutomationMcpTools.tools + CrmIntegrationMcpTools.tools + CrmImportMcpTools.tools + CrmImportSources.mcpTools)
 
     private const val Instructions =
         "El CRM sigue a los interesados (leads) por un embudo de etapas; cerrar en una etapa ganada o perdida termina el seguimiento. " +
@@ -120,7 +120,7 @@ object CrmMcpTools {
             "Los nuevos leads pueden traer un usuario sugerido que, al aprobarlo, se anade a los asignados. Antes de enviar un mensaje a un lead, crear " +
             "una reserva o cambiar configuracion o integraciones, muestra lo que vas a hacer y espera la confirmacion del usuario. " +
             "Las credenciales de las integraciones y del correo (API keys, tokens, secretos, contrasenas) se configuran solo en la app; " +
-            "nunca las pidas ni las recibas. Meta, WordPress, Encuentra24, Cloudbeds y la importacion desde monday son extensiones que cada empresa instala " +
+            "nunca las pidas ni las recibas. Meta, WordPress, Encuentra24, Cloudbeds y las fuentes externas de importacion son extensiones que cada empresa instala " +
             "y activa en Empresa > Extensiones: si una herramienta responde que la extension no esta activa, dile al usuario que la instale o la active alli. Las automatizaciones (list_automations) envian plantillas, cambian etapas o campos, avisan a usuarios y usan Cloudbeds " +
             "cuando se dispara su evento o su fecha; los campos de tipo Boton de la ficha (press_lead_button) y las automatizaciones manuales (run_automation) " +
             "se ejecutan solo a pedido del usuario: muestra lo que haran y espera su confirmacion."
@@ -542,8 +542,8 @@ object CrmMcpTools {
 
     // Same rule as dragging on the board: with rooms chosen in Cloudbeds the lead is won by confirming the reservation.
     private fun moveChecked(call: McpToolCall, context: CrmScreens.Context, lead: CrmLead, stage: CrmStage) {
-        val pendingRooms = CrmItems.list(call.tenant, lead.id, CrmCloudbeds.Source).any { it.status == "chosen" }
-        val reserved = CrmCloudbeds.forLead(call.tenant, lead.id).any { it.status !in setOf("canceled", "no_show") }
+        val pendingRooms = CrmHost.chosenRooms(call.tenant, lead.id).isNotEmpty()
+        val reserved = CrmHost.reservationsForLead(call.tenant, lead.id).any { it.status !in setOf("canceled", "no_show") }
         if (stage.kind == StageKind.Won && pendingRooms && !reserved) {
             throw McpToolException("${lead.name} tiene habitaciones asignadas: la reserva debe confirmarse desde su ficha en el CRM.")
         }

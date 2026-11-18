@@ -11,14 +11,13 @@ import javax.xml.parsers.DocumentBuilderFactory
 class CrmImportException(message: String) : Exception(message)
 
 // Rows read from a source: the column names in order and each row as column -> value.
-// [types]: type of each column as the source reports it (monday column types), when it does.
+// [types]: type of each column as the source reports it, when it does.
 data class CrmTable(val columns: List<String>, val rows: List<Map<String, String>>, val types: Map<String, String> = emptyMap())
 
-/** Reading of CSV, XLSX and monday exports, and the automatic column mapping. */
+/** Reading of CSV and XLSX, and the automatic column mapping. */
 object CrmImportParse {
     const val MaxRows = 20_000
     private const val MaxBytes = 20 * 1024 * 1024
-    const val GroupColumn = "Grupo"
 
     // CRM fields a column can feed, with the labels shown in the mapping.
     val fields = linkedMapOf(
@@ -145,30 +144,24 @@ object CrmImportParse {
 
     // ---- Layout ----
 
-    /**
-     * Turns raw records into a table. Recognizes the monday export: title lines before the header,
-     * one line per group (a single cell) followed by the header again; the group goes to [GroupColumn].
-     */
+    /** Turns raw records into a table: the header is the first record with at least two cells (title lines before it are ignored) and a repeated header is skipped. */
     fun table(records: List<List<String>>): CrmTable {
         if (records.isEmpty()) throw CrmImportException("El archivo no tiene filas.")
-        // Header: the first record with at least two cells, else the first one.
-        val headerIndex = records.indexOfFirst { record -> record.count { it.isNotBlank() } >= 2 }.coerceAtLeast(0)
+        val (headerIndex, names) = header(records)
         val header = records[headerIndex].map { it.trim() }
-        val names = unique(header.mapIndexed { index, name -> name.ifEmpty { "Columna ${index + 1}" } })
-        var group = records.take(headerIndex).lastOrNull { it.count { cell -> cell.isNotBlank() } == 1 }?.first { it.isNotBlank() }?.trim().orEmpty()
-        val grouped = records.drop(headerIndex + 1).any { it.count { cell -> cell.isNotBlank() } == 1 }
         val rows = mutableListOf<Map<String, String>>()
         records.drop(headerIndex + 1).forEach { record ->
-            val filled = record.count { it.isNotBlank() }
-            when {
-                record.map { it.trim() } == header -> Unit
-                grouped && filled == 1 && record.firstOrNull()?.isNotBlank() == true -> group = record.first().trim()
-                else -> rows += names.mapIndexed { index, name -> name to record.getOrNull(index).orEmpty().trim() }.toMap() +
-                    (if (grouped || group.isNotEmpty()) mapOf(GroupColumn to group) else emptyMap())
-            }
+            if (record.map { it.trim() } == header) return@forEach
+            rows += names.mapIndexed { index, name -> name to record.getOrNull(index).orEmpty().trim() }.toMap()
         }
-        val columns = names + listOfNotNull(GroupColumn.takeIf { grouped || group.isNotEmpty() })
-        return CrmTable(columns, rows)
+        return CrmTable(names, rows)
+    }
+
+    /** Index of the header record (the first with at least two cells, else the first one) and its unique column names. */
+    fun header(records: List<List<String>>): Pair<Int, List<String>> {
+        val headerIndex = records.indexOfFirst { record -> record.count { it.isNotBlank() } >= 2 }.coerceAtLeast(0)
+        val header = records[headerIndex].map { it.trim() }
+        return headerIndex to unique(header.mapIndexed { index, name -> name.ifEmpty { "Columna ${index + 1}" } })
     }
 
     private fun unique(names: List<String>): List<String> {
@@ -206,9 +199,7 @@ object CrmImportParse {
         val mapping = columns.associateWith { column ->
             guesses.firstOrNull { (field, pattern) -> field !in used && pattern.containsMatchIn(column.trim()) }?.first?.also { used += it }.orEmpty()
         }.toMutableMap()
-        // The monday group is the stage when no status column was found.
-        if (GroupColumn in columns && "stage" !in used) mapping[GroupColumn] = "stage"
-        // Without a name column, the first column is the name (monday puts the item name first).
+        // Without a name column, the first column is the name.
         if ("name" !in mapping.values && columns.isNotEmpty() && mapping[columns.first()].isNullOrEmpty()) mapping[columns.first()] = "name"
         return mapping
     }
@@ -227,7 +218,7 @@ object CrmImportParse {
         return dateFormats.firstNotNullOfOrNull { format -> runCatching { LocalDate.parse(value, format) }.getOrNull() }
     }
 
-    /** Range "2026-10-25 - 2026-11-03" (monday timeline) or "Oct 25 - Nov 3" with the year of [fallbackYear]. */
+    /** Range "2026-10-25 - 2026-11-03" or "Oct 25 - Nov 3" with the year of [fallbackYear]. */
     fun range(raw: String, fallbackYear: Int): Pair<LocalDate?, LocalDate?> {
         val parts = raw.split(Regex("\\s+(-|–|a|to)\\s+")).map { it.trim() }.filter { it.isNotEmpty() }
         if (parts.size != 2) return date(raw) to null

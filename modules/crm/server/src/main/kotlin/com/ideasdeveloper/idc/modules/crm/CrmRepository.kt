@@ -547,8 +547,8 @@ object CrmRepository {
      */
     fun wonNeedsReservation(tenant: Connection, leadId: UUID, stage: CrmStage): Boolean {
         if (stage.kind != StageKind.Won) return false
-        val pendingRooms = CrmItems.list(tenant, leadId, CrmCloudbeds.Source).any { it.status == "chosen" }
-        val reserved = CrmCloudbeds.forLead(tenant, leadId).any { it.status !in setOf("canceled", "no_show") }
+        val pendingRooms = CrmHost.chosenRooms(tenant, leadId).isNotEmpty()
+        val reserved = CrmHost.reservationsForLead(tenant, leadId).any { it.status !in setOf("canceled", "no_show") }
         return pendingRooms && !reserved
     }
 

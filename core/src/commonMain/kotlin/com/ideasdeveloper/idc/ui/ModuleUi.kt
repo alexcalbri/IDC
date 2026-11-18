@@ -575,6 +575,16 @@ data class UiOpenModule(
     @EncodeDefault override val type: String = "openModule",
 ) : UiAction
 
+// Opens the native Extensiones screen of the app, filtered to a module (entry in its Configuracion).
+// Older apps decode it as UiUnknownAction and disable the control.
+@OptIn(ExperimentalSerializationApi::class)
+@Serializable
+data class UiOpenExtensions(
+    val moduleId: String,
+    override val formId: String? = null,
+    @EncodeDefault override val type: String = "open_extensions",
+) : UiAction
+
 // Action sent by a newer server; clients disable the control that uses it.
 @Serializable
 data class UiUnknownAction(override val type: String = "unknown", override val formId: String? = null) : UiAction
@@ -587,6 +597,7 @@ object UiActionSerializer : JsonContentPolymorphicSerializer<UiAction>(UiAction:
             "download" -> UiDownload.serializer()
             "openUrl" -> UiOpenUrl.serializer()
             "openModule" -> UiOpenModule.serializer()
+            "open_extensions" -> UiOpenExtensions.serializer()
             else -> UiUnknownAction.serializer()
         }
 }

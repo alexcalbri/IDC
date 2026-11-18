@@ -19,7 +19,6 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.UUID
-import com.ideasdeveloper.idc.server.modules.ModuleFiles
 import com.ideasdeveloper.idc.server.net.PinnedHost
 import com.ideasdeveloper.idc.server.net.PinnedHostException
 
@@ -46,26 +45,22 @@ data class CrmImportJob(
     val conflicts: Int,
     val errors: Int,
     val createdAt: Instant,
-    // monday board ids still to read (status reading) and why a job failed.
+    // Ids de origen que una fuente externa aun debe leer (estado reading) y por que fallo un job.
     val boards: List<String> = emptyList(),
     val error: String = "",
-    // Type of each column as the source reported it (monday), to type the fields the import creates.
+    // Tipo de cada columna como lo informo la fuente, para tipar los campos que crea la importacion.
     val columnTypes: Map<String, String> = emptyMap(),
 )
 
 data class CrmImportNote(val date: LocalDate?, val author: String, val text: String)
 
-data class CrmMondayBoard(val id: String, val name: String, val workspace: String, val items: Int?)
-
-/** Imports of leads from files, monday and CT Leads Pro, applied in batches by a job. */
+/** Imports of leads from files (CSV, XLSX, URL), applied in batches by a job. Las fuentes externas se registran en [CrmImportSources]. */
 object CrmImport {
     private const val MaxBytes = 20 * 1024 * 1024
     const val KeyColumn = "__key"
     const val NotesColumn = "__notes"
     const val ListingsColumn = "__listings"
-    const val BoardColumn = "Tablero"
     private val json = Json { ignoreUnknownKeys = true }
-    private const val MondayHost = "api.monday.com"
 
     private fun JsonElement?.obj() = this as? JsonObject
     private fun JsonElement?.arr() = (this as? JsonArray).orEmpty()
@@ -109,170 +104,8 @@ object CrmImport {
         throw CrmImportException("Demasiadas redirecciones.")
     }
 
-    /**
-     * Items of monday boards through the GraphQL API: every column as text (and its type), the
-     * group, the board (used as interest), the creation date, updates with their replies and
-     * subitems as notes, the files of file columns and of updates, and the item id as key.
-     */
-    fun fromMonday(token: String, boardIds: List<String>): CrmTable {
-        if (token.isBlank()) throw CrmImportException("Escribe el token de la API de monday.")
-        if (boardIds.isEmpty() || boardIds.any { !it.matches(Regex("^[0-9]{1,20}$")) }) throw CrmImportException("Escribe los ID de los tableros (numeros separados por coma).")
-        val itemFields = "id name created_at group { title } column_values { type text value column { title } } " +
-            "updates(limit: 100) { text_body created_at creator { name } assets { id name } replies { text_body created_at creator { name } } } " +
-            "subitems { name column_values { column { title } text } }"
-        val columns = linkedSetOf("Nombre")
-        val types = mutableMapOf<String, String>()
-        val rows = mutableListOf<Map<String, String>>()
-        boardIds.forEach { boardId ->
-            var data = monday(token, "query { boards(ids: [$boardId]) { name items_page(limit: 100) { cursor items { $itemFields } } } }")
-            val board = data["boards"].arr().firstOrNull().obj() ?: throw CrmImportException("monday no devolvio el tablero $boardId (revisa el ID y los permisos del token).")
-            val boardName = board["name"].str()
-            var page = board["items_page"].obj()
-            while (page != null) {
-                page["items"].arr().mapNotNull { it.obj() }.forEach { item ->
-                    val row = linkedMapOf("Nombre" to item["name"].str())
-                    val files = mutableListOf<CrmMondayFile>()
-                    item["column_values"].arr().mapNotNull { it.obj() }.forEach { value ->
-                        val title = value["column"].obj()?.get("title").str().ifEmpty { return@forEach }
-                        columns += title
-                        types.putIfAbsent(title, value["type"].str())
-                        row[title] = value["text"].str()
-                        if (value["type"].str() == "file") files += CrmMondayFiles.fromColumnValue(title, value["value"].str())
-                    }
-                    row[CrmImportParse.GroupColumn] = item["group"].obj()?.get("title").str()
-                    row[BoardColumn] = boardName
-                    row[KeyColumn] = "monday:${item["id"].str()}"
-                    row["__created"] = item["created_at"].str()
-                    val notes = item["updates"].arr().mapNotNull { it.obj() }.flatMap { update ->
-                        val date = CrmImportParse.date(update["created_at"].str())
-                        val attached = update["assets"].arr().mapNotNull { it.obj() }.map { asset ->
-                            CrmMondayFile(asset["id"].str(), asset["name"].str(), update = date?.toString() ?: "sin-fecha")
-                        }
-                        files += attached
-                        val text = update["text_body"].str() + if (attached.isEmpty()) "" else
-                            "\nAdjuntos: ${attached.joinToString { it.name }} (en ${CrmFields.DocumentsLabel} > ${CrmMondayFiles.UpdatesFolder})"
-                        listOf(CrmImportNote(date, update["creator"].obj()?.get("name").str(), text.trim())) +
-                            update["replies"].arr().mapNotNull { it.obj() }.map { reply ->
-                                val author = reply["creator"].obj()?.get("name").str()
-                                CrmImportNote(CrmImportParse.date(reply["created_at"].str()), author, "Respuesta${if (author.isEmpty()) "" else " de $author"}: ${reply["text_body"].str()}")
-                            }
-                    } + item["subitems"].arr().mapNotNull { it.obj() }.map { subitem ->
-                        val details = subitem["column_values"].arr().mapNotNull { it.obj() }
-                            .mapNotNull { value -> value["text"].str().ifEmpty { null }?.let { "${value["column"].obj()?.get("title").str()}: $it" } }
-                        CrmImportNote(null, "monday", "Subelemento: ${subitem["name"].str()}${if (details.isEmpty()) "" else " (${details.joinToString()})"}")
-                    }
-                    row[NotesColumn] = notesJson(notes)
-                    if (files.isNotEmpty()) row[CrmMondayFiles.FilesColumn] = CrmMondayFiles.encode(files)
-                    rows += row
-                    if (rows.size > CrmImportParse.MaxRows) throw CrmImportException("Los tableros tienen mas de ${CrmImportParse.MaxRows} elementos.")
-                }
-                val cursor = page["cursor"].str()
-                if (cursor.isEmpty()) break
-                data = monday(token, "query { next_items_page(limit: 100, cursor: \"$cursor\") { cursor items { $itemFields } } }")
-                page = data["next_items_page"].obj()
-            }
-        }
-        return CrmTable(columns.toList() + listOf(CrmImportParse.GroupColumn, BoardColumn), rows, types)
-    }
-
-    fun mondayToken(tenant: Connection): String? =
-        tenant.prepareStatement("SELECT monday_token FROM crm_settings WHERE id = 1").use { query ->
-            query.executeQuery().use { rows -> if (rows.next()) CrmSecrets.open(tenant, rows.getString(1))?.takeIf { it.isNotBlank() && !CrmSecrets.isUnreadable(it) } else null }
-        }
-
-    fun saveMondayToken(tenant: Connection, token: String?) {
-        // Borrar el token siempre se puede; guardarlo exige la extension activa.
-        if (token != null) CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
-        tenant.prepareStatement(
-            "INSERT INTO crm_settings (id, monday_token) VALUES (1, ?) ON CONFLICT (id) DO UPDATE SET monday_token = EXCLUDED.monday_token, updated_at = CURRENT_TIMESTAMP"
-        ).use { update ->
-            update.setString(1, CrmSecrets.seal(tenant, token?.trim()?.takeIf { it.isNotEmpty() }))
-            update.executeUpdate()
-        }
-    }
-
-    /** Active boards the token can read, by workspace and name (subitem boards and docs left out). */
-    fun mondayBoards(token: String): List<CrmMondayBoard> {
-        if (token.isBlank()) throw CrmImportException("Escribe el token de la API de monday.")
-        val boards = mutableListOf<CrmMondayBoard>()
-        for (page in 1..50) {
-            val data = monday(token, "query { boards(limit: 100, page: $page, state: active) { id name type items_count workspace { name } } }")
-            boards += parseMondayBoards(data)
-            if (data["boards"].arr().size < 100) break
-        }
-        return boards.sortedWith(compareBy<CrmMondayBoard>({ it.workspace != MainWorkspace }, { it.workspace.lowercase() }, { it.name.lowercase() }))
-    }
-
-    const val MainWorkspace = "Espacio principal"
-
-    fun parseMondayBoards(data: JsonObject): List<CrmMondayBoard> = data["boards"].arr().mapNotNull { it.obj() }
-        .filter { it["type"].str().ifEmpty { "board" } == "board" }
-        .mapNotNull { board ->
-            val id = board["id"].str().takeIf { it.matches(Regex("^[0-9]{1,20}$")) } ?: return@mapNotNull null
-            CrmMondayBoard(id, board["name"].str().ifEmpty { id }, board["workspace"].obj()?.get("name").str().ifEmpty { MainWorkspace }, board["items_count"].str().toIntOrNull())
-        }
-
-    internal fun mondayQuery(token: String, query: String): JsonObject = monday(token, query)
-
-    private fun monday(token: String, query: String): JsonObject {
-        val payload = JsonObject(mapOf("query" to JsonPrimitive(query))).toString().toByteArray(Charsets.UTF_8)
-        // Se resuelve una vez y la conexion va a esa IP validada (anti DNS rebinding).
-        val (status, text) = try {
-            val validated = PinnedHost.resolveValidated(MondayHost)
-            PinnedHost.openPinnedHttps(
-                URI.create("https://$MondayHost/v2"), validated, MondayHost, "POST",
-                mapOf("Authorization" to token.trim(), "API-Version" to "2024-10", "Content-Type" to "application/json"),
-                payload, timeoutMillis = 30_000, totalMillis = 60_000, maxBodyBytes = MaxBytes + 1L,
-            ).use { response -> response.status to response.body.readNBytes(MaxBytes + 1).decodeToString() }
-        } catch (failure: Exception) {
-            throw CrmImportException("No se pudo contactar monday.")
-        }
-        val body = runCatching { json.parseToJsonElement(text) }.getOrNull().obj()
-        if (status == 401 || status == 403) throw CrmImportException("monday rechazo el token.")
-        body?.get("errors").arr().firstOrNull()?.let { throw CrmImportException("monday: ${it.obj()?.get("message").str()}") }
-        return body?.get("data").obj() ?: throw CrmImportException("monday respondio HTTP $status.")
-    }
-
-    /** Leads of CT Leads Pro read through the IDC Connector plugin (stage, agent, source, tags, notes, messages, listings). */
-    fun fromLeadsPro(tenant: Connection): CrmTable {
-        CrmExtensions.inactive(tenant, CrmExtensionIds.WordPress)?.let { throw CrmImportException(it) }
-        val settings = CrmWordPress.load(tenant)
-        if (!settings.ready) throw CrmImportException("Conecta primero el sitio en Integraciones > WordPress.")
-        val rows = mutableListOf<Map<String, String>>()
-        var page = 1
-        while (true) {
-            val result = try {
-                CrmWordPress.rpc(settings, "leads", buildJsonObject { put("page", page); put("per_page", 200) }).obj()
-            } catch (failure: CrmWordPressException) {
-                throw CrmImportException(failure.message.orEmpty())
-            } ?: throw CrmImportException("Respuesta invalida del sitio.")
-            if (result["error"].str().isNotEmpty()) throw CrmImportException(result["error"].str())
-            val items = result["items"].arr().mapNotNull { it.obj() }
-            items.forEach { lead ->
-                val notes = (lead["notes"].arr() + lead["messages"].arr()).mapNotNull { it.obj() }.map {
-                    CrmImportNote(CrmImportParse.date(it["date"].str()), it["author"].str(), it["text"].str())
-                }
-                rows += mapOf(
-                    "Nombre" to lead["name"].str(),
-                    "Correo" to lead["email"].str(),
-                    "Telefono" to lead["phone"].str(),
-                    "Etapa" to lead["stage"].str(),
-                    "Agente" to lead["agent"].obj()?.get("name").str(),
-                    "Origen" to lead["source"].str(),
-                    "Etiquetas" to lead["tags"].arr().joinToString { it.str() },
-                    "Creado" to lead["created"].str(),
-                    KeyColumn to "leadspro:${lead["id"].str()}",
-                    NotesColumn to notesJson(notes),
-                    ListingsColumn to JsonArray(lead["listings"].arr()).toString(),
-                )
-            }
-            if (items.size < 200 || page >= 200) break
-            page++
-        }
-        return CrmTable(listOf("Nombre", "Correo", "Telefono", "Etapa", "Agente", "Origen", "Etiquetas", "Creado"), rows)
-    }
-
-    private fun notesJson(notes: List<CrmImportNote>) = JsonArray(
+    /** Notes of a row as the JSON stored in [NotesColumn]. */
+    fun notesJson(notes: List<CrmImportNote>) = JsonArray(
         notes.filter { it.text.isNotBlank() }.map { note ->
             buildJsonObject {
                 put("date", note.date?.toString().orEmpty())
@@ -301,7 +134,7 @@ object CrmImport {
         return CrmImportMapping(section("columns"), section("stages"), section("owners"), section("interests"))
     }
 
-    /** Stores the rows of a source and guesses the mapping (monday boards become interests). */
+    /** Stores the rows of a source and guesses the mapping. */
     fun create(tenant: Connection, source: String, name: String, table: CrmTable, userId: UUID?): UUID {
         if (table.rows.isEmpty()) throw CrmImportException("No hay filas para importar.")
         val id = UUID.randomUUID()
@@ -312,38 +145,8 @@ object CrmImport {
         return id
     }
 
-    /** Queues monday boards for the import job, which reads them and leaves the job ready to map. */
-    fun queueMonday(tenant: Connection, boardIds: List<String>, userId: UUID?): UUID {
-        CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
-        if (boardIds.isEmpty() || boardIds.any { !it.matches(Regex("^[0-9]{1,20}$")) }) throw CrmImportException("Marca al menos un tablero.")
-        val id = UUID.randomUUID()
-        insertJob(tenant, id, "monday", "monday ${boardIds.joinToString()}", "reading", boardIds, userId)
-        return id
-    }
-
-    /** Reads the queued monday boards; a job canceled meanwhile stays canceled. */
-    fun readQueued(tenant: Connection) {
-        jobQuery(tenant, "WHERE status = 'reading' ORDER BY created_at").forEach { job ->
-            val table = try {
-                CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { throw CrmImportException(it) }
-                val token = mondayToken(tenant) ?: throw CrmImportException("Se borro el token de monday; guardalo de nuevo.")
-                fromMonday(token, job.boards).also { if (it.rows.isEmpty()) throw CrmImportException("Los tableros marcados no tienen elementos.") }
-            } catch (failure: Exception) {
-                tenant.prepareStatement("UPDATE crm_import_jobs SET status = 'failed', error = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'reading'").use { update ->
-                    update.setString(1, (failure as? CrmImportException)?.message ?: "No se pudieron leer los tableros de monday.")
-                    update.setObject(2, job.id)
-                    update.executeUpdate()
-                }
-                return@forEach
-            }
-            val names = table.rows.mapNotNull { it[BoardColumn]?.takeIf(String::isNotEmpty) }.distinct()
-            transaction(tenant) {
-                storeRows(tenant, job.id, "monday ${names.joinToString()}", table, from = "reading")
-            }
-        }
-    }
-
-    private fun insertJob(tenant: Connection, id: UUID, source: String, name: String, status: String, boards: List<String>, userId: UUID?) {
+    /** Inserts a job; [boards] are the source ids an external source still has to read (status "reading"). */
+    fun insertJob(tenant: Connection, id: UUID, source: String, name: String, status: String, boards: List<String>, userId: UUID?) {
         tenant.prepareStatement(
             "INSERT INTO crm_import_jobs (id, source, name, status, boards, created_by) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?)"
         ).use { insert ->
@@ -357,16 +160,27 @@ object CrmImport {
         }
     }
 
-    /** Stores the rows of a job and guesses the mapping (monday boards become interests); the job moves to mapping. */
-    private fun storeRows(tenant: Connection, id: UUID, name: String, table: CrmTable, from: String = "mapping") {
+    /**
+     * Stores the rows of a job and guesses the mapping; the job moves to mapping. [from] is the status the job must have.
+     * Una fuente externa puede afinar la adivinanza con [refine] (columnas, mapeo adivinado -> mapeo final) y marcar en
+     * [noProposal] las columnas a las que no se les propone un campo nuevo.
+     */
+    fun storeRows(
+        tenant: Connection,
+        id: UUID,
+        name: String,
+        table: CrmTable,
+        from: String = "mapping",
+        refine: (List<String>, Map<String, String>) -> Map<String, String> = { _, guessed -> guessed },
+        noProposal: Set<String> = emptySet(),
+    ) {
         val columns = table.columns.filter { !it.startsWith("__") }
-        var guessed = CrmImportParse.guess(columns)
-        if (BoardColumn in columns && "interest" !in guessed.values) guessed = guessed + (BoardColumn to "interest")
+        var guessed = refine(columns, CrmImportParse.guess(columns))
         // Columns the CRM has no field for: an existing custom field with that name, or a new one to confirm.
         val crmFields = CrmFields.all(tenant)
         val customerFields = CrmImportTargets.customerFields(tenant)
         guessed = guessed.mapValues { (column, field) ->
-            if (field.isNotEmpty() || column == CrmImportParse.GroupColumn || column == BoardColumn) field
+            if (field.isNotEmpty() || column in noProposal) field
             else CrmImportTargets.propose(column, table.types[column], table.rows.any { !it[column].isNullOrBlank() }, crmFields, customerFields)
         }
         val moved = tenant.prepareStatement(
@@ -398,7 +212,8 @@ object CrmImport {
 
     fun job(tenant: Connection, id: UUID): CrmImportJob? = jobQuery(tenant, "WHERE id = ?") { it.setObject(1, id) }.firstOrNull()
 
-    private fun jobQuery(tenant: Connection, tail: String, bind: (java.sql.PreparedStatement) -> Unit = {}): List<CrmImportJob> = tenant.prepareStatement(
+    /** Jobs filtered by a SQL tail ("WHERE status = 'reading' ORDER BY created_at"); used by the runners of the sources. */
+    fun jobQuery(tenant: Connection, tail: String, bind: (java.sql.PreparedStatement) -> Unit = {}): List<CrmImportJob> = tenant.prepareStatement(
         "SELECT id, source, name, status, mapping::text, columns::text, total, processed, created, updated, skipped, conflicts, errors, created_at, boards::text, error, column_types::text FROM crm_import_jobs $tail"
     ).use { query ->
         bind(query)
@@ -477,9 +292,11 @@ object CrmImport {
      * Returns the labels of the created fields.
      */
     fun saveMappingCreatingFields(tenant: Connection, job: CrmImportJob, mapping: CrmImportMapping): List<String> = transaction(tenant) {
+        // La fuente externa del job (si la tiene) tipa las columnas y marca los campos que crea con su extension.
         val (columns, created) = CrmImportTargets.createMissing(
             tenant, mapping.columns, job.columnTypes,
-            extensionId = CrmExtensionIds.MondayImport.takeIf { job.source == "monday" },
+            extensionId = CrmImportSources.of(job.source)?.extensionId,
+            fieldType = { columnType -> CrmImportSources.fieldType(job.source, columnType) },
         ) { column -> columnValues(tenant, job, column) }
         saveMapping(tenant, job, mapping.copy(columns = columns))
         created
@@ -533,8 +350,6 @@ object CrmImport {
         // Custom fields of the CRM and of the customer, by key, with the source text.
         val crm: Map<String, String> = emptyMap(),
         val customer: Map<String, String> = emptyMap(),
-        // monday files of the row with the field key and folder each one goes to.
-        val files: List<Pair<CrmMondayFile, Pair<String, String>>> = emptyList(),
     )
 
     fun values(row: Map<String, String>, mapping: CrmImportMapping, context: Context): Values {
@@ -577,7 +392,6 @@ object CrmImport {
             createdAt = created,
             crm = custom(row, mapping, CrmImportTargets.CrmPrefix),
             customer = custom(row, mapping, CrmImportTargets.CustomerPrefix),
-            files = filesOf(row, mapping, context),
         )
     }
 
@@ -588,28 +402,12 @@ object CrmImport {
             .mapValues { (_, texts) -> texts.filter { it.isNotEmpty() }.joinToString(", ") }
             .filterValues { it.isNotEmpty() }
 
-    /**
-     * Where each monday file of the row goes: files of a column mapped to the lead's files land in
-     * Documentos in a folder named after the column, those of a column mapped to a CRM files field
-     * in that field; files of updates go to Documentos > Actualizaciones de monday > date.
-     */
-    private fun filesOf(row: Map<String, String>, mapping: CrmImportMapping, context: Context): List<Pair<CrmMondayFile, Pair<String, String>>> =
-        CrmMondayFiles.decode(row[CrmMondayFiles.FilesColumn]).mapNotNull { file ->
-            val place = when {
-                file.update.isNotEmpty() -> CrmFields.Documents to "${CrmMondayFiles.UpdatesFolder}/${file.update}"
-                else -> when (val target = mapping.columns[file.column].orEmpty()) {
-                    CrmImportTargets.Files -> CrmFields.Documents to file.column
-                    else -> context.crmFields.firstOrNull { target == CrmImportTargets.CrmPrefix + it.key && it.type == CrmFieldType.Files }?.let { it.key to "" }
-                }
-            }
-            place?.let { file to it }
-        }
-
     private fun sha(text: String) = MessageDigest.getInstance("SHA-256").digest(text.toByteArray()).joinToString("") { "%02x".format(it) }.take(32)
 
     enum class Outcome(val status: String) { Created("created"), Updated("updated"), Skipped("skipped"), Conflict("conflict") }
 
-    private fun leadByKey(tenant: Connection, key: String): UUID? =
+    /** The lead imported with that key (import_key), if any. */
+    fun leadByKey(tenant: Connection, key: String): UUID? =
         tenant.prepareStatement("SELECT id FROM crm_leads WHERE import_key = ?").use { query ->
             query.setString(1, key)
             query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
@@ -701,7 +499,7 @@ object CrmImport {
         addNotes(tenant, leadId, values.notes)
         listings?.let { raw ->
             runCatching { json.parseToJsonElement(raw) }.getOrNull().arr().forEach { element ->
-                CrmWordPress.listing(element)?.let { CrmWordPress.linkListing(tenant, leadId, it, null) }
+                WpListing.parse(element)?.let { CrmHost.wordpressLinkListing(tenant, leadId, it, null) }
             }
         }
         // The people of the row without a CRM user are not assigned and are listed in the report (users are never created here).
@@ -789,24 +587,32 @@ object CrmImport {
     }
 
     /**
-     * Applies up to [limit] pending rows of every running job. Each row is committed on its own; its
-     * monday files are downloaded afterwards into [files] (left out without it). Stops after
-     * [budget] so a run with many downloads leaves the rest to the next one.
+     * Applies up to [limit] pending rows of every running job that [accept] takes. Each row is committed on its own.
+     * Stops after [budget] so a long run leaves the rest to the next one.
+     * Extension points of the external sources (see [CrmImportSources]): [accept] chooses the jobs (the default
+     * runs all of them), [label] names the source in the history of the lead, and [afterRow] runs after each row
+     * applied with its job, source row, values, status and message and returns the message to store (for example to
+     * add what could not be downloaded).
      */
-    fun runPending(tenant: Connection, limit: Int, today: LocalDate, files: ModuleFiles? = null, budget: Duration = Duration.ofSeconds(50)): Int {
+    fun runPending(
+        tenant: Connection,
+        limit: Int,
+        today: LocalDate,
+        budget: Duration = Duration.ofSeconds(50),
+        accept: (CrmImportJob) -> Boolean = { true },
+        label: (CrmImportJob) -> String = { "archivo" },
+        afterRow: (CrmImportJob, Map<String, String>, Values, String, String) -> String = { _, _, _, _, message -> message },
+    ): Int {
         val running = jobQuery(tenant, "WHERE status = 'running' ORDER BY created_at")
         val deadline = Instant.now().plus(budget)
         var done = 0
-        val mondayActive = CrmExtensions.isEnabled(tenant, CrmExtensionIds.MondayImport)
         running.forEach { job ->
-            // Las importaciones de monday esperan a que su extension vuelva a estar activa.
-            if (job.source == "monday" && !mondayActive) return@forEach
+            if (!accept(job)) return@forEach
             val context = Context(
                 CrmRepository.stages(tenant), CrmRepository.interests(tenant), CrmRepository.users(tenant), today, job.source,
                 CrmFields.all(tenant), CrmImportTargets.customerFields(tenant),
             )
-            val token = if (job.source == "monday") mondayToken(tenant) else null
-            val label = when (job.source) { "monday" -> "monday"; "leadspro" -> "CT Leads Pro"; else -> "archivo" }
+            val sourceLabel = label(job)
             val pending = tenant.prepareStatement("SELECT row_no, data::text FROM crm_import_rows WHERE job_id = ? AND status = 'pending' ORDER BY row_no LIMIT ?").use { query ->
                 query.setObject(1, job.id)
                 query.setInt(2, limit - done)
@@ -818,23 +624,13 @@ object CrmImport {
                 val values = values(row, job.mapping, context)
                 var (status, message) = try {
                     transaction(tenant) {
-                        val (outcome, text) = apply(tenant, values, context, label, row[ListingsColumn])
+                        val (outcome, text) = apply(tenant, values, context, sourceLabel, row[ListingsColumn])
                         outcome.status to text
                     }
                 } catch (failure: Exception) {
                     "error" to (failure.message ?: failure.javaClass.simpleName)
                 }
-                if ((status == "created" || status == "updated") && values.files.isNotEmpty()) {
-                    val problems = when {
-                        files == null -> emptyList()
-                        token == null -> listOf("sin token de monday para descargar los archivos")
-                        else -> leadByKey(tenant, values.key)?.let { leadId ->
-                            val places = values.files.toMap()
-                            CrmMondayFiles.import(tenant, files, token, leadId, values.files.map { it.first }) { places[it] }
-                        }.orEmpty()
-                    }
-                    if (problems.isNotEmpty()) message = listOf(message, "Archivos: " + problems.take(5).joinToString("; ")).filter { it.isNotEmpty() }.joinToString(" | ")
-                }
+                message = afterRow(job, row, values, status, message)
                 tenant.prepareStatement("UPDATE crm_import_rows SET status = ?, message = ? WHERE job_id = ? AND row_no = ?").use { update ->
                     update.setString(1, status)
                     update.setString(2, message.take(500))
@@ -869,7 +665,7 @@ object CrmImport {
         return done
     }
 
-    private fun <T> transaction(tenant: Connection, block: () -> T): T {
+    fun <T> transaction(tenant: Connection, block: () -> T): T {
         val previous = tenant.autoCommit
         tenant.autoCommit = false
         try {

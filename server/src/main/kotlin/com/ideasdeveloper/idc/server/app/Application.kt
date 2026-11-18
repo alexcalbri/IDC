@@ -275,6 +275,7 @@ fun Application.module() {
         moduleClassLoader = { id -> moduleRegistry.module(id)?.javaClass?.classLoader },
     )
     val extensionRegistry = ExtensionRegistry.of(serverModules, packageExtensions)
+    serverModules.forEach { module -> module.linkExtensions(extensionRegistry.forModule(module.definition.id)) }
     extensionService = ExtensionService(
         connections = extensionConnections,
         storage = extensionStorage,
@@ -407,7 +408,9 @@ fun Application.module() {
         }
         rateLimit(RateLimitName("admin")) {
             val packageActors = ExtensionActors(moduleAccessService, ServerOwnerAuthorizer(DatabaseFactory.getDataSource(), centralSessions), extensionConnections)
-            extensionPackageRoutes(extensionPackages) { call ->
+            // Instalar por ZIP/URL queda apagado salvo que EXTENSION_UPLOAD_ENABLED=true (mismo patron que MODULE_SIGNATURE_ENFORCED).
+            val uploadEnabled = System.getenv("EXTENSION_UPLOAD_ENABLED")?.trim()?.equals("true", ignoreCase = true) ?: false
+            extensionPackageRoutes(extensionPackages, uploadEnabled) { call ->
                 (packageActors.serverOwner(call) as? ExtensionActorLookup.Found)?.actor?.role
             }
         }

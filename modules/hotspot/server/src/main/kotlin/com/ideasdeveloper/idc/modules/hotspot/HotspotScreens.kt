@@ -356,14 +356,14 @@ object HotspotScreens {
         val crmInstalled = HotspotCrmPipeline.isInstalled(tenant)
         val crmStages = HotspotCrmPipeline.stages(tenant)
         // Only the enabled ecosystem's settings are shown; access times and mail work with any of them.
-        val controllerCards = when (controller) {
-            null -> listOf(
+        val controllerCards = when {
+            controller == null -> listOf(
                 UiCard(
                     title = "Controlador de red",
                     children = listOf(UiStatus("Elige el controlador de red (UniFi u otro) en Integraciones.", UiTone.Warning)),
                 )
             )
-            UnifiController -> listOf(unifiCard(settings, permissions, values)) + pickers
+            controller.id == HotspotIntegrations.NetworkUnifi -> listOf(unifiCard(settings, permissions, values)) + pickers
             else -> emptyList()
         }
         val crmFields = listOf(
@@ -582,7 +582,7 @@ object HotspotScreens {
         formId = "unifi",
     )
 
-    fun consolePicker(consoles: List<UnifiConsole>, selectedId: String?): UiNode = UiCard(
+    fun consolePicker(consoles: List<ControllerOption>, selectedId: String?): UiNode = UiCard(
         title = "Selecciona la consola",
         children = if (consoles.isEmpty()) {
             listOf(UiText("La API key no tiene acceso a ninguna consola.", UiTextStyle.Caption))
@@ -594,7 +594,7 @@ object HotspotScreens {
                         UiCard(
                             title = console.name,
                             children = listOfNotNull(
-                                UiText(listOf(console.model, console.state).filter { it.isNotBlank() }.joinToString(" - ").ifBlank { "Consola UniFi" }, UiTextStyle.Caption),
+                                UiText(console.detail.ifBlank { "Consola UniFi" }, UiTextStyle.Caption),
                                 UiText(console.id, UiTextStyle.Caption),
                                 if (console.id == selectedId) UiStatus("Seleccionada", UiTone.Success) else null,
                                 UiButton("Usar esta consola", unifiStep("console", console.id)),
@@ -606,7 +606,7 @@ object HotspotScreens {
         },
     )
 
-    fun sitePicker(sites: List<UnifiSite>, selectedId: String?): UiNode = UiCard(
+    fun sitePicker(sites: List<ControllerOption>, selectedId: String?): UiNode = UiCard(
         title = "Selecciona el sitio",
         children = if (sites.isEmpty()) {
             listOf(UiText("Esta consola no tiene sitios disponibles en la API de UniFi.", UiTextStyle.Caption))
@@ -618,7 +618,7 @@ object HotspotScreens {
                         UiCard(
                             title = site.name,
                             children = listOfNotNull(
-                                site.reference.takeIf { it.isNotBlank() }?.let { UiText("Referencia: $it", UiTextStyle.Caption) },
+                                site.detail.takeIf { it.isNotBlank() }?.let { UiText(it, UiTextStyle.Caption) },
                                 UiText(site.id, UiTextStyle.Caption),
                                 if (site.id == selectedId) UiStatus("Seleccionado", UiTone.Success) else null,
                                 UiButton("Usar este sitio", unifiStep("site", site.id)),

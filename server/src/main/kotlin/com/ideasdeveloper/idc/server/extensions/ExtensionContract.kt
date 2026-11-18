@@ -31,7 +31,7 @@ data class ExtensionManifest(
 
 @Serializable
 data class ExtensionSource(
-    /** "bundled" (shipped inside its module) or "github" (folder at a pinned commit). */
+    /** "bundled" (shipped inside its module), "github" (folder at a pinned commit), "zip" (uploaded ZIP) or "url" (ZIP from an https URL). */
     val type: String = ExtensionSourceType.Bundled,
     val url: String? = null,
 )
@@ -39,6 +39,11 @@ data class ExtensionSource(
 object ExtensionSourceType {
     const val Bundled = "bundled"
     const val GitHub = "github"
+    const val Zip = "zip"
+    const val Url = "url"
+
+    /** Origenes de un paquete externo (los que se instalan desde fuera del modulo). */
+    val External = setOf(GitHub, Zip, Url)
 }
 
 @Serializable

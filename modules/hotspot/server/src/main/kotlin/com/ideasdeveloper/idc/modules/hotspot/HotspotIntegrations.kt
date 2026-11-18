@@ -1,7 +1,7 @@
 package com.ideasdeveloper.idc.modules.hotspot
 
+import com.ideasdeveloper.idc.server.extensions.ServerExtension
 import java.sql.Connection
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Result of asking the network controller to let a device in. [wrongNetwork] marks a refusal
@@ -49,41 +49,44 @@ data class ConnectedGuest(val mac: String, val ssid: String, val authorized: Boo
 
 class NetworkControllerException(message: String) : Exception(message)
 
-object UnifiController : NetworkController {
-    override val id = "unifi"
-    override val name = "UniFi"
-    override val description = "Autoriza a los visitantes en una consola UniFi a traves de UniFi Site Manager (api.ui.com)."
+/**
+ * Opcion id->nombre (con un detalle opcional) que una extension de controlador ofrece para elegir la
+ * consola o el sitio en la pantalla de Integraciones y por MCP, sin que el hotspot conozca los tipos
+ * propios del controlador.
+ */
+data class ControllerOption(val id: String, val name: String, val detail: String = "")
 
-    override fun isConfigured(settings: HotspotSettings) = settings.unifiConfigured
+/**
+ * Lo implementa una extension (p. ej. UniFi) para aportar un [NetworkController] sin que el hotspot
+ * dependa de su codigo. Las extensiones habilitadas se enlazan en [HotspotModuleExtensions] al arrancar
+ * ([HotspotServerModule.linkExtensions]); el modulo las descubre solo por este contrato.
+ */
+interface NetworkControllerProvider {
+    fun controller(): NetworkController
 
-    override fun authorizeGuest(settings: HotspotSettings, mac: String, ssid: String) = UnifiClient.authorizeGuest(settings, mac, ssid)
+    /**
+     * Consolas que alcanza la API key guardada en [settings] (controladores con seleccion de
+     * consola/sitio, como UniFi). Lanza [NetworkControllerException] si no se pueden leer.
+     */
+    fun consoles(settings: HotspotSettings): List<ControllerOption>
 
-    override fun disconnectGuest(settings: HotspotSettings, mac: String) = UnifiClient.unauthorizeGuest(settings, mac)
+    /** Sitios de la consola [consoleId]. Lanza [NetworkControllerException] si no se pueden leer. */
+    fun sites(settings: HotspotSettings, consoleId: String): List<ControllerOption>
+}
 
-    override fun connectedGuests(settings: HotspotSettings): List<ConnectedGuest> = try {
-        UnifiClient.connectedGuests(settings)
-    } catch (failure: Exception) {
-        throw NetworkControllerException(failure.message.orEmpty())
+/** Registro de los controladores de red que aportan las extensiones del hotspot (las entrega el Core al arrancar). */
+object HotspotModuleExtensions {
+    @Volatile
+    private var providers: List<NetworkControllerProvider> = emptyList()
+
+    fun link(extensions: List<ServerExtension>) {
+        providers = extensions.filterIsInstance<NetworkControllerProvider>()
     }
 
-    // The settings screen lists the SSIDs on every render; a short cache spares a cloud call each time.
-    private const val SsidCacheMillis = 60_000L
-    private val ssidCache = ConcurrentHashMap<List<String>, Pair<Long, List<String>>>()
+    fun controllers(): List<NetworkController> = providers.map { it.controller() }
 
-    override fun wifiNetworks(settings: HotspotSettings): List<String> {
-        if (!settings.unifiConfigured) throw NetworkControllerException("Configura la consola y el sitio de UniFi primero.")
-        val key = listOf(settings.unifiApiKey!!, settings.unifiConsoleId!!, settings.unifiSiteId!!)
-        val now = System.currentTimeMillis()
-        ssidCache[key]?.let { (readAt, ssids) -> if (now - readAt < SsidCacheMillis) return ssids }
-        return try {
-            UnifiClient.wifiNetworks(key[0], key[1], key[2]).also { ssids ->
-                ssidCache.entries.removeIf { now - it.value.first >= SsidCacheMillis }
-                ssidCache[key] = now to ssids
-            }
-        } catch (failure: UnifiException) {
-            throw NetworkControllerException(failure.message.orEmpty())
-        }
-    }
+    /** El proveedor del controlador [id], o null si su extension no esta instalada. */
+    fun providerFor(id: String): NetworkControllerProvider? = providers.firstOrNull { it.controller().id == id }
 }
 
 /** An integration the hotspot offers: a network controller ("network") or another module ("module"). */
@@ -100,11 +103,14 @@ object HotspotIntegrations {
     const val Module = "module"
     // Users of the company connect with their user code on networks set to "Codigo de usuario".
     const val Users = "usuarios"
+    // Id del controlador UniFi (su codigo vive en la extension "unifi"); el hotspot lo conoce solo para su UI/MCP.
+    const val NetworkUnifi = "unifi"
 
-    val controllers: List<NetworkController> = listOf(UnifiController)
+    // Network controllers come from the enabled extensions; none when no controller extension is installed.
+    val controllers: List<NetworkController> get() = HotspotModuleExtensions.controllers()
 
-    // Integrations defined by the hotspot itself.
-    val builtIn: List<HotspotIntegration> = controllers.map { HotspotIntegration(it.id, Network, it.name, it.description) } +
+    // Integrations defined by the hotspot itself (network controllers from extensions + Usuarios).
+    val builtIn: List<HotspotIntegration> get() = controllers.map { HotspotIntegration(it.id, Network, it.name, it.description) } +
         HotspotIntegration(
             Users, Module, "Usuarios",
             "Los usuarios de la empresa se conectan con su codigo de usuario a las redes con acceso \"Codigo de usuario\".",

@@ -102,6 +102,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V009__add_server_owner_company_sessions.sql
     database/control/migrations/V010__create_core_update_requests.sql
     database/control/migrations/V011__create_extensions.sql
+    database/control/migrations/V012__extension_zip_url_sources.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -645,6 +646,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V008__add_company
 apply_migration "$DB_NAME" control database/control/migrations/V009__add_server_owner_company_sessions.sql
 apply_migration "$DB_NAME" control database/control/migrations/V010__create_core_update_requests.sql
 apply_migration "$DB_NAME" control database/control/migrations/V011__create_extensions.sql
+apply_migration "$DB_NAME" control database/control/migrations/V012__extension_zip_url_sources.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
@@ -706,6 +708,8 @@ install -d -m 700 "$CONFIG_DIR"
     # Optional GitHub token (fine-grained, read-only on public repositories) to avoid GitHub's
     # 60 requests/hour limit when listing and installing modules; edit and restart ideascore.
     printf 'MODULE_GITHUB_TOKEN=\n'
+    # Instalar extensiones desde un ZIP o una URL queda apagado por seguridad; pon true y reinicia ideascore para activarlo.
+    printf 'EXTENSION_UPLOAD_ENABLED=false\n'
     # Llave maestra que envuelve la llave de datos de cada empresa (secretos cifrados). Respaldala: nunca se regenera.
     printf 'IDC_MASTER_KEY=%s\n' "$(openssl rand -base64 32)"
     printf 'VERSION_CATALOG_URL=\n'

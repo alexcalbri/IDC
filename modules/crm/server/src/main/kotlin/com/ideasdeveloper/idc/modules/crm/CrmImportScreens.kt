@@ -26,9 +26,15 @@ object CrmImportScreens {
     private const val Default = "Primera etapa abierta"
     private const val Keep = "Sin cambios"
     private val statusLabels = mapOf(
-        "reading" to "Leyendo monday", "mapping" to "Por mapear", "running" to "Importando", "done" to "Terminada", "canceled" to "Cancelada", "failed" to "Fallo",
+        "mapping" to "Por mapear", "running" to "Importando", "done" to "Terminada", "canceled" to "Cancelada", "failed" to "Fallo",
     )
-    private val sourceLabels = mapOf("file" to "Archivo", "monday" to "monday", "leadspro" to "CT Leads Pro")
+    private val sourceLabels = mapOf("file" to "Archivo")
+
+    private fun sourceLabel(job: CrmImportJob) = CrmImportSources.label(job.source) ?: sourceLabels[job.source]
+
+    // El estado "reading" lo pone una fuente externa de lectura en segundo plano: ella lo nombra.
+    private fun statusLabel(job: CrmImportJob) =
+        if (job.status == "reading") CrmImportSources.of(job.source)?.readingLabel ?: "Leyendo" else statusLabels[job.status]
 
     // ---- Sources and jobs ----
 
@@ -36,52 +42,19 @@ object CrmImportScreens {
         val jobs = CrmImport.jobs(context.tenant).map { job ->
             UiListItem(
                 title = job.name,
-                subtitle = "${sourceLabels[job.source]} - ${statusLabels[job.status]} - ${job.processed}/${job.total} filas" +
+                subtitle = "${sourceLabel(job)} - ${statusLabel(job)} - ${job.processed}/${job.total} filas" +
                     if (job.processed > 0) " (${job.created} nuevos, ${job.updated} actualizados, ${job.conflicts} por revisar, ${job.skipped} omitidos)" else "",
                 trailing = job.createdAt.atZone(ZoneId.systemDefault()).toLocalDate().toString(),
                 action = UiNavigate("importjob", mapOf("job" to job.id.toString())),
             )
         }
-        val wordpress = CrmWordPress.load(context.tenant).ready && CrmExtensions.isEnabled(context.tenant, CrmExtensionIds.WordPress)
-        val mondayMissing = CrmExtensions.missingNodes(context.tenant, CrmExtensionIds.MondayImport)
-        val mondayToken = CrmImport.mondayToken(context.tenant)
-        // Sin la extension de monday activa, en su lugar se muestra el aviso para instalarla.
-        val mondayCards: List<UiNode> = mondayMissing ?: listOf(
-                UiCard(
-                    listOfNotNull(
-                        UiForm(
-                            "mondayToken",
-                            listOf(
-                                UiField("token", "Token de la API de monday", type = "password", required = mondayToken == null,
-                                    help = "monday > tu avatar > Developers > Mi token. Se guarda para la empresa."),
-                            ),
-                            mapOf("token" to CrmSecrets.mask(mondayToken)),
-                            submit = UiButton("Guardar y cargar tableros", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayToken"), formId = "mondayToken")),
-                        ),
-                        mondayToken?.let {
-                            UiRow(
-                                listOf(
-                                    UiButton("Cargar tableros", UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
-                                    UiButton("Quitar token", UiRequest(UiRoute + "/import", params = mapOf("op" to "mondayForget"), confirm = "Se borra el token de monday guardado. Continuar?"), style = "secondary"),
-                                ),
-                            )
-                        },
-                    ),
-                    title = "monday",
-                )
-        )
+        // Las fuentes externas ponen aqui sus tarjetas (o el aviso para instalar su extension).
+        val sourceCards: List<UiNode> = CrmImportSources.all.flatMap { it.importCards(context) }
         return listOfNotNull(
             UiText("Cada importacion pasa por mapeo de columnas, vista previa y luego se aplica por lotes. Se busca a cada persona por correo o telefono; si el correo y el telefono son de clientes distintos la fila queda por revisar. Importar de nuevo actualiza los leads ya importados."),
             UiGrid(
                 listOf(
-                    *mondayCards.toTypedArray(),
-                    UiCard(
-                        listOf(
-                            UiText("Lee los leads de CT Leads Pro del sitio conectado: etapa, agente, origen, etiquetas, notas, mensajes y propiedades de interes."),
-                            UiButton("Leer CT Leads Pro", UiRequest(UiRoute + "/import", params = mapOf("op" to "leadspro")), enabled = wordpress),
-                        ) + listOfNotNull(UiText("Conecta el sitio en Integraciones > WordPress.", UiTextStyle.Caption).takeIf { !wordpress }),
-                        title = "Real estate (CT Leads Pro)",
-                    ),
+                    *sourceCards.toTypedArray(),
                     UiCard(
                         listOf(
                             UiForm(
@@ -105,32 +78,8 @@ object CrmImportScreens {
                 ),
                 minItemWidth = 300,
             ),
-            mondayToken?.takeIf { params["monday"] == "boards" && mondayMissing == null }?.let { mondayBoards(it) },
+            *CrmImportSources.all.mapNotNull { it.importExtras(context, params) }.toTypedArray(),
             UiCard(listOf(UiList(jobs, emptyText = "Sin importaciones.")), title = "Importaciones"),
-        )
-    }
-
-    /** Boards of the saved token grouped by workspace, each with a checkbox. */
-    private fun mondayBoards(token: String): UiNode {
-        val boards = try {
-            CrmImport.mondayBoards(token)
-        } catch (failure: CrmImportException) {
-            return UiCard(listOf(UiText(failure.message.orEmpty(), tone = UiTone.Danger)), title = "Tableros de monday")
-        }
-        if (boards.isEmpty()) return UiCard(listOf(UiText("El token no tiene acceso a ningun tablero activo.", tone = UiTone.Warning)), title = "Tableros de monday")
-        val fields = boards.map { board ->
-            UiField("board:${board.id}", board.name + board.items?.let { " ($it elementos)" }.orEmpty(), type = "boolean", section = board.workspace)
-        }
-        return UiCard(
-            listOf(
-                UiText("Marca los tableros que quieres importar. Cada tablero queda como interes."),
-                UiForm(
-                    "importMonday", fields,
-                    submit = UiButton("Importar tableros marcados", UiRequest(UiRoute + "/import", params = mapOf("op" to "monday", "monday" to "boards"), formId = "importMonday")),
-                    minFieldWidth = 320,
-                ),
-            ),
-            title = "Tableros de monday",
         )
     }
 
@@ -139,7 +88,7 @@ object CrmImportScreens {
             ?: return listOf(UiText("Esa importacion ya no existe.", tone = UiTone.Warning))
         val id = mapOf("job" to job.id.toString())
         val header = listOf(
-            UiRow(listOf(UiButton("Volver", UiNavigate("import"), style = "secondary"), UiText("${job.name} (${sourceLabels[job.source]}) - ${statusLabels[job.status]}", UiTextStyle.Subtitle))),
+            UiRow(listOf(UiButton("Volver", UiNavigate("import"), style = "secondary"), UiText("${job.name} (${sourceLabel(job)}) - ${statusLabel(job)}", UiTextStyle.Subtitle))),
             UiGrid(
                 listOf(
                     UiCard(listOf(UiMetric("Filas", job.total.toString(), caption = "${job.processed} procesadas"))),
@@ -151,21 +100,9 @@ object CrmImportScreens {
                 minItemWidth = 160,
             ),
         )
-        when (job.status) {
-            "reading" -> return header.take(1) + listOf(
-                UiText("Se estan leyendo ${job.boards.size} tablero(s) de monday con sus actualizaciones y subelementos. Un tablero grande tarda unos minutos; vuelve a abrir esta pantalla para seguir con el mapeo."),
-                UiRow(
-                    listOf(
-                        UiButton("Actualizar", UiNavigate("importjob", id), style = "secondary"),
-                        UiButton("Cancelar", UiRequest(UiRoute + "/importjob", params = id + ("op" to "cancel")), style = "danger"),
-                    ),
-                ),
-            )
-            "failed" -> return header.take(1) + listOf(
-                UiText(job.error.ifEmpty { "No se pudieron leer los tableros." }, tone = UiTone.Danger),
-                UiButton("Elegir tableros de nuevo", UiNavigate("import", mapOf("monday" to "boards")), style = "secondary"),
-            )
-        }
+        // Los estados de lectura en segundo plano (reading, failed) los pinta la fuente externa del job.
+        CrmImportSources.of(job.source)?.statusScreen(job, header.take(1))?.let { return it }
+        if (job.status == "failed") return header.take(1) + listOf(UiText(job.error.ifEmpty { "No se pudo leer el origen." }, tone = UiTone.Danger))
         if (job.status != "mapping") {
             val problems = (CrmImport.rows(context.tenant, job, "conflict") + CrmImport.rows(context.tenant, job, "error")).take(50).map { (rowNo, row, message) ->
                 UiListItem("Fila $rowNo: ${row.values.firstOrNull().orEmpty()}", message)
@@ -178,12 +115,11 @@ object CrmImportScreens {
         }
         val fieldOptions = CrmImportTargets.options(context.fields, CrmImportTargets.customerFields(context.tenant))
         val columnFields = job.columns.map { column ->
-            val type = job.columnTypes[column]?.takeIf { it.isNotEmpty() }?.let { " (monday: $it)" }.orEmpty()
+            val type = job.columnTypes[column]?.takeIf { it.isNotEmpty() }?.let { CrmImportSources.of(job.source)?.columnLabel(it) }.orEmpty()
             UiField("col:$column", column + type, type = "dropdown", options = fieldOptions.values.toList(), section = "Columnas")
         }
         // Columns proposed as new fields: the user confirms them by saving the mapping.
         val toCreate = job.columns.filter { job.mapping.columns[it] in setOf(CrmImportTargets.NewCrm, CrmImportTargets.NewCustomer) }
-        val fileColumns = job.columns.filter { job.columnTypes[it] == "file" }
         val columnValues = job.columns.associate { column -> "col:$column" to (fieldOptions[job.mapping.columns[column].orEmpty()] ?: fieldOptions.getValue("")) }
         fun valueFields(field: String, prefix: String, section: String, options: List<String>, mapped: Map<String, String>) =
             CrmImport.distinctValues(context.tenant, job, field).map { value -> UiField("$prefix:$value", value, type = "dropdown", options = options, section = section) } to
@@ -234,7 +170,7 @@ object CrmImportScreens {
                         UiList(
                             columns.map { column ->
                                 val target = if (job.mapping.columns[column] == CrmImportTargets.NewCustomer) "campo del cliente" else "campo del CRM"
-                                val (type, multiple) = CrmImportTargets.crmType(job.columnTypes[column])
+                                val (type, multiple) = CrmImportSources.fieldType(job.source, job.columnTypes[column])
                                 UiListItem(column, "Se crearia como $target de tipo ${type.label}${if (multiple) " (varias opciones)" else ""}")
                             },
                         ),
@@ -242,13 +178,7 @@ object CrmImportScreens {
                     title = "Campos que faltan",
                 )
             },
-            fileColumns.takeIf { it.isNotEmpty() || job.source == "monday" }?.let {
-                UiText(
-                    "Los archivos de las columnas que mapees a \"Archivos del lead\" y los adjuntos de las actualizaciones se descargan de monday al importar " +
-                        "(hasta ${CrmAttachments.MaxFileBytes / (1024 * 1024)} MB cada uno) y quedan en ${CrmFields.DocumentsLabel}. Las actualizaciones y sus respuestas se importan como notas.",
-                    UiTextStyle.Caption,
-                )
-            },
+            *(CrmImportSources.of(job.source)?.mappingNotes(job).orEmpty()).toTypedArray(),
             UiCard(
                 listOf(UiTable(sampleColumns.map { UiTableColumn(it, it) }, sample.map { (_, row, _) -> sampleColumns.associateWith { row[it].orEmpty().take(60) } })),
                 title = "Primeras filas",

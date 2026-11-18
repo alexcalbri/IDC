@@ -84,7 +84,6 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V020__system_sections.sql",
         "modules/crm/migrations/V021__automations_templates_translation.sql",
         "modules/crm/migrations/V022__extensions_and_secrets.sql",
-        "modules/crm/migrations/V023__cloudbeds_default_country.sql",
     )
 
     override val runtimeTables = listOf(
@@ -104,16 +103,7 @@ object CrmServerModule : ServerModule {
         "crm_spam_settings",
         "crm_spam_log",
         "crm_user_settings",
-        "crm_meta_settings",
-        "crm_meta_log",
-        "crm_meta_server_app",
-        "crm_meta_routes",
-        "crm_meta_tickets",
-        "crm_encuentra24_settings",
-        "crm_wordpress_settings",
-        "crm_wp_agents",
         "crm_lead_items",
-        "crm_cloudbeds_settings",
         "crm_reservations",
         "crm_import_jobs",
         "crm_import_rows",
@@ -129,11 +119,11 @@ object CrmServerModule : ServerModule {
     /**
      * A duplicated company gets the same pipeline, interests, custom fields, templates, spam rules
      * and import presets. Leads, conversations and per-user settings stay behind, and so do the
-     * integrations (mail, Meta, WordPress, Encuentra24, Cloudbeds, monday): they are connected again.
+     * integrations (mail, Meta, WordPress, Encuentra24, Cloudbeds y las demas extensiones): they are connected again.
      */
     override val duplicatedSettings = listOf(
         // The translation key is a credential of the integration: the copy connects it again.
-        SettingsTable("crm_settings", reset = mapOf("monday_token" to null, "digest_sent_on" to null, "translation_api_key" to "", "extensions_migrated_at" to null)),
+        SettingsTable("crm_settings", reset = mapOf("digest_sent_on" to null, "translation_api_key" to "", "extensions_migrated_at" to null)),
         SettingsTable("crm_stages"),
         SettingsTable("crm_interests"),
         SettingsTable("crm_field_sections"),
@@ -146,9 +136,13 @@ object CrmServerModule : ServerModule {
         SettingsTable("crm_import_presets"),
     )
 
-    // Integrations of the CRM that each company installs on its own (EXTENSIONS.md).
+    // Integrations of the CRM that each company installs on its own (EXTENSIONS.md). All of them are packages now (extensions/...): none ships bundled.
     override val bundledExtensions: List<ServerExtension>
-        get() = listOf(CrmMetaExtension, CrmMondayExtension, CrmWordPressExtension, CrmEncuentra24Extension, CrmCloudbedsExtension)
+        get() = emptyList()
+
+    override fun linkExtensions(extensions: List<ServerExtension>) {
+        CrmModuleExtensions.link(extensions)
+    }
 
     override val mcp: ModuleMcp
         get() = CrmMcpTools.mcp
@@ -185,8 +179,8 @@ object CrmServerModule : ServerModule {
         ModuleJob("imap", Duration.ofMinutes(5)) { context -> readMailbox(context.tenant, context.access.secrets) },
         // Contacts of the company listings in Encuentra24.
         // Cloudbeds: welcome emails before check-in and reservation statuses (archive after check-out).
-        ModuleJob("cloudbeds-welcome", Duration.ofMinutes(15)) { context -> CrmCloudbeds.sendWelcomes(context.tenant, LocalDateTime.now()) },
-        ModuleJob("cloudbeds-sync", Duration.ofMinutes(30)) { context -> CrmCloudbeds.syncStatuses(context.tenant, java.time.LocalDate.now()) },
+        ModuleJob("cloudbeds-welcome", Duration.ofMinutes(15)) { context -> CrmModuleExtensions.cloudbeds()?.sendWelcomes(CrmHost, context.tenant, LocalDateTime.now()) ?: 0 },
+        ModuleJob("cloudbeds-sync", Duration.ofMinutes(30)) { context -> CrmModuleExtensions.cloudbeds()?.syncStatuses(CrmHost, context.tenant, java.time.LocalDate.now()) ?: 0 },
         // Date automations: run (once per lead and value of the date) or warn about missing data.
         ModuleJob("automations", Duration.ofMinutes(5)) { context -> CrmAutomationEngine.runDue(context.tenant, context.notifier) },
         // Event automations (lead created, stage or field changed, new message) are queued when the event happens and run here, up to 50 a minute;
@@ -196,20 +190,23 @@ object CrmServerModule : ServerModule {
         ModuleJob("automations-purge", Duration.ofHours(24)) { context -> CrmAutomationStore.purge(context.tenant) },
         // Archive after check-out (without Cloudbeds): leads of the chosen stages whose end date arrived.
         ModuleJob("exit-archive", Duration.ofMinutes(15)) { context -> CrmExit.archiveDue(context.tenant, java.time.Instant.now()) },
-        // Imports: queued monday boards are read, then imports in progress apply 300 rows a minute.
+        // Imports: what the external sources queued (CrmImportSources) is read, then imports in progress apply 300 rows
+        // a minute: the generic runner first and then the one of each source.
         ModuleJob("import", Duration.ofMinutes(1)) { context ->
-            CrmImport.readQueued(context.tenant)
-            CrmImport.runPending(context.tenant, 300, java.time.LocalDate.now(), context.access.files(context.companyCode, CrmModule.id))
+            CrmImportSources.readQueued(context.tenant)
+            CrmImportSources.runPending(context.tenant, 300, java.time.LocalDate.now(), context.access.files(context.companyCode, CrmModule.id))
         },
         ModuleJob("encuentra24", Duration.ofMinutes(5)) { context ->
-            if (CrmExtensions.isEnabled(context.tenant, CrmExtensionIds.Encuentra24) && CrmEncuentra24.load(context.tenant).ready) {
-                runCatching { CrmEncuentra24.sync(context.tenant) { leadId -> CrmNotify.newLead(context.tenant, leadId) } }
+            // La importacion vive en la extension "encuentra24"; sin ella el trabajo no hace nada.
+            val provider = CrmModuleExtensions.encuentra24()
+            if (provider != null && provider.active(CrmHost, context.tenant)) {
+                runCatching { provider.sync(CrmHost, context.tenant, null) }
             }
         },
         // Once per company (and again until the master key exists): integrations already configured become enabled extensions and
-        // their plain-text secrets are sealed. The server workspace also seals the Meta app of the server owner.
+        // their plain-text secrets are sealed.
         ModuleJob("extensions-migration", Duration.ofMinutes(10)) { context ->
-            val (registered, sealed) = CrmExtensions.migrateTenant(context.tenant, context.access.secrets, CrmMetaServer.serverWorkspace() == context.companyCode)
+            val (registered, sealed) = CrmExtensions.migrateTenant(context.tenant, context.access.secrets)
             if (registered > 0 || sealed > 0) {
                 org.slf4j.LoggerFactory.getLogger("CrmExtensions").info("CRM {}: {} integracion(es) registradas como extensiones, {} secreto(s) cifrados.", context.companyCode, registered, sealed)
             } else if (!context.access.secrets.available && secretsWarned.compareAndSet(false, true)) {
@@ -255,9 +252,10 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.26.1",
+        version = "0.27.0",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.7.0",
+        supportsExtensions = true,
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas. Quien es mencionado en una nota puede leer ese lead y responder con notas sin este permiso."),
@@ -272,12 +270,11 @@ object CrmServerModule : ServerModule {
     )
 
     override fun routes(route: Route, access: ModuleAccessService) {
-        CrmMetaServer.access = access
         CrmCustomerEvents.access = access
         CrmLeadEvents.access = access
         // Secrets of the integrations are sealed with the key of each company database (CrmSecrets).
         CrmSecrets.box = access.secrets
-        // The integrations are extensions (CrmMetaExtension, CrmWordPressExtension...): their public routes live under /modules/crm/extensions/<id>.
+        // The integrations are extensions (los paquetes en extensions/...): their public routes live under /modules/crm/extensions/<id>.
         // The old /modules/crm/meta/..., /modules/crm/hooks/... and /modules/crm/wordpress/... routes no longer answer.
 
         route.route(CrmScreens.UiRoute) {
@@ -446,6 +443,12 @@ object CrmServerModule : ServerModule {
         extensionOfOperation?.let { id -> CrmExtensions.inactive(tenant, id)?.let { return show("integrations", UiNotice(it, UiTone.Warning), emptyMap()) } }
 
         return try {
+            // Las acciones propias de las fuentes externas de importacion (las trae su extension) las atiende la fuente.
+            if (screen == "import") {
+                CrmImportSources.action(tenant, params["op"].orEmpty(), values, actor.userId)?.let { result ->
+                    return show(result.screen, UiNotice(result.message, result.tone), result.params)
+                }
+            }
             when ("$screen:${params["op"]}") {
                 "pipeline:move" -> {
                     val lead = visibleLead("card") ?: return show(
@@ -669,7 +672,7 @@ object CrmServerModule : ServerModule {
                     show("automations", UiNotice(if (deleted) "Automatizacion eliminada." else "Esa automatizacion ya no existe.", if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
                 }
                 "automations:welcomeOff" -> {
-                    CrmCloudbeds.setWelcomeEnabled(tenant, false)
+                    CrmHost.setWelcomeEnabled(tenant, false)
                     show("automations", UiNotice("Bienvenida de Cloudbeds apagada: solo saldra el correo de tus automatizaciones.", UiTone.Success), emptyMap())
                 }
                 "lead:reviewed" -> {
@@ -759,14 +762,14 @@ object CrmServerModule : ServerModule {
                 }
                 "integrations:metaSave" -> {
                     val merged = try {
-                        CrmMeta.merge(CrmMeta.load(tenant), values)
+                        CrmHost.metaMerge(CrmHost.metaSettings(tenant), values)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
-                    CrmMeta.save(tenant, merged)
+                    CrmHost.saveMeta(tenant, merged)
                     // Saving connects everything at once: page token and Instagram, and the WhatsApp account.
                     if (!merged.enabled || merged.systemToken == null) return show("integrations", UiNotice("Meta guardado.", UiTone.Success), emptyMap())
-                    val setup = CrmMeta.setup(tenant, merged)
+                    val setup = CrmHost.metaSetup(tenant, merged)
                     show(
                         "integrations",
                         UiNotice("Meta guardado. ${setup.notice}".trim(), if (setup.problems.isEmpty()) UiTone.Success else UiTone.Warning),
@@ -775,60 +778,60 @@ object CrmServerModule : ServerModule {
                 }
                 "integrations:metaServerApp" -> {
                     // Only the server owner, from the server workspace, configures the server app.
-                    if (!permissions.serverOwner || CrmMetaServer.serverWorkspace() != permissions.companyCode) {
+                    if (!permissions.serverOwner || CrmHost.metaServerWorkspace() != permissions.companyCode) {
                         return show("integrations", UiNotice("Solo el dueno del servidor configura la app de Meta del servidor, desde el espacio del servidor.", UiTone.Danger), emptyMap())
                     }
                     val app = try {
-                        CrmMetaServer.mergeApp(CrmMetaServer.loadApp(tenant), values)
+                        CrmHost.metaMergeApp(CrmHost.metaLoadApp(tenant), values)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
-                    CrmMetaServer.saveApp(tenant, app)
+                    CrmHost.metaSaveApp(tenant, app)
                     show("integrations", UiNotice(if (app.enabled) "App de Meta del servidor guardada: las empresas ya pueden conectarse." else "App de Meta del servidor guardada (desactivada).", UiTone.Success), emptyMap())
                 }
                 "integrations:metaMode" -> {
                     val mode = params["mode"].takeIf { it == OwnMode || it == ServerMode }
                         ?: return show("integrations", UiNotice("Modo invalido.", UiTone.Danger), emptyMap())
-                    val current = CrmMeta.load(tenant)
-                    if (mode == ServerMode && CrmMetaServer.app()?.ready != true) {
+                    val current = CrmHost.metaSettings(tenant)
+                    if (mode == ServerMode && CrmHost.metaServerApp()?.ready != true) {
                         return show("integrations", UiNotice("El servidor no tiene una app de Meta activa.", UiTone.Warning), emptyMap())
                     }
                     if (mode != current.connectionMode) {
                         // Tokens of one mode are useless in the other: the company connects again.
-                        if (current.serverMode) CrmMetaServer.disconnect(tenant, permissions.companyCode)
-                        CrmMeta.save(
+                        if (current.serverMode) CrmHost.metaDisconnect(tenant, permissions.companyCode)
+                        CrmHost.saveMeta(
                             tenant,
-                            CrmMeta.load(tenant).copy(
+                            CrmHost.metaSettings(tenant).copy(
                                 connectionMode = mode, enabled = false, appSecret = null, verifyToken = null, systemToken = null,
                                 pageId = null, pageName = null, pageToken = null, instagramAccountId = null, instagramUsername = null,
                                 wabaId = null, phoneNumberId = null, messengerToken = null, instagramToken = null, sharedTokens = true,
                                 oauthToken = null, metaUserId = null,
                             ),
                         )
-                        CrmMeta.log(tenant, "modo", if (mode == ServerMode) "app del servidor" else "app propia")
+                        CrmHost.metaLog(tenant, "modo", if (mode == ServerMode) "app del servidor" else "app propia")
                     }
                     show("integrations", UiNotice(if (mode == ServerMode) "Ahora conecta la empresa con Meta." else "Configura la app propia de la empresa.", UiTone.Success), emptyMap())
                 }
                 "integrations:metaLink" -> {
-                    if (CrmMetaServer.app()?.ready != true) return show("integrations", UiNotice("El servidor no tiene una app de Meta activa.", UiTone.Warning), emptyMap())
-                    val ticket = CrmMetaServer.newTicket(tenant, actor.name)
+                    if (CrmHost.metaServerApp()?.ready != true) return show("integrations", UiNotice("El servidor no tiene una app de Meta activa.", UiTone.Warning), emptyMap())
+                    val ticket = CrmHost.metaNewTicket(tenant, actor.name)
                     show(
                         "integrations",
                         UiNotice("Abre la ventana de Meta, inicia sesion y elige la pagina y el numero. El enlace vence en 30 minutos.", UiTone.Info),
-                        mapOf("link" to CrmMetaServer.connectUrl(publicBase, permissions.companyCode, ticket)),
+                        mapOf("link" to CrmHost.metaConnectUrl(publicBase, permissions.companyCode, ticket)),
                     )
                 }
                 "integrations:metaDisconnect" -> {
-                    CrmMetaServer.disconnect(tenant, permissions.companyCode)
+                    CrmHost.metaDisconnect(tenant, permissions.companyCode)
                     show("integrations", UiNotice("Meta desconectado: ya no se reciben ni se envian mensajes por WhatsApp, Messenger ni Instagram.", UiTone.Success), emptyMap())
                 }
                 "integrations:metaServerOptions" -> {
-                    CrmMeta.save(tenant, CrmMeta.load(tenant).copy(recordEchoes = values["recordEchoes"] == "true"))
+                    CrmHost.saveMeta(tenant, CrmHost.metaSettings(tenant).copy(recordEchoes = values["recordEchoes"] == "true"))
                     show("integrations", UiNotice("Opciones de Meta guardadas.", UiTone.Success), emptyMap())
                 }
                 "integrations:e24Save" -> {
                     try {
-                        CrmEncuentra24.saveForm(tenant, values)
+                        CrmHost.saveEncuentra24Form(tenant, values)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
                     }
@@ -840,7 +843,7 @@ object CrmServerModule : ServerModule {
                             ?: return show("integrations", UiNotice("La fecha debe tener el formato AAAA-MM-DD.", UiTone.Danger), emptyMap())
                     }
                     val notice = try {
-                        val result = CrmEncuentra24.sync(tenant, from) { leadId -> CrmNotify.newLead(tenant, leadId) }
+                        val result = CrmHost.encuentra24Sync(tenant, from)
                         UiNotice("Encuentra24: $result.", UiTone.Success)
                     } catch (failure: CrmEncuentra24Exception) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
@@ -849,21 +852,25 @@ object CrmServerModule : ServerModule {
                 }
                 "integrations:wpSave" -> {
                     try {
-                        CrmWordPress.saveForm(tenant, values)
+                        CrmHost.saveWordPressForm(tenant, values)
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
                     show("integrations", UiNotice("WordPress guardado.", UiTone.Success), emptyMap())
                 }
                 "integrations:wpSecret" -> {
-                    val secret = CrmWordPress.newSecret(tenant)
+                    val secret = try {
+                        CrmHost.wordpressNewSecret(tenant)
+                    } catch (failure: CrmValidationException) {
+                        return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
+                    }
                     show("integrations", UiNotice("Secreto nuevo generado; pegalo en el plugin.", UiTone.Success), mapOf("secret" to secret))
                 }
                 "integrations:wpPing" -> {
                     val notice = try {
-                        UiNotice("Conexion correcta: ${CrmWordPress.ping(tenant)}.", UiTone.Success)
+                        UiNotice("Conexion correcta: ${CrmHost.wordpressPing(tenant)}.", UiTone.Success)
                     } catch (failure: CrmWordPressException) {
-                        CrmWordPress.recordError(tenant, failure.message.orEmpty())
+                        CrmHost.recordWordPressError(tenant, failure.message.orEmpty())
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
                     show("integrations", notice, emptyMap())
@@ -871,16 +878,16 @@ object CrmServerModule : ServerModule {
                 "integrations:wpAgentsSync" -> {
                     val notice = try {
                         val emails = CrmNotify.userSettings(tenant).mapValues { it.value.email }
-                        UiNotice("${CrmWordPress.syncAgents(tenant, context.users, emails)} agente(s) del sitio sincronizados.", UiTone.Success)
+                        UiNotice("${CrmHost.wordpressSyncAgents(tenant, context.users, emails)} agente(s) del sitio sincronizados.", UiTone.Success)
                     } catch (failure: CrmWordPressException) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
                     show("integrations", notice, emptyMap())
                 }
                 "integrations:wpAgentsSave" -> {
-                    CrmWordPress.agents(tenant).forEach { agent ->
+                    CrmHost.wordpressAgents(tenant).forEach { agent ->
                         val chosen = values["agent_${agent.wpUserId}"] ?: return@forEach
-                        CrmWordPress.mapAgent(tenant, agent.wpUserId, context.users.firstOrNull { it.name == chosen }?.id)
+                        CrmHost.wordpressMapAgent(tenant, agent.wpUserId, context.users.firstOrNull { it.name == chosen }?.id)
                     }
                     show("integrations", UiNotice("Agentes guardados.", UiTone.Success), emptyMap())
                 }
@@ -888,8 +895,8 @@ object CrmServerModule : ServerModule {
                     val lead = visibleLead("lead") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
                     val listingId = params["listing"]?.toLongOrNull() ?: return show("properties", UiNotice("Propiedad invalida.", UiTone.Danger), params - setOf("op", "listing"))
                     val notice = try {
-                        val listing = CrmWordPress.listing(tenant, listingId)
-                        CrmWordPress.linkListing(tenant, lead.id, listing, "Propiedad vinculada por ${actor.name}: ${listing.title}.")
+                        val listing = CrmHost.wordpressListing(tenant, listingId)
+                        CrmHost.wordpressLinkListing(tenant, lead.id, listing, "Propiedad vinculada por ${actor.name}: ${listing.title}.")
                         UiNotice("${listing.title} vinculada a ${lead.name}.", UiTone.Success)
                     } catch (failure: CrmWordPressException) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
@@ -961,50 +968,31 @@ object CrmServerModule : ServerModule {
                     show("integrations", UiNotice("Traduccion guardada.", UiTone.Success), emptyMap())
                 }
                 "integrations:cbSave" -> {
+                    val provider = CrmModuleExtensions.cloudbeds()
+                        ?: return show("integrations", UiNotice(CrmCloudbedsMissing, UiTone.Danger), emptyMap())
                     try {
-                        CrmCloudbeds.saveForm(tenant, values, CrmMail.templates(tenant))
+                        provider.saveSettings(CrmHost, tenant, values, CrmMail.templates(tenant))
                     } catch (failure: CrmValidationException) {
                         return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
                     }
                     show("integrations", UiNotice("Cloudbeds guardado.", UiTone.Success), emptyMap())
                 }
                 "integrations:cbTest" -> {
+                    val provider = CrmModuleExtensions.cloudbeds()
+                        ?: return show("integrations", UiNotice(CrmCloudbedsMissing, UiTone.Danger), emptyMap())
                     val notice = try {
-                        UiNotice("Conexion correcta con Cloudbeds: ${CrmCloudbeds.test(tenant)}.", UiTone.Success)
+                        UiNotice("Conexion correcta con Cloudbeds: ${provider.test(CrmHost, tenant)}.", UiTone.Success)
                     } catch (failure: CrmCloudbedsException) {
                         UiNotice(failure.message.orEmpty(), UiTone.Danger)
                     }
                     show("integrations", notice, emptyMap())
                 }
-                "import:mondayToken" -> {
-                    CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { return show("import", UiNotice(it, UiTone.Warning), emptyMap()) }
-                    val typed = values["token"].orEmpty().trim().takeIf { it.isNotEmpty() && !CrmSecrets.isPlaceholder(it) }
-                    if (typed == null && CrmImport.mondayToken(tenant) == null) return show("import", UiNotice("Escribe el token de la API de monday.", UiTone.Danger), emptyMap())
-                    typed?.let { CrmImport.saveMondayToken(tenant, it) }
-                    show("import", UiNotice("Token de monday guardado.", UiTone.Success), mapOf("monday" to "boards"))
-                }
-                "import:mondayForget" -> {
-                    CrmImport.saveMondayToken(tenant, null)
-                    show("import", UiNotice("Token de monday borrado.", UiTone.Success), emptyMap())
-                }
-                "import:monday" -> {
-                    CrmExtensions.inactive(tenant, CrmExtensionIds.MondayImport)?.let { return show("import", UiNotice(it, UiTone.Warning), emptyMap()) }
-                    // Reading a board takes minutes, longer than the app waits: the import job reads it.
-                    if (CrmImport.mondayToken(tenant) == null) return show("import", UiNotice("Guarda primero el token de la API de monday.", UiTone.Danger), emptyMap())
-                    val boards = values.filter { it.key.startsWith("board:") && it.value == "true" }.keys.map { it.removePrefix("board:") }
-                    val job = try {
-                        CrmImport.queueMonday(tenant, boards, actor.userId)
-                    } catch (failure: CrmImportException) {
-                        return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), mapOf("monday" to "boards"))
-                    }
-                    show("importjob", UiNotice("Se estan leyendo los tableros de monday.", UiTone.Success), mapOf("job" to job.toString()))
-                }
-                "import:text", "import:url", "import:leadspro" -> {
+                "import:text", "import:url" -> {
                     val (source, name, table) = try {
                         when (params["op"]) {
                             "text" -> Triple("file", values["name"].orEmpty().trim().ifEmpty { "CSV pegado ${context.today}" }, CrmImportParse.csv(values["csv"].orEmpty()))
                             "url" -> values["url"].orEmpty().trim().let { url -> Triple("file", url.substringAfterLast('/').take(80).ifEmpty { "Archivo" }, CrmImport.fromUrl(url)) }
-                            else -> Triple("leadspro", "CT Leads Pro ${context.today}", CrmImport.fromLeadsPro(tenant))
+                            else -> return show("import", UiNotice("Operacion de importacion desconocida.", UiTone.Danger), emptyMap())
                         }
                     } catch (failure: CrmImportException) {
                         return show("import", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
@@ -1076,7 +1064,7 @@ object CrmServerModule : ServerModule {
                 "integrations:metaNumber" -> {
                     val id = params["id"].orEmpty().takeIf { it.matches(Regex("^[0-9]{1,64}$")) }
                         ?: return show("integrations", UiNotice("Numero invalido.", UiTone.Danger), emptyMap())
-                    CrmMeta.save(tenant, CrmMeta.load(tenant).copy(phoneNumberId = id))
+                    CrmHost.saveMeta(tenant, CrmHost.metaSettings(tenant).copy(phoneNumberId = id))
                     show("integrations", UiNotice("Numero de WhatsApp guardado.", UiTone.Success), emptyMap())
                 }
                 "lead:delete" -> {
@@ -1189,7 +1177,7 @@ object CrmServerModule : ServerModule {
     }
 
     // Numbers of the WhatsApp account for the screen (id|number|name|platform;...), so the CRM number can be chosen.
-    private fun metaNumbers(setup: CrmMeta.Setup): Map<String, String> =
+    private fun metaNumbers(setup: MetaSetup): Map<String, String> =
         if (setup.numbers.isEmpty()) emptyMap()
         else mapOf("numbers" to setup.numbers.joinToString(";") { listOf(it.id, it.number, it.name, it.platform).joinToString("|") { part -> part.replace(";", ",").replace("|", "/") } })
 

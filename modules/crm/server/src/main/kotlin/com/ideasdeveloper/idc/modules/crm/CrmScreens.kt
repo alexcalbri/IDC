@@ -22,6 +22,7 @@ import com.ideasdeveloper.idc.ui.UiListItem
 import com.ideasdeveloper.idc.ui.UiMetric
 import com.ideasdeveloper.idc.ui.UiNavItem
 import com.ideasdeveloper.idc.ui.UiNavigate
+import com.ideasdeveloper.idc.ui.UiOpenExtensions
 import com.ideasdeveloper.idc.ui.UiOpenModule
 import com.ideasdeveloper.idc.ui.UiNavigation
 import com.ideasdeveloper.idc.ui.UiNode
@@ -271,7 +272,10 @@ object CrmScreens {
     private fun tabBar(context: Context, current: String): List<UiNode> {
         val selected = settingsTabOf(current)
         val tabs = settingsTabs.filter { context.permissions.has(it.permission) }
-        return listOf(UiRow(tabs.map { UiButton(it.label, UiNavigate(it.screen), style = if (it.screen == selected) "primary" else "secondary") }))
+        val buttons = tabs.map { UiButton(it.label, UiNavigate(it.screen), style = if (it.screen == selected) "primary" else "secondary") }
+        // Ultima pestana: abre la pantalla nativa de extensiones filtrada al CRM (apps viejas la ignoran).
+        val extensions = UiButton("Extensiones", UiOpenExtensions(CrmModule.id), style = "secondary").takeIf { context.permissions.has(Settings) }
+        return listOf(UiRow(buttons + listOfNotNull(extensions)))
     }
 
     // Tab Automatizaciones: the rules of the company (CrmAutomationScreens) and the exit rule.

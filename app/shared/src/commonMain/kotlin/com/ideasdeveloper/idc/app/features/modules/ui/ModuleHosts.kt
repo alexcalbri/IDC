@@ -59,6 +59,7 @@ import com.ideasdeveloper.idc.ui.UiNavigate
 import com.ideasdeveloper.idc.ui.UiNavigation
 import com.ideasdeveloper.idc.ui.UiNode
 import com.ideasdeveloper.idc.ui.UiNotice
+import com.ideasdeveloper.idc.ui.UiOpenExtensions
 import com.ideasdeveloper.idc.ui.UiOpenUrl
 import com.ideasdeveloper.idc.ui.UiOpenModule
 import com.ideasdeveloper.idc.ui.UiRequest
@@ -103,6 +104,8 @@ fun NativeModuleHost(
     modifier: Modifier = Modifier,
     initial: UiNavigate? = null,
     onOpenModule: (UiOpenModule) -> Unit = {},
+    // Abre la pantalla nativa de extensiones filtrada a un modulo (UiOpenExtensions).
+    onOpenExtensions: (String) -> Unit = {},
 ) {
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
@@ -158,6 +161,7 @@ fun NativeModuleHost(
             }
             is UiOpenUrl -> runCatching { uriHandler.openUri(action.url) }
             is UiOpenModule -> onOpenModule(action)
+            is UiOpenExtensions -> onOpenExtensions(action.moduleId)
             else -> Unit
         }
     }

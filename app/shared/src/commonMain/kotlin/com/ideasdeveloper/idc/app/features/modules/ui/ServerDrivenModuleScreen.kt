@@ -108,6 +108,8 @@ fun ServerDrivenModuleScreen(
     modifier: Modifier = Modifier,
     // Abre una pantalla de otro modulo (UiOpenModule), por ejemplo el lead del CRM de un cliente.
     onOpenModule: (UiOpenModule) -> Unit = {},
+    // Abre la pantalla nativa de extensiones de un modulo (entrada de su Configuracion).
+    onOpenExtensions: (String) -> Unit = {},
 ) {
     val companyIdentity = remember { CompanyIdentityStore.current() }
     // Pantalla pedida por otro modulo al abrir este (ModuleDeepLinks).
@@ -263,7 +265,7 @@ fun ServerDrivenModuleScreen(
             ) {
                 val panel = Modifier.fillMaxSize().clip(RoundedCornerShape(18.dp))
                 if (ui.type == "native") {
-                    NativeModuleHost(ui, callContext, primaryColor, panel, initial = deepLink, onOpenModule = onOpenModule)
+                    NativeModuleHost(ui, callContext, primaryColor, panel, initial = deepLink, onOpenModule = onOpenModule, onOpenExtensions = onOpenExtensions)
                 } else {
                     // Los navegadores embebidos se dibujan encima de Compose: se deja aire para que no tapen la X.
                     WebModuleHost(moduleId, callContext, primaryColor, Modifier.padding(top = 20.dp).then(panel))

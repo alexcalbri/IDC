@@ -20,7 +20,7 @@ object CrmExitScreens {
 
     fun card(context: CrmScreens.Context, submitted: Map<String, String>?): UiNode {
         val config = CrmExit.load(context.tenant)
-        val cloudbeds = CrmCloudbeds.load(context.tenant)
+        val cloudbeds = CrmHost.cloudbedsSettings(context.tenant)
         val section = "Etapas de origen"
         // Leads the automation would archive right now, per stage: shown before turning it on.
         val overdue = CrmExit.dueByStage(context.tenant, config, context.stages.map { it.id }, Instant.now())

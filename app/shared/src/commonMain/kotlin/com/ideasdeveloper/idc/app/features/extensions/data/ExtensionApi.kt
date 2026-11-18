@@ -13,10 +13,14 @@ import io.ktor.client.request.delete
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.forms.MultiPartFormDataContent
+import io.ktor.client.request.forms.formData
 import io.ktor.client.request.put
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
+import io.ktor.http.Headers
+import io.ktor.http.HttpHeaders
 import io.ktor.http.Url
 import io.ktor.http.contentType
 import io.ktor.http.encodeURLPathPart
@@ -205,6 +209,53 @@ class ExtensionApi(serverUrl: String) {
         }.ensureOk()
     }
 
+    // Instalacion desde ZIP o URL (solo server owner): el servidor deja el paquete en preparacion
+    // (staging, caduca a los 30 min) y devuelve su inspeccion; luego se autoriza (si no esta firmado) e instala.
+    suspend fun uploadPackage(token: String, id: String, fileName: String, bytes: ByteArray): ExtensionPackageStagedInspection = call {
+        val response = client.post("$baseUrl/server/extensions/upload") {
+            bearerAuth(token)
+            setBody(
+                MultiPartFormDataContent(
+                    formData {
+                        append("id", id)
+                        append("file", bytes, Headers.build {
+                            append(HttpHeaders.ContentType, "application/zip")
+                            append(HttpHeaders.ContentDisposition, "filename=\"${fileName.replace("\"", "")}\"")
+                        })
+                    },
+                ),
+            )
+        }
+        response.ensureOk()
+        response.body<ExtensionPackageStagedInspection>()
+    }
+
+    suspend fun packageFromUrl(token: String, id: String, url: String): ExtensionPackageStagedInspection = call {
+        val response = client.post("$baseUrl/server/extensions/from-url") {
+            bearerAuth(token)
+            jsonBody(PackageFromUrlRequest(id, url))
+        }
+        response.ensureOk()
+        response.body<ExtensionPackageStagedInspection>()
+    }
+
+    // Responde 409 (PACKAGE_CHANGED) si el paquete en preparacion ya no es el revisado, y 404 si caduco.
+    suspend fun authorizeStaged(token: String, stagingToken: String, confirmationText: String, expectedPackageSha256: String): UnsignedAuthorizationResponse = call {
+        val response = client.post("$baseUrl/server/extensions/staged/${stagingToken.encodeURLPathPart()}/authorize-unsigned") {
+            bearerAuth(token)
+            jsonBody(AuthorizeStagedRequest(confirmationText, expectedPackageSha256))
+        }
+        response.ensureOk()
+        response.body<UnsignedAuthorizationResponse>()
+    }
+
+    suspend fun installStaged(token: String, stagingToken: String): ExtensionPackageStatus = call {
+        val response = client.post("$baseUrl/server/extensions/staged/${stagingToken.encodeURLPathPart()}/install") { bearerAuth(token) }
+        // El servidor responde 202 mientras compila el paquete.
+        response.ensureOk()
+        response.body<ExtensionPackageStatus>()
+    }
+
     suspend fun removePackage(token: String, id: String): ExtensionPackageStatus = call {
         val response = client.delete("$baseUrl/server/extensions/${id.encodeURLPathPart()}") { bearerAuth(token) }
         response.ensureOk()
@@ -388,4 +439,32 @@ data class ExtensionPackageInspection(
     val signed: Boolean = false,
     val keyId: String? = null,
     val signatureProblem: String? = null,
+)
+
+// Paquete subido (ZIP) o descargado (URL) y dejado en preparacion por el servidor.
+@Serializable
+data class ExtensionPackageStagedInspection(
+    val id: String = "",
+    val source: String = "",
+    val sourceUrl: String? = null,
+    val stagingToken: String = "",
+    val packageSha256: String = "",
+    val signed: Boolean = false,
+    val keyId: String? = null,
+    val signatureProblem: String? = null,
+    val installable: Boolean = false,
+)
+
+@Serializable
+data class PackageFromUrlRequest(val id: String, val url: String)
+
+@Serializable
+data class AuthorizeStagedRequest(val confirmationText: String = "", val expectedPackageSha256: String = "")
+
+// Respuesta de autorizar sin firma; la app solo necesita saber que salio bien.
+@Serializable
+data class UnsignedAuthorizationResponse(
+    val id: String = "",
+    val packageSha256: String = "",
+    val authorized: Boolean = true,
 )

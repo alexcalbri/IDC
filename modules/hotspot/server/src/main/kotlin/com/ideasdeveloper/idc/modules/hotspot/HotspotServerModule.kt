@@ -9,6 +9,7 @@ import com.ideasdeveloper.idc.server.modules.ModuleJobSchedule
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
 import com.ideasdeveloper.idc.server.modules.ModulePermissionDefinition
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
+import com.ideasdeveloper.idc.server.extensions.ServerExtension
 import com.ideasdeveloper.idc.server.modules.ServerModule
 import com.ideasdeveloper.idc.server.modules.ServerModuleProvider
 import com.ideasdeveloper.idc.server.modules.requireModuleAccess
@@ -116,7 +117,8 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-        version = "0.10.0",
+        version = "0.11.0",
+        supportsExtensions = true,
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -126,6 +128,11 @@ object HotspotServerModule : ServerModule {
         ),
         ui = ModuleUiEntry(type = "native", entry = HotspotScreens.UiRoute, home = "dashboard"),
     )
+
+    // Los controladores de red (UniFi hoy) llegan como extensiones instaladas por empresa (EXTENSIONS.md).
+    override fun linkExtensions(extensions: List<ServerExtension>) {
+        HotspotModuleExtensions.link(extensions)
+    }
 
     override val mcp: ModuleMcp
         get() = HotspotMcpTools.mcp
@@ -386,7 +393,7 @@ object HotspotServerModule : ServerModule {
         val current = HotspotSettingsRepository.load(tenant)
         // The UniFi settings are only editable while UniFi is the enabled network controller.
         val unifiKeys = HotspotScreens.unifiFields.map { it.key }.toSet()
-        var values = if (HotspotIntegrations.controller(tenant) == UnifiController) posted else JsonObject(posted.filterKeys { it !in unifiKeys })
+        var values = if (HotspotIntegrations.controller(tenant)?.id == HotspotIntegrations.NetworkUnifi) posted else JsonObject(posted.filterKeys { it !in unifiKeys })
         if ("crmStage" in values) {
             val name = values["crmStage"]?.jsonPrimitive?.contentOrNull.orEmpty()
             if (name.isNotBlank() && !HotspotCrmPipeline.isInstalled(tenant)) {
@@ -445,9 +452,11 @@ object HotspotServerModule : ServerModule {
         values: JsonObject,
     ): UiScreen {
         var settings = HotspotSettingsRepository.load(tenant)
-        if (HotspotIntegrations.controller(tenant) != UnifiController) {
+        if (HotspotIntegrations.controller(tenant)?.id != HotspotIntegrations.NetworkUnifi) {
             return render(access, tenant, permissions, "settings", emptyMap(), UiNotice("Activa la integracion UniFi en Integraciones.", UiTone.Warning))
         }
+        val provider = HotspotModuleExtensions.providerFor(HotspotIntegrations.NetworkUnifi)
+            ?: return render(access, tenant, permissions, "settings", emptyMap(), UiNotice("Instala la extension UniFi para configurar la conexion.", UiTone.Warning))
         val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } - "unifiApiKey"
         fun screen(notice: UiNotice, picker: UiNode? = null): UiScreen {
             val (status, active) = domainState(access, permissions.companyCode, settings.domain)
@@ -465,15 +474,15 @@ object HotspotServerModule : ServerModule {
             when (step) {
                 "consoles" -> {
                     values["unifiApiKey"]?.jsonPrimitive?.contentOrNull?.let { store("unifiApiKey" to it) }
-                    val apiKey = settings.unifiApiKey ?: return screen(UiNotice("Escribe la API key de UniFi y vuelve a buscar.", UiTone.Warning))
-                    val consoles = UnifiClient.consoles(apiKey)
+                    settings.unifiApiKey ?: return screen(UiNotice("Escribe la API key de UniFi y vuelve a buscar.", UiTone.Warning))
+                    val consoles = provider.consoles(settings)
                     screen(UiNotice("${consoles.size} consola(s) encontradas. Elige la del hotspot.", UiTone.Success), HotspotScreens.consolePicker(consoles, settings.unifiConsoleId))
                 }
                 "console" -> {
                     val consoleId = id?.takeIf { it.isNotBlank() } ?: return screen(UiNotice("Elige una consola de la lista.", UiTone.Warning))
                     if (consoleId != settings.unifiConsoleId) store("unifiConsoleId" to consoleId, "unifiSiteId" to "") else store("unifiConsoleId" to consoleId)
-                    val apiKey = settings.unifiApiKey ?: return screen(UiNotice("Escribe la API key de UniFi y vuelve a buscar.", UiTone.Warning))
-                    val sites = UnifiClient.sites(apiKey, consoleId)
+                    settings.unifiApiKey ?: return screen(UiNotice("Escribe la API key de UniFi y vuelve a buscar.", UiTone.Warning))
+                    val sites = provider.sites(settings, consoleId)
                     if (sites.size == 1) {
                         store("unifiSiteId" to sites.single().id)
                         screen(UiNotice("Consola guardada y sitio \"${sites.single().name}\" seleccionado.", UiTone.Success))
@@ -490,7 +499,7 @@ object HotspotServerModule : ServerModule {
             }
         } catch (failure: HotspotValidationException) {
             screen(UiNotice(failure.message.orEmpty(), UiTone.Danger))
-        } catch (failure: UnifiException) {
+        } catch (failure: NetworkControllerException) {
             screen(UiNotice(failure.message.orEmpty(), UiTone.Danger))
         }
     }

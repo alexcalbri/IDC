@@ -61,9 +61,11 @@ object CrmCloudbedsScreens {
                 ),
             ),
         )
-        val chosen = CrmItems.list(context.tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }.map { it.externalId }.toSet()
+        val chosen = CrmHost.chosenRooms(context.tenant, lead.id).map { it.externalId }.toSet()
+        // Sin la extensión instalada no hay búsqueda: se muestra el aviso en lugar de la lista.
+        val provider = CrmModuleExtensions.cloudbeds() ?: return listOf(form, UiText(CrmCloudbedsMissing, tone = UiTone.Warning))
         val result = try {
-            CrmCloudbeds.availability(context.tenant, stay.start, stay.end, stay.adults, stay.children)
+            provider.availability(CrmHost, context.tenant, stay.start, stay.end, stay.adults, stay.children)
         } catch (failure: CrmCloudbedsException) {
             return listOf(form, UiText(failure.message.orEmpty(), tone = UiTone.Danger))
         } catch (failure: CrmValidationException) {
@@ -103,13 +105,13 @@ object CrmCloudbedsScreens {
 
     fun reservation(context: CrmScreens.Context, lead: CrmLead, canEdit: Boolean): UiNode? {
         // Sin la extension activa no se busca ni se reserva; las reservas ya hechas se siguen mostrando.
-        val settings = CrmCloudbeds.load(context.tenant).let { if (CrmExtensions.isEnabled(context.tenant, CrmExtensionIds.Cloudbeds)) it else it.copy(enabled = false) }
-        val reservations = CrmCloudbeds.forLead(context.tenant, lead.id)
+        val settings = CrmHost.cloudbedsSettings(context.tenant).let { if (CrmHost.cloudbedsEnabled(context.tenant)) it else it.copy(enabled = false) }
+        val reservations = CrmHost.reservationsForLead(context.tenant, lead.id)
         if (!settings.ready && reservations.isEmpty()) return null
-        val rooms = CrmItems.list(context.tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }
+        val rooms = CrmHost.chosenRooms(context.tenant, lead.id)
         val existing = reservations.map { reservation ->
             UiStatus(
-                "Reserva ${reservation.reservationId} (${CrmCloudbeds.statusLabels[reservation.status] ?: reservation.status}) del ${reservation.startDate} al ${reservation.endDate}" +
+                "Reserva ${reservation.reservationId} (${CrmReservations.statusLabels[reservation.status] ?: reservation.status}) del ${reservation.startDate} al ${reservation.endDate}" +
                     (reservation.total?.let { " - ${it.toPlainString()}" }.orEmpty()) + if (reservation.welcomeSent) " - bienvenida enviada" else "",
                 when (reservation.status) {
                     "canceled", "no_show" -> UiTone.Danger
@@ -127,12 +129,12 @@ object CrmCloudbedsScreens {
             } + listOf(
                 UiField("country", "Pais (codigo de 2 letras)", placeholder = "NI", section = "Datos del huesped", help = "Vacio usa el pais por defecto de Integraciones > Cloudbeds."),
                 UiField("zip", "Codigo postal", section = "Datos del huesped"),
-                UiField("payment", "Metodo de pago", type = "dropdown", required = true, options = CrmCloudbeds.paymentLabels.values.toList(), section = "Datos del huesped",
+                UiField("payment", "Metodo de pago", type = "dropdown", required = true, options = CrmCloudbedsStore.paymentLabels.values.toList(), section = "Datos del huesped",
                     help = "Cloudbeds lo exige; el cobro se gestiona en Cloudbeds."),
             )
             val values = rooms.flatMap { room ->
                 listOf("adults_${room.id}" to room.data["adults"].orEmpty().ifEmpty { "2" }, "children_${room.id}" to room.data["children"].orEmpty().ifEmpty { "0" })
-            }.toMap() + ("payment" to (CrmCloudbeds.paymentLabels[settings.paymentMethod] ?: CrmCloudbeds.paymentLabels.getValue("cash"))) +
+            }.toMap() + ("payment" to (CrmCloudbedsStore.paymentLabels[settings.paymentMethod] ?: CrmCloudbedsStore.paymentLabels.getValue("cash"))) +
                 ("country" to settings.defaultCountry)
             UiForm(
                 "reservation", fields, values,
@@ -161,7 +163,7 @@ object CrmCloudbedsScreens {
     // ---- Settings: Integraciones > Cloudbeds ----
 
     fun settings(context: CrmScreens.Context): List<UiNode> {
-        val settings = CrmCloudbeds.load(context.tenant)
+        val settings = CrmHost.cloudbedsSettings(context.tenant)
         val templates = CrmMail.templates(context.tenant)
         val on = UiFieldCondition("enabled", listOf("true"))
         val welcome = UiFieldCondition("welcomeEnabled", listOf("true"))
@@ -186,7 +188,7 @@ object CrmCloudbedsScreens {
                             UiField("enabled", "Usar Cloudbeds", type = "boolean"),
                             UiField("apiKey", "API key", type = "password", visibleWhen = on),
                             UiField("propertyId", "ID de la propiedad", visibleWhen = on, help = "Solo si la API key tiene varias propiedades."),
-                            UiField("paymentMethod", "Metodo de pago por defecto", help = "Se puede cambiar en cada reserva.", type = "dropdown", options = CrmCloudbeds.paymentLabels.values.toList(), visibleWhen = on),
+                            UiField("paymentMethod", "Metodo de pago por defecto", help = "Se puede cambiar en cada reserva.", type = "dropdown", options = CrmCloudbedsStore.paymentLabels.values.toList(), visibleWhen = on),
                             UiField("defaultCountry", "Pais por defecto del huesped (codigo de 2 letras)", placeholder = "US", visibleWhen = on,
                                 help = "Cloudbeds exige el pais. Se usa en las reservas automaticas y cuando la reserva no lo indica."),
                             UiField("archiveOnCheckout", "Archivar el lead cuando el huesped hace check-out", type = "boolean", visibleWhen = on),
@@ -200,7 +202,7 @@ object CrmCloudbedsScreens {
                             "enabled" to settings.enabled.toString(),
                             "apiKey" to CrmSecrets.mask(settings.apiKey),
                             "propertyId" to settings.propertyId.orEmpty(),
-                            "paymentMethod" to (CrmCloudbeds.paymentLabels[settings.paymentMethod] ?: "Efectivo"),
+                            "paymentMethod" to (CrmCloudbedsStore.paymentLabels[settings.paymentMethod] ?: "Efectivo"),
                             "defaultCountry" to settings.defaultCountry,
                             "archiveOnCheckout" to settings.archiveOnCheckout.toString(),
                             "welcomeEnabled" to settings.welcomeEnabled.toString(),

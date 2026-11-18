@@ -1,0 +1,21 @@
+{
+  "id": "wordpress",
+  "module": "crm",
+  "displayName": "WordPress (Real Estate 7)",
+  "description": "Conecta el sitio WordPress (Real Estate 7) con el plugin IDC Connector: formularios y consultas crean leads, y las propiedades se buscan y se vinculan a ellos.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.27.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/wordpress" },
+  "permissions": [
+    "secrets.write",
+    "webhook.public",
+    "crm.leads.create",
+    "crm.leads.update",
+    "crm.items.write"
+  ],
+  "settings": [],
+  "migrations": ["V001__settings.sql"],
+  "uninstall": { "options": [
+    { "id": "linked_properties", "label": "Propiedades del sitio vinculadas a los leads", "default": "keep" }
+  ] }
+}

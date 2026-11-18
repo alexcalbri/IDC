@@ -1,0 +1,20 @@
+{
+  "id": "meta",
+  "module": "crm",
+  "displayName": "Meta (WhatsApp, Messenger e Instagram)",
+  "description": "Recibe y responde mensajes de WhatsApp, Messenger e Instagram en el CRM, con la app de Meta de la empresa o la del servidor.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.27.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/meta" },
+  "permissions": [
+    "network.outbound:graph.facebook.com",
+    "secrets.write",
+    "webhook.public",
+    "crm.leads.create",
+    "crm.leads.update",
+    "crm.messages.write"
+  ],
+  "settings": [],
+  "migrations": ["V001__settings.sql"],
+  "uninstall": { "options": [] }
+}

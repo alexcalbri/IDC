@@ -152,7 +152,7 @@ object CrmExit {
     /** Open leads per stage that the automation would archive now (to warn before activating it). */
     fun dueByStage(tenant: Connection, config: CrmExitAutomation, stageIds: Collection<UUID>, now: Instant): Map<UUID, Int> {
         if (stageIds.isEmpty()) return emptyMap()
-        val cloudbeds = CrmCloudbeds.load(tenant)
+        val cloudbeds = CrmHost.cloudbedsSettings(tenant)
         val condition = dueSql(cloudbeds.ready, cloudbeds.archiveOnCheckout) ?: return emptyMap()
         val gate = gate(config, now)
         return tenant.prepareStatement(
@@ -182,7 +182,7 @@ object CrmExit {
     fun archiveDue(tenant: Connection, now: Instant): Int {
         val config = load(tenant)
         if (!config.enabled || config.stageIds.isEmpty()) return 0
-        val cloudbeds = CrmCloudbeds.load(tenant)
+        val cloudbeds = CrmHost.cloudbedsSettings(tenant)
         val condition = dueSql(cloudbeds.ready, cloudbeds.archiveOnCheckout) ?: return 0
         val gate = gate(config, now)
         return CrmRepository.transaction(tenant) {

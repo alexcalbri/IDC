@@ -48,7 +48,9 @@ class ExtensionManifestValidator(
     }
 
     private fun sourceProblem(manifest: ExtensionManifest): String? {
-        if (manifest.source.type != ExtensionSourceType.GitHub) return "source.type debe ser 'github' en un paquete externo."
+        // ZIP subido o URL: source.url es solo informativo. La garantia real es la firma o la autorizacion por hash.
+        if (manifest.source.type == ExtensionSourceType.Zip || manifest.source.type == ExtensionSourceType.Url) return null
+        if (manifest.source.type != ExtensionSourceType.GitHub) return "source.type debe ser 'github', 'zip' o 'url' en un paquete externo."
         val url = manifest.source.url ?: return "source.url es obligatorio."
         val match = SourceUrl.matchEntire(url.trim())
             ?: return "source.url debe ser https://github.com/<owner>/<repo>/tree/<commit de 40 hex>/extensions/<id>; una rama no se acepta."

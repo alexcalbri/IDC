@@ -69,7 +69,7 @@ object CrmAttachments {
     }
 
     /**
-     * Stores an imported file directly in a lead's field. [sourceRef] (e.g. monday:asset:1) keeps a
+     * Stores an imported file directly in a lead's field. [sourceRef] (e.g. source:asset:1) keeps a
      * new import of the same item from attaching it again. The stored file is removed if the row fails.
      */
     fun importLinked(

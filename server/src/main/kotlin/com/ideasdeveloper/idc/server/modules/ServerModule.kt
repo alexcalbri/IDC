@@ -52,6 +52,11 @@ interface ServerModule {
     val bundledExtensions: List<com.ideasdeveloper.idc.server.extensions.ServerExtension>
         get() = emptyList()
 
+    // Las extensiones (bundled + paquetes) de este modulo, entregadas una vez al arrancar tras construir el
+    // ExtensionRegistry; el modulo se queda con las que le sirven (p. ej. proveedores de acciones de automatizacion).
+    fun linkExtensions(extensions: List<com.ideasdeveloper.idc.server.extensions.ServerExtension>) {
+    }
+
     fun routes(route: Route, access: ModuleAccessService) {
     }
 }
@@ -79,6 +84,8 @@ data class ModuleDefinition(
     val minAppVersion: String? = null,
     // Permissions this module lets its extensions declare (EXTENSIONS.md), e.g. "crm.leads.create".
     val extensionPermissions: List<String> = emptyList(),
+    // Whether this module supports per-company extensions: shows an "Extensiones" section in its config.
+    val supportsExtensions: Boolean = false,
 )
 
 @Serializable

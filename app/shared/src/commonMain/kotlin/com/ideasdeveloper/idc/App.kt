@@ -30,6 +30,8 @@ import com.ideasdeveloper.idc.app.features.company.ui.ServerStaffScreen
 import com.ideasdeveloper.idc.app.features.company.ui.ServerLogsScreen
 import com.ideasdeveloper.idc.app.features.company.ui.ServerUpdateScreen
 import com.ideasdeveloper.idc.app.features.dashboard.ui.DashboardScreen
+import com.ideasdeveloper.idc.app.features.extensions.data.ExtensionTarget
+import com.ideasdeveloper.idc.app.features.extensions.ui.ExtensionsScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ServerDrivenModuleScreen
 import com.ideasdeveloper.idc.app.features.modules.ui.ModuleDeepLinks
 import com.ideasdeveloper.idc.app.features.notifications.ui.LocalNotificationNavigator
@@ -239,6 +241,29 @@ fun App(initialServerUrl: String = "") {
                                 ModuleDeepLinks.open(action)
                                 navController.navigate("module/${action.moduleId}")
                             },
+                            // Entrada "Extensiones" de la Configuracion del modulo.
+                            onOpenExtensions = { id -> navController.navigate(NavRoute.ModuleExtensions(id).routeName()) },
+                        )
+                    }
+                }
+                composable("module/{moduleId}/extensions") { backStackEntry ->
+                    val moduleId = backStackEntry.arguments?.read {
+                        getStringOrNull("moduleId")
+                    }.orEmpty()
+                    val serverOwner = currentSession?.role == "server_owner"
+                    // El business owner trabaja en su empresa; el server owner en el espacio del servidor.
+                    val companyCode = currentSession?.companyCode ?: currentSession?.workspaceCompanyCode
+                    if (companyCode != null) {
+                        ExtensionsScreen(
+                            serverUrl = clientConfiguration?.serverUrl,
+                            session = currentSession,
+                            target = ExtensionTarget(companyCode, asServerOwner = serverOwner),
+                            companyName = null,
+                            moduleId = moduleId,
+                            onSettings = { navController.navigate(NavRoute.Settings.routeName()) },
+                            onLogout = ::requestLogout,
+                            // Vuelve al modulo (su Configuracion), no al inicio.
+                            onClose = { navController.popBackStack() },
                         )
                     }
                 }

@@ -39,7 +39,8 @@ object HotspotNetworkGuard {
     fun mismatches(guests: List<ConnectedGuest>, lastSsids: Map<String, String>): List<Pair<ConnectedGuest, String>> =
         guests.mapNotNull { guest ->
             val authorizedFor = lastSsids[guest.mac] ?: return@mapNotNull null
-            if (UnifiClient.sameNetwork(guest.ssid, authorizedFor)) null else guest to authorizedFor
+            // SSIDs are compared exactly, as WiFi does; only surrounding spaces are ignored.
+            if (guest.ssid.trim() == authorizedFor.trim()) null else guest to authorizedFor
         }
 
     // SSID ("" when wired or unknown) of the latest authorized access of each MAC in this company.

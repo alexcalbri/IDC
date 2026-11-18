@@ -1,0 +1,15 @@
+{
+  "id": "unifi",
+  "module": "hotspot",
+  "displayName": "UniFi",
+  "description": "Controlador de red UniFi: autoriza y desconecta a los visitantes del portal en una consola UniFi a traves de UniFi Site Manager (api.ui.com) y lista sus redes WiFi.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.11.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/unifi" },
+  "permissions": [
+    "network.outbound:api.ui.com"
+  ],
+  "settings": [],
+  "migrations": [],
+  "uninstall": { "options": [] }
+}

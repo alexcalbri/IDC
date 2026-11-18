@@ -324,7 +324,7 @@ object CrmAutomationMcpTools {
         val duplicate = CrmAutomationRules.duplicatesCloudbedsWelcome(
             saved,
             CrmStay.effective(context.stay, context.fields).let { listOf(it.startKey, it.endKey).filter { key -> key.isNotEmpty() } },
-            CrmCloudbeds.active(call.tenant) && CrmCloudbeds.load(call.tenant).welcomeEnabled,
+            CrmModuleExtensions.cloudbedsActive(call.tenant) && CrmHost.cloudbedsSettings(call.tenant).welcomeEnabled,
         )
         return buildJsonObject {
             put("id", saved.id.toString())

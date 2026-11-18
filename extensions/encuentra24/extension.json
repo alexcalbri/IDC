@@ -1,0 +1,22 @@
+{
+  "id": "encuentra24",
+  "module": "crm",
+  "displayName": "Encuentra24",
+  "description": "Importa como leads los mensajes, chats y llamadas de los anuncios de Encuentra24 y deja el anuncio en los intereses del lead.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.27.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/encuentra24" },
+  "permissions": [
+    "network.outbound:www.encuentra24.com",
+    "secrets.write",
+    "crm.leads.create",
+    "crm.leads.update",
+    "crm.messages.write",
+    "crm.items.write"
+  ],
+  "settings": [],
+  "migrations": ["V001__settings.sql"],
+  "uninstall": { "options": [
+    { "id": "ads", "label": "Anuncios de Encuentra24 vinculados a los leads", "default": "keep" }
+  ] }
+}

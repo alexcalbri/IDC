@@ -1,29 +1,5 @@
 BEGIN;
 
--- Website on WordPress with Real Estate 7 and the IDC Connector plugin. The secret signs both
--- directions (X-IDC-Timestamp and X-IDC-Signature).
-CREATE TABLE crm_wordpress_settings (
-    id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
-    enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    site_url TEXT CHECK (site_url IS NULL OR site_url ~ '^https?://'),
-    secret TEXT CHECK (secret IS NULL OR secret ~ '^[A-Za-z0-9]{32,128}$'),
-    site_name TEXT NOT NULL DEFAULT '',
-    last_event_at TIMESTAMPTZ,
-    last_error TEXT NOT NULL DEFAULT '',
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-INSERT INTO crm_wordpress_settings (id) VALUES (1);
-
--- Agents of the website and the IDC user each one is, for the suggested responsible of a lead.
-CREATE TABLE crm_wp_agents (
-    wp_user_id BIGINT PRIMARY KEY CHECK (wp_user_id > 0),
-    name TEXT NOT NULL DEFAULT '',
-    email TEXT NOT NULL DEFAULT '',
-    user_id UUID REFERENCES application_users(id) ON DELETE SET NULL,
-    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
 -- What a lead is interested in or bought: properties of the website, rooms of a PMS or items typed
 -- by hand. external_id is the id in the source (listing id, room id).
 CREATE TABLE crm_lead_items (

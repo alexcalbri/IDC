@@ -16,8 +16,8 @@ import java.util.UUID
 
 /**
  * Agent tools of the CRM imports (crm.settings, like the Importar screens) and bulk actions
- * (crm.leads.manage, like the bulk bar of the list view of Leads). The monday token is saved only in the app; the tools
- * use the stored one, server side, and never receive or return it.
+ * (crm.leads.manage, like the bulk bar of the list view of Leads). The tools of the external sources live with each
+ * source ([CrmImportSources.mcpTools]).
  */
 object CrmImportMcpTools {
     private const val Confirm = " Confirma con el usuario antes."
@@ -60,33 +60,6 @@ object CrmImportMcpTools {
                 "file" to (url.substringAfterLast('/').take(80).ifEmpty { "Archivo" } to CrmImport.fromUrl(url))
             }
         },
-        McpTool(
-            name = "import_leadspro",
-            title = "Importar desde CT Leads Pro",
-            description = "Lee los leads del plugin CT Leads Pro del sitio WordPress conectado y crea una importacion en mapeo.",
-            permission = CrmScreens.Settings,
-        ) { call -> read(call) { "leadspro" to ("CT Leads Pro ${it.today}" to CrmImport.fromLeadsPro(call.tenant)) } },
-        McpTool(
-            name = "list_monday_boards",
-            title = "Tableros de monday",
-            description = "Lista los tableros de monday.com de la cuenta, con el token guardado en la app.",
-            permission = CrmScreens.Settings,
-            readOnly = true,
-        ) { call -> mondayBoards(call) },
-        McpTool(
-            name = "import_monday",
-            title = "Importar tableros de monday",
-            description = "Lee en segundo plano los tableros elegidos de monday.com (puede tardar minutos) y crea una importacion; consulta su avance con get_import.",
-            permission = CrmScreens.Settings,
-            inputSchema = McpSchema.obj(
-                mapOf("boards" to buildJsonObject {
-                    put("type", "array")
-                    put("description", "Ids de los tableros (list_monday_boards).")
-                    put("items", buildJsonObject { put("type", "string") })
-                }),
-                required = listOf("boards"),
-            ),
-        ) { call -> importMonday(call) },
         McpTool(
             name = "get_import",
             title = "Ver importacion",
@@ -162,12 +135,12 @@ object CrmImportMcpTools {
 
     private fun context(call: McpToolCall) = CrmScreens.Context.load(call.tenant, call.permissions, call.access.serverMail)
 
-    private fun actor(call: McpToolCall): CrmActor {
+    fun actor(call: McpToolCall): CrmActor {
         val actor = CrmRepository.actor(call.tenant, call.permissions, call.access.userIdentity(call.tenant, call.permissions))
         return actor.copy(name = "${actor.name} (agente ${call.agentName})")
     }
 
-    private inline fun <T> checked(block: () -> T): T = try {
+    inline fun <T> checked(block: () -> T): T = try {
         block()
     } catch (failure: CrmImportException) {
         throw McpToolException(failure.message.orEmpty())
@@ -177,7 +150,7 @@ object CrmImportMcpTools {
         throw McpToolException(failure.message.orEmpty())
     }
 
-    private fun strings(call: McpToolCall, key: String): List<String> =
+    fun strings(call: McpToolCall, key: String): List<String> =
         (call.arguments[key] as? JsonArray)?.map { (it as? JsonPrimitive)?.contentOrNull?.trim() ?: throw McpToolException("'$key' debe ser una lista de textos.") }
             ?: throw McpToolException("'$key' debe ser una lista.")
 
@@ -216,7 +189,8 @@ object CrmImportMcpTools {
             ),
         )
         put("presets", JsonArray(CrmImport.presets(call.tenant).keys.sorted().map(::JsonPrimitive)))
-        put("mondayTokenConfigured", CrmImport.mondayToken(call.tenant) != null)
+        // Cada fuente externa anade lo suyo (por ejemplo, si tiene credenciales guardadas; nunca las credenciales).
+        CrmImportSources.all.forEach { it.describe(call.tenant, this) }
     }
 
     // Reads a source into a new job in "mapping": [source] gives (source, (name, table)).
@@ -228,34 +202,6 @@ object CrmImportMcpTools {
         return buildJsonObject {
             put("job", id.toString())
             put("result", "${table.rows.size} filas leidas. Revisa el mapeo con get_import.")
-        }
-    }
-
-    private fun mondayBoards(call: McpToolCall): JsonElement {
-        CrmExtensions.inactive(call.tenant, CrmExtensionIds.MondayImport)?.let { throw McpToolException(it) }
-        val token = CrmImport.mondayToken(call.tenant) ?: throw McpToolException("Guarda primero el token de la API de monday en la app (Importar).")
-        val boards = checked { CrmImport.mondayBoards(token) }
-        return buildJsonObject {
-            putJsonArray("boards") {
-                boards.forEach { board ->
-                    add(buildJsonObject {
-                        put("id", board.id)
-                        put("name", board.name)
-                        put("workspace", board.workspace)
-                        board.items?.let { put("items", it) }
-                    })
-                }
-            }
-        }
-    }
-
-    private fun importMonday(call: McpToolCall): JsonElement {
-        CrmExtensions.inactive(call.tenant, CrmExtensionIds.MondayImport)?.let { throw McpToolException(it) }
-        if (CrmImport.mondayToken(call.tenant) == null) throw McpToolException("Guarda primero el token de la API de monday en la app (Importar).")
-        val id = checked { CrmImport.queueMonday(call.tenant, strings(call, "boards"), actor(call).userId) }
-        return buildJsonObject {
-            put("job", id.toString())
-            put("result", "Se estan leyendo los tableros de monday; consulta get_import en unos minutos.")
         }
     }
 
@@ -316,7 +262,7 @@ object CrmImportMcpTools {
             owners = stringMap(call, "owners").filterValues { it.isNotEmpty() },
             interests = stringMap(call, "interests").filterValues { it.isNotEmpty() },
         )
-        // "new:crm" / "new:cliente" create the field first, typed from the monday column.
+        // "new:crm" / "new:cliente" create the field first, typed from the column of the source.
         val created = CrmImport.saveMappingCreatingFields(call.tenant, job, mapping)
         val saved = CrmImport.job(call.tenant, job.id)!!
         call.string("presetName", 80).takeIf { it.isNotEmpty() }?.let { CrmImport.savePreset(call.tenant, it, saved.mapping) }

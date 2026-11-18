@@ -1,9 +1,7 @@
 package com.ideasdeveloper.idc.modules.crm
 
-import com.ideasdeveloper.idc.server.extensions.ExtensionIdPattern
 import com.ideasdeveloper.idc.server.extensions.ExtensionPermissions
 import com.ideasdeveloper.idc.server.extensions.ExtensionRegistry
-import com.ideasdeveloper.idc.server.extensions.UninstallDefault
 import com.ideasdeveloper.idc.server.security.SecretBox
 import com.ideasdeveloper.idc.server.security.SecretsUnavailableException
 import java.io.File
@@ -47,86 +45,28 @@ class CrmExtensionsTest {
     // ---- Manifiestos ----
 
     @Test
-    fun theCrmShipsFiveBundledExtensions() {
-        val extensions = CrmServerModule.bundledExtensions
-        assertEquals(setOf("meta", "monday_import", "wordpress", "encuentra24", "cloudbeds"), extensions.map { it.manifest.id }.toSet())
-        assertEquals(CrmExtensionIds.all.toSet(), extensions.map { it.manifest.id }.toSet())
-        // El registro del Core las acepta: ids unicos y bien formados.
-        assertEquals(5, ExtensionRegistry.of(listOf(CrmServerModule)).forModule("crm").size)
+    fun theCrmShipsNoBundledExtension() {
+        // Meta, Cloudbeds, Encuentra24, monday y WordPress ya no vienen incluidas: son paquetes (extensions/meta, extensions/cloudbeds, extensions/encuentra24, extensions/monday, extensions/wordpress).
+        assertEquals(emptyList(), CrmServerModule.bundledExtensions)
+        assertEquals(0, ExtensionRegistry.of(listOf(CrmServerModule)).forModule("crm").size)
+        // El CRM sigue admitiendo extensiones (las de los paquetes).
+        assertTrue(CrmServerModule.definition.supportsExtensions)
     }
 
     @Test
-    fun manifestsUseTheClosedPermissionListAndTheModulePermissions() {
-        CrmServerModule.bundledExtensions.forEach { extension ->
-            val manifest = extension.manifest
-            assertTrue(ExtensionIdPattern.matches(manifest.id), manifest.id)
-            assertEquals("crm", manifest.module)
-            assertEquals("bundled", manifest.source.type)
-            assertTrue(manifest.displayName.isNotBlank() && manifest.description.isNotBlank(), manifest.id)
-            assertTrue(manifest.version.isNotBlank())
-            manifest.permissions.forEach { permission ->
-                assertTrue(ExtensionPermissions.isAllowed(permission, modulePermissions), "${manifest.id}: permiso no permitido $permission")
-            }
-            assertEquals(manifest.permissions.distinct(), manifest.permissions, "${manifest.id}: permisos repetidos")
-            // La configuracion sigue en las pantallas del CRM: ningun ajuste es obligatorio.
-            assertTrue(manifest.settings.none { it.required })
-        }
-    }
-
-    @Test
-    fun crmDeclaresThePermissionsItsExtensionsUse() {
-        val used = CrmServerModule.bundledExtensions.flatMap { it.manifest.permissions }.filter { it.startsWith("crm.") }.toSet()
-        assertTrue(used.isNotEmpty())
-        assertTrue(modulePermissions.containsAll(used))
+    fun crmDeclaresTheClosedPermissionListForItsExtensions() {
+        assertTrue(modulePermissions.isNotEmpty())
         assertTrue(modulePermissions.all { it.startsWith("crm.") })
+        // Los permisos de la extension Meta los declara el CRM (se comprueban en extensions/meta).
+        assertTrue(modulePermissions.containsAll(listOf(CrmExtensionPermissions.LeadsCreate, CrmExtensionPermissions.LeadsUpdate, CrmExtensionPermissions.MessagesWrite)))
         // Una extension no puede pedir un permiso de otro modulo ni uno inventado.
         assertFalse(ExtensionPermissions.isAllowed("clientes.customers.delete", modulePermissions))
         assertFalse(ExtensionPermissions.isAllowed("crm.leads.delete", modulePermissions))
     }
 
     @Test
-    fun sensitiveExtensionsDeclareHostsSecretsAndWebhooks() {
-        fun permissions(id: String) = CrmServerModule.bundledExtensions.first { it.manifest.id == id }.manifest.permissions
-        assertTrue("network.outbound:graph.facebook.com" in permissions("meta"))
-        assertTrue("network.outbound:api.monday.com" in permissions("monday_import"))
-        assertTrue("network.outbound:www.encuentra24.com" in permissions("encuentra24"))
-        assertTrue("network.outbound:api.cloudbeds.com" in permissions("cloudbeds"))
-        // Los que reciben llamadas publicas lo declaran.
-        assertTrue(ExtensionPermissions.WebhookPublic in permissions("meta"))
-        assertTrue(ExtensionPermissions.WebhookPublic in permissions("wordpress"))
-        CrmExtensionIds.all.forEach { assertTrue(ExtensionPermissions.SecretsWrite in permissions(it), it) }
-        assertTrue("crm.fields.create" in permissions("monday_import"))
-    }
-
-    @Test
-    fun uninstallOptionsAreValidAndMatchTheDecisions() {
-        CrmServerModule.bundledExtensions.forEach { extension ->
-            val options = extension.manifest.uninstall.options
-            assertEquals(options.map { it.id }.distinct(), options.map { it.id }, "${extension.manifest.id}: opciones repetidas")
-            options.forEach {
-                assertTrue(ExtensionIdPattern.matches(it.id), it.id)
-                assertTrue(it.default in setOf(UninstallDefault.Keep, UninstallDefault.Delete, UninstallDefault.Ask), "${it.id}: ${it.default}")
-                assertTrue(it.label.isNotBlank())
-            }
-        }
-        fun options(id: String) = CrmServerModule.bundledExtensions.first { it.manifest.id == id }.manifest.uninstall.options.associate { it.id to it.default }
-        // monday: los campos creados se preguntan y el historial se borra.
-        assertEquals(mapOf("created_fields" to UninstallDefault.Ask, "import_history" to UninstallDefault.Delete), options("monday_import"))
-        // Meta: las conexiones siempre se borran y las conversaciones siempre se conservan, asi que no hay nada que preguntar.
-        assertTrue(options("meta").isEmpty())
-        // Lo que sale de otros sistemas se conserva salvo que el usuario diga lo contrario.
-        assertEquals(UninstallDefault.Keep, options("wordpress").getValue("linked_properties"))
-        assertEquals(UninstallDefault.Keep, options("encuentra24").getValue("ads"))
-        assertEquals(setOf("reservations", "rooms", "default_country"), options("cloudbeds").keys)
-        assertEquals(UninstallDefault.Keep, options("cloudbeds").getValue("reservations"))
-        assertEquals(UninstallDefault.Keep, options("cloudbeds").getValue("rooms"))
-        assertEquals(UninstallDefault.Ask, options("cloudbeds").getValue("default_country"))
-    }
-
-    @Test
     fun manifestsRequireTheModuleVersionThatShipsThem() {
-        assertEquals("0.26.1", CrmServerModule.definition.version)
-        CrmServerModule.bundledExtensions.forEach { assertEquals(CrmServerModule.definition.version, it.manifest.minModuleVersion) }
+        assertEquals("0.27.0", CrmServerModule.definition.version)
         assertEquals(CrmExtensions.MinModuleVersion, CrmServerModule.definition.version)
         assertEquals("0.8.0", CrmServerModule.definition.minCoreVersion)
         assertEquals("0.7.0", CrmServerModule.definition.minAppVersion)
@@ -147,30 +87,32 @@ class CrmExtensionsTest {
 
     @Test
     fun routesMovedUnderTheExtensionPrefix() {
-        assertEquals("/modules/crm/extensions/meta/webhook", CrmMetaServer.WebhookPath)
-        assertEquals("/modules/crm/extensions/meta/deauthorize", CrmMetaServer.DeauthorizePath)
-        assertEquals("/modules/crm/extensions/meta/data-deletion", CrmMetaServer.DataDeletionPath)
-        assertEquals("/modules/crm/extensions/meta/deletion", CrmMetaServer.DeletionStatusPath)
-        assertEquals("/modules/crm/extensions/meta/connect", CrmMetaServer.ConnectPath)
-        assertEquals("/modules/crm/extensions/meta/acme/webhook", CrmMetaServer.companyWebhookPath("acme"))
-        assertEquals("/modules/crm/extensions/meta/connect/acme?t=abc", CrmMetaServer.connectUrl("", "acme", "abc"))
+        // Las rutas de Meta las sirve el paquete extensions/meta; el CRM solo conoce sus direcciones para mostrarlas.
+        assertEquals("/modules/crm/extensions/meta/webhook", MetaPaths.WebhookPath)
+        assertEquals("/modules/crm/extensions/meta/deauthorize", MetaPaths.DeauthorizePath)
+        assertEquals("/modules/crm/extensions/meta/data-deletion", MetaPaths.DataDeletionPath)
+        assertEquals("/modules/crm/extensions/meta/deletion", MetaPaths.DeletionStatusPath)
+        assertEquals("/modules/crm/extensions/meta/connect", MetaPaths.ConnectPath)
+        assertEquals("/modules/crm/extensions/meta/acme/webhook", MetaPaths.companyWebhookPath("acme"))
+        assertEquals("/modules/crm/extensions/meta/connect/acme?t=abc", CrmHost.metaConnectUrl("", "acme", "abc"))
+        // La descarga del plugin la sirve el paquete extensions/wordpress; el CRM solo conoce su direccion.
         assertEquals("/modules/crm/extensions/wordpress/idc-connector.zip", CrmWordPressScreens.PluginPath)
-        assertEquals("/modules/crm/extensions/wordpress/acme/hook", CrmWordPressExtension.hookPath("acme"))
+        assertEquals(WordPressPluginInfo.Path, CrmWordPressScreens.PluginPath)
     }
 
     @Test
-    fun theWordPressPluginPostsToTheNewAddress() {
-        val php = CrmWordPress::class.java.classLoader.getResourceAsStream("modules/crm/wordpress/idc-connector/idc-connector.php")!!.use { String(it.readBytes()) }
-        assertTrue(php.contains("'/modules/crm/extensions/wordpress/' . rawurlencode( \$settings['company'] ) . '/hook'"))
-        assertFalse(php.contains("/modules/crm/hooks/"))
-        assertTrue(php.contains("Version: ${CrmWordPress.PluginVersion}"))
-    }
-
-    @Test
-    fun serverWebhookWithoutServerWorkspaceIsRejected() {
-        // Sin espacio del servidor no hay app ni rutas: 403, y ninguna empresa se abre.
-        val status = CrmMetaServer.dispatch("""{"object":"page","entry":[]}""".toByteArray(), "sha256=00") { error("no debia abrir ninguna empresa") }
-        assertEquals(403, status)
+    fun withoutTheMetaExtensionTheCrmSeesMetaTurnedOff() {
+        CrmModuleExtensions.link(emptyList())
+        assertNull(CrmModuleExtensions.meta())
+        assertNull(CrmHost.metaServerApp())
+        assertNull(CrmHost.metaServerWorkspace())
+        assertFalse(CrmHost.metaSettings(untouchedConnection).enabled)
+        assertFalse(CrmHost.metaActive(untouchedConnection))
+        assertTrue(CrmHost.metaRecent(untouchedConnection).isEmpty())
+        // Escribir o enviar sin la extension falla con un aviso claro, sin tocar la base.
+        assertFailsWith<CrmValidationException> { CrmHost.saveMeta(untouchedConnection, CrmHost.metaSettings(untouchedConnection)) }
+        assertFailsWith<CrmMetaException> { CrmHost.metaSendWhatsApp(CrmHost.metaSettings(untouchedConnection), "5051", "hola") }
+        CrmHost.metaLog(untouchedConnection, "evento")
     }
 
     // ---- Estado de la extension ----
@@ -242,20 +184,6 @@ class CrmExtensionsTest {
         assertTrue(CrmSecrets.UnreadableText.contains("IDC_MASTER_KEY"))
         assertTrue(CrmSecrets.isPlaceholder(CrmMail.SecretMask) && CrmSecrets.isPlaceholder(CrmSecrets.UnreadableText))
         assertFalse(CrmSecrets.isPlaceholder("token-nuevo"))
-        // El formulario de Meta con el aviso en vez del secreto conserva el guardado.
-        val current = CrmMeta.merge(
-            CrmMetaSettings(false, null, null, null, null, null, null, null, null, null, true),
-            mapOf("enabled" to "false", "appSecret" to "secreto-1", "verifyToken" to "verify-token-1"),
-        )
-        val kept = CrmMeta.merge(current, mapOf("enabled" to "false", "appSecret" to CrmSecrets.UnreadableText, "verifyToken" to "verify-token-1"))
-        assertEquals("secreto-1", kept.appSecret)
-        val unreadableCurrent = current.copy(appSecret = CrmSecrets.UnreadablePrefix + "enc:v1:abc", verifyToken = CrmSecrets.UnreadablePrefix + "enc:v1:def")
-        val shown = CrmMeta.toFormValues(unreadableCurrent)
-        assertEquals(CrmSecrets.UnreadableText, shown["appSecret"])
-        assertEquals(CrmSecrets.UnreadableText, shown["verifyToken"])
-        val back = CrmMeta.merge(unreadableCurrent, shown + ("enabled" to "false"))
-        assertEquals(unreadableCurrent.appSecret, back.appSecret)
-        assertEquals(unreadableCurrent.verifyToken, back.verifyToken)
     }
 
     @Test
@@ -264,27 +192,6 @@ class CrmExtensionsTest {
         assertFailsWith<CrmValidationException> { CrmSecrets.seal(untouchedConnection, "abc") }
         assertNull(CrmSecrets.seal(untouchedConnection, null))
         assertEquals("abc", CrmSecrets.open(untouchedConnection, "abc"))
-    }
-
-    // ---- Sitio de WordPress: sin redes privadas ----
-
-    private fun address(text: String) = java.net.InetAddress.getByName(text)
-
-    @Test
-    fun wordPressSitesCannotPointInsideTheNetwork() {
-        listOf("127.0.0.1", "10.1.2.3", "172.16.0.5", "172.31.255.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "100.127.255.255", "0.0.0.0", "::1", "fc00::1", "fd12:3456::1", "fe80::1")
-            .forEach { assertTrue(CrmWordPress.blockedAddress(address(it)), it) }
-        listOf("8.8.8.8", "93.184.216.34", "100.63.255.255", "100.128.0.1", "172.32.0.1", "2606:4700:4700::1111")
-            .forEach { assertFalse(CrmWordPress.blockedAddress(address(it)), it) }
-        val public = { _: String -> listOf(address("93.184.216.34")) }
-        CrmWordPress.checkSite("https://mi-inmobiliaria.com", public)
-        // Un solo nombre que resuelva adentro basta para rechazarlo.
-        assertFailsWith<CrmWordPressException> { CrmWordPress.checkSite("https://mi-inmobiliaria.com") { listOf(address("93.184.216.34"), address("10.0.0.8")) } }
-        assertFailsWith<CrmWordPressException> { CrmWordPress.checkSite("https://intranet", public) }
-        assertFailsWith<CrmWordPressException> { CrmWordPress.checkSite("https://localhost", public) }
-        assertFailsWith<CrmWordPressException> { CrmWordPress.checkSite("https://servidor.local", public) }
-        assertFailsWith<CrmWordPressException> { CrmWordPress.checkSite("https://10.0.0.1") }
-        assertFailsWith<CrmWordPressException> { CrmWordPress.checkSite("https://nada.example.com") { throw java.net.UnknownHostException() } }
     }
 
     @Test
@@ -302,11 +209,7 @@ class CrmExtensionsTest {
         val columns = (CrmSecrets.tenantColumns + CrmSecrets.serverColumns).flatMap { column -> column.secretColumns.map { "${column.table}.$it" } }.toSet()
         assertEquals(
             setOf(
-                "crm_meta_settings.app_secret", "crm_meta_settings.verify_token", "crm_meta_settings.system_token", "crm_meta_settings.page_token",
-                "crm_meta_settings.messenger_token", "crm_meta_settings.instagram_token", "crm_meta_settings.oauth_token",
-                "crm_meta_server_app.app_secret", "crm_meta_server_app.verify_token",
-                "crm_wordpress_settings.secret", "crm_encuentra24_settings.api_key", "crm_cloudbeds_settings.api_key",
-                "crm_settings.monday_token", "crm_settings.translation_api_key",
+                "crm_settings.translation_api_key",
                 "crm_mail_settings.imap_password",
             ),
             columns,
@@ -315,8 +218,9 @@ class CrmExtensionsTest {
         (CrmSecrets.tenantColumns + CrmSecrets.serverColumns).forEach { column ->
             assertTrue(identifier.matches(column.table) && column.idColumns.all(identifier::matches) && column.secretColumns.all(identifier::matches))
         }
-        // El espacio del servidor solo cifra su app; el resto va a cada empresa.
-        assertTrue(CrmSecrets.tenantColumns.none { it.table == "crm_meta_server_app" })
+        // Los secretos de Meta (y de las demas extensiones) los sella cada extension al guardar: el CRM ya no los lista.
+        assertTrue(CrmSecrets.tenantColumns.none { it.table.startsWith("crm_meta") })
+        assertTrue(CrmSecrets.serverColumns.isEmpty())
     }
 
     @Test
@@ -324,15 +228,10 @@ class CrmExtensionsTest {
         val sql = listOf("modules/crm/migrations/V022__extensions_and_secrets.sql", "../modules/crm/migrations/V022__extensions_and_secrets.sql")
             .map(::File).firstOrNull { it.isFile }?.readText() ?: return
         assertTrue(sql.trim().startsWith("BEGIN;") && sql.trim().endsWith("COMMIT;"))
-        assertTrue(sql.contains("DROP CONSTRAINT IF EXISTS crm_wordpress_settings_secret_check"))
-        assertTrue(sql.contains("DROP CONSTRAINT IF EXISTS crm_settings_monday_token_check"))
+        assertFalse(sql.contains("crm_wordpress_settings"), "Los ajustes de WordPress viven en la extension (ext_wordpress__settings)")
         assertTrue(sql.contains("extension_id"))
-        assertTrue(sql.contains("crm_meta_routes_asset_idx"))
-    }
-
-    @Test
-    fun cloudbedsAsksWhetherToKeepTheDefaultCountry() {
-        val option = CrmCloudbedsExtension.manifest.uninstall.options.single { it.id == CrmCloudbedsExtension.CountryOption }
-        assertEquals(UninstallDefault.Ask, option.default)
+        // El indice de las rutas de Meta lo crea ahora la extension (ext_meta__routes).
+        assertFalse(sql.contains("CREATE UNIQUE INDEX"))
+        assertTrue(sql.contains("ext_meta__routes"))
     }
 }

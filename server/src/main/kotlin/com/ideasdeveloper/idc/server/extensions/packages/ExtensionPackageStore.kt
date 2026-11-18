@@ -1,6 +1,5 @@
 package com.ideasdeveloper.idc.server.extensions.packages
 
-import com.ideasdeveloper.idc.server.extensions.ExtensionSourceType
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
@@ -75,12 +74,12 @@ class JdbcExtensionPackageStore(private val connection: () -> Connection) : Exte
                 """
                 INSERT INTO server_extensions (id, module_id, version, min_module_version, source_type, source_url, package_sha256,
                                                signed, key_id, installed_package_path, manifest, status)
-                VALUES (?, ?, ?, ?, 'github', ?, ?, ?, ?, ?, ?::jsonb, 'pending_restart')
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?::jsonb, 'pending_restart')
                 ON CONFLICT (id) DO UPDATE SET
                     module_id = EXCLUDED.module_id,
                     version = EXCLUDED.version,
                     min_module_version = EXCLUDED.min_module_version,
-                    source_type = 'github',
+                    source_type = EXCLUDED.source_type,
                     source_url = EXCLUDED.source_url,
                     package_sha256 = EXCLUDED.package_sha256,
                     signed = EXCLUDED.signed,
@@ -95,18 +94,19 @@ class JdbcExtensionPackageStore(private val connection: () -> Connection) : Exte
                 statement.setString(2, built.manifest.module)
                 statement.setString(3, built.manifest.version)
                 statement.setString(4, built.manifest.minModuleVersion)
-                statement.setString(5, built.sourceUrl)
-                statement.setString(6, built.packageSha256)
-                statement.setBoolean(7, built.signed)
-                statement.setString(8, built.keyId)
-                statement.setString(9, built.jar.toString())
+                statement.setString(5, built.sourceType)
+                statement.setString(6, built.sourceUrl)
+                statement.setString(7, built.packageSha256)
+                statement.setBoolean(8, built.signed)
+                statement.setString(9, built.keyId)
+                statement.setString(10, built.jar.toString())
                 // El manifiesto lleva ademas el SHA-256 del jar (jarSha256) para comprobarlo al cargar.
                 val manifest = buildJsonObject {
                     json.encodeToJsonElement(com.ideasdeveloper.idc.server.extensions.ExtensionManifest.serializer(), built.manifest).jsonObject
                         .forEach { (key, value) -> put(key, value) }
                     put("jarSha256", built.jarSha256)
                 }
-                statement.setString(10, manifest.toString())
+                statement.setString(11, manifest.toString())
                 statement.executeUpdate()
             }
         }
@@ -114,7 +114,7 @@ class JdbcExtensionPackageStore(private val connection: () -> Connection) : Exte
 
     override fun markRemoved(id: String): Boolean = connection().use { conn ->
         conn.prepareStatement(
-            "UPDATE server_extensions SET status = 'removed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND source_type = 'github' AND status <> 'removed'",
+            "UPDATE server_extensions SET status = 'removed', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND source_type IN ('github', 'zip', 'url') AND status <> 'removed'",
         ).use { statement ->
             statement.setString(1, id)
             statement.executeUpdate() > 0
@@ -123,7 +123,7 @@ class JdbcExtensionPackageStore(private val connection: () -> Connection) : Exte
 
     override fun loadable(): List<StoredExtensionPackage> = connection().use { conn ->
         conn.prepareStatement(
-            "SELECT $columns FROM server_extensions WHERE source_type = '${ExtensionSourceType.GitHub}' AND status IN ('installed', 'pending_restart') AND installed_package_path IS NOT NULL ORDER BY id",
+            "SELECT $columns FROM server_extensions WHERE source_type IN ('github', 'zip', 'url') AND status IN ('installed', 'pending_restart') AND installed_package_path IS NOT NULL ORDER BY id",
         ).use { statement ->
             statement.executeQuery().use { rows -> buildList { while (rows.next()) add(read(rows)) } }
         }

@@ -1,0 +1,24 @@
+{
+  "id": "cloudbeds",
+  "module": "crm",
+  "displayName": "Cloudbeds",
+  "description": "Busca habitaciones libres, crea reservas y hace el check-in en Cloudbeds desde el lead; envia la bienvenida y archiva al salir el huesped.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.27.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/cloudbeds" },
+  "permissions": [
+    "network.outbound:api.cloudbeds.com",
+    "secrets.write",
+    "crm.leads.update",
+    "crm.messages.write",
+    "crm.items.write",
+    "crm.reservations.write"
+  ],
+  "settings": [],
+  "migrations": ["V001__settings.sql"],
+  "uninstall": { "options": [
+    { "id": "reservations", "label": "Reservas de Cloudbeds registradas en los leads", "default": "keep" },
+    { "id": "rooms", "label": "Habitaciones de Cloudbeds asignadas a los leads", "default": "keep" },
+    { "id": "default_country", "label": "Pais por defecto del huesped", "default": "ask" }
+  ] }
+}

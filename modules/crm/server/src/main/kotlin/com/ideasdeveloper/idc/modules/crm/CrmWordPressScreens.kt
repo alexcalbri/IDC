@@ -24,7 +24,7 @@ import java.time.format.DateTimeFormatter
 /** Items of interest of a lead, the property search of the website and the WordPress settings. */
 object CrmWordPressScreens {
     private const val UiRoute = CrmScreens.UiRoute
-    const val PluginPath = CrmWordPressExtension.PluginPath
+    const val PluginPath = WordPressPluginInfo.Path
     private const val Any = "Todos"
     private val timeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
@@ -40,7 +40,7 @@ object CrmWordPressScreens {
 
     fun items(context: CrmScreens.Context, lead: CrmLead, canEdit: Boolean): UiNode? {
         val items = CrmItems.list(context.tenant, lead.id)
-        val wordpress = CrmWordPress.load(context.tenant).ready && CrmExtensions.isEnabled(context.tenant, CrmExtensionIds.WordPress)
+        val wordpress = CrmHost.wordpressSettings(context.tenant).ready && CrmExtensions.isEnabled(context.tenant, CrmExtensionIds.WordPress)
         if (items.isEmpty() && !wordpress && !canEdit) return null
         val id = lead.id.toString()
         fun action(op: String, item: CrmItem, extra: Map<String, String> = emptyMap()) =
@@ -57,7 +57,7 @@ object CrmWordPressScreens {
                 UiButton("Descartar", action("itemStatus", item, mapOf("status" to "discarded")), style = "secondary").takeIf { item.status !in setOf("discarded", "sold", "booked") },
                 UiButton("Quitar", action("itemRemove", item, emptyMap()).copy(confirm = "Quitar ${item.title} del lead?"), style = "danger").takeIf { item.status !in setOf("sold", "booked") },
             )
-            val sale = if (canEdit && item.source == CrmWordPress.Source && item.status !in setOf("sold", "discarded")) {
+            val sale = if (canEdit && item.source == WordPressPluginInfo.Source && item.status !in setOf("sold", "discarded")) {
                 UiForm(
                     "sold_${item.id}",
                     listOf(
@@ -96,7 +96,7 @@ object CrmWordPressScreens {
 
     fun properties(context: CrmScreens.Context, lead: CrmLead, params: Map<String, String>): List<UiNode> {
         val taxonomies = try {
-            CrmWordPress.taxonomies(context.tenant)
+            CrmHost.wordpressTaxonomies(context.tenant)
         } catch (failure: CrmWordPressException) {
             return listOf(UiText(failure.message.orEmpty(), tone = UiTone.Danger))
         }
@@ -108,9 +108,9 @@ object CrmWordPressScreens {
         val values = fields.associate { it.key to (params[it.key] ?: if (it.type == "dropdown") Any else "") }
         val page = params["page"]?.toIntOrNull()?.coerceAtLeast(1) ?: 1
         val filters = filterKeys.mapNotNull { (key, _) -> params["f_$key"]?.takeIf { it.isNotBlank() && it != Any }?.let { key to it } }.toMap()
-        val linked = CrmItems.list(context.tenant, lead.id, CrmWordPress.Source).map { it.externalId }.toSet()
+        val linked = CrmItems.list(context.tenant, lead.id, WordPressPluginInfo.Source).map { it.externalId }.toSet()
         val result = try {
-            CrmWordPress.search(context.tenant, params["q"].orEmpty(), filters, params["min"].orEmpty(), params["max"].orEmpty(), page)
+            CrmHost.wordpressSearch(context.tenant, params["q"].orEmpty(), filters, params["min"].orEmpty(), params["max"].orEmpty(), page)
         } catch (failure: CrmWordPressException) {
             return listOf(UiText(failure.message.orEmpty(), tone = UiTone.Danger))
         }
@@ -152,7 +152,7 @@ object CrmWordPressScreens {
     // ---- Settings: Integraciones > WordPress ----
 
     fun settings(context: CrmScreens.Context, secretShown: String?): List<UiNode> {
-        val settings = CrmWordPress.load(context.tenant)
+        val settings = CrmHost.wordpressSettings(context.tenant)
         val on = UiFieldCondition("enabled", listOf("true"))
         val status = when {
             !settings.ready -> UiStatus("WordPress desactivado", UiTone.Neutral)
@@ -160,7 +160,7 @@ object CrmWordPressScreens {
             settings.lastEventAt != null -> UiStatus("Conectado con ${settings.siteName.ifEmpty { settings.siteUrl.orEmpty() }}; ultimo evento ${timeFormat.format(settings.lastEventAt.atZone(ZoneId.systemDefault()))}", UiTone.Success)
             else -> UiStatus("Sin eventos todavia: instala el plugin y prueba la conexion", UiTone.Warning)
         }
-        val agents = CrmWordPress.agents(context.tenant)
+        val agents = CrmHost.wordpressAgents(context.tenant)
         val agentForm = if (agents.isEmpty()) UiText("Sincroniza los agentes para elegir el usuario de cada uno.", UiTextStyle.Caption) else UiForm(
             "wpAgents",
             agents.map { agent ->
@@ -176,7 +176,7 @@ object CrmWordPressScreens {
                 listOf(
                     status,
                     UiText(
-                        "1. Descarga el plugin IDC Connector ${CrmWordPress.PluginVersion} e instalalo en WordPress (Plugins > Anadir nuevo > Subir plugin). " +
+                        "1. Descarga el plugin IDC Connector ${WordPressPluginInfo.Version} e instalalo en WordPress (Plugins > Anadir nuevo > Subir plugin). " +
                             "2. Genera el secreto aqui. 3. En WordPress, Ajustes > IDC Connector: direccion de IDC ${context.publicBase}, empresa ${context.permissions.companyCode} y el secreto. " +
                             "Los formularios, consultas de propiedades y visitas crean leads; favoritos, busquedas guardadas y vistas quedan en la actividad del lead.",
                     ),

@@ -24,7 +24,7 @@ object CrmIntegrationScreens {
     private val timeFormat = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
 
     // Public URL Meta calls for this company when it uses its own Meta app, e.g. .../modules/crm/extensions/meta/acme/webhook.
-    fun metaHookUrl(context: CrmScreens.Context) = "${context.publicBase}${CrmMetaServer.companyWebhookPath(context.permissions.companyCode)}"
+    fun metaHookUrl(context: CrmScreens.Context) = "${context.publicBase}${MetaPaths.companyWebhookPath(context.permissions.companyCode)}"
 
     // Each integration is an extension of the company: without it installed and active, its card only says how to install it.
     fun integrations(context: CrmScreens.Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> {
@@ -120,7 +120,7 @@ object CrmIntegrationScreens {
     // ---- Encuentra24 Leads API ----
 
     private fun encuentra24(context: CrmScreens.Context): List<UiNode> {
-        val settings = CrmEncuentra24.load(context.tenant)
+        val settings = CrmHost.encuentra24Settings(context.tenant)
         val on = UiFieldCondition("enabled", listOf("true"))
         val status = when {
             !settings.ready -> UiStatus("Encuentra24 desactivado", UiTone.Neutral)
@@ -143,7 +143,7 @@ object CrmIntegrationScreens {
                             UiField("apiKey", "API key", type = "password", visibleWhen = on),
                             UiField("slug", "Slug de la empresa", visibleWhen = on, placeholder = "mi-inmobiliaria"),
                         ),
-                        CrmEncuentra24.toFormValues(settings),
+                        CrmEncuentra24Ads.formValues(settings),
                         submit = UiButton("Guardar", UiRequest(UiRoute + "/integrations", params = mapOf("op" to "e24Save"), formId = "e24")),
                     ),
                 ),
@@ -164,10 +164,10 @@ object CrmIntegrationScreens {
     // ---- Meta: WhatsApp, Messenger, Instagram ----
 
     private fun meta(context: CrmScreens.Context, submitted: Map<String, String>?, pickers: String?, link: String?): List<UiNode> {
-        val settings = CrmMeta.load(context.tenant)
-        val serverApp = CrmMetaServer.app()
+        val settings = CrmHost.metaSettings(context.tenant)
+        val serverApp = CrmHost.metaServerApp()
         val company = context.permissions.companyCode
-        val workspace = context.permissions.serverOwner && CrmMetaServer.serverWorkspace() == company
+        val workspace = context.permissions.serverOwner && CrmHost.metaServerWorkspace() == company
         val header = listOfNotNull(
             UiText("Meta Business (WhatsApp, Messenger e Instagram)", UiTextStyle.Subtitle),
             if (workspace) serverAppCard(context, serverApp ?: CrmMetaServerApp(), submitted) else null,
@@ -193,7 +193,7 @@ object CrmIntegrationScreens {
     private fun serverModeNodes(context: CrmScreens.Context, settings: CrmMetaSettings, app: CrmMetaServerApp?, link: String?): List<UiNode> {
         fun status(ready: Boolean, yes: String, no: String) = UiStatus(if (ready) yes else no, if (ready) UiTone.Success else UiTone.Neutral)
         val ready = app?.ready == true
-        val log = CrmMeta.recent(context.tenant).map { UiTimelineEntry(it.event, it.detail, timeFormat.format(it.at.atZone(ZoneId.systemDefault()))) }
+        val log = CrmHost.metaRecent(context.tenant).map { UiTimelineEntry(it.event, it.detail, timeFormat.format(it.at.atZone(ZoneId.systemDefault()))) }
         val instagram = settings.instagramUsername?.let { "@$it" } ?: settings.instagramAccountId
         return listOfNotNull(
             UiCard(
@@ -259,11 +259,11 @@ object CrmIntegrationScreens {
                 "WhatsApp, y el producto Facebook Login for Business. Permisos: pages_messaging, pages_manage_metadata, pages_read_engagement, " +
                 "pages_show_list, business_management, instagram_basic, instagram_manage_messages, whatsapp_business_messaging y whatsapp_business_management.",
             "3. Configuracion > Basica: dominio de la app $host, URL de la politica de privacidad y, en Facebook Login for Business > Configuracion, " +
-                "Dominios permitidos para el SDK de JavaScript: $base. Callback de desautorizacion: $base${CrmMetaServer.DeauthorizePath}. " +
-                "Solicitud de eliminacion de datos: $base${CrmMetaServer.DataDeletionPath}.",
+                "Dominios permitidos para el SDK de JavaScript: $base. Callback de desautorizacion: $base${MetaPaths.DeauthorizePath}. " +
+                "Solicitud de eliminacion de datos: $base${MetaPaths.DataDeletionPath}.",
             "4. Facebook Login for Business > Configuraciones: crea una para Messenger e Instagram (tipo token de usuario, con los permisos de paginas e " +
                 "Instagram) y otra de WhatsApp Embedded Signup (registro integrado). Copia sus IDs aqui.",
-            "5. Webhooks con la Callback URL $base${CrmMetaServer.WebhookPath} y el verify token de aqui: Page (messages y standby), Instagram " +
+            "5. Webhooks con la Callback URL $base${MetaPaths.WebhookPath} y el verify token de aqui: Page (messages y standby), Instagram " +
                 "(messages) y WhatsApp Business Account (messages y smb_message_echoes). No hace falta suscribir paginas a mano: cada empresa lo hace al conectarse.",
             "6. App Review de los permisos (el video muestra Conectar con Meta desde el CRM) y publica la app. Mientras tanto solo funcionan las " +
                 "personas con rol en la app.",
@@ -280,7 +280,7 @@ object CrmIntegrationScreens {
                         UiField("serverPagesConfigId", "ID de la configuracion de Messenger e Instagram", visibleWhen = on),
                         UiField("serverWhatsAppConfigId", "ID de la configuracion de WhatsApp (Embedded Signup)", visibleWhen = on),
                     ),
-                    CrmMetaServer.appFormValues(app) + submitted.orEmpty().filterKeys { it.startsWith("server") },
+                    CrmHost.metaAppFormValues(app) + submitted.orEmpty().filterKeys { it.startsWith("server") },
                     submit = UiButton("Guardar app del servidor", UiRequest(UiRoute + "/integrations", params = mapOf("op" to "metaServerApp"), formId = "metaServer")),
                 ),
             ),
@@ -355,7 +355,7 @@ object CrmIntegrationScreens {
                 )
             }
         }.orEmpty()
-        val log = CrmMeta.recent(context.tenant).map { UiTimelineEntry(it.event, it.detail, timeFormat.format(it.at.atZone(ZoneId.systemDefault()))) }
+        val log = CrmHost.metaRecent(context.tenant).map { UiTimelineEntry(it.event, it.detail, timeFormat.format(it.at.atZone(ZoneId.systemDefault()))) }
         return listOfNotNull(
             metaGuide(context, open = !settings.enabled),
             UiCard(
@@ -363,7 +363,7 @@ object CrmIntegrationScreens {
                     UiText("Callback URL de los webhooks, la misma para los tres canales:", UiTextStyle.Caption),
                     UiText(metaHookUrl(context)),
                     UiForm(
-                        "meta", fields, CrmMeta.toFormValues(settings) + submitted.orEmpty(),
+                        "meta", fields, CrmHost.metaToFormValues(settings) + submitted.orEmpty(),
                         submit = UiButton("Guardar y conectar", UiRequest(UiRoute + "/integrations", params = mapOf("op" to "metaSave"), formId = "meta")),
                         collapsibleSections = true,
                         sectionNotes = notes,
