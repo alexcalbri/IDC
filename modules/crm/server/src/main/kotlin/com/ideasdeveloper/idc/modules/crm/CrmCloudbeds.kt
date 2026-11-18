@@ -170,6 +170,11 @@ object CrmCloudbeds {
         return send(settings, HttpRequest.newBuilder(URI.create("$Api/$method")).header("Content-Type", "application/x-www-form-urlencoded").POST(HttpRequest.BodyPublishers.ofString(body)))
     }
 
+    private fun put(settings: CrmCloudbedsSettings, method: String, form: List<Pair<String, String>>): JsonObject {
+        val body = form.joinToString("&") { "${encode(it.first)}=${encode(it.second)}" }
+        return send(settings, HttpRequest.newBuilder(URI.create("$Api/$method")).header("Content-Type", "application/x-www-form-urlencoded").PUT(HttpRequest.BodyPublishers.ofString(body)))
+    }
+
     private fun JsonElement?.obj() = this as? JsonObject
     private fun JsonElement?.arr() = (this as? JsonArray).orEmpty()
     private fun JsonElement?.str() = (this as? JsonPrimitive)?.contentOrNull?.trim().orEmpty()
@@ -300,6 +305,38 @@ object CrmCloudbeds {
         }
     }
 
+    /** Form fields of putReservation that mark a reservation as checked in (Cloudbeds API: reservationID and status). */
+    fun checkInForm(settings: CrmCloudbedsSettings, reservationId: String): List<Pair<String, String>> = buildList {
+        settings.propertyId?.let { add("propertyID" to it) }
+        add("reservationID" to reservationId)
+        add("status" to "checked_in")
+    }
+
+    /**
+     * Checks the guest of [reservation] in at Cloudbeds and records the new status. The reservation must still be waiting
+     * for its check-in (confirmed or not confirmed).
+     */
+    fun checkIn(tenant: Connection, reservation: CrmReservation) {
+        val settings = load(tenant)
+        if (!settings.ready) throw CrmCloudbedsException("Cloudbeds no esta activo: configuralo en Integraciones.")
+        if (reservation.status !in CrmAutomationRequirements.CheckInStatuses) {
+            throw CrmValidationException("La reserva ${reservation.reservationId} esta ${statusLabels[reservation.status]?.lowercase() ?: reservation.status}: no se puede hacer el check-in.")
+        }
+        put(settings, "putReservation", checkInForm(settings, reservation.reservationId))
+        tenant.prepareStatement("UPDATE crm_reservations SET status = 'checked_in', updated_at = CURRENT_TIMESTAMP WHERE id = ?").use { update ->
+            update.setObject(1, reservation.id)
+            update.executeUpdate()
+        }
+    }
+
+    /** Turns the welcome email of Cloudbeds on or off (an automation of the CRM can replace it). */
+    fun setWelcomeEnabled(tenant: Connection, enabled: Boolean) {
+        tenant.prepareStatement("UPDATE crm_cloudbeds_settings SET welcome_enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1").use { update ->
+            update.setBoolean(1, enabled)
+            update.executeUpdate()
+        }
+    }
+
     private fun reservations(tenant: Connection, condition: String, bind: (java.sql.PreparedStatement) -> Unit = {}): List<CrmReservation> = tenant.prepareStatement(
         "SELECT id, lead_id, reservation_id, status, start_date, end_date, total, rooms, guest_email, welcome_sent_at FROM crm_reservations WHERE $condition ORDER BY start_date"
     ).use { query ->
@@ -332,15 +369,14 @@ object CrmCloudbeds {
             it.setObject(1, today)
             it.setObject(2, today.plusDays(settings.welcomeDaysBefore.toLong()))
         }
-        val names = CrmNames(CrmRepository.users(tenant), CrmRepository.interests(tenant))
-        val stages = CrmRepository.stages(tenant)
         var queued = 0
         due.forEach { reservation ->
             val lead = CrmRepository.lead(tenant, reservation.leadId) ?: return@forEach
             val to = lead.email.ifEmpty { reservation.guestEmail }
             if (!CrmContacts.isEmail(to)) return@forEach
-            val values = CrmInbox.templateValues(
-                tenant, lead, names, stages,
+            // Dates, rooms and number of the reservation replace the lead's; translated to the guest's language when the template asks for it.
+            val mail = CrmTemplateMailer.renderFor(
+                tenant, template, lead,
                 mapOf(
                     "checkin" to reservation.startDate.toString(),
                     "checkout" to reservation.endDate.toString(),
@@ -348,7 +384,8 @@ object CrmCloudbeds {
                     "reserva" to reservation.reservationId,
                 ),
             )
-            val email = CrmMail.render(template.subject, template.body, values)
+            val email = mail.toEmail()
+            mail.note?.let { CrmRepository.addActivity(tenant, lead.id, "item", "Bienvenida: $it", CrmActor(null, "Bienvenida automatica")) }
             CrmNotify.enqueue(tenant, "welcome", to, email, lead.id)
             CrmInbox.addMessage(tenant, lead.id, "out", "email", email.subject, email.text, "welcome:${reservation.reservationId}", "sent", "", null, "Bienvenida automatica")
             tenant.prepareStatement("UPDATE crm_reservations SET welcome_sent_at = CURRENT_TIMESTAMP WHERE id = ?").use { it.setObject(1, reservation.id); it.executeUpdate() }

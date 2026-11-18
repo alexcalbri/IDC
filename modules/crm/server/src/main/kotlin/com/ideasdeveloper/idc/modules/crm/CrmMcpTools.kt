@@ -108,7 +108,7 @@ object CrmMcpTools {
 
     // What this module tells agents about itself (see ModuleMcp): leads, settings and integrations.
     val mcp: ModuleMcp
-        get() = ModuleMcp(Instructions, tools + CrmSettingsMcpTools.tools + CrmIntegrationMcpTools.tools + CrmImportMcpTools.tools)
+        get() = ModuleMcp(Instructions, tools + CrmSettingsMcpTools.tools + CrmAutomationMcpTools.tools + CrmIntegrationMcpTools.tools + CrmImportMcpTools.tools)
 
     private const val Instructions =
         "El CRM sigue a los interesados (leads) por un embudo de etapas; cerrar en una etapa ganada o perdida termina el seguimiento. " +
@@ -120,7 +120,9 @@ object CrmMcpTools {
             "Los nuevos leads pueden traer un usuario sugerido que, al aprobarlo, se anade a los asignados. Antes de enviar un mensaje a un lead, crear " +
             "una reserva o cambiar configuracion o integraciones, muestra lo que vas a hacer y espera la confirmacion del usuario. " +
             "Las credenciales de las integraciones y del correo (API keys, tokens, secretos, contrasenas) se configuran solo en la app; " +
-            "nunca las pidas ni las recibas."
+            "nunca las pidas ni las recibas. Las automatizaciones (list_automations) envian plantillas, cambian etapas o campos, avisan a usuarios y usan Cloudbeds " +
+            "cuando se dispara su evento o su fecha; los campos de tipo Boton de la ficha (press_lead_button) y las automatizaciones manuales (run_automation) " +
+            "se ejecutan solo a pedido del usuario: muestra lo que haran y espera su confirmacion."
 
     val tools = listOf(
         McpTool(
@@ -738,6 +740,7 @@ object CrmMcpTools {
             val field = context.fields.firstOrNull { it.key == name || it.label.equals(name.trim(), ignoreCase = true) }
                 ?: throw McpToolException("No existe el campo personalizado $name (ver list_pipeline).")
             if (field.type == CrmFieldType.Files) throw McpToolException("Los archivos de ${field.label} se adjuntan desde la app.")
+            if (field.type == CrmFieldType.Button) throw McpToolException("${field.label} es un boton, no guarda valores: usa press_lead_button.")
             field.key to when (value) {
                 is JsonArray -> UiFieldValues.options(value.mapNotNull { (it as? JsonPrimitive)?.contentOrNull })
                 is JsonNull -> ""

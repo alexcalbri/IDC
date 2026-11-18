@@ -43,7 +43,8 @@ data class CrmMailSettings(
     val imapReady get() = imapEnabled && !imapHost.isNullOrBlank() && !imapUsername.isNullOrBlank() && !imapPassword.isNullOrBlank()
 }
 
-data class CrmTemplate(val id: UUID, val name: String, val subject: String, val body: String)
+// baseLanguage: language the text is written in; translate: translate it to the guest's language when sending (see CrmTemplateMailer).
+data class CrmTemplate(val id: UUID, val name: String, val subject: String, val body: String, val baseLanguage: String = "es", val translate: Boolean = false)
 
 // A rendered email: subject, HTML and the plain-text alternative.
 data class CrmEmail(val subject: String, val html: String, val text: String)
@@ -174,9 +175,9 @@ object CrmMail {
     // ---- Templates ----
 
     fun templates(tenant: Connection): List<CrmTemplate> =
-        tenant.prepareStatement("SELECT id, name, subject, body FROM crm_email_templates ORDER BY name").use { query ->
+        tenant.prepareStatement("SELECT id, name, subject, body, base_language, translate FROM crm_email_templates ORDER BY name").use { query ->
             query.executeQuery().use { rows ->
-                buildList { while (rows.next()) add(CrmTemplate(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3), rows.getString(4))) }
+                buildList { while (rows.next()) add(CrmTemplate(rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3), rows.getString(4), rows.getString(5), rows.getBoolean(6))) }
             }
         }
 
@@ -187,32 +188,54 @@ object CrmMail {
         if (name.isEmpty() || name.length > 80) throw CrmValidationException("El nombre de la plantilla debe tener entre 1 y 80 caracteres.")
         if (subject.isEmpty() || subject.length > 300) throw CrmValidationException("El asunto debe tener entre 1 y 300 caracteres.")
         if (body.isBlank() || body.length > 50000) throw CrmValidationException("Escribe el contenido del correo (hasta 50000 caracteres).")
-        unknownPlaceholders(subject + body).takeIf { it.isNotEmpty() }?.let {
+        val baseLanguage = values["baseLanguage"]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+        if (baseLanguage != null && !CrmTranslate.isLanguageCode(baseLanguage)) throw CrmValidationException("El idioma base debe ser un codigo como es o en.")
+        unknownPlaceholders(subject + body, CrmFields.all(tenant).map { it.key }.toSet(), CrmImportTargets.customerFields(tenant).map { it.key }.toSet()).takeIf { it.isNotEmpty() }?.let {
             throw CrmValidationException("Variables desconocidas: ${it.joinToString { name -> "{$name}" }}.")
         }
-        if (templates(tenant).any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw CrmValidationException("Ya existe la plantilla $name.")
+        val existing = templates(tenant)
+        if (existing.any { it.name.equals(name, ignoreCase = true) && it.id != id }) throw CrmValidationException("Ya existe la plantilla $name.")
+        val current = existing.firstOrNull { it.id == id }
+        val language = baseLanguage ?: current?.baseLanguage ?: "es"
+        val translate = values["translate"]?.let { it == "true" } ?: current?.translate ?: false
         val sql = if (id == null) {
-            "INSERT INTO crm_email_templates (name, subject, body, id) VALUES (?, ?, ?, ?)"
+            "INSERT INTO crm_email_templates (name, subject, body, base_language, translate, id) VALUES (?, ?, ?, ?, ?, ?)"
         } else {
-            "UPDATE crm_email_templates SET name = ?, subject = ?, body = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+            "UPDATE crm_email_templates SET name = ?, subject = ?, body = ?, base_language = ?, translate = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
         }
+        val savedId = id ?: UUID.randomUUID()
         tenant.prepareStatement(sql).use { statement ->
             statement.setString(1, name)
             statement.setString(2, subject)
             statement.setString(3, body)
-            statement.setObject(4, id ?: UUID.randomUUID())
+            statement.setString(4, language)
+            statement.setBoolean(5, translate)
+            statement.setObject(6, savedId)
             if (statement.executeUpdate() != 1) throw CrmValidationException("Esa plantilla ya no existe.")
         }
+        // Editing the template makes its cached translations useless.
+        CrmTranslate.clearCache(tenant, savedId)
         return name
     }
 
     fun deleteTemplate(tenant: Connection, id: UUID): Boolean =
         tenant.prepareStatement("DELETE FROM crm_email_templates WHERE id = ?").use { it.setObject(1, id); it.executeUpdate() == 1 }
 
-    private val placeholder = Regex("\\{([a-z_]+)\\}")
+    // {nombre}, {campo:clave} (custom lead field) or {cliente:clave} (customer field of Clientes).
+    val placeholder = Regex("\\{([a-z_]+(?::[A-Za-z0-9_]+)?)\\}")
 
-    fun unknownPlaceholders(text: String): Set<String> =
-        placeholder.findAll(text).map { it.groupValues[1] }.filter { it !in placeholders }.toSet()
+    /**
+     * Placeholders of [text] that do not exist. {campo:key} and {cliente:key} are known only when the key is in
+     * [fieldKeys] / [customerKeys] (empty by default: every one is reported).
+     */
+    fun unknownPlaceholders(text: String, fieldKeys: Set<String> = emptySet(), customerKeys: Set<String> = emptySet()): Set<String> =
+        placeholder.findAll(text).map { it.groupValues[1] }.filter { name ->
+            when {
+                name.startsWith("campo:") -> name.removePrefix("campo:") !in fieldKeys
+                name.startsWith("cliente:") -> name.removePrefix("cliente:") !in customerKeys
+                else -> name !in placeholders
+            }
+        }.toSet()
 
     /**
      * Fills a template. [body] is HTML written by the company; a body without tags is treated as

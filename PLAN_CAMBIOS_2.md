@@ -233,3 +233,76 @@ Nada de lo que corre como root o postgres se lee de `source/`. La lógica del cl
 - **Campos en cualquier sección:** un campo personalizado se puede poner en las secciones fijas del lead ("Datos del cliente", la de contacto con nombre, teléfono y correo; "Seguimiento"; "Mensaje y detalles"; "Documentos") o en una sección creada por la empresa. Si la sección no existe, se crea con su nombre y se le agregan campos.
 - **Orden de las secciones:** todas se ordenan a gusto, fijas y personalizadas, salvo "Datos del cliente", que siempre va primero.
 - **Cómo:** V020 agrega `system_key` a `crm_field_sections` y crea en cada empresa una fila por sección fija, en el orden actual. Las secciones fijas no se borran; renombrarlas no se pide, así que se dejan con su nombre. `position` controla el orden y "Datos del cliente" se fija en 0. El formulario y el detalle se arman recorriendo las secciones en orden: en cada una van primero sus campos fijos y después los personalizados asignados a ella.
+
+## 9. Automatizaciones, plantillas con traducción, botones y avisos (CRM 0.24.0, V021)
+
+**Origen:** la revisión de los tableros de leads de La Jolla en monday. Los puntos 6, 7 y 8 de esa revisión (salida a la etapa Old Guest, reparto por asignado y webhook) quedan fuera.
+
+### 9.1 Plantillas de correo por contenido
+- Siguen las plantillas actuales (`crm_email_templates`, HTML o texto). Cada empresa crea las que quiera (bienvenida, confirmación, recordatorio...), sin una plantilla por idioma.
+- **Datos:** además de las variables actuales (`{nombre}`, `{codigo_cliente}`, `{checkin}`, `{checkout}`, `{etapa}`, `{interes}`, `{valor}`, `{responsable}`, `{habitaciones}`, `{reserva}`), se puede cargar cualquier campo personalizado del lead con `{campo:clave}` y cualquier campo dinámico del cliente con `{cliente:clave}`. El editor muestra la lista de variables disponibles y una vista previa con un lead de ejemplo.
+- **Traducción automática** (opcional por plantilla, "Traducir al idioma del huésped"):
+  - **Configuración > Integraciones > "Traducción":** proveedor Google Cloud Translation (clave de API) o IA por API (Claude: clave de API y modelo). La clave se guarda como las demás credenciales de integraciones.
+  - **Idioma del huésped:** sale de un campo mapeado ("Campo de idioma", como el mapeo de fechas) y de una tabla de equivalencias (Español → es, Inglés → en...). La plantilla tiene un idioma base. Sin idioma o con el idioma base, no se traduce.
+  - **Lo que se respeta:** se traduce el asunto y el cuerpo antes de cargar los datos. Las variables `{...}` y las etiquetas HTML se protegen (Google con `format=html` y marcadores; la IA con instrucciones y una verificación de que las variables y las etiquetas siguen iguales). Así, nombres, códigos y fechas nunca pasan por el traductor.
+  - **Caché y fallos:** las traducciones se guardan en caché (`crm_template_translations`: plantilla, idioma y hash del contenido) y se invalidan al editar. Si la traducción falla, se envía el original y queda anotado en la actividad del lead.
+
+### 9.2 Motor de automatizaciones (`crm_automations`, `crm_automation_runs`)
+Configuración > Automatizaciones (permiso `crm.settings`). Cada regla tiene un disparador, condiciones opcionales y una o más acciones en orden.
+- **Disparadores:**
+  - lead creado;
+  - cambio a una etapa;
+  - cambio de un campo;
+  - nuevo mensaje entrante;
+  - fecha: N días antes o después de la fecha de ingreso o salida mapeada, del seguimiento o de cualquier campo de fecha, a una hora del día en la zona horaria de la empresa;
+  - manual: solo desde un botón (9.4).
+- **Condiciones:** etapa o interés en una lista, campo igual o distinto a un valor, campo vacío o lleno, y tiene correo o teléfono.
+- **Acciones:**
+  - enviar una plantilla al correo del lead (traducida si corresponde);
+  - cambiar la etapa;
+  - fijar un campo;
+  - avisar a usuarios: asignados, usuarios elegidos o los que ven todos los leads, con aviso en la app y correo;
+  - Cloudbeds, solo si la integración está activa: crear la reserva y hacer el check-in.
+- **Datos incompletos:** cada acción sabe lo que necesita (el correo para enviar, las fechas y la habitación para reservar, la reserva para el check-in).
+  - **Aviso anticipado (reglas de fecha):** quien crea la regla define con cuánto tiempo de anticipación revisar los datos (por ejemplo "avisar 2 días antes"). Al llegar ese momento, si al lead le falta algo para la ejecución que viene, se avisa (app y correo) a los asignados o a los usuarios elegidos en la regla: qué falta, en qué lead y cuándo se ejecuta. Así hay tiempo de completarlo.
+  - **Al ejecutar:** si todavía falta algo, la regla no se ejecuta y se avisa de nuevo, una sola vez. Las reglas sin fecha (lead creado, cambio de etapa o campo, mensaje, botón) solo pueden avisar en el momento: no se ejecutan y avisan qué falta.
+- **Ejecución:**
+  - un job revisa cada 5 minutos los disparadores de fecha;
+  - los demás se disparan al guardar el lead o al llegar el mensaje;
+  - cada ejecución queda en `crm_automation_runs` (lead, regla, resultado, detalle) y en la actividad del lead;
+  - una regla de fecha corre una sola vez por lead para cada valor de la fecha: si la fecha cambia, vuelve a correr.
+- **Bienvenida antes del check-in:** no es una regla especial. Es una automatización normal de fecha ("N días antes de la fecha del campo elegido, hacer esto") que cada empresa crea si la necesita: por ejemplo, 1 día antes de "Fecha de ingreso", enviar la plantilla "Bienvenida". Las empresas sin check-in simplemente no la crean. Si Cloudbeds está activo con su bienvenida encendida, al guardar una regla que envía correo por una fecha de estadía se avisa que pueden salir dos correos, y se ofrece apagar la bienvenida de Cloudbeds.
+
+### 9.3 Avisos (app y correo)
+- **Mensaje nuevo de un lead** (inbox: correo o Meta): aviso en la app a los asignados, y correo según su preferencia en Equipo.
+- **Fecha de seguimiento:** aviso en la app y correo a los asignados a la hora del seguimiento (o a la hora del resumen si no tiene hora), además del resumen diario.
+- **Preferencias:** las dos opciones nuevas se agregan a las preferencias de notificación de cada usuario.
+
+### 9.4 Botones como campos personalizados
+- **Tipo nuevo de campo, "Botón":** se pone en cualquier sección, como los demás campos, y su acción puede ser:
+  - enviar una plantilla;
+  - ejecutar una o más automatizaciones con disparador manual, en orden, por ejemplo "Confirmar reserva": enviar la confirmación, crear la reserva en Cloudbeds y avisar a recepción.
+- Se muestra en el detalle del lead (no en el formulario de edición), pide confirmación y devuelve el resultado de cada acción o los datos que faltan. Respeta los permisos de quien lo pulsa.
+
+### Fuera de esta versión
+Salida a la etapa "Old Guest", reparto por asignado y webhooks.
+
+### Automatizaciones para las pruebas del cambio 9 (no son código)
+No se programan: son datos de configuración. Al probar el cambio 9, se crean desde la app (o por MCP) en el servidor, con la configuración de La Jolla (las fechas mapeadas como "Fecha de ingreso" y "Fecha de salida", y el campo de idioma mapeado):
+1. **Bienvenida antes del check-in:**
+   - disparador: 1 día antes de "Fecha de ingreso", a la hora configurada;
+   - condiciones: etapa Booked/Converted y tiene correo;
+   - acción: enviar la plantilla "Bienvenida" traducida al idioma del huésped;
+   - aviso anticipado: 2 días antes, si falta el correo.
+2. **Confirmación de reserva** (botón "Enviar confirmación" en el lead): disparador manual; enviar la plantilla "Confirmación", traducida.
+3. **Confirmar y reservar** (botón):
+   - disparador manual;
+   - acciones: enviar la confirmación, crear la reserva en Cloudbeds y avisar a recepción;
+   - si faltan las fechas o la habitación, avisa qué falta.
+4. **Booked sin fechas:**
+   - disparador: cambio a la etapa Booked/Converted;
+   - acción: avisar a los asignados (o al usuario elegido, como magrock en monday);
+   - si faltan la fecha de ingreso o la de salida, avisa qué falta.
+5. **Mensaje nuevo de un lead:** aviso en la app y por correo a los asignados. Lo cubre 9.3; se revisa que llegue.
+6. **Seguimiento que vence:** aviso en la app y por correo a los asignados a la hora del seguimiento. Lo cubre 9.3.
+7. **Check-in en Cloudbeds** (botón, con la integración activa): disparador manual; acción: hacer el check-in, o avisar si no hay reserva.

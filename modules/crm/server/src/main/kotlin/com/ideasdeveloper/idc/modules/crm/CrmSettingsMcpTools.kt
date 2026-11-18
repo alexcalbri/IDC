@@ -183,6 +183,8 @@ object CrmSettingsMcpTools {
                     "notifyAssigned" to McpSchema.boolean("Aviso cuando le asignan un lead."),
                     "dailyDigest" to McpSchema.boolean("Resumen diario de sus leads."),
                     "notifyMentioned" to McpSchema.boolean("Aviso por correo (al correo del perfil del usuario) cuando lo mencionan en una nota; activado por defecto."),
+                    "notifyNewMessage" to McpSchema.boolean("Correo con cada mensaje nuevo de sus leads asignados; activado por defecto."),
+                    "notifyFollowUp" to McpSchema.boolean("Correo cuando vence un seguimiento de sus leads asignados; activado por defecto."),
                 ),
                 required = listOf("user"),
             ),
@@ -288,6 +290,8 @@ object CrmSettingsMcpTools {
                         put("notifyAssigned", saved?.notifyAssigned ?: true)
                         put("dailyDigest", saved?.dailyDigest ?: false)
                         put("notifyMentioned", saved?.notifyMentioned ?: true)
+                        put("notifyNewMessage", saved?.notifyNewMessage ?: true)
+                        put("notifyFollowUp", saved?.notifyFollowUp ?: true)
                     })
                 }
             }
@@ -514,6 +518,8 @@ object CrmSettingsMcpTools {
             notifyAssigned = if (call.has("notifyAssigned")) call.boolean("notifyAssigned") else saved?.notifyAssigned ?: true,
             dailyDigest = if (call.has("dailyDigest")) call.boolean("dailyDigest") else saved?.dailyDigest ?: false,
             notifyMentioned = if (call.has("notifyMentioned")) call.boolean("notifyMentioned") else saved?.notifyMentioned ?: true,
+            notifyNewMessage = if (call.has("notifyNewMessage")) call.boolean("notifyNewMessage") else saved?.notifyNewMessage ?: true,
+            notifyFollowUp = if (call.has("notifyFollowUp")) call.boolean("notifyFollowUp") else saved?.notifyFollowUp ?: true,
         )
         validated { CrmNotify.saveUserSettings(call.tenant, settings) }
         return result("Avisos de ${user.name} guardados.")

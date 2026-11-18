@@ -64,7 +64,7 @@ Tabs of **Configuracion**:
 | Tab | Screen id | Content |
 | --- | --- | --- |
 | General | `settings` | Interests switch, interest catalog, interests per user, custom fields, **Resumen diario** hour (action `settings:digest`), stages and stage templates. |
-| Automatizaciones | `automations` | **Automatizacion de salida** (`CrmExitScreens.card`, action `settings:exitSave`) and the rules that come next. |
+| Automatizaciones | `automations` | The rules of the company (`CrmAutomationScreens`, actions `automations:save` / `toggle` / `delete` / `welcomeOff`; see "Automations and button fields") and the **Automatizacion de salida** (`CrmExitScreens.card`, action `settings:exitSave`). |
 | Equipo | `team` | Notification email and options per user. |
 | Correo | `mail` | SMTP and IMAP. |
 | Plantillas | `templates` | Message templates. |
@@ -263,8 +263,12 @@ sent by job `outbox` every minute with up to 5 attempts.
 | --- | --- | --- |
 | `outbox` | 1 min | Send queued mail. |
 | `digest` | 15 min | Daily digest once the digest hour has passed. |
+| `followups` | 15 min | Follow-up due notices (in-app and email) to the assigned users, once the digest hour has passed in the company zone (0.24.0). |
 | `imap` | 5 min | Read the company mailbox. |
 | `encuentra24` | 5 min | Import Encuentra24 leads. |
+| `automations` | 5 min | Date automations (0.24.0): runs each rule once per lead and value of its date once the hour arrives (within one day of catch-up) and sends the early warning of missing data. |
+| `automation-events` | 1 min | Runs the queued event automations (up to 50 per pass, `FOR UPDATE SKIP LOCKED`) and marks runs stuck in `running` for 15 min as failed ("Interrumpida"). |
+| `automations-purge` | 24 h | Deletes automation runs older than 90 days, except `date:` / `warn:` keys (kept a year). |
 | `cloudbeds-welcome` | 15 min | Welcome emails before check-in. |
 | `cloudbeds-sync` | 30 min | Reservation statuses; archive after check-out. |
 | `exit-archive` | 15 min | Automatizacion de salida without Cloudbeds: archive the leads of the chosen stages whose end date arrived, once the hour passed (see below). |
@@ -630,6 +634,21 @@ The renderer has no row selection, so it is a form with one checkbox field per l
 
 "Mover a Clientes" was removed (the 0.22.0 action, its permission check and code): a field such as `age` stays a custom field of the CRM.
 
+## Notices of new messages and due follow-ups (V021, 0.24.0)
+
+- **New inbound message:** `CrmInbox.receive` (the single entry of IMAP, Meta, WordPress and Encuentra24) calls
+  `CrmLeadEvents.messageReceived(tenant, leadId, message, channel)` once per stored message (new or existing lead, non-empty text). Every
+  **assigned** user of the lead gets "Nuevo mensaje de <nombre>" in the notification center (the text is the message cut to 140 characters;
+  it opens the lead) and, if `crm_user_settings.notify_new_message` is on (default) and they have an email in **Equipo**, an email
+  (`crm_outbox` kind `new_message`). Leads without assigned users notify nobody. The automations lane adds `message_received` inside that function.
+  The notifier comes from `CrmLeadEvents.access` (set in `routes`), since webhooks and jobs have no request.
+- **Follow-up due:** job `followups` (15 min). Open (not closed, not archived) leads with `follow_up_on` today or before, once the digest hour passed
+  in the company zone, and `follow_up_notified_on IS DISTINCT FROM follow_up_on`: one atomic `UPDATE ... RETURNING` marks them, then every assigned user
+  gets "Seguimiento pendiente: <nombre>" and, if `notify_followup` is on and they have an email, an email (kind `follow_up`). Changing the date re-arms it.
+- **Company zone:** `CrmZone.of(tenant)` is `crm_settings.exit_time_zone` when valid, else the server zone; `CrmZone.gate(zone, hour, now)` gives today and whether the hour passed.
+- **Equipo** has two new options ("Correo con cada mensaje nuevo de mis leads", "Correo cuando vence un seguimiento"); `crm_update_user_notifications`
+  has `notifyNewMessage` and `notifyFollowUp`, and `crm_get_settings` returns them.
+
 - **Built-in sections are rows** of `crm_field_sections` with a `system_key` (V020, idempotent by key): `customer` "Datos del cliente" (name, email, phone,
   customer code, language; it used to be called "Contacto"), `followup` "Seguimiento", `message` "Mensaje y detalles" and `documents` "Documentos". V020 seeds them
   in today's order (positions 0..3) and moves the company's own sections after them, keeping their order. A custom section that already used a built-in name is renamed
@@ -641,6 +660,75 @@ The renderer has no row selection, so it is a form with one checkbox field per l
 - **How the form is built:** `leadFields` walks the sections in order; in each built-in section its built-in fields come first, then the custom fields assigned to it (by field position);
   the fields without section follow in "Campos personalizados". Required built-in fields keep their `required` flag wherever their section sits. The lead detail uses the same form.
 - Agents: `crm_list_pipeline` returns `sections` (in order, `fixed` for built-in ones) and each field's `section`.
+
+## Templates by content and automatic translation (V021, 0.24.0)
+
+- **Variables:** besides the fixed ones, `{campo:key}` loads any custom lead field and `{cliente:key}` any dynamic field of the customer (Clientes,
+  `customers.flexible_attributes`). Values are shown as in the lead detail (lists comma-joined, "Si" / "No", dates as stored) and HTML-escaped in HTML bodies.
+  Saving a template reports unknown keys like the other unknown variables. The editor lists every variable generated from the current definitions and has a
+  **Vista previa** (action `templates:preview`) that renders the template for one of the 25 most recent leads the user can see, with the translation and its note. Nothing is sent.
+- **Single entry point** (`CrmTemplateMailer.kt`, signatures documented at its top; the automations use it):
+  `render(tenant, templateId, leadId, extra, http): RenderedMail(subject, html, text, language, translated, note)` and
+  `send(tenant, templateId, leadId, requestedBy, extra, http): SentMail` (queues to the lead's email in `crm_outbox` kind `template`, adds the message to
+  the conversation and the lead activity, and the translation note when it failed). `renderFor(tenant, template, lead, extra)` is the same with both loaded.
+  `lead:send` (reply form with a template and no typed text) and the Cloudbeds welcome use it too.
+- **Translation** (`CrmTranslate.kt`): Integraciones > Traduccion: provider (none, Google Cloud Translation, IA by API with Claude), API key (masked, a masked or blank
+  value keeps the saved one), model (default `claude-haiku-5-5`), the lead field that holds the guest's language (text or list) and the table "Valor = codigo".
+  A template has `base_language` and `translate`. The guest's language is `language_map[value]` or the value itself when it is a code (`en`, `en-US`); no language, an
+  unknown one or the base language means no translation.
+- **What goes to the translator:** only the template text. `{...}` placeholders become tokens `⟦n⟧` before translating and are restored after, so names, codes and dates
+  never leave the server. Google gets `format=html` with the tokens wrapped in `notranslate` spans; Claude gets a strict system prompt. The result is rejected unless every
+  token and the same HTML tags (names and counts) are still there and no new placeholder appeared.
+- **Cache and failures:** `crm_template_translations` by template, language and `content_hash` (sha256 of base language, subject and body); a template's rows are deleted when it is saved.
+  If the translation fails (no key, HTTP error, timeout, validation) the original is sent and the note "No se pudo traducir: motivo" goes to the lead activity.
+- HTTP goes through the `CrmHttp` interface (`CrmJavaHttp`: 10 s connect, 25 s request, no redirects) so tests use fakes.
+
+## Automations and button fields (V021, 0.24.0)
+
+Configuracion > Automatizaciones (`crm.settings`) lists the rules of the company with an on/off switch, the trigger, the last results and "Ejecuciones recientes"
+(`crm_automation_runs`: lead, rule, status, detail; tap a row to open the lead). Code: `CrmAutomations.kt` (model, validation and every pure rule),
+`CrmAutomationStore.kt` (tables), `CrmAutomationEngine.kt` (engine, notices, event hooks, date pass), `CrmAutomationScreens.kt` (tab and form),
+`CrmButtons.kt` (button fields) and `CrmAutomationMcpTools.kt`.
+
+- **Rule:** a trigger, optional conditions (all must hold) and 1 to 10 actions run in order. Names are unique. JSON of V021 (`trigger_config`, `conditions`, `actions`):
+  - triggers: `lead_created`, `stage_changed` (`{"stage"}`), `field_changed` (`{"field"}`, a custom field or the follow-up date), `message_received`,
+    `date` (`{"field","offsetDays" -60..60,"hour" 0..23}` in the company zone; the field is a date custom field or `follow_up_on`) and `manual` (only from a button or an agent).
+  - conditions: `stage_in`, `interest_in` (+ `noInterest`), `field_equals`, `field_not_equals`, `field_empty`, `field_filled`, `has_email`, `has_phone`. Equality ignores case, matches any
+    option of a list and treats Si / No like true / false.
+  - actions: `send_template` (`CrmTemplateMailer.send`, translated when the template asks for it), `set_stage` (`moveLead`), `set_field` (same parsing as the lead form; also the follow-up date),
+    `notify` (assigned users, chosen users or whoever sees all leads: notice in the app and, if the user has an email in Equipo, an email of kind `automation`),
+    `cloudbeds_reserve` (`CrmLeadItemActions.reserve` with the chosen rooms; the lead goes to the first won stage as always) and `cloudbeds_checkin`
+    (`CrmCloudbeds.checkIn`: Cloudbeds `putReservation` with `reservationID` and `status=checked_in`, then `crm_reservations.status`). The Cloudbeds actions are offered and saved only with the integration active.
+- **Missing data:** each action declares what it needs (`CrmAutomationRequirements`): a valid email to send, the check-in and check-out dates (the mapped stay fields), a room chosen for those dates and an
+  email to reserve, a reservation waiting for check-in to check in (a reserve earlier in the same rule covers it). Nothing missing: the actions run. Something missing: the rule does not run, the run is
+  recorded as `missing_data` and the people in charge are told what is missing, in which lead and when (the users chosen in the rule; else the assigned users; else whoever sees all leads).
+  Rules without a date (events) can only tell at that moment; a button answers to whoever pressed it instead of notifying.
+- **Once per execution:** `crm_automation_runs.run_key` + the unique index. The engine first **claims** the key (`INSERT ... ON CONFLICT DO NOTHING`), then runs, then writes the result: an execution never happens twice,
+  even if two passes overlap or the server stops half way (a claimed row stays "Omitida / En curso"). Keys: `date:<value>` (a date rule runs once per lead and value of the date; if the date changes it runs again),
+  `warn:<value>` (the early warning, once), `evt:<ms>-<nonce>` (event rules: every event is its own run) and `btn:<uuid>` (each press). Rules whose conditions are not met record nothing,
+  so a date rule can still run later in its window if the lead meets them.
+- **Date rules:** job `automations` (5 min) reads, per enabled rule, the leads whose date is inside the window that can be due or warn today. A rule is due from its time (`date + offsetDays` at `hour`, company zone)
+  until `CrmAutomationSchedule.CatchUp` (1 day) later: turning a rule on does not fire for old dates. **Early warning** (`warn_before_minutes`, hours in the form): from that long before the run time until it,
+  if something the actions need is missing (and the conditions hold) it tells once (`warned`); at the run time the rule reports it again if still missing.
+- **Events are queued, not run:** `CrmAutomationEvents` fires after the change is saved but only inserts a `pending` row in `crm_automation_runs` (conditions already checked); job `automation-events` claims it
+  (`running`), runs the engine and finishes it. A save, a webhook or a bulk move never waits for a translation or Cloudbeds. Events: `lead_created` (`createLead` and new leads of every channel in `CrmInbox.receive`),
+  `stage_changed` (`moveLead` and the form's stage change), `field_changed` (`updateLead` and `set_field`) and `message_received` (`CrmLeadEvents.messageReceived`). Imports run `suppressed { }` and write custom
+  fields straight to the table, so they trigger nothing. Buttons, `crm_run_automation` and the date job stay synchronous. Status flow: `pending` -> `running` -> `done` / `failed` / `missing_data` / `skipped`
+  (`CrmRunStates.canMove`); everything after the claim is wrapped so a row always ends finished.
+- **Loops and floods:** `message_received` queues one run per rule, lead and day (`msg:<day>` key); automations send at most 3 template emails per lead per hour (counted in `crm_outbox`, kind `template`; over it
+  the run is `skipped`); an event rule queues at most 5 runs per lead per hour (cuts rules that trigger each other); a missing-data notice of an event rule goes out once per day (`missing:<day>`).
+  Saving a "message + send template" rule warns about this. `set_stage` refuses to win a lead with rooms chosen in Cloudbeds (confirm the reservation from the lead instead).
+- **Date job:** reads refs once per rule and pass; the due query skips leads whose `date:<value>` run already exists (no starvation by the 500 cap) and orders by date. Closed leads are NOT excluded
+  (the "booked" rules need them); archived ones are.
+- **Duplicate email:** saving an enabled date rule that sends a template on a mapped stay date while Cloudbeds' welcome is on warns that the guest can get two emails; the tab keeps a card with **Apagar la bienvenida de Cloudbeds**.
+- **The form** has fixed slots (3 to 10 conditions and actions: its own plus one empty); a slot without kind is ignored. Agents can save any number up to 10.
+- **Button fields (9.4):** the new field type **Boton** (`crm_field_definitions.config`: `{"template": id}` or `{"automations": [ids]}`, the automations being manual ones, in order). It holds no value: it is left
+  out of the lead form, required checks, imports, change history and `{campo:...}` values. The lead detail shows the buttons in a card **Acciones** grouped by the section they were placed in, only to who can edit the lead;
+  pressing asks "¿Ejecutar <nombre>?" (`lead:button`, permission `crm.leads.manage` + a lead of the user's scope). A template is sent to the lead's email (after checking it has one); automations run with the same engine and
+  `actor` = the user, one `btn:<uuid>` per press, stopping at the first that is missing data, failed, off or not manual; the notice lists each result or what is missing.
+- **Agents** (`CrmAutomationMcpTools.kt`): `crm_list_automations`, `crm_get_automation`, `crm_save_automation`, `crm_delete_automation`, `crm_list_automation_runs` (`crm.settings`), and `crm_run_automation`,
+  `crm_press_lead_button` (`crm.leads.manage`, a lead the user can edit). Names or ids are accepted for stages, templates, users and fields. No tool handles credentials.
+- **Test rules** of the change plan (welcome before check-in, confirmation, confirm and reserve, booked without dates, check-in) are plain configuration of the above: nothing is special-cased in code.
 
 ## Customer history (0.15.0)
 
@@ -657,8 +745,7 @@ that apply to every lead) with a button that opens the customer's profile. The l
 
 ## Not in this version
 
-Automations (move by rule) and attachments
-come in the next versions.
+Webhooks, leaving to "Old Guest" and distribution by assigned user.
 
 ## AI agent tools
 
@@ -674,6 +761,8 @@ screens, so an agent sees and changes only the leads of its user's scope:
 | `crm_send_message` | `crm.leads.manage` | Sends by email, WhatsApp, Messenger or Instagram with the reply form's checks; recorded in the conversation (also when it fails). |
 | `crm_list_pending_assignments`, `crm_resolve_assignment` | `crm.assign` | Approve (adds the suggested user to the assigned ones) or discard suggested assigned users. |
 | `crm_delete_lead` | `crm.leads.delete` | Deletes a lead (marked destructive); the customer stays. |
+| `crm_run_automation`, `crm_press_lead_button` | `crm.leads.manage` | Run a manual automation or press a button field on a lead the user can edit (can send mail or create reservations: confirm first). |
+| `crm_list_automations`, `crm_get_automation`, `crm_list_automation_runs`, `crm_save_automation`, `crm_delete_automation` | `crm.settings` | Automations with their runs and what can be used to build them; create, edit and delete (see "Automations and button fields"). |
 
 Settings tools (`CrmSettingsMcpTools.kt`, permission `crm.settings`), with the same parsing as the
 settings screens; edits change only what is sent:

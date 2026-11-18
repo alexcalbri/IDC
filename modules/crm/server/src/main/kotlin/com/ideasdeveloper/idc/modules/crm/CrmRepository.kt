@@ -322,7 +322,13 @@ object CrmRepository {
      * The customer keeps its data; only an email or phone it did not have yet is added. Without a
      * match a new prospect customer is created in Clientes.
      */
-    fun createLead(tenant: Connection, entered: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID? = null, fields: List<CrmField> = emptyList()): UUID = transaction(tenant) {
+    fun createLead(tenant: Connection, entered: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID? = null, fields: List<CrmField> = emptyList()): UUID =
+        insertLead(tenant, entered, stage, actor, chosenCustomerId, fields).also { id ->
+            // Once saved: the "lead creado" automations (best effort, never fails the creation).
+            CrmAutomationEvents.leadCreated(tenant, id)
+        }
+
+    private fun insertLead(tenant: Connection, entered: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID?, fields: List<CrmField>): UUID = transaction(tenant) {
         // target_start and target_end are copied from the mapped date fields (empty without mapping).
         val input = withStayDates(tenant, entered, JsonObject(emptyMap()), fields)
         val existing = chosenCustomerId?.takeIf { activeCustomer(tenant, it) } ?: matchCustomer(tenant, input.email, input.phone)
@@ -441,6 +447,7 @@ object CrmRepository {
     ): CrmAssignees.Change {
         val input = withStayDates(tenant, entered, lead.customFields, fields)
         var ownersChange = CrmAssignees.Change(emptyList(), emptyList())
+        var stageMoved = false
         transaction(tenant) {
         tenant.prepareStatement(
             "UPDATE customers SET display_name = ?, primary_email = ?, primary_phone = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?"
@@ -462,7 +469,7 @@ object CrmRepository {
             update.executeUpdate()
         }
         if (input.stageId != lead.stageId) {
-            stages.firstOrNull { it.id == input.stageId }?.let { moveLead(tenant, lead, it, stages, actor) }
+            stages.firstOrNull { it.id == input.stageId }?.let { stageMoved = applyMove(tenant, lead, it, stages, actor) }
         }
         // A changed end date puts a restored lead back under the exit automation (a stage change does it in moveLead).
         if (!CrmExit.restoreSurvives(lead.stageId, input.stageId, lead.targetEnd, input.targetEnd)) {
@@ -487,7 +494,18 @@ object CrmRepository {
         }
         // Name, email and phone belong to the customer: they change at once in every company it is shared with.
         CrmCustomerEvents.changed(tenant, lead.customerId)
+        // Everything is saved: the automations of the stage change and of the changed fields run now (best effort).
+        if (stageMoved) CrmAutomationEvents.stageChanged(tenant, lead.id, input.stageId)
+        val changedFields = changedFieldKeys(lead, input, fields)
+        if (changedFields.isNotEmpty()) CrmAutomationEvents.fieldsChanged(tenant, lead.id, changedFields)
         return ownersChange
+    }
+
+    /** Keys of the custom fields (and of the follow-up date) whose value this save changes: the ones a "field changed" automation watches. */
+    fun changedFieldKeys(lead: CrmLead, input: CrmLeadInput, fields: List<CrmField>): List<String> {
+        val after = CrmFields.merge(lead.customFields, input.custom)
+        val custom = fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button && CrmFields.display(lead.customFields[it.key]) != CrmFields.display(after[it.key]) }.map { it.key }
+        return custom + listOfNotNull(CrmAutomationRefs.FollowUpField.takeIf { lead.followUpOn != input.followUpOn })
     }
 
     /** "Campo: antes -> despues" for each changed value of the lead form, or null when nothing changed. */
@@ -535,9 +553,15 @@ object CrmRepository {
     }
 
     fun moveLead(tenant: Connection, lead: CrmLead, stage: CrmStage, stages: List<CrmStage>, actor: CrmActor) {
+        // Moved: the "cambio a una etapa" automations run (best effort). A caller inside a transaction uses [applyMove] and fires them after committing.
+        if (applyMove(tenant, lead, stage, stages, actor)) CrmAutomationEvents.stageChanged(tenant, lead.id, stage.id)
+    }
+
+    /** [moveLead] without the automations; true when the lead really changed stage (or closed state). */
+    private fun applyMove(tenant: Connection, lead: CrmLead, stage: CrmStage, stages: List<CrmStage>, actor: CrmActor): Boolean {
         // Archived leads sit outside the stages (a stage change would mix them back into the pipeline).
         if (lead.archivedAt != null) throw CrmValidationException("Restaura el lead antes de moverlo.")
-        if (stage.id == lead.stageId && lead.closedAt == null == (stage.kind == StageKind.Open)) return
+        if (stage.id == lead.stageId && lead.closedAt == null == (stage.kind == StageKind.Open)) return false
         tenant.prepareStatement(
             """
             UPDATE crm_leads SET stage_id = ?, stage_changed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, restored_at = NULL,
@@ -556,6 +580,7 @@ object CrmRepository {
         if (stage.kind == StageKind.Won && stages.firstOrNull { it.id == lead.stageId }?.kind != StageKind.Won) {
             CrmCustomerEvents.won(tenant, lead, actor)
         }
+        return stage.id != lead.stageId
     }
 
     /**

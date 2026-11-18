@@ -248,7 +248,7 @@ object CrmScreens {
             "integrations" -> tabBar(context, screen) + CrmIntegrationScreens.integrations(context, params, submitted)
             "import" -> tabBar(context, screen) + CrmImportScreens.imports(context, params)
             "importjob" -> tabBar(context, screen) + CrmImportScreens.job(context, params)
-            "automations" -> tabBar(context, screen) + automations(context, submitted)
+            "automations" -> tabBar(context, screen) + automations(context, params, submitted)
             else -> tabBar(context, screen) + settings(context, params, submitted)
         }
         return frame(context, screen, title, notice, body)
@@ -274,11 +274,9 @@ object CrmScreens {
         return listOf(UiRow(tabs.map { UiButton(it.label, UiNavigate(it.screen), style = if (it.screen == selected) "primary" else "secondary") }))
     }
 
-    // Tab Automatizaciones: the exit rule and the ones that come next.
-    private fun automations(context: Context, submitted: Map<String, String>?): List<UiNode> = listOf(
-        UiText("Reglas que el CRM aplica solo.", UiTextStyle.Caption),
-        CrmExitScreens.card(context, submitted),
-    )
+    // Tab Automatizaciones: the rules of the company (CrmAutomationScreens) and the exit rule.
+    private fun automations(context: Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> =
+        CrmAutomationScreens.tab(context, params, submitted) + CrmExitScreens.card(context, submitted)
 
     // ---- Filters ----
 
@@ -698,12 +696,12 @@ object CrmScreens {
         return buildList {
             sections.forEach { section ->
                 section.systemKey?.let { builtIn[it] }?.let { addAll(it) }
-                context.fields.filter { it.sectionId == section.id }.sortedWith(compareBy({ it.position }, { it.label.lowercase() }))
+                context.fields.filter { it.sectionId == section.id && it.type != CrmFieldType.Button }.sortedWith(compareBy({ it.position }, { it.label.lowercase() }))
                     .forEach { add(customField(it, readOnly, section.name)) }
             }
             // The fields without section (or whose section is gone) go last, in "Campos personalizados".
             val placed = sections.map { it.id }.toSet()
-            context.fields.filter { it.sectionId == null || it.sectionId !in placed }.sortedWith(compareBy({ it.position }, { it.label.lowercase() }))
+            context.fields.filter { (it.sectionId == null || it.sectionId !in placed) && it.type != CrmFieldType.Button }.sortedWith(compareBy({ it.position }, { it.label.lowercase() }))
                 .forEach { add(customField(it, readOnly, CrmFields.Section)) }
         }
     }
@@ -778,7 +776,7 @@ object CrmScreens {
             "interest" to if (context.interestsEnabled && !context.scope.seesAll && !context.scope.reception) context.usableInterests.firstOrNull()?.name.orEmpty() else CrmForms.NoInterest,
             "owner" to UiFieldValues.options(listOfNotNull(context.scope.userId?.let { id -> context.users.firstOrNull { it.id == id }?.name })),
             // Every custom field is sent even if left untouched, so required ones are checked.
-        ) + context.fields.associate { it.key to "" } + (CrmFields.Documents to "")
+        ) + context.fields.filter { it.type != CrmFieldType.Button }.associate { it.key to "" } + (CrmFields.Documents to "")
         return listOf(
             UiText("Correo y telefono son opcionales. Mientras escribes se sugieren los clientes existentes; si ya hay uno con ese correo o telefono, el lead se le asigna en lugar de crear otro."),
             UiCard(
@@ -910,7 +908,33 @@ object CrmScreens {
         val conversation = CrmAdminScreens.conversation(context, lead, canEdit, submitted)
         val items = CrmWordPressScreens.items(context, lead, canEdit).takeIf { access.canWrite }
         val reservation = CrmCloudbedsScreens.reservation(context, lead, canEdit).takeIf { access.canWrite }
-        return listOfNotNull(header, actions, review, suggestion, customerNotes, form, items, reservation, conversation, mentions, note.takeIf { canNote }, timeline)
+        val buttons = buttonsCard(context, lead, canEdit)
+        return listOfNotNull(header, actions, review, suggestion, customerNotes, form, buttons, items, reservation, conversation, mentions, note.takeIf { canNote }, timeline)
+    }
+
+    /**
+     * The button fields of the lead, grouped by the section they were placed in (the form has no buttons: they act, they hold no value).
+     * Pressing one asks for confirmation and runs its template or manual automations; only who can edit the lead sees them.
+     */
+    private fun buttonsCard(context: Context, lead: CrmLead, canEdit: Boolean): UiNode? {
+        if (!canEdit) return null
+        val buttons = context.fields.filter { it.type == CrmFieldType.Button && !CrmButtons.read(it.config).isEmpty }
+        if (buttons.isEmpty()) return null
+        val ordered = CrmFieldSections.ordered(buttons, context.sections)
+        val children = mutableListOf<UiNode>()
+        ordered.groupBy { CrmFieldSections.title(it, context.sections) }.forEach { (section, group) ->
+            children += UiText(section, UiTextStyle.Caption)
+            children += UiRow(
+                group.map { field ->
+                    UiButton(
+                        field.label,
+                        UiRequest(UiRoute + "/lead", params = mapOf("id" to lead.id.toString(), "op" to "button", "field" to field.key), confirm = CrmButtons.confirmText(field)),
+                        style = "secondary",
+                    )
+                },
+            )
+        }
+        return UiCard(children, title = "Acciones")
     }
 
     /**
@@ -959,6 +983,9 @@ object CrmScreens {
     // ---- Settings ----
 
     private fun customFieldsCard(context: Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> {
+        val templates = CrmMail.templates(context.tenant)
+        val automations = CrmAutomationStore.all(context.tenant)
+        val manual = automations.filter { it.trigger.type == CrmTriggerType.Manual }
         val editing = params["field"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { id -> context.fields.firstOrNull { it.id == id } }
         val editingSection = params["section"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }?.let { id -> context.sections.firstOrNull { it.id == id && !it.isSystem } }
         val mapped = CrmStay.effective(context.stay, context.fields)
@@ -967,6 +994,7 @@ object CrmScreens {
                 add(field.type.label)
                 add(CrmFieldSections.title(field, context.sections))
                 if (field.type == CrmFieldType.Dropdown) add(if (field.multiple) "varias opciones" else "una opcion")
+                if (field.type == CrmFieldType.Button) add(CrmButtons.describe(field.config, templates, automations))
                 if (field.required) add("obligatorio")
                 if (field.key == mapped.startKey) add("ingreso de la estadia")
                 if (field.key == mapped.endKey) add("salida de la estadia")
@@ -989,6 +1017,9 @@ object CrmScreens {
         }
         val section = if (editing == null) "Nuevo campo" else "Editar ${editing.label}"
         val dropdown = UiFieldCondition("type", listOf(CrmFieldType.Dropdown.label))
+        val isButton = UiFieldCondition("type", listOf(CrmFieldType.Button.label))
+        // The "Obligatorio" checkbox makes no sense in a button: shown for every other type.
+        val notButton = UiFieldCondition("type", CrmFieldType.entries.filter { it != CrmFieldType.Button }.map { it.label })
         val formFields = listOf(
             UiField("label", "Nombre", required = true, section = section),
             UiField(
@@ -1004,14 +1035,24 @@ object CrmScreens {
                 help = "Una opcion por linea. Quitar una opcion no borra lo que ya tengan los leads, pero ya no se podra elegir.",
             ),
             UiField("multiple", "Permitir elegir varias opciones", type = "boolean", section = section, visibleWhen = dropdown),
-            UiField("required", "Obligatorio", type = "boolean", section = section),
+            UiField(
+                "buttonAction", "Que hace el boton", type = "dropdown", options = listOf(CrmButtons.ActionTemplate, CrmButtons.ActionAutomations), section = section, visibleWhen = isButton,
+                help = "El boton aparece en la ficha del lead (no en el formulario), pide confirmacion y muestra el resultado.",
+            ),
+            UiField("buttonTemplate", "Plantilla", type = "dropdown", options = templates.map { it.name }, section = section, visibleWhen = UiFieldCondition("buttonAction", listOf(CrmButtons.ActionTemplate))),
+            UiField(
+                "buttonAutomations", "Automatizaciones manuales", type = "dropdown", multiple = true, options = manual.map { it.name }, section = section,
+                visibleWhen = UiFieldCondition("buttonAction", listOf(CrmButtons.ActionAutomations)),
+                help = "Se ejecutan en el orden elegido y se detienen en la primera que no termine. Se crean en Automatizaciones con el disparador Manual.",
+            ),
+            UiField("required", "Obligatorio", type = "boolean", section = section, visibleWhen = notButton),
             UiField("position", "Posicion", type = "number", help = "Orden dentro de su seccion en la ficha del lead.", section = section),
         )
         val values = editing?.let {
             mapOf(
                 "label" to it.label, "type" to it.type.label, "options" to it.options.joinToString("\n"), "section" to CrmFieldSections.title(it, context.sections),
                 "multiple" to it.multiple.toString(), "required" to it.required.toString(), "position" to it.position.toString(),
-            )
+            ) + CrmButtons.formValues(it.config, templates, manual)
         } ?: mapOf("type" to CrmFieldType.Text.label, "section" to CrmFields.Section, "position" to ((context.fields.maxOfOrNull { it.position } ?: -1) + 1).toString())
         val saveParams = mapOf("op" to "fieldSave") + listOfNotNull(editing?.let { "id" to it.id.toString() })
         val fieldsCard = UiCard(
@@ -1020,7 +1061,7 @@ object CrmScreens {
                 listOfNotNull(UiButton("Nuevo campo", UiNavigate("settings"), style = "secondary").takeIf { editing != null }) +
                 UiForm(
                     "customField", formFields,
-                    values + submitted.orEmpty().filterKeys { it in setOf("label", "type", "section", "options", "multiple", "required", "position") },
+                    values + submitted.orEmpty().filterKeys { it in setOf("label", "type", "section", "options", "multiple", "required", "position", "buttonAction", "buttonTemplate", "buttonAutomations") },
                     submit = UiButton(if (editing == null) "Agregar campo" else "Guardar campo", UiRequest(UiRoute + "/settings", params = saveParams, formId = "customField")),
                     minFieldWidth = 220,
                 ),

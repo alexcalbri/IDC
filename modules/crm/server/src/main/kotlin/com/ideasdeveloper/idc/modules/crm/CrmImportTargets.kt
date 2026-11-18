@@ -38,7 +38,8 @@ object CrmImportTargets {
     fun options(crmFields: List<CrmField>, customerFields: List<CustomerField>): LinkedHashMap<String, String> {
         val options = LinkedHashMap(CrmImportParse.fields)
         options[Files] = "Archivos del lead (${CrmFields.DocumentsLabel})"
-        crmFields.forEach { options[CrmPrefix + it.key] = "Campo del CRM: ${it.label}" }
+        // A button holds no value: it is not a place to import into.
+        crmFields.filter { it.type != CrmFieldType.Button }.forEach { options[CrmPrefix + it.key] = "Campo del CRM: ${it.label}" }
         customerFields.forEach { options[CustomerPrefix + it.key] = "Campo del cliente: ${it.label}" }
         options[NewCrm] = "Crear campo en el CRM"
         options[NewCustomer] = "Crear campo del cliente"
@@ -51,7 +52,7 @@ object CrmImportTargets {
      * CRM field for anything else with values, and nothing for empty columns.
      */
     fun propose(column: String, mondayType: String?, hasValues: Boolean, crmFields: List<CrmField>, customerFields: List<CustomerField>): String {
-        crmFields.firstOrNull { it.label.equals(column.trim(), ignoreCase = true) }?.let { return CrmPrefix + it.key }
+        crmFields.firstOrNull { it.type != CrmFieldType.Button && it.label.equals(column.trim(), ignoreCase = true) }?.let { return CrmPrefix + it.key }
         customerFields.firstOrNull { it.label.equals(column.trim(), ignoreCase = true) }?.let { return CustomerPrefix + it.key }
         if (mondayType == "file") return Files
         if (!hasValues) return ""
@@ -241,7 +242,7 @@ object CrmImportTargets {
             val lead = CrmRepository.lead(tenant, leadId) ?: return problems
             val changes = mutableMapOf<String, JsonElement?>()
             crmValues.forEach { (key, text) ->
-                val field = crmFields.firstOrNull { it.key == key && it.type != CrmFieldType.Files } ?: return@forEach
+                val field = crmFields.firstOrNull { it.key == key && it.type != CrmFieldType.Files && it.type != CrmFieldType.Button } ?: return@forEach
                 val form = formValue(text, field.type, field.multiple).ifEmpty { return@forEach }
                 try {
                     // Options a lead already had stay valid; a value not in the list is reported.

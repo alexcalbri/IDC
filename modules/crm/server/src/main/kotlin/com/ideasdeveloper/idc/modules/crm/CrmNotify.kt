@@ -7,6 +7,7 @@ import com.ideasdeveloper.idc.server.modules.NotificationTarget
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import org.slf4j.LoggerFactory
 import java.sql.Connection
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.util.UUID
@@ -19,6 +20,10 @@ data class CrmUserSettings(
     val dailyDigest: Boolean,
     // "Avisarme por correo cuando me mencionen" (on by default; the email goes to the profile email of the user).
     val notifyMentioned: Boolean = true,
+    // Email with each new inbound message of an assigned lead (on by default; the in-app notice is always created).
+    val notifyNewMessage: Boolean = true,
+    // Email when the follow-up of an assigned lead is due (on by default; the in-app notice is always created).
+    val notifyFollowUp: Boolean = true,
 )
 
 /** Email notifications of the CRM. Messages are queued in crm_outbox and sent by a job. */
@@ -26,12 +31,12 @@ object CrmNotify {
     private const val MaxAttempts = 5
 
     fun userSettings(tenant: Connection): Map<UUID, CrmUserSettings> =
-        tenant.prepareStatement("SELECT user_id, email, notify_new_leads, notify_assigned, daily_digest, notify_mentioned FROM crm_user_settings").use { query ->
+        tenant.prepareStatement("SELECT user_id, email, notify_new_leads, notify_assigned, daily_digest, notify_mentioned, notify_new_message, notify_followup FROM crm_user_settings").use { query ->
             query.executeQuery().use { rows ->
                 buildMap {
                     while (rows.next()) {
                         val id = rows.getObject(1, UUID::class.java)
-                        put(id, CrmUserSettings(id, rows.getString(2), rows.getBoolean(3), rows.getBoolean(4), rows.getBoolean(5), rows.getBoolean(6)))
+                        put(id, CrmUserSettings(id, rows.getString(2), rows.getBoolean(3), rows.getBoolean(4), rows.getBoolean(5), rows.getBoolean(6), rows.getBoolean(7), rows.getBoolean(8)))
                     }
                 }
             }
@@ -41,9 +46,11 @@ object CrmNotify {
         if (settings.email.isNotEmpty() && !CrmContacts.isEmail(settings.email)) throw CrmValidationException("Escribe un correo valido o dejalo vacio.")
         tenant.prepareStatement(
             """
-            INSERT INTO crm_user_settings (user_id, email, notify_new_leads, notify_assigned, daily_digest, notify_mentioned) VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO crm_user_settings (user_id, email, notify_new_leads, notify_assigned, daily_digest, notify_mentioned, notify_new_message, notify_followup)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT (user_id) DO UPDATE SET email = EXCLUDED.email, notify_new_leads = EXCLUDED.notify_new_leads,
-                notify_assigned = EXCLUDED.notify_assigned, daily_digest = EXCLUDED.daily_digest, notify_mentioned = EXCLUDED.notify_mentioned
+                notify_assigned = EXCLUDED.notify_assigned, daily_digest = EXCLUDED.daily_digest, notify_mentioned = EXCLUDED.notify_mentioned,
+                notify_new_message = EXCLUDED.notify_new_message, notify_followup = EXCLUDED.notify_followup
             """.trimIndent()
         ).use { upsert ->
             upsert.setObject(1, settings.userId)
@@ -52,8 +59,99 @@ object CrmNotify {
             upsert.setBoolean(4, settings.notifyAssigned)
             upsert.setBoolean(5, settings.dailyDigest)
             upsert.setBoolean(6, settings.notifyMentioned)
+            upsert.setBoolean(7, settings.notifyNewMessage)
+            upsert.setBoolean(8, settings.notifyFollowUp)
             upsert.executeUpdate()
         }
+    }
+
+    const val NewMessageTitlePrefix = "Nuevo mensaje de "
+    const val FollowUpTitlePrefix = "Seguimiento pendiente: "
+
+    /** Email of "Nuevo mensaje": the one the user wrote in Equipo, only when they did not turn it off. Null: no email. */
+    fun newMessageEmailTarget(settings: CrmUserSettings?): String? =
+        settings?.takeIf { it.notifyNewMessage }?.email?.trim()?.takeIf { it.isNotEmpty() }
+
+    /** Email of "Seguimiento pendiente": the one the user wrote in Equipo, only when they did not turn it off. Null: no email. */
+    fun followUpEmailTarget(settings: CrmUserSettings?): String? =
+        settings?.takeIf { it.notifyFollowUp }?.email?.trim()?.takeIf { it.isNotEmpty() }
+
+    /**
+     * A new inbound message of [leadId] (already stored): every assigned user of the lead gets "Nuevo mensaje de ..."
+     * in the notification center (it opens the lead) and, if notify_new_message is on and they have an email in Equipo,
+     * an email (outbox kind "new_message"). Users that are not assigned get nothing. Never fails the caller.
+     */
+    fun newMessage(tenant: Connection, notifier: ModuleNotifier?, leadId: UUID, message: String, channel: String) {
+        runCatching {
+            val lead = CrmRepository.lead(tenant, leadId) ?: return
+            if (lead.ownerUserIds.isEmpty()) return
+            val settings = userSettings(tenant)
+            val text = excerpt(message)
+            lead.ownerUserIds.distinct().forEach { userId ->
+                runCatching {
+                    notifier?.notify(tenant, userId, NewMessageTitlePrefix + lead.name, text, NotificationTarget("lead", mapOf("id" to leadId.toString())))
+                }.onFailure { log.warn("No se pudo crear el aviso de mensaje nuevo ({}).", it.javaClass.simpleName) }
+                runCatching {
+                    newMessageEmailTarget(settings[userId])?.let { to ->
+                        val intro = "Escribio ${lead.name} por ${CrmInbox.label(channel)}.\n\nMensaje:\n${message.trim().take(1000)}"
+                        enqueue(tenant, "new_message", to, leadEmail("Nuevo mensaje de ${lead.name}", intro, tenant, lead), lead.id)
+                    }
+                }.onFailure { log.warn("No se pudo preparar el correo de mensaje nuevo ({}).", it.javaClass.simpleName) }
+            }
+        }.onFailure { log.warn("No se pudo avisar un mensaje nuevo ({}).", it.javaClass.simpleName) }
+    }
+
+    /**
+     * The rule of [followUpsDue] for one lead (the SQL applies the same one): the date arrived (today or before), the
+     * hour passed, the lead is open and that date was not noticed yet. A new date re-arms it.
+     */
+    fun followUpDue(followUpOn: LocalDate?, notifiedOn: LocalDate?, open: Boolean, gate: CrmExit.Gate): Boolean =
+        open && gate.hourPassed && followUpOn != null && !followUpOn.isAfter(gate.today) && notifiedOn != followUpOn
+
+    /**
+     * Follow-ups due: open leads whose follow-up date arrived (today or before in the company's zone, once the digest
+     * hour passed) and were not noticed for that date. Each is marked with one atomic UPDATE ... RETURNING (two
+     * runs never notice the same date twice; a new date re-arms it), then every assigned user gets "Seguimiento
+     * pendiente: ..." in the notification center and, if notify_followup is on and they have an email, an email.
+     * Returns how many leads were noticed.
+     */
+    fun followUpsDue(tenant: Connection, notifier: ModuleNotifier?, now: Instant): Int {
+        val hour = tenant.prepareStatement("SELECT digest_hour FROM crm_settings WHERE id = 1").use { query ->
+            query.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else return 0 }
+        }
+        val gate = CrmZone.gate(CrmZone.of(tenant), hour, now)
+        if (!gate.hourPassed) return 0
+        val due = tenant.prepareStatement(
+            """
+            UPDATE crm_leads SET follow_up_notified_on = follow_up_on
+            WHERE follow_up_on <= ? AND follow_up_notified_on IS DISTINCT FROM follow_up_on
+                AND closed_at IS NULL AND archived_at IS NULL
+                AND EXISTS (SELECT 1 FROM crm_lead_owners o WHERE o.lead_id = crm_leads.id)
+            RETURNING id
+            """.trimIndent()
+        ).use { update ->
+            update.setObject(1, gate.today)
+            update.executeQuery().use { rows -> buildList { while (rows.next()) add(rows.getObject(1, UUID::class.java)) } }
+        }
+        if (due.isEmpty()) return 0
+        val settings = userSettings(tenant)
+        due.forEach { leadId ->
+            runCatching {
+                val lead = CrmRepository.lead(tenant, leadId) ?: return@runCatching
+                val since = lead.followUpOn?.let { if (it.isBefore(gate.today)) "Venció el $it." else "Es para hoy." }.orEmpty()
+                lead.ownerUserIds.distinct().forEach { userId ->
+                    runCatching {
+                        notifier?.notify(tenant, userId, FollowUpTitlePrefix + lead.name, since, NotificationTarget("lead", mapOf("id" to leadId.toString())))
+                    }.onFailure { log.warn("No se pudo crear el aviso de seguimiento ({}).", it.javaClass.simpleName) }
+                    runCatching {
+                        followUpEmailTarget(settings[userId])?.let { to ->
+                            enqueue(tenant, "follow_up", to, leadEmail("Seguimiento pendiente: ${lead.name}", "Tienes un seguimiento pendiente. $since", tenant, lead), lead.id)
+                        }
+                    }.onFailure { log.warn("No se pudo preparar el correo de seguimiento ({}).", it.javaClass.simpleName) }
+                }
+            }.onFailure { log.warn("No se pudo avisar un seguimiento ({}).", it.javaClass.simpleName) }
+        }
+        return due.size
     }
 
     /** Which leads a company user sees, as [CrmRepository.scope] does for a signed-in user. */

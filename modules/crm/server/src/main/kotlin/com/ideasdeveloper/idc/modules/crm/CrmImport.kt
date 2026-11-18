@@ -724,7 +724,7 @@ object CrmImport {
         // On a new import of an existing lead the mapped stage wins, recorded in the stage history.
         if (update && values.stage != null) {
             CrmRepository.lead(tenant, leadId)?.let { lead ->
-                if (lead.archivedAt == null && lead.stageId != values.stage.id) CrmRepository.moveLead(tenant, lead, values.stage, context.stages, CrmActor(null, "Importacion"))
+                if (lead.archivedAt == null && lead.stageId != values.stage.id) CrmAutomationEvents.suppressed { CrmRepository.moveLead(tenant, lead, values.stage, context.stages, CrmActor(null, "Importacion")) }
             }
         }
     }

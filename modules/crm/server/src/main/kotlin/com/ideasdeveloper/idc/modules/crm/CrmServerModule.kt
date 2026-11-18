@@ -81,6 +81,7 @@ object CrmServerModule : ServerModule {
         "modules/crm/migrations/V018__lead_mentions.sql",
         "modules/crm/migrations/V019__field_sections_and_stay_dates.sql",
         "modules/crm/migrations/V020__system_sections.sql",
+        "modules/crm/migrations/V021__automations_templates_translation.sql",
     )
 
     override val runtimeTables = listOf(
@@ -117,6 +118,9 @@ object CrmServerModule : ServerModule {
         "crm_field_sections",
         "crm_field_definitions",
         "crm_attachments",
+        "crm_template_translations",
+        "crm_automations",
+        "crm_automation_runs",
     )
 
     /**
@@ -125,12 +129,15 @@ object CrmServerModule : ServerModule {
      * integrations (mail, Meta, WordPress, Encuentra24, Cloudbeds, monday): they are connected again.
      */
     override val duplicatedSettings = listOf(
-        SettingsTable("crm_settings", reset = mapOf("monday_token" to null, "digest_sent_on" to null)),
+        // The translation key is a credential of the integration: the copy connects it again.
+        SettingsTable("crm_settings", reset = mapOf("monday_token" to null, "digest_sent_on" to null, "translation_api_key" to "")),
         SettingsTable("crm_stages"),
         SettingsTable("crm_interests"),
         SettingsTable("crm_field_sections"),
         SettingsTable("crm_field_definitions"),
         SettingsTable("crm_email_templates"),
+        // Rules come off and forget who they notified (users are not copied); stages, templates and fields keep their ids, so the rest still points to them.
+        SettingsTable("crm_automations", reset = mapOf("enabled" to false, "notify_user_ids" to "[]")),
         SettingsTable("crm_spam_settings"),
         SettingsTable("crm_import_presets"),
     )
@@ -147,12 +154,21 @@ object CrmServerModule : ServerModule {
             CrmNotify.sendQueued(context.tenant, CrmMail.load(context.tenant).smtp(context.access.serverMail), 30)
         },
         ModuleJob("digest", Duration.ofMinutes(15)) { context -> CrmNotify.digestIfDue(context.tenant, LocalDateTime.now()) },
+        // Follow-ups due: in-app notice (and email) to the assigned users, once per lead and date.
+        ModuleJob("followups", Duration.ofMinutes(15)) { context -> CrmNotify.followUpsDue(context.tenant, context.notifier, java.time.Instant.now()) },
         // Replies of customers by email.
         ModuleJob("imap", Duration.ofMinutes(5)) { context -> readMailbox(context.tenant) },
         // Contacts of the company listings in Encuentra24.
         // Cloudbeds: welcome emails before check-in and reservation statuses (archive after check-out).
         ModuleJob("cloudbeds-welcome", Duration.ofMinutes(15)) { context -> CrmCloudbeds.sendWelcomes(context.tenant, LocalDateTime.now()) },
         ModuleJob("cloudbeds-sync", Duration.ofMinutes(30)) { context -> CrmCloudbeds.syncStatuses(context.tenant, java.time.LocalDate.now()) },
+        // Date automations: run (once per lead and value of the date) or warn about missing data.
+        ModuleJob("automations", Duration.ofMinutes(5)) { context -> CrmAutomationEngine.runDue(context.tenant, context.notifier) },
+        // Event automations (lead created, stage or field changed, new message) are queued when the event happens and run here, up to 50 a minute;
+        // runs stuck in "running" are marked failed.
+        ModuleJob("automation-events", Duration.ofMinutes(1)) { context -> CrmAutomationEngine.processPending(context.tenant, context.notifier) },
+        // Old rows of crm_automation_runs: 90 days, except the date and warning keys (a year).
+        ModuleJob("automations-purge", Duration.ofHours(24)) { context -> CrmAutomationStore.purge(context.tenant) },
         // Archive after check-out (without Cloudbeds): leads of the chosen stages whose end date arrived.
         ModuleJob("exit-archive", Duration.ofMinutes(15)) { context -> CrmExit.archiveDue(context.tenant, java.time.Instant.now()) },
         // Imports: queued monday boards are read, then imports in progress apply 300 rows a minute.
@@ -202,7 +218,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.23.0",
+        version = "0.24.0",
         permissions = listOf(
             ModulePermissionDefinition(CrmScreens.View, "Usar el CRM", "Permite ver el pipeline, los leads y los seguimientos de sus intereses o asignados."),
             ModulePermissionDefinition(CrmScreens.Manage, "Gestionar leads", "Permite crear y editar leads, moverlos de etapa y agregar notas. Quien es mencionado en una nota puede leer ese lead y responder con notas sin este permiso."),
@@ -218,6 +234,7 @@ object CrmServerModule : ServerModule {
     override fun routes(route: Route, access: ModuleAccessService) {
         CrmMetaServer.access = access
         CrmCustomerEvents.access = access
+        CrmLeadEvents.access = access
         metaServerRoutes(route, access)
         // Public webhooks: the company comes from the URL and every call is authenticated by the integration.
         // The IDC Connector plugin for WordPress, built from the module resources (it holds no secrets).
@@ -600,11 +617,14 @@ object CrmServerModule : ServerModule {
                 }
                 "lead:send" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val translationNotes = mutableListOf<String>()
                     val (channel, email) = try {
-                        CrmAdminScreens.composeReply(context, lead, values)
+                        CrmAdminScreens.composeReply(context, lead, values, translationNotes)
                     } catch (failure: CrmValidationException) {
                         return show("lead", UiNotice(failure.message.orEmpty(), UiTone.Danger), submitted = values)
                     }
+                    // A template that could not be translated goes out in its original language; the lead's activity says so.
+                    translationNotes.forEach { CrmRepository.addActivity(tenant, lead.id, "item", it, actor) }
                     val body = email.text
                     try {
                         val externalId = channel.send(CrmChannelContext(tenant, serverMail), lead, email)
@@ -629,6 +649,42 @@ object CrmServerModule : ServerModule {
                     // From "Sin calificar" the user goes back to the list; from the lead, stays on it.
                     if (params["from"] == "reception" && CrmScreens.canOpen("reception", permissions)) show("reception", notice, emptyMap()) else show("lead", notice)
                 }
+                "lead:button" -> {
+                    // A button field of the lead detail: its template or manual automations run as the user who pressed it.
+                    val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
+                    val back = mapOf("id" to lead.id.toString())
+                    val field = context.fields.firstOrNull { it.key == params["field"] && it.type == CrmFieldType.Button }
+                        ?: return show("lead", UiNotice("Ese boton ya no existe.", UiTone.Warning), back)
+                    if (!context.readAccess(lead).canWrite) return show("lead", UiNotice("No tienes permiso para ejecutar este boton en este lead.", UiTone.Danger), back)
+                    val result = CrmButtons.press(tenant, lead, field, actor, notifier)
+                    show("lead", UiNotice(result.text, result.tone), back)
+                }
+                "automations:save" -> {
+                    val saved = try {
+                        CrmAutomationScreens.save(context, uuid("automation"), values)
+                    } catch (failure: CrmValidationException) {
+                        return show("automations", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
+                    }
+                    show("automations", UiNotice(saved.message, if (saved.warning) UiTone.Warning else UiTone.Success), emptyMap())
+                }
+                "automations:toggle" -> {
+                    val automation = uuid("automation")?.let { CrmAutomationStore.find(tenant, it) }
+                        ?: return show("automations", UiNotice("Esa automatizacion ya no existe.", UiTone.Warning), emptyMap())
+                    val saved = try {
+                        CrmAutomationScreens.setEnabled(context, automation, params["enabled"] == "true")
+                    } catch (failure: CrmValidationException) {
+                        return show("automations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap())
+                    }
+                    show("automations", UiNotice(saved.message, if (saved.warning) UiTone.Warning else UiTone.Success), emptyMap())
+                }
+                "automations:delete" -> {
+                    val deleted = uuid("automation")?.let { CrmAutomationStore.delete(tenant, it) } == true
+                    show("automations", UiNotice(if (deleted) "Automatizacion eliminada." else "Esa automatizacion ya no existe.", if (deleted) UiTone.Success else UiTone.Warning), emptyMap())
+                }
+                "automations:welcomeOff" -> {
+                    CrmCloudbeds.setWelcomeEnabled(tenant, false)
+                    show("automations", UiNotice("Bienvenida de Cloudbeds apagada: solo saldra el correo de tus automatizaciones.", UiTone.Success), emptyMap())
+                }
                 "lead:reviewed" -> {
                     val lead = visibleLead("id") ?: return show("leads", UiNotice("Ese lead ya no esta disponible.", UiTone.Warning), emptyMap())
                     CrmRepository.clearReview(tenant, lead, actor)
@@ -650,6 +706,16 @@ object CrmServerModule : ServerModule {
                         return show("templates", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }
                     show("templates", UiNotice("Plantilla $name guardada.", UiTone.Success), emptyMap())
+                }
+                "templates:preview" -> {
+                    // Preview of a template for a lead the user can see (translated when the template asks for it).
+                    val template = uuid("id")?.let { id -> CrmMail.templates(tenant).firstOrNull { it.id == id } }
+                        ?: return show("templates", UiNotice("Esa plantilla ya no existe.", UiTone.Warning), emptyMap())
+                    val back = mapOf("template" to template.id.toString())
+                    val lead = CrmAdminScreens.previewLead(context, values["previewLead"].orEmpty())
+                        ?: return show("templates", UiNotice("Elige un lead para la vista previa.", UiTone.Warning), back, values)
+                    val mail = CrmTemplateMailer.renderFor(tenant, template, lead)
+                    show("templates", UiNotice(CrmAdminScreens.previewText(template, lead, mail), if (mail.note == null) UiTone.Success else UiTone.Warning), back, values)
                 }
                 "templates:delete" -> {
                     val deleted = uuid("id")?.let { CrmMail.deleteTemplate(tenant, it) } == true
@@ -674,6 +740,8 @@ object CrmServerModule : ServerModule {
                             values["notifyAssigned"] == "true", values["dailyDigest"] == "true",
                             // Not sent (an old form): keeps what was saved instead of turning it off.
                             values["notifyMentioned"]?.let { it == "true" } ?: CrmNotify.userSettings(tenant)[user.id]?.notifyMentioned ?: true,
+                            notifyNewMessage = values["notifyNewMessage"]?.let { it == "true" } ?: CrmNotify.userSettings(tenant)[user.id]?.notifyNewMessage ?: true,
+                            notifyFollowUp = values["notifyFollowUp"]?.let { it == "true" } ?: CrmNotify.userSettings(tenant)[user.id]?.notifyFollowUp ?: true,
                         ),
                     )
                     show("team", UiNotice("Avisos de ${user.name} guardados.", UiTone.Success), emptyMap())
@@ -897,6 +965,14 @@ object CrmServerModule : ServerModule {
                     }
                     show("integrations", UiNotice("Fechas de estadia guardadas.${CrmStay.lostNote(lost)}", if (lost > 0) UiTone.Warning else UiTone.Success), emptyMap())
                 }
+                "integrations:translationSave" -> {
+                    try {
+                        CrmTranslate.save(tenant, CrmTranslate.merge(CrmTranslate.load(tenant), values, context.fields))
+                    } catch (failure: CrmValidationException) {
+                        return show("integrations", UiNotice(failure.message.orEmpty(), UiTone.Danger), emptyMap(), values)
+                    }
+                    show("integrations", UiNotice("Traduccion guardada.", UiTone.Success), emptyMap())
+                }
                 "integrations:cbSave" -> {
                     try {
                         CrmCloudbeds.saveForm(tenant, values, CrmMail.templates(tenant))
@@ -1063,7 +1139,14 @@ object CrmServerModule : ServerModule {
                     val editing = uuid("id")?.let { id -> context.fields.firstOrNull { it.id == id } }
                     if (uuid("id") != null && editing == null) return show("settings", UiNotice("Ese campo ya no existe.", UiTone.Warning), emptyMap())
                     val field = try {
-                        CrmFields.save(tenant, editing?.id, CrmFields.parseDefinition(values, editing, context.sections), context.fields)
+                        CrmFields.save(
+                            tenant, editing?.id,
+                            CrmFields.parseDefinition(
+                                values, editing, context.sections, CrmMail.templates(tenant),
+                                CrmAutomationStore.all(tenant).filter { it.trigger.type == CrmTriggerType.Manual },
+                            ),
+                            context.fields,
+                        )
                     } catch (failure: CrmValidationException) {
                         return show("settings", UiNotice(failure.message.orEmpty(), UiTone.Danger), params - "op", values)
                     }

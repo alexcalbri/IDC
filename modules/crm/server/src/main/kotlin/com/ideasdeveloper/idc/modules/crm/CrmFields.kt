@@ -27,7 +27,9 @@ enum class CrmFieldType(val id: String, val label: String) {
     Date("date", "Fecha"),
     Boolean("boolean", "Si / No"),
     Dropdown("dropdown", "Lista desplegable"),
-    Files("files", "Archivos y carpetas");
+    Files("files", "Archivos y carpetas"),
+    // Not a value: a button of the lead detail that sends a template or runs manual automations (see CrmButtons).
+    Button("button", "Boton");
 
     val uiType get() = id
 
@@ -48,6 +50,8 @@ data class CrmField(
     val position: Int = 0,
     // Section of the lead form the field shows in (crm_field_sections); null: "Campos personalizados".
     val sectionId: UUID? = null,
+    // Button fields: {"template": "<id>"} or {"automations": ["<id>", ...]}; {} for the rest.
+    val config: JsonObject = JsonObject(emptyMap()),
 )
 
 data class CrmFieldInput(
@@ -58,6 +62,7 @@ data class CrmFieldInput(
     val required: kotlin.Boolean,
     val position: Int,
     val sectionId: UUID? = null,
+    val config: JsonObject = JsonObject(emptyMap()),
 )
 
 object CrmFields {
@@ -71,7 +76,7 @@ object CrmFields {
     // ---- Definitions ----
 
     fun all(tenant: Connection): List<CrmField> = tenant.prepareStatement(
-        "SELECT id, field_key, label, field_type, options::text, multiple, required, position, section_id FROM crm_field_definitions ORDER BY position, created_at"
+        "SELECT id, field_key, label, field_type, options::text, multiple, required, position, section_id, config::text FROM crm_field_definitions ORDER BY position, created_at"
     ).use { query ->
         query.executeQuery().use { rows ->
             buildList {
@@ -82,6 +87,7 @@ object CrmFields {
                             rows.getObject(1, UUID::class.java), rows.getString(2), rows.getString(3), type,
                             Json.parseToJsonElement(rows.getString(5)).jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull },
                             rows.getBoolean(6), rows.getBoolean(7), rows.getInt(8), rows.getObject(9, UUID::class.java),
+                            parseStored(rows.getString(10)),
                         )
                     )
                 }
@@ -95,9 +101,9 @@ object CrmFields {
         val options = JsonArray(input.options.map { JsonPrimitive(it) }).toString()
         if (id == null) {
             if (existing.size >= MaxFields) throw CrmValidationException("El CRM admite hasta $MaxFields campos personalizados.")
-            val field = CrmField(UUID.randomUUID(), uniqueKey(input.label, existing.map { it.key }.toSet()), input.label, input.type, input.options, input.multiple, input.required, input.position, input.sectionId)
+            val field = CrmField(UUID.randomUUID(), uniqueKey(input.label, existing.map { it.key }.toSet()), input.label, input.type, input.options, input.multiple, input.required, input.position, input.sectionId, input.config)
             tenant.prepareStatement(
-                "INSERT INTO crm_field_definitions (id, field_key, label, field_type, options, multiple, required, position, section_id) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?)"
+                "INSERT INTO crm_field_definitions (id, field_key, label, field_type, options, multiple, required, position, section_id, config) VALUES (?, ?, ?, ?, CAST(? AS jsonb), ?, ?, ?, ?, CAST(? AS jsonb))"
             ).use { insert ->
                 insert.setObject(1, field.id)
                 insert.setString(2, field.key)
@@ -108,13 +114,14 @@ object CrmFields {
                 insert.setBoolean(7, field.required)
                 insert.setInt(8, field.position)
                 insert.setObject(9, field.sectionId)
+                insert.setString(10, field.config.toString())
                 insert.executeUpdate()
             }
             return field
         }
         val current = existing.firstOrNull { it.id == id } ?: throw CrmValidationException("Ese campo ya no existe.")
         tenant.prepareStatement(
-            "UPDATE crm_field_definitions SET label = ?, options = CAST(? AS jsonb), multiple = ?, required = ?, position = ?, section_id = ? WHERE id = ?"
+            "UPDATE crm_field_definitions SET label = ?, options = CAST(? AS jsonb), multiple = ?, required = ?, position = ?, section_id = ?, config = CAST(? AS jsonb) WHERE id = ?"
         ).use { update ->
             update.setString(1, input.label)
             update.setString(2, options)
@@ -122,10 +129,14 @@ object CrmFields {
             update.setBoolean(4, input.required)
             update.setInt(5, input.position)
             update.setObject(6, input.sectionId)
-            update.setObject(7, id)
+            update.setString(7, if (current.type == CrmFieldType.Button) input.config.toString() else current.config.toString())
+            update.setObject(8, id)
             update.executeUpdate()
         }
-        return current.copy(label = input.label, options = input.options, multiple = input.multiple, required = input.required, position = input.position, sectionId = input.sectionId)
+        return current.copy(
+            label = input.label, options = input.options, multiple = input.multiple, required = input.required, position = input.position, sectionId = input.sectionId,
+            config = if (current.type == CrmFieldType.Button) input.config else current.config,
+        )
     }
 
     /** Deletes the field with its values in every lead (and its files). Returns how many leads lost their stay dates. */
@@ -171,7 +182,14 @@ object CrmFields {
     }
 
     /** Reads the field form of Configuracion. [editing] keeps its type. */
-    fun parseDefinition(values: Map<String, String>, editing: CrmField?, sections: List<CrmFieldSection> = emptyList()): CrmFieldInput {
+    fun parseDefinition(
+        values: Map<String, String>,
+        editing: CrmField?,
+        sections: List<CrmFieldSection> = emptyList(),
+        // Button fields: the templates and the manual automations a button can run.
+        templates: List<CrmTemplate> = emptyList(),
+        manualAutomations: List<CrmAutomation> = emptyList(),
+    ): CrmFieldInput {
         val label = values["label"].orEmpty().trim()
         if (label.isEmpty()) throw CrmValidationException("Escribe el nombre del campo.")
         if (label.length > 80) throw CrmValidationException("El nombre admite hasta 80 caracteres.")
@@ -193,16 +211,17 @@ object CrmFields {
             type = type,
             options = options,
             multiple = type == CrmFieldType.Dropdown && values["multiple"] == "true",
-            required = type != CrmFieldType.Boolean && values["required"] == "true",
+            required = type != CrmFieldType.Boolean && type != CrmFieldType.Button && values["required"] == "true",
             position = position,
             sectionId = section?.id,
+            config = if (type == CrmFieldType.Button) CrmButtons.parseForm(values, templates, manualAutomations) else JsonObject(emptyMap()),
         )
     }
 
     // ---- Values of a lead ----
 
     /** Form value of each custom field (attachments excluded): multiple dropdowns as a JSON array. */
-    fun formValues(fields: List<CrmField>, stored: JsonObject): Map<String, String> = fields.filter { it.type != CrmFieldType.Files }.associate { field ->
+    fun formValues(fields: List<CrmField>, stored: JsonObject): Map<String, String> = fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }.associate { field ->
         val value = stored[field.key]
         field.key to when {
             value == null -> ""
@@ -216,7 +235,7 @@ object CrmFields {
      * result maps each of them to its new value or to null to clear it (agents send only what changes).
      */
     fun parseValues(values: Map<String, String>, fields: List<CrmField>, stored: JsonObject = JsonObject(emptyMap())): Map<String, JsonElement?> = buildMap {
-        fields.filter { it.type != CrmFieldType.Files && it.key in values }.forEach { field ->
+        fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button && it.key in values }.forEach { field ->
             val raw = values[field.key].orEmpty().trim()
             val label = field.label
             val value: JsonElement? = when (field.type) {
@@ -284,7 +303,7 @@ object CrmFields {
     fun parseStored(text: String?): JsonObject = text?.let { runCatching { Json.parseToJsonElement(it).jsonObject }.getOrNull() } ?: JsonObject(emptyMap())
 
     /** "Campo: antes -> despues" for each custom field that changed. */
-    fun changes(fields: List<CrmField>, before: JsonObject, after: JsonObject): List<String> = fields.filter { it.type != CrmFieldType.Files }.mapNotNull { field ->
+    fun changes(fields: List<CrmField>, before: JsonObject, after: JsonObject): List<String> = fields.filter { it.type != CrmFieldType.Files && it.type != CrmFieldType.Button }.mapNotNull { field ->
         val old = display(before[field.key])
         val new = display(after[field.key])
         if (old == new) null else "${field.label}: ${old.ifEmpty { "(vacio)" }} -> ${new.ifEmpty { "(vacio)" }}"

@@ -73,8 +73,11 @@ object CrmLeadItemActions {
      * Creates in Cloudbeds the reservation of the lead's chosen rooms and wins the lead. [values]:
      * adults_<itemId>, children_<itemId>, country, zip, payment (label of [CrmCloudbeds.paymentLabels]).
      */
-    fun reserve(context: CrmScreens.Context, lead: CrmLead, values: Map<String, String>, actor: CrmActor): Reservation {
-        val tenant = context.tenant
+    fun reserve(context: CrmScreens.Context, lead: CrmLead, values: Map<String, String>, actor: CrmActor): Reservation =
+        reserve(context.tenant, context.stages, lead, values, actor)
+
+    /** [reserve] with only what it needs, so the automations (no screen context) can run it too. */
+    fun reserve(tenant: Connection, stages: List<CrmStage>, lead: CrmLead, values: Map<String, String>, actor: CrmActor): Reservation {
         val rooms = CrmItems.list(tenant, lead.id, CrmCloudbeds.Source).filter { it.status == "chosen" }
         val start = rooms.firstOrNull()?.startsOn
         val end = rooms.firstOrNull()?.endsOn
@@ -106,7 +109,7 @@ object CrmLeadItemActions {
             CrmItems.setData(tenant, room, room.data + mapOf("adults" to request.adults.toString(), "children" to request.children.toString(), "reservation" to result.reservationId))
         }
         CrmRepository.addActivity(tenant, lead.id, "item", "Reserva ${result.reservationId} creada en Cloudbeds: $roomNames, del $start al $end${result.total?.let { " - total ${it.toPlainString()}" }.orEmpty()}.", actor)
-        context.stages.firstOrNull { it.kind == StageKind.Won }?.takeIf { lead.archivedAt == null }?.let { won -> CrmRepository.moveLead(tenant, lead, won, context.stages, actor) }
+        stages.firstOrNull { it.kind == StageKind.Won }?.takeIf { lead.archivedAt == null }?.let { won -> CrmRepository.moveLead(tenant, lead, won, stages, actor) }
         return if (result.unassigned > 0) {
             Reservation("Reserva ${result.reservationId} creada, pero Cloudbeds dejo ${result.unassigned} habitacion(es) sin asignar (puede que se ocupara o que la propiedad no permita elegir habitacion). Revisala en Cloudbeds.", warning = true)
         } else {

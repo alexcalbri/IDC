@@ -114,7 +114,18 @@ object CrmInbox {
                 CrmEncuentra24.adFromText(inbound.message)?.let { ad -> CrmEncuentra24.rememberAd(tenant, leadId, ad.id, ad.url, "") }
             }
             if (created) CrmIntakeResult.Created(leadId) else CrmIntakeResult.Updated(leadId)
-        }.also { if (it is CrmIntakeResult.Created) onNewLead(it.leadId) }
+        }.also { result ->
+            if (result is CrmIntakeResult.Created) {
+                onNewLead(result.leadId)
+                // The lead is saved: its "lead creado" automations run (best effort, before the ones of its first message).
+                CrmAutomationEvents.leadCreated(tenant, result.leadId)
+            }
+            // Single entry of every channel: the message notice and the automations hook run here, once per stored message.
+            val leadId = (result as? CrmIntakeResult.Created)?.leadId ?: (result as? CrmIntakeResult.Updated)?.leadId
+            if (leadId != null && inbound.message.isNotBlank()) {
+                runCatching { CrmLeadEvents.messageReceived(tenant, leadId, inbound.message, inbound.channel) }
+            }
+        }
     }
 
     private fun createLead(tenant: Connection, customer: UUID, inbound: CrmInbound, review: String): UUID {

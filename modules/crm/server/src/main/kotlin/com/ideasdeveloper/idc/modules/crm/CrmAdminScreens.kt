@@ -74,8 +74,11 @@ object CrmAdminScreens {
         return UiCard(composer + UiTimeline(entries, emptyText = "Sin mensajes."), title = "Conversacion")
     }
 
-    /** Builds the message to send from the reply form: a typed text, or the chosen template filled for the lead. */
-    fun composeReply(context: CrmScreens.Context, lead: CrmLead, values: Map<String, String>): Pair<CrmChannel, CrmEmail> {
+    /**
+     * Builds the message to send from the reply form: a typed text, or the chosen template filled for the lead (translated to
+     * the guest's language when the template asks for it). A failed translation is added to [notes] for the lead's activity.
+     */
+    fun composeReply(context: CrmScreens.Context, lead: CrmLead, values: Map<String, String>, notes: MutableList<String>? = null): Pair<CrmChannel, CrmEmail> {
         val channel = CrmChannels.all.firstOrNull { it.label == values["channel"] } ?: throw CrmValidationException("Elige el canal.")
         channel.unavailable(CrmChannelContext(context.tenant, context.serverMail), lead)?.let { throw CrmValidationException(it) }
         val template = values["template"]?.takeIf { it.isNotBlank() && it != NoTemplate }?.let { name ->
@@ -84,10 +87,16 @@ object CrmAdminScreens {
         val text = values["text"].orEmpty().trim()
         val subject = values["subject"].orEmpty().trim()
         if (text.length > 20000) throw CrmValidationException("El mensaje admite hasta 20000 caracteres.")
-        val placeholders = CrmInbox.templateValues(context.tenant, lead, context.names, context.stages)
+        val placeholders = CrmInbox.templateValues(context.tenant, lead, context.names, context.stages) +
+            if (text.isEmpty() && template != null) CrmTemplateMailer.dynamicValues(context.tenant, lead) else emptyMap()
         val email = when {
             text.isNotEmpty() -> CrmMail.render(subject.ifEmpty { template?.subject.orEmpty() }, text, placeholders)
-            template != null -> CrmMail.render(subject.ifEmpty { template.subject }, template.body, placeholders)
+            template != null && subject.isEmpty() -> {
+                val mail = CrmTemplateMailer.renderFor(context.tenant, template, lead)
+                mail.note?.let { notes?.add("${template.name}: $it") }
+                mail.toEmail()
+            }
+            template != null -> CrmMail.render(subject, template.body, placeholders)
             else -> throw CrmValidationException("Escribe el mensaje o elige una plantilla.")
         }
         return channel to email
@@ -156,8 +165,11 @@ object CrmAdminScreens {
                 ),
             )
         }
-        val variables = CrmMail.placeholders.entries.joinToString("\n") { (key, label) -> "{$key} - $label" }
-        val values = editing?.let { mapOf("name" to it.name, "subject" to it.subject, "body" to it.body) }.orEmpty() + submitted.orEmpty()
+        val variables = CrmTemplateMailer.variableHelp(context.fields, CrmImportTargets.customerFields(context.tenant))
+        val translation = CrmTranslate.load(context.tenant)
+        val values = (editing?.let { mapOf("name" to it.name, "subject" to it.subject, "body" to it.body, "baseLanguage" to it.baseLanguage, "translate" to it.translate.toString()) }
+            ?: mapOf("baseLanguage" to "es", "translate" to "false")) + submitted.orEmpty()
+        val recent = recentLeads(context)
         val saveParams = mapOf("op" to "save") + listOfNotNull(editing?.let { "id" to it.id.toString() })
         return listOf(
             UiCard(rows.ifEmpty { listOf(UiText("Aun no hay plantillas.", tone = UiTone.Warning)) }, title = "Plantillas"),
@@ -170,6 +182,12 @@ object CrmAdminScreens {
                             UiField("subject", "Asunto", required = true),
                             UiField("body", "Contenido", type = "textarea", required = true,
                                 help = "Texto o HTML. Las variables se reemplazan con los datos del lead al enviar."),
+                            UiField("baseLanguage", "Idioma en que esta escrita (codigo)", help = "Por ejemplo es o en.", section = "Traduccion"),
+                            UiField(
+                                "translate", "Traducir al idioma del huesped", type = "boolean", section = "Traduccion",
+                                help = if (translation.ready && translation.languageField.isNotEmpty()) "Se traduce solo si el huesped tiene otro idioma. Las variables y el formato no se tocan."
+                                else "Configura el traductor y el campo de idioma en Integraciones > Traduccion.",
+                            ),
                         ),
                         values,
                         submit = UiButton(if (editing == null) "Crear plantilla" else "Guardar plantilla", UiRequest(UiRoute + "/templates", params = saveParams, formId = "template")),
@@ -178,8 +196,39 @@ object CrmAdminScreens {
                 title = if (editing == null) "Nueva plantilla" else "Editar ${editing.name}",
                 actions = listOfNotNull(editing?.let { UiButton("Nueva", UiNavigate("templates"), style = "secondary") }),
             ),
+            editing?.let { template ->
+                UiCard(
+                    listOf(
+                        UiText("Muestra el correo como se enviaria a un lead (con la traduccion si corresponde). No envia nada.", UiTextStyle.Caption),
+                        UiForm(
+                            "preview",
+                            listOf(UiField("previewLead", "Lead de ejemplo", type = "dropdown", options = recent.map { previewLabel(it) })),
+                            mapOf("previewLead" to recent.firstOrNull()?.let { previewLabel(it) }.orEmpty()) + submitted.orEmpty().filterKeys { it == "previewLead" },
+                            submit = UiButton("Vista previa", UiRequest(UiRoute + "/templates", params = mapOf("op" to "preview", "id" to template.id.toString()), formId = "preview"), style = "secondary"),
+                        ),
+                    ),
+                    title = "Vista previa",
+                )
+            },
             UiCard(listOf(UiText(variables)), title = "Variables"),
-        )
+        ).filterNotNull()
+    }
+
+    // ---- Template preview ----
+
+    private fun recentLeads(context: CrmScreens.Context) = CrmRepository.leads(context.tenant, context.scope, CrmLeadFilter(), 25, 0)
+
+    private fun previewLabel(lead: CrmLead) = "${lead.name} #${lead.id.toString().take(8)}"
+
+    /** The lead chosen in the preview form, only among the recent ones the user can see. */
+    fun previewLead(context: CrmScreens.Context, label: String): CrmLead? =
+        recentLeads(context).firstOrNull { previewLabel(it) == label }
+
+    fun previewText(template: CrmTemplate, lead: CrmLead, mail: RenderedMail): String = buildString {
+        append("Vista previa de ${template.name} para ${lead.name} (idioma: ${mail.language}${if (mail.translated) ", traducida" else ""}).\n")
+        mail.note?.let { append("$it Se usaria el original.\n") }
+        append("Asunto: ${mail.subject}\n\n")
+        append(mail.text.take(1500))
     }
 
     // ---- Anti-spam ----
@@ -256,9 +305,13 @@ object CrmAdminScreens {
                                 "notifyMentioned", "Avisarme por correo cuando me mencionen", type = "boolean",
                                 help = "Llega al correo del perfil del usuario. El aviso en la campana de la app siempre se crea.",
                             ),
+                            UiField("notifyNewMessage", "Correo con cada mensaje nuevo de mis leads", type = "boolean", help = "Solo de los leads asignados. El aviso en la campana siempre se crea."),
+                            UiField("notifyFollowUp", "Correo cuando vence un seguimiento", type = "boolean", help = "Solo de los leads asignados. El aviso en la campana siempre se crea."),
                         ),
                         mapOf(
                             "email" to settings?.email.orEmpty(),
+                            "notifyNewMessage" to (settings?.notifyNewMessage ?: true).toString(),
+                            "notifyFollowUp" to (settings?.notifyFollowUp ?: true).toString(),
                             "notifyNewLeads" to (settings?.notifyNewLeads ?: false).toString(),
                             "notifyAssigned" to (settings?.notifyAssigned ?: true).toString(),
                             "dailyDigest" to (settings?.dailyDigest ?: false).toString(),

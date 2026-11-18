@@ -28,7 +28,54 @@ object CrmIntegrationScreens {
 
     fun integrations(context: CrmScreens.Context, params: Map<String, String>, submitted: Map<String, String>?): List<UiNode> =
         meta(context, submitted, pickers = params["numbers"], link = params["link"]) + encuentra24(context) + CrmWordPressScreens.settings(context, params["secret"]) +
-            CrmCloudbedsScreens.settings(context) + staySettings(context)
+            CrmCloudbedsScreens.settings(context) + staySettings(context) + translation(context, submitted)
+
+    // ---- Traduccion de plantillas ----
+
+    // Provider and language mapping used by the templates that translate to the guest's language.
+    private fun translation(context: CrmScreens.Context, submitted: Map<String, String>?): List<UiNode> {
+        val settings = CrmTranslate.load(context.tenant)
+        val fields = CrmTranslate.languageFields(context.fields)
+        val ai = UiFieldCondition("provider", listOf(CrmTranslate.providerLabels.getValue("anthropic")))
+        val on = UiFieldCondition("provider", CrmTranslate.providerLabels.filterKeys { it.isNotEmpty() }.values.toList())
+        val status = when {
+            settings.provider.isEmpty() -> UiStatus("Traduccion desactivada", UiTone.Neutral)
+            !settings.ready -> UiStatus("Falta la clave de API", UiTone.Warning)
+            settings.languageField.isEmpty() -> UiStatus("Falta el campo de idioma del huesped", UiTone.Warning)
+            else -> UiStatus("Traduccion lista", UiTone.Success)
+        }
+        return listOf(
+            UiText("Traduccion", UiTextStyle.Subtitle),
+            UiCard(
+                listOf(
+                    status,
+                    UiText(
+                        "Las plantillas con \"Traducir al idioma del huesped\" se traducen al idioma del huesped antes de enviarse. Solo se envia al traductor el texto de la plantilla: " +
+                            "las variables (nombre, codigo, fechas...) se protegen y nunca salen del servidor. Si la traduccion falla, se envia el original y queda anotado en la actividad del lead.",
+                    ),
+                    UiForm(
+                        "translation",
+                        listOf(
+                            UiField("provider", "Proveedor", type = "dropdown", options = CrmTranslate.providerLabels.values.toList()),
+                            UiField("apiKey", "Clave de API", type = "password", visibleWhen = on),
+                            UiField("model", "Modelo de IA", visibleWhen = ai, help = "Por defecto ${CrmTranslate.DefaultModel}."),
+                            UiField(
+                                "languageField", "Campo de idioma del huesped", type = "dropdown", options = listOf(CrmTranslate.NoField) + fields.map { it.label },
+                                visibleWhen = on, help = "Un campo personalizado de tipo texto o lista del lead.",
+                            ),
+                            UiField(
+                                "languageMap", "Equivalencias de idioma", type = "textarea", visibleWhen = on,
+                                help = "Una por linea: Valor = codigo. Por ejemplo Ingles = en. Si el valor ya es un codigo (en, fr) no hace falta.",
+                            ),
+                        ),
+                        CrmTranslate.toFormValues(settings, context.fields) + submitted.orEmpty().filterKeys { it in setOf("provider", "model", "languageField", "languageMap") },
+                        submit = UiButton("Guardar", UiRequest(UiRoute + "/integrations", params = mapOf("op" to "translationSave"), formId = "translation")),
+                        minFieldWidth = 220,
+                    ),
+                ),
+            ),
+        )
+    }
 
     // ---- Fechas de estadia ----
 
