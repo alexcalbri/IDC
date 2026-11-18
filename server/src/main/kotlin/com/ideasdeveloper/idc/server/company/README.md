@@ -39,7 +39,9 @@ Implementación actual:
   (solo `server_owner`) autoriza un modulo SIN firmar fijando su hash y commit
   (igual que las extensiones): antes de compilar, `ModulePackageBuilder.verify`
   exige firma Ed25519 valida o, si no viene firmada, que su hash este autorizado
-  aqui. Sin firma ni autorizacion, la instalacion se rechaza. La autorizacion de
+  aqui. Con `MODULE_SIGNATURE_ENFORCED=true` (recomendado en produccion), sin
+  firma ni autorizacion la instalacion se rechaza; con `false` (por defecto,
+  dev/pruebas) se permite sin firma con un aviso en el log. La autorizacion de
   modulos es independiente de la de extensiones (se guarda con prefijo
   `module-commit:`).
 - `PUT /companies/{code}/modules/{moduleId}` habilita o deshabilita modulos

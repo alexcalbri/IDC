@@ -108,6 +108,9 @@ class ModulePackageBuilder(
     private val verifier: ExtensionSignatureVerifier = ExtensionSignatureVerifier(),
     // Sin autorizaciones, un paquete sin firma se rechaza.
     private val authorizations: ModuleUnsignedAuthorizationStore = DenyAllModuleAuthorizations,
+    // Compuerta de firma: false (por defecto; develop/pruebas) permite modulos sin firma con aviso;
+    // true (produccion/master, MODULE_SIGNATURE_ENFORCED=true) exige firma Ed25519 o hash autorizado.
+    private val signatureEnforced: Boolean = false,
 ) {
     private val log = LoggerFactory.getLogger(ModulePackageBuilder::class.java)
     private val http = HttpClient.newBuilder()
@@ -188,9 +191,13 @@ class ModulePackageBuilder(
             throw ModuleBuildException("El hash del paquete no coincide con ${ExtensionTreeHash.SignatureFileName}.")
         }
         if (!authorizations.isAuthorized(actual)) {
-            throw ModuleBuildException(
-                "El modulo '$moduleId' no esta firmado. El dueno del servidor debe autorizar el hash $actual antes de instalarlo.",
-            )
+            if (signatureEnforced) {
+                throw ModuleBuildException(
+                    "El modulo '$moduleId' no esta firmado. El dueno del servidor debe autorizar el hash $actual antes de instalarlo.",
+                )
+            }
+            log.warn("Instalando el modulo sin firma {} (hash {}) con la compuerta de firma en modo permisivo (MODULE_SIGNATURE_ENFORCED=false).", moduleId, actual)
+            return actual
         }
         log.warn("Instalando el modulo sin firma {} (hash {}) por autorizacion del dueno del servidor.", moduleId, actual)
         return actual
@@ -431,12 +438,13 @@ class ModulePackageBuilder(
             packagesRoot: Path,
             githubToken: String? = null,
             authorizations: ModuleUnsignedAuthorizationStore = DenyAllModuleAuthorizations,
+            signatureEnforced: Boolean = false,
         ): ModulePackageBuilder? {
             val location = runCatching { Path.of(ModulePackageBuilder::class.java.protectionDomain.codeSource.location.toURI()) }.getOrNull()
                 ?: return null
             val compilerDir = location.parent?.parent?.resolve("compiler")?.takeIf { Files.isDirectory(it) } ?: return null
             val java = ProcessHandle.current().info().command().orElse("java")
-            return ModulePackageBuilder(packagesRoot, compilerDir, System.getProperty("java.class.path"), java, githubToken, authorizations = authorizations)
+            return ModulePackageBuilder(packagesRoot, compilerDir, System.getProperty("java.class.path"), java, githubToken, authorizations = authorizations, signatureEnforced = signatureEnforced)
         }
     }
 }

@@ -27,8 +27,8 @@ class ModulePackageSignatureGateTest {
         }
     }
 
-    private fun builder(root: Path, authorizations: ModuleUnsignedAuthorizationStore) =
-        ModulePackageBuilder(root.resolve("pkgs"), root.resolve("compiler"), "", "java", verifier = verifier, authorizations = authorizations)
+    private fun builder(root: Path, authorizations: ModuleUnsignedAuthorizationStore, signatureEnforced: Boolean = true) =
+        ModulePackageBuilder(root.resolve("pkgs"), root.resolve("compiler"), "", "java", verifier = verifier, authorizations = authorizations, signatureEnforced = signatureEnforced)
 
     private fun moduleDir(root: Path): Path {
         val dir = Files.createDirectories(root.resolve("crm"))
@@ -61,6 +61,14 @@ class ModulePackageSignatureGateTest {
             """{"packageSha256":"$hash","signature":{"keyId":"ideascore-2026","value":"${sign(hash)}"}}""",
         )
         assertEquals(hash, builder(root, DenyAllModuleAuthorizations).verify("crm", dir))
+    }
+
+    @Test
+    fun unsignedIsAllowedWhenEnforcementIsOff() = withRoot { root ->
+        val dir = moduleDir(root)
+        val hash = ExtensionTreeHash.compute(dir)
+        // Compuerta permisiva (develop/pruebas, MODULE_SIGNATURE_ENFORCED=false): sin firma ni autorizacion se permite.
+        assertEquals(hash, builder(root, MemoryAuthorizations(), signatureEnforced = false).verify("crm", dir))
     }
 
     @Test

@@ -199,6 +199,8 @@ fun Application.module() {
             modulePackagesRoot,
             githubToken,
             JdbcModuleUnsignedAuthorizationStore { DatabaseFactory.getDataSource().connection },
+            // Compuerta de firma de modulos: permisiva por defecto (develop/pruebas); produccion la pone en true.
+            signatureEnforced = System.getenv("MODULE_SIGNATURE_ENFORCED")?.trim()?.equals("true", ignoreCase = true) ?: false,
         ),
         requestRestart = ::restartToLoadModules,
         companyFiles = companyFiles,
