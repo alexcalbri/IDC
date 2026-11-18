@@ -125,10 +125,10 @@ class CrmExtensionsTest {
 
     @Test
     fun manifestsRequireTheModuleVersionThatShipsThem() {
-        assertEquals("0.25.1", CrmServerModule.definition.version)
+        assertEquals("0.25.2", CrmServerModule.definition.version)
         CrmServerModule.bundledExtensions.forEach { assertEquals(CrmServerModule.definition.version, it.manifest.minModuleVersion) }
         assertEquals(CrmExtensions.MinModuleVersion, CrmServerModule.definition.version)
-        assertEquals("0.7.0", CrmServerModule.definition.minCoreVersion)
+        assertEquals("0.7.2", CrmServerModule.definition.minCoreVersion)
         assertEquals("0.7.0", CrmServerModule.definition.minAppVersion)
         assertTrue("modules/crm/migrations/V022__extensions_and_secrets.sql" in CrmServerModule.migrationPaths)
     }

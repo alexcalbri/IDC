@@ -124,12 +124,20 @@ When the server owner installs an optional module, the server:
 
 1. downloads that branch from GitHub and extracts `modules/<id>/`;
 2. checks the module layout;
-3. compiles the module with the Kotlin compiler shipped in the distribution
+3. **verifies the package** before compiling (Core 0.7.2): the same gate the
+   optional extensions use (`ModulePackageBuilder.verify`, reusing
+   `ExtensionSignatureVerifier` and `IdeasCorePublicKeys`). A signed package must
+   carry a valid Ed25519 signature (`extension.sig.json`) that matches the tree
+   hash; an unsigned package is only built if its SHA-256 tree hash is authorized
+   in the module authorization store (pinned hash plus a 40-hex commit). Anything
+   unsigned and unauthorized, or with an invalid signature, is rejected before the
+   compiler runs;
+4. compiles the module with the Kotlin compiler shipped in the distribution
    (`compiler/`) against the core it is running. If the module does not fit this
    core version, the installation fails with the compiler error and nothing changes;
-4. stores the package in `MODULE_PACKAGES_ROOT/<id>/<id>-<version>.jar` (code,
+5. stores the package in `MODULE_PACKAGES_ROOT/<id>/<id>-<version>.jar` (code,
    migrations, resources and `module.json`) and records it in `server_modules`;
-5. restarts itself (systemd brings it back in a few seconds) and loads the
+6. restarts itself (systemd brings it back in a few seconds) and loads the
    package in its own class loader.
 
 The module list shows the progress (`installing`, `restarting`, `failed`). When

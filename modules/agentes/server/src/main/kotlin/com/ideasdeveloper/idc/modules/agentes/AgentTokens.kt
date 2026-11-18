@@ -170,6 +170,19 @@ object AgentTokens {
         return OAuthTokens(find(tenant, id)!!, access, refresh)
     }
 
+    // Ventana en la que un refresh token recien rotado se tolera (refresh concurrente o reintento tras un timeout).
+    val RefreshReuseGrace: Duration = Duration.ofSeconds(30)
+
+    /** Reuso de un refresh token ya rotado: es sospechoso solo pasada la ventana de gracia desde su rotacion. */
+    fun isRefreshReuse(rotatedAt: Instant, now: Instant = Instant.now()): Boolean =
+        rotatedAt.isBefore(refreshGraceCutoff(now))
+
+    /** Limite de la gracia: lo rotado antes de este instante ya cuenta como reuso. Es el valor que recibe el SQL de deteccion. */
+    fun refreshGraceCutoff(now: Instant = Instant.now()): Instant = now.minus(RefreshReuseGrace)
+
+    // Dias que se conserva el historial de refresh de conexiones ya revocadas o vencidas (para auditar; no sirve para detectar reuso).
+    const val RefreshHistoryRetentionDays = 90
+
     /**
      * Exchanges a refresh token of an active OAuth connection for a new access token and a new
      * refresh token (the old one stops working). Null when the refresh token is unknown, already
@@ -178,33 +191,50 @@ object AgentTokens {
     fun refresh(tenant: Connection, refreshToken: String, clientId: String, companyCode: String, accessLifetime: Duration): OAuthTokens? {
         val access = newValue(Prefix, companyCode)
         val refresh = newValue(RefreshPrefix, companyCode)
+        val presentedHash = hash(refreshToken)
+        // Una sola sentencia: rotar y registrar el hash anterior en la historia son atomicos (si no, una caida entre ambas
+        // dejaria esa generacion sin registrar y su reuso no se detectaria).
         val id = tenant.prepareStatement(
             """
-            UPDATE agent_tokens
-            SET token_hash = ?, previous_refresh_hash = refresh_hash, previous_rotated_at = CURRENT_TIMESTAMP, refresh_hash = ?, access_expires_at = ?, last_used_at = CURRENT_TIMESTAMP
-            WHERE refresh_hash = ? AND oauth_client = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
-            RETURNING id
+            WITH upd AS (
+                UPDATE agent_tokens
+                SET token_hash = ?, refresh_hash = ?, access_expires_at = ?, last_used_at = CURRENT_TIMESTAMP
+                WHERE refresh_hash = ? AND oauth_client = ? AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > CURRENT_TIMESTAMP)
+                RETURNING id
+            ), ins AS (
+                INSERT INTO agent_refresh_history (token_id, refresh_hash)
+                SELECT id, ? FROM upd
+                ON CONFLICT DO NOTHING
+            )
+            SELECT id FROM upd
             """.trimIndent()
         ).use { update ->
             update.setString(1, hash(access))
             update.setString(2, hash(refresh))
             update.setTimestamp(3, Timestamp.from(Instant.now().plus(accessLifetime)))
-            update.setString(4, hash(refreshToken))
+            update.setString(4, presentedHash)
             update.setString(5, clientId)
+            update.setString(6, presentedHash)
             update.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
         }
         if (id == null) {
-            // Un refresh token ya rotado que vuelve a presentarse es un reuso (se filtro o se copio): se revoca la conexion.
-            // Dentro de 30 s de la rotacion se tolera (refresh concurrente o reintento del cliente legitimo tras un timeout): solo se rechaza.
+            // Un refresh token de cualquier generacion anterior que vuelve a presentarse es un reuso (se filtro o se copio):
+            // se revoca la conexion entera y se invalida su refresh vigente. Dentro de 30 s de la rotacion de ESA generacion
+            // se tolera (refresh concurrente o reintento del cliente legitimo tras un timeout): solo se rechaza.
             tenant.prepareStatement(
                 """
-                UPDATE agent_tokens SET revoked_at = CURRENT_TIMESTAMP, revoked_by = 'reuso de refresh token'
-                WHERE previous_refresh_hash = ? AND oauth_client = ? AND revoked_at IS NULL
-                  AND (previous_rotated_at IS NULL OR previous_rotated_at < CURRENT_TIMESTAMP - INTERVAL '30 seconds')
+                UPDATE agent_tokens SET revoked_at = CURRENT_TIMESTAMP, revoked_by = 'reuso de refresh token', refresh_hash = NULL
+                WHERE oauth_client = ? AND revoked_at IS NULL
+                  AND id IN (
+                      SELECT token_id FROM agent_refresh_history
+                      WHERE refresh_hash = ? AND rotated_at < ?
+                  )
                 """.trimIndent()
             ).use { revoke ->
-                revoke.setString(1, hash(refreshToken))
-                revoke.setString(2, clientId)
+                revoke.setString(1, clientId)
+                revoke.setString(2, presentedHash)
+                // El corte de la gracia lo calcula Kotlin (la misma regla que prueba isRefreshReuse).
+                revoke.setTimestamp(3, Timestamp.from(refreshGraceCutoff()))
                 revoke.executeUpdate()
             }
             return null
@@ -248,6 +278,20 @@ object AgentTokens {
             insert.setString(3, outcome)
             insert.setString(4, detail.take(500))
             insert.executeUpdate()
+        }
+    }
+
+    // Borra el historial de refresh de conexiones ya revocadas o vencidas hace mas de [days] dias (las vivas conservan toda su familia).
+    fun purgeRefreshHistory(tenant: Connection, days: Int) {
+        tenant.prepareStatement(
+            """
+            DELETE FROM agent_refresh_history h USING agent_tokens t
+            WHERE h.token_id = t.id
+              AND LEAST(t.revoked_at, t.expires_at) < CURRENT_TIMESTAMP - make_interval(days => ?)
+            """.trimIndent()
+        ).use { delete ->
+            delete.setInt(1, days)
+            delete.executeUpdate()
         }
     }
 

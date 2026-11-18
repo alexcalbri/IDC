@@ -87,7 +87,10 @@ class HotspotPortal(private val access: ModuleAccessService) {
         respondHtml(html)
     }
 
-    // Limite por IP de origen (la MAC y el correo los controla el cliente, la IP no tanto): en memoria, ventana deslizante.
+    // Limite por IP de origen (la MAC y el correo los controla el cliente, la IP no tanto). Dos capas:
+    // 1) un pre-filtro en memoria, barato y con tope duro, ANTES de abrir la base de la empresa (cubre tambien
+    //    dominios que no existen y evita que un atacante con muchas IPs infle la tabla);
+    // 2) el contador compartido y persistente en la base de la empresa (hotspot_ip_throttle, V012), por ventana fija.
     private val ipHits = java.util.concurrent.ConcurrentHashMap<String, java.util.ArrayDeque<Long>>()
     private val ipWindowMillis = Duration.ofMinutes(10).toMillis()
     // Holgados a proposito: un hotel o local comparte una sola IP publica (NAT) entre muchos huespedes.
@@ -95,6 +98,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
     private val maxCodePerIp = 120
     private val maxTrackedIps = 50_000
     private val lastIpCleanup = java.util.concurrent.atomic.AtomicLong(0)
+    // Ultima limpieza de la tabla por empresa (cada empresa tiene su base).
+    private val lastTableCleanup = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     // IPv6: se agrupa por /64 (un cliente controla todo su /64); IPv4 queda igual.
     private fun ipGroup(ip: String): String {
@@ -112,7 +117,8 @@ class HotspotPortal(private val access: ModuleAccessService) {
     }
 
     // True si esta IP ya agoto sus intentos de [action] en la ventana; si no, cuenta este.
-    private fun overIpLimit(ip: String, action: String, max: Int): Boolean {
+    // Pre-filtro en memoria (ventana deslizante, tope duro). Se llama antes de abrir la base de la empresa.
+    private fun overMemoryIpLimit(ip: String, action: String, max: Int): Boolean {
         val now = System.currentTimeMillis()
         // Limpieza de entradas vencidas como mucho una vez por minuto.
         if (now - lastIpCleanup.get() > 60_000 && lastIpCleanup.getAndSet(now) != now) {
@@ -130,13 +136,46 @@ class HotspotPortal(private val access: ModuleAccessService) {
         }
     }
 
-    private suspend fun ApplicationCall.tooManyRequests() = respondHtml(
-        HotspotPortalPages.message(null, "Demasiados intentos", "Espera unos minutos y vuelve a intentarlo.", retry = false),
-        HttpStatusCode.TooManyRequests,
-    )
+    // Contador persistente de la empresa; fuente compartida entre reinicios y servidores.
+    private fun overIpLimit(target: PortalTarget, ip: String, action: String, max: Int): Boolean {
+        val connection = target.connection
+        val now = System.currentTimeMillis()
+        // Limpieza de ventanas vencidas de ESTA empresa como mucho una vez por minuto; nunca debe tumbar la peticion.
+        if (now - (lastTableCleanup[target.companyCode] ?: 0L) > 60_000) {
+            lastTableCleanup[target.companyCode] = now
+            runCatching {
+                connection.prepareStatement("DELETE FROM hotspot_ip_throttle WHERE window_start < ?").use { delete ->
+                    delete.setTimestamp(1, Timestamp(now - ipWindowMillis))
+                    delete.executeUpdate()
+                }
+            }.onFailure { log.warn("No se pudo limpiar hotspot_ip_throttle de {}", target.companyCode, it) }
+        }
+        // Ventana fija: el inicio es el instante actual redondeado hacia abajo al tamano de la ventana.
+        val windowStart = Timestamp(now - now % ipWindowMillis)
+        // Una sola sentencia atomica: suma uno mientras haya cupo y no devuelve fila cuando ya se agoto.
+        return connection.prepareStatement(
+            """
+            INSERT INTO hotspot_ip_throttle (ip_group, action, window_start, hits)
+            VALUES (?, ?, ?, 1)
+            ON CONFLICT (ip_group, action, window_start) DO UPDATE SET hits = hotspot_ip_throttle.hits + 1
+            WHERE hotspot_ip_throttle.hits < ?
+            RETURNING hits
+            """.trimIndent()
+        ).use { upsert ->
+            upsert.setString(1, ipGroup(ip))
+            upsert.setString(2, action)
+            upsert.setTimestamp(3, windowStart)
+            upsert.setInt(4, max)
+            upsert.executeQuery().use { rows -> !rows.next() }
+        }
+    }
+
+    private fun tooManyRequestsHtml() =
+        HotspotPortalPages.message(null, "Demasiados intentos", "Espera unos minutos y vuelve a intentarlo.", retry = false)
 
     private suspend fun ApplicationCall.register() {
-        if (overIpLimit(clientIp(), "register", maxRegisterPerIp)) return tooManyRequests()
+        val ip = clientIp()
+        if (overMemoryIpLimit(ip, "register", maxRegisterPerIp)) return respondHtml(tooManyRequestsHtml(), HttpStatusCode.TooManyRequests)
         val form = receiveParameters()
         val guest = guestContext(form)
         val values = FormValues(
@@ -145,8 +184,16 @@ class HotspotPortal(private val access: ModuleAccessService) {
             phone = form["phone"].orEmpty().trim(),
             birthday = form["birthday"].orEmpty().trim(),
         )
-        val html = withPortal { target -> register(target, guest, values, form["terms"] == "si") } ?: return
-        respondHtml(html)
+        var limited = false
+        val html = withPortal { target ->
+            if (overIpLimit(target, ip, "register", maxRegisterPerIp)) {
+                limited = true
+                tooManyRequestsHtml()
+            } else {
+                register(target, guest, values, form["terms"] == "si")
+            }
+        } ?: return
+        respondHtml(html, if (limited) HttpStatusCode.TooManyRequests else HttpStatusCode.OK)
     }
 
     private suspend fun ApplicationCall.verify() {
@@ -165,12 +212,21 @@ class HotspotPortal(private val access: ModuleAccessService) {
     }
 
     private suspend fun ApplicationCall.customerCode() {
-        if (overIpLimit(clientIp(), "code", maxCodePerIp)) return tooManyRequests()
+        val ip = clientIp()
+        if (overMemoryIpLimit(ip, "code", maxCodePerIp)) return respondHtml(tooManyRequestsHtml(), HttpStatusCode.TooManyRequests)
         val form = receiveParameters()
         val guest = guestContext(form)
         val code = HotspotNetworks.normalizeCustomerCode(form["code"].orEmpty().take(40))
-        val html = withPortal { target -> accessByCode(target, guest, code) } ?: return
-        respondHtml(html)
+        var limited = false
+        val html = withPortal { target ->
+            if (overIpLimit(target, ip, "code", maxCodePerIp)) {
+                limited = true
+                tooManyRequestsHtml()
+            } else {
+                accessByCode(target, guest, code)
+            }
+        } ?: return
+        respondHtml(html, if (limited) HttpStatusCode.TooManyRequests else HttpStatusCode.OK)
     }
 
     private fun register(target: PortalTarget, guest: GuestContext, values: FormValues, acceptedTerms: Boolean): String {

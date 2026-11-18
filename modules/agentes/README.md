@@ -90,7 +90,7 @@ Implements the MCP authorization spec (2025-06-18) with OAuth 2.1:
 | `GET /.well-known/oauth-authorization-server` | Authorization server metadata (RFC 8414). The issuer is `IDC_PUBLIC_BASE_URL` (set by `install.sh`/`update.sh`), falling back to the request `Host`; it never trusts `X-Forwarded-Host`. |
 | `POST /modules/agentes/oauth/register` | Dynamic client registration (RFC 7591). Stateless: the client id carries the client metadata signed with HMAC; confidential clients get a secret derived from it. Redirect URIs must be HTTPS or loopback HTTP. |
 | `GET/POST /modules/agentes/oauth/authorize` | Authorization code with mandatory PKCE S256. Sign-in page (rate limited per IP, no session is left behind) and consent page. `resource` (RFC 8707), when sent, must be the MCP endpoint. |
-| `POST /modules/agentes/oauth/token` | `authorization_code` and `refresh_token` grants. Access tokens last 1 hour; refresh tokens rotate on every use and are bound to their client. A refresh fails (and the connection is revoked) when the user lost access. Reusing an already-rotated refresh token revokes the connection (reuse detection), except within a ~30 s grace window for a client retrying after a lost response. |
+| `POST /modules/agentes/oauth/token` | `authorization_code` and `refresh_token` grants. Access tokens last 1 hour; refresh tokens rotate on every use and are bound to their client. A refresh fails (and the connection is revoked) when the user lost access. Reusing an already-rotated refresh token of ANY earlier generation revokes the connection (reuse detection over the whole refresh history), except within a ~30 s grace window for a client retrying after a lost response. |
 | `POST /modules/agentes/oauth/revoke` | Token revocation (RFC 7009), only for tokens issued to the calling client. |
 
 The HMAC key is created on first use in `server_settings` (`agentes.oauth.signing_key`); deleting it
@@ -106,6 +106,9 @@ Migration `V001__create_agent_tokens.sql`:
   (`NULL` = all, including modules enabled later), read only, expiration, last use, revocation.
   OAuth connections also store the client id, the current refresh token hash and when the current
   access token expires; their `expires_at` is the end of the whole connection.
+- `agent_refresh_history` (migration `V003__refresh_history.sql`): hashes of every refresh token already
+  rotated for each OAuth connection and when they were rotated; written in the same statement as the
+  rotation (atomic). The daily job deletes the history of connections revoked or expired more than 90 days ago.
 - `agent_activity`: tool, outcome (`ok`, `error`, `denied`), detail and time. A daily job deletes
   entries older than 180 days.
 

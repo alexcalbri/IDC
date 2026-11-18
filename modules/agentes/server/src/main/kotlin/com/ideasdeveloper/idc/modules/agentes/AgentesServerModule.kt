@@ -63,9 +63,10 @@ object AgentesServerModule : ServerModule {
     override val migrationPaths = listOf(
         "modules/agentes/migrations/V001__create_agent_tokens.sql",
         "modules/agentes/migrations/V002__refresh_reuse_detection.sql",
+        "modules/agentes/migrations/V003__refresh_history.sql",
     )
 
-    override val runtimeTables = listOf("agent_tokens", "agent_activity")
+    override val runtimeTables = listOf("agent_tokens", "agent_activity", "agent_refresh_history")
 
     // Its own MCP (managing connections), offered through the same bridge as every module.
     override val mcp: ModuleMcp
@@ -75,7 +76,7 @@ object AgentesServerModule : ServerModule {
         id = AgentesModule.id,
         displayName = AgentesModule.displayName,
         description = "Cada usuario conecta su propio modelo o agente de IA por MCP, limitado a las funciones que ese usuario tiene permitidas.",
-        version = "0.3.2",
+        version = "0.3.3",
         permissions = listOf(
             ModulePermissionDefinition(
                 AgentesScreens.Connect,
@@ -92,7 +93,10 @@ object AgentesServerModule : ServerModule {
     )
 
     override val jobs = listOf(
-        ModuleJob("purge-activity", Duration.ofDays(1)) { context -> AgentTokens.purgeActivity(context.tenant, ActivityDays) },
+        ModuleJob("purge-activity", Duration.ofDays(1)) { context ->
+            AgentTokens.purgeActivity(context.tenant, ActivityDays)
+            AgentTokens.purgeRefreshHistory(context.tenant, AgentTokens.RefreshHistoryRetentionDays)
+        },
     )
 
     override fun routes(route: Route, access: ModuleAccessService) {

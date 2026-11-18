@@ -470,6 +470,57 @@ fun Route.companyRoutes(
         call.respond(HttpStatusCode.OK, response)
     }
 
+    // Descarga el modulo del catalogo y devuelve su commit y hash para que el dueno los revise (igual que las extensiones).
+    get("/server/modules/{moduleId}/inspect") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        if (call.serverOwnerRole(authorizer) == null) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para revisar paquetes de modulos."))
+            return@get
+        }
+        val service = provisioning ?: run {
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            return@get
+        }
+        try {
+            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.inspectServerModule(call.parameters["moduleId"].orEmpty()) })
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(modulePackageStatus(exception), CompanyErrorResponse(exception.code ?: "INVALID_REQUEST", exception.message ?: "No se pudo revisar el modulo."))
+        }
+    }
+
+    // El dueno autoriza el hash y commit de un modulo sin firma, con confirmacion escrita (igual que las extensiones).
+    post("/server/modules/{moduleId}/authorize-unsigned") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val serverOwnerRole = call.serverOwnerRole(authorizer)
+        if (serverOwnerRole == null) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("SERVER_OWNER_REQUIRED", "Debes iniciar sesion como server_owner para autorizar paquetes sin firma."))
+            return@post
+        }
+        val service = provisioning ?: run {
+            call.respond(HttpStatusCode.ServiceUnavailable, CompanyErrorResponse("PROVISIONING_NOT_CONFIGURED", "El servidor no tiene configuracion de provisioning disponible."))
+            return@post
+        }
+        val request = try {
+            call.receive<com.ideasdeveloper.idc.server.modules.AuthorizeUnsignedModuleRequest>()
+        } catch (_: BadRequestException) {
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            return@post
+        }
+        try {
+            call.respond(
+                HttpStatusCode.OK,
+                withContext(Dispatchers.IO) {
+                    service.authorizeUnsignedServerModule(
+                        call.parameters["moduleId"].orEmpty(), serverOwnerRole, request.confirmationText,
+                        request.expectedPackageSha256, request.expectedCommit,
+                    )
+                },
+            )
+        } catch (exception: CompanyProvisioningException) {
+            call.respond(modulePackageStatus(exception), CompanyErrorResponse(exception.code ?: "INVALID_REQUEST", exception.message ?: "No se pudo autorizar el modulo."))
+        }
+    }
+
     // Creates the server company (server workspace) when it does not exist yet and returns its code.
     // Single-company installs use it as their company: the server owner is its business owner.
     post("/server/workspace") {
@@ -1020,6 +1071,15 @@ private fun io.ktor.server.application.ApplicationCall.businessOwnerContext(): B
         ?.removePrefix("Bearer ")
         ?: return null
     return BusinessOwnerRouteContext(companyCode, token)
+}
+
+// Mismo mapa de estados que las rutas de paquetes de extensiones.
+private fun modulePackageStatus(exception: CompanyProvisioningException): HttpStatusCode = when (exception.code) {
+    "NOT_FOUND" -> HttpStatusCode.NotFound
+    "PACKAGE_CHANGED" -> HttpStatusCode.Conflict
+    "BUILDER_UNAVAILABLE" -> HttpStatusCode.ServiceUnavailable
+    "PACKAGE_UNAVAILABLE" -> HttpStatusCode.BadGateway
+    else -> HttpStatusCode.BadRequest
 }
 
 private suspend fun io.ktor.server.application.ApplicationCall.serverOwnerRole(

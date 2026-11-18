@@ -1,6 +1,8 @@
 package com.ideasdeveloper.idc.modules.crm
 
 import com.ideasdeveloper.idc.server.modules.ModuleFiles
+import com.ideasdeveloper.idc.server.net.PinnedHost
+import com.ideasdeveloper.idc.server.net.PinnedHostException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -8,13 +10,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
-import java.net.InetAddress
 import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.sql.Connection
-import java.time.Duration
 import java.util.UUID
 
 /**
@@ -28,7 +25,6 @@ object CrmMondayFiles {
     const val FilesColumn = "__files"
     const val UpdatesFolder = "Actualizaciones de monday"
     private val json = Json { ignoreUnknownKeys = true }
-    private val download = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).followRedirects(HttpClient.Redirect.NEVER).build()
     private val assetId = Regex("^[0-9]{1,20}$")
 
     fun encode(files: List<CrmMondayFile>): String = JsonArray(
@@ -124,14 +120,24 @@ object CrmMondayFiles {
     private fun fetch(url: String, store: (contentType: String, body: java.io.InputStream) -> Unit) {
         val uri = runCatching { URI.create(url) }.getOrNull()
         if (uri == null || uri.scheme != "https" || uri.host.isNullOrBlank()) throw CrmImportException("enlace de descarga invalido")
-        val addresses = runCatching { InetAddress.getAllByName(uri.host).toList() }.getOrElse { throw CrmImportException("no se encontro ${uri.host}") }
-        if (addresses.isEmpty() || addresses.any(CrmWordPress::blockedAddress)) {
-            throw CrmImportException("el enlace apunta a una red privada")
+        // Una sola resolucion: se valida y la conexion va a esa misma IP (anti DNS rebinding).
+        val validated = try {
+            PinnedHost.resolveValidated(uri.host)
+        } catch (failure: PinnedHostException) {
+            throw CrmImportException(if (failure.message.orEmpty().startsWith("No se encontro")) "no se encontro ${uri.host}" else "el enlace apunta a una red privada")
         }
-        val response = download.send(HttpRequest.newBuilder(uri).timeout(Duration.ofMinutes(5)).GET().build(), HttpResponse.BodyHandlers.ofInputStream())
-        response.body().use { body ->
-            if (response.statusCode() !in 200..299) throw CrmImportException("la descarga respondio HTTP ${response.statusCode()}")
-            store(response.headers().firstValue("Content-Type").orElse("application/octet-stream"), body)
+        val response = try {
+            PinnedHost.openPinnedHttps(
+                uri, validated, uri.host, timeoutMillis = 30_000, connectTimeoutMillis = 15_000,
+                totalMillis = 5 * 60_000L, maxBodyBytes = CrmAttachments.MaxFileBytes + 1,
+            )
+        } catch (failure: Exception) {
+            throw CrmImportException("no se pudo descargar")
+        }
+        // use cierra la conexion aunque store falle.
+        response.use {
+            if (it.status !in 200..299) throw CrmImportException("la descarga respondio HTTP ${it.status}")
+            store(it.header("Content-Type") ?: "application/octet-stream", it.body)
         }
     }
 }

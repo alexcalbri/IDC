@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.server.company.application
 
 import com.ideasdeveloper.idc.server.modules.CompanyFiles
+import com.ideasdeveloper.idc.server.security.ScramSha256
 import com.ideasdeveloper.idc.server.company.api.ServerNameResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.ServerNameSetting
 import com.ideasdeveloper.idc.server.company.api.DuplicateOwnerRequest
@@ -27,6 +28,8 @@ import com.ideasdeveloper.idc.ModuleVersion
 import com.ideasdeveloper.idc.server.modules.GitHubLocation
 import com.ideasdeveloper.idc.server.modules.ModuleBuildException
 import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
+import com.ideasdeveloper.idc.server.modules.ModulePackageInspection
+import com.ideasdeveloper.idc.server.modules.ModuleUnsignedAuthorizationResponse
 import com.ideasdeveloper.idc.server.modules.ServerModule
 import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
@@ -62,6 +65,7 @@ class CompanyProvisioningService(
     private val log = LoggerFactory.getLogger(CompanyProvisioningService::class.java)
     // Progress of optional modules being built for installation, shown in the module list.
     private val installStates = ConcurrentHashMap<String, ModuleInstallState>()
+    private val MinModuleConfirmationLength = 10
     // One build at a time: compiling uses about 1 GB of memory.
     private val buildExecutor = Executors.newSingleThreadExecutor { task -> Thread(task, "module-build").apply { isDaemon = true } }
     private val companyCodePattern = Regex("[a-z][a-z0-9_]{0,62}")
@@ -111,7 +115,7 @@ class CompanyProvisioningService(
                 // Por defecto PUBLIC puede conectarse a cualquier base: solo el runtime y el owner.
                 statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
                 statement.executeUpdate(
-                    "CREATE ROLE ${quoteIdentifier(ownerUsername)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(ownerPassword)}"
+                    "CREATE ROLE ${quoteIdentifier(ownerUsername)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(ScramSha256.verifier(ownerPassword))}"
                 )
                 statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
                 statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(ownerUsername)}")
@@ -406,7 +410,7 @@ class CompanyProvisioningService(
                     statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
                     if (newOwnerInput != null) {
                         statement.executeUpdate(
-                            "CREATE ROLE ${quoteIdentifier(owner.role)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(newOwnerInput.password)}"
+                            "CREATE ROLE ${quoteIdentifier(owner.role)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(ScramSha256.verifier(newOwnerInput.password))}"
                         )
                         roleCreated = true
                     }
@@ -679,7 +683,7 @@ class CompanyProvisioningService(
             admin.autoCommit = true
             admin.createStatement().use { statement ->
                 silenceStatementLog(statement)
-                statement.executeUpdate("ALTER ROLE ${quoteIdentifier(role)} PASSWORD ${quoteLiteral(password)}")
+                statement.executeUpdate("ALTER ROLE ${quoteIdentifier(role)} PASSWORD ${quoteLiteral(ScramSha256.verifier(password))}")
             }
         }
         central.connection.use { connection ->
@@ -722,7 +726,7 @@ class CompanyProvisioningService(
             admin.autoCommit = true
             admin.createStatement().use { statement ->
                 silenceStatementLog(statement)
-                statement.executeUpdate("ALTER ROLE ${quoteIdentifier(ownerRole)} PASSWORD ${quoteLiteral(password)}")
+                statement.executeUpdate("ALTER ROLE ${quoteIdentifier(ownerRole)} PASSWORD ${quoteLiteral(ScramSha256.verifier(password))}")
             }
         }
         tenantRuntimeConnection(tenantConfig).use { tenant ->
@@ -767,12 +771,11 @@ class CompanyProvisioningService(
         }
 
     /**
-     * Evita que PostgreSQL registre en su log el DDL con contrasena en texto. Se hace por sesion (la
-     * conexion de aprovisionamiento es de un solo uso). Si el rol no puede cambiar el parametro se
-     * avisa en el log: el silencio NO esta activo y las contrasenas pueden quedar registradas.
-     *
-     * TODO(seguridad): lo robusto es enviar el verificador SCRAM-SHA-256 ya calculado
-     * (ALTER ROLE ... PASSWORD 'SCRAM-SHA-256$...') para que el texto plano nunca viaje ni se registre.
+     * Defensa en profundidad: los CREATE/ALTER ROLE ya envian el verificador SCRAM-SHA-256
+     * ([ScramSha256.verifier]) y no la contrasena en texto, asi que el texto plano nunca viaja ni se
+     * registra. Aun asi se pide a PostgreSQL no registrar estos DDL en el log. Se hace por sesion (la
+     * conexion de aprovisionamiento es de un solo uso); si el rol no puede cambiar el parametro solo
+     * se avisa en el log, sin consecuencia para la contrasena.
      */
     private fun silenceStatementLog(statement: java.sql.Statement) {
         try {
@@ -827,7 +830,7 @@ class CompanyProvisioningService(
             admin.createStatement().use { statement ->
                 silenceStatementLog(statement)
                 if (renamed) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(owner.role)} RENAME TO ${quoteIdentifier(username)}")
-                if (password.isNotEmpty()) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} PASSWORD ${quoteLiteral(password)}")
+                if (password.isNotEmpty()) statement.executeUpdate("ALTER ROLE ${quoteIdentifier(username)} PASSWORD ${quoteLiteral(ScramSha256.verifier(password))}")
             }
         }
         try {
@@ -1171,6 +1174,73 @@ class CompanyProvisioningService(
         return moduleResponse(definition, remotePackage).copy(warning = warning)
     }
 
+    /** Descarga el modulo del catalogo y devuelve commit, URL y hash calculado, para revisarlo antes de autorizar. */
+    fun inspectServerModule(moduleId: String): ModulePackageInspection {
+        val id = moduleId.trim()
+        val remote = syncRemoteAvailableModules()[id]
+        val source = remote?.source
+            ?: throw CompanyProvisioningException("El modulo '$id' no esta en el catalogo configurado, o el catalogo no es una carpeta de GitHub.", "NOT_FOUND")
+        val builder = modulePackageBuilder
+            ?: throw CompanyProvisioningException("Este servidor no puede revisar modulos: falta la carpeta compiler/ de la instalacion.", "BUILDER_UNAVAILABLE")
+        return try {
+            builder.inspect(id, source)
+        } catch (failure: ModuleBuildException) {
+            throw CompanyProvisioningException(failure.message ?: "No se pudo descargar el modulo.", "PACKAGE_UNAVAILABLE")
+        }
+    }
+
+    /**
+     * El dueno del servidor autoriza un modulo sin firma, identificado por su hash, con una confirmacion
+     * escrita. Debe indicar el hash y el commit que reviso; si lo descargado ahora es otra cosa, se
+     * rechaza. Un modulo firmado no necesita autorizacion y uno con una firma que no vale tampoco se
+     * puede autorizar (igual que las extensiones).
+     */
+    fun authorizeUnsignedServerModule(
+        moduleId: String,
+        actorRole: String,
+        confirmationText: String,
+        expectedPackageSha256: String,
+        expectedCommit: String,
+    ): ModuleUnsignedAuthorizationResponse {
+        val id = moduleId.trim()
+        val text = confirmationText.trim()
+        if (text.length < MinModuleConfirmationLength) {
+            throw CompanyProvisioningException("Escribe la confirmacion con tus palabras (al menos $MinModuleConfirmationLength caracteres).", "CONFIRMATION_REQUIRED")
+        }
+        if (!Regex("[A-Fa-f0-9]{64}").matches(expectedPackageSha256.trim()) || !Regex("[a-f0-9]{40}").matches(expectedCommit.trim().lowercase())) {
+            throw CompanyProvisioningException("Indica el hash (64 hex) y el commit (40 hex) que revisaste.", "EXPECTED_REQUIRED")
+        }
+        val inspection = inspectServerModule(id)
+        if (!inspection.packageSha256.equals(expectedPackageSha256.trim(), ignoreCase = true) ||
+            !inspection.commit.equals(expectedCommit.trim(), ignoreCase = true)
+        ) {
+            throw CompanyProvisioningException(
+                "El modulo cambio desde que lo revisaste (ahora: commit ${inspection.commit}, hash ${inspection.packageSha256}). Revisalo otra vez.",
+                "PACKAGE_CHANGED",
+            )
+        }
+        if (inspection.signed) {
+            throw CompanyProvisioningException("El modulo '$id' esta firmado; no necesita autorizacion.", "ALREADY_SIGNED")
+        }
+        inspection.signatureProblem?.let {
+            throw CompanyProvisioningException("El modulo '$id' trae una firma que no vale ($it); no se puede autorizar.", "SIGNATURE_INVALID")
+        }
+        val builder = modulePackageBuilder
+            ?: throw CompanyProvisioningException("Este servidor no puede autorizar modulos: falta la carpeta compiler/ de la instalacion.", "BUILDER_UNAVAILABLE")
+        builder.authorizeUnsigned(inspection.packageSha256, id, inspection.commit, actorRole, text)
+        recordAudit(
+            actorRole, "module.package.authorize_unsigned", null, id,
+            kotlinx.serialization.json.buildJsonObject {
+                put("moduleId", kotlinx.serialization.json.JsonPrimitive(id))
+                put("packageSha256", kotlinx.serialization.json.JsonPrimitive(inspection.packageSha256))
+                put("commit", kotlinx.serialization.json.JsonPrimitive(inspection.commit))
+                put("sourceUrl", kotlinx.serialization.json.JsonPrimitive(inspection.commitUrl))
+                put("confirmationText", kotlinx.serialization.json.JsonPrimitive(text))
+            }.toString(),
+        )
+        return ModuleUnsignedAuthorizationResponse(id, inspection.packageSha256, inspection.commitUrl)
+    }
+
     private fun activateLoadedModule(definition: ModuleDefinition) {
         central.connection.use { connection ->
             connection.autoCommit = false
@@ -1330,6 +1400,11 @@ class CompanyProvisioningService(
                         applyUserProfileMigration(tenant)
                     } catch (failure: Exception) {
                         log.error("User profile migration failed for company {}", companyCode, failure)
+                    }
+                    try {
+                        applyAccountThrottleMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Account throttle migration failed for company {}", companyCode, failure)
                     }
                     try {
                         applyNotificationsMigration(tenant)
@@ -1609,6 +1684,7 @@ class CompanyProvisioningService(
             applyMigration(connection, module, relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
         }
         applyUserProfileMigration(connection)
+        applyAccountThrottleMigration(connection)
         applyNotificationsMigration(connection)
         applyExtensionsMigration(connection)
     }
@@ -1618,10 +1694,86 @@ class CompanyProvisioningService(
     private fun applyExtensionsMigration(connection: Connection) {
         val relativePath = "database/tenant/migrations/V006__create_extensions.sql"
         applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        grantIfMissing(connection, config.runtimeUser, "tenant_data_keys", listOf("SELECT", "INSERT"))
+        grantIfMissing(connection, config.runtimeUser, "tenant_extensions", listOf("SELECT", "INSERT", "UPDATE"))
+        listOf("tenant_extension_settings", "tenant_extension_objects").forEach { table ->
+            grantIfMissing(connection, config.runtimeUser, table, listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
+        }
+    }
+
+    /**
+     * GRANT idempotente para la puesta al dia de empresas existentes: en ellas el rol de aprovisionamiento
+     * no es dueno de la tabla y un GRANT directo fallaria con "permission denied". Si [runtimeUser] ya tiene
+     * todos los privilegios no hace nada; si faltan, ejecuta el GRANT como dueno de la tabla (SET ROLE) y
+     * vuelve al rol anterior. Nunca lanza: ante un fallo solo avisa en el log para no abortar la puesta al dia.
+     */
+    private fun grantIfMissing(connection: Connection, runtimeUser: String, table: String, privileges: List<String>) {
+        try {
+            val missing = privileges.filterNot { privilege ->
+                connection.prepareStatement("SELECT has_table_privilege(?, ?, ?)").use { query ->
+                    query.setString(1, runtimeUser)
+                    query.setString(2, quoteIdentifier(table))
+                    query.setString(3, privilege)
+                    query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+                }
+            }
+            if (missing.isEmpty()) return
+            runAsTableOwner(connection, table) { statement ->
+                statement.executeUpdate("GRANT ${missing.joinToString(", ")} ON ${quoteIdentifier(table)} TO ${quoteIdentifier(runtimeUser)}")
+            }
+        } catch (failure: Exception) {
+            log.error("No se pudo conceder {} sobre {} a {}; se continua sin abortar la puesta al dia, pero el runtime podria fallar despues con 'permission denied'", privileges, table, runtimeUser, failure)
+        }
+    }
+
+    /** Variante de [grantIfMissing] para privilegios por columna, p. ej. UPDATE (read_at). */
+    private fun grantColumnsIfMissing(connection: Connection, runtimeUser: String, table: String, privilege: String, columns: List<String>) {
+        try {
+            val missing = columns.filterNot { column ->
+                connection.prepareStatement("SELECT has_column_privilege(?, ?, ?, ?)").use { query ->
+                    query.setString(1, runtimeUser)
+                    query.setString(2, quoteIdentifier(table))
+                    query.setString(3, column)
+                    query.setString(4, privilege)
+                    query.executeQuery().use { rows -> rows.next() && rows.getBoolean(1) }
+                }
+            }
+            if (missing.isEmpty()) return
+            runAsTableOwner(connection, table) { statement ->
+                val columnList = missing.joinToString(", ") { quoteIdentifier(it) }
+                statement.executeUpdate("GRANT $privilege ($columnList) ON ${quoteIdentifier(table)} TO ${quoteIdentifier(runtimeUser)}")
+            }
+        } catch (failure: Exception) {
+            log.error("No se pudo conceder {} ({}) sobre {} a {}; se continua sin abortar la puesta al dia, pero el runtime podria fallar despues con 'permission denied'", privilege, columns, table, runtimeUser, failure)
+        }
+    }
+
+    // Ejecuta [action] como dueno de la tabla (si el rol actual no lo es) y restaura el rol anterior.
+    private fun runAsTableOwner(connection: Connection, table: String, action: (java.sql.Statement) -> Unit) {
+        val owner = connection.prepareStatement("SELECT tableowner FROM pg_tables WHERE schemaname = current_schema() AND tablename = ?").use { query ->
+            query.setString(1, table)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+        } ?: throw CompanyProvisioningException("La tabla $table no existe")
+        val current = connection.createStatement().use { statement ->
+            statement.executeQuery("SELECT current_user").use { rows -> rows.next(); rows.getString(1) }
+        }
+        val needsRoleSwitch = owner != current
         connection.createStatement().use { statement ->
-            statement.executeUpdate("GRANT SELECT, INSERT ON tenant_data_keys TO ${quoteIdentifier(config.runtimeUser)}")
-            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE ON tenant_extensions TO ${quoteIdentifier(config.runtimeUser)}")
-            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON tenant_extension_settings, tenant_extension_objects TO ${quoteIdentifier(config.runtimeUser)}")
+            if (needsRoleSwitch) statement.execute("SET ROLE ${quoteIdentifier(owner)}")
+            try {
+                action(statement)
+            } finally {
+                // Restaura el rol anterior (el de aprovisionamiento, no RESET ROLE que volveria al rol de login).
+                // Un fallo aqui se registra pero no enmascara la excepcion de [action] ni deja la conexion en el
+                // rol del dueno para las operaciones siguientes.
+                if (needsRoleSwitch) {
+                    try {
+                        statement.execute("SET ROLE ${quoteIdentifier(current)}")
+                    } catch (restore: Exception) {
+                        log.error("No se pudo restaurar el rol {} tras el GRANT sobre {}", current, table, restore)
+                    }
+                }
+            }
         }
     }
 
@@ -1629,9 +1781,8 @@ class CompanyProvisioningService(
     private fun applyNotificationsMigration(connection: Connection) {
         val relativePath = "database/core/migrations/V005__create_notifications.sql"
         applyMigration(connection, "core", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
-        connection.createStatement().use { statement ->
-            statement.executeUpdate("GRANT SELECT, INSERT, DELETE, UPDATE (read_at) ON notifications TO ${quoteIdentifier(config.runtimeUser)}")
-        }
+        grantIfMissing(connection, config.runtimeUser, "notifications", listOf("SELECT", "INSERT", "DELETE"))
+        grantColumnsIfMissing(connection, config.runtimeUser, "notifications", "UPDATE", listOf("read_at"))
     }
 
     // Name, email and password reset codes of users (core V003); also brought to existing companies at startup.
@@ -1640,10 +1791,17 @@ class CompanyProvisioningService(
         applyMigration(connection, "core", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
         val userCodeMigration = "database/core/migrations/V004__add_application_user_code.sql"
         applyMigration(connection, "core", userCodeMigration, Files.readString(Path.of(config.migrationsRoot).resolve(userCodeMigration)))
-        connection.createStatement().use { statement ->
-            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE, DELETE ON password_reset_codes TO ${quoteIdentifier(config.runtimeUser)}")
-            statement.executeUpdate("GRANT SELECT, UPDATE (user_code) ON application_users TO ${quoteIdentifier(config.runtimeUser)}")
-        }
+        grantIfMissing(connection, config.runtimeUser, "password_reset_codes", listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
+        grantIfMissing(connection, config.runtimeUser, "application_users", listOf("SELECT"))
+        grantColumnsIfMissing(connection, config.runtimeUser, "application_users", "UPDATE", listOf("user_code"))
+    }
+
+    // Contadores de fuerza bruta de reseteo de contrasena persistidos por empresa (tenant V008);
+    // tambien se trae a las empresas existentes al arrancar.
+    private fun applyAccountThrottleMigration(connection: Connection) {
+        val relativePath = "database/tenant/migrations/V008__account_reset_throttle.sql"
+        applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        grantIfMissing(connection, config.runtimeUser, "account_reset_throttle", listOf("SELECT", "INSERT", "UPDATE", "DELETE"))
     }
 
     private fun applyBaseModuleMigrations(connection: Connection) {

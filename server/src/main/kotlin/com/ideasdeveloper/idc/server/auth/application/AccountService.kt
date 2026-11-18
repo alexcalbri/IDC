@@ -59,7 +59,8 @@ class AccountService(
     private val tokens = SessionTokenGenerator()
     private val random = SecureRandom()
     private val background = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private val throttles = ConcurrentHashMap<String, Throttle>()
+    // Solo para duenos del servidor (base central, sin la tabla por empresa); las empresas usan la base.
+    private val ownerThrottles = MemoryThrottles()
     private val codePattern = Regex("[0-9]{6}")
     private val identifierPattern = Regex("[a-z][a-z0-9_]{0,62}")
 
@@ -128,19 +129,12 @@ class AccountService(
             val account = accountByUsername(connection, name, companyCode == null)
                 ?.takeIf { it.email != null && UserProfileRules.validEmail(it.email) } ?: return@use null
             val now = clock()
-            // La entrada de contadores solo se crea si el usuario existe; con el mapa lleno se rechaza en silencio.
-            val throttle = throttle(throttleKey(name, companyCode), create = true) ?: return@use null
             // Tope acumulado en la ventana: no se reinicia al pedir otro codigo y la espera crece con cada envio.
-            // La plaza se reserva en el mismo bloque que la comprobacion (atomico) y se devuelve si no se emite.
-            var previousLast: Instant? = null
-            synchronized(throttle) {
-                if (throttle.issued >= MaxCodesPerWindow) return@use null
-                val last = throttle.lastIssued
-                if (last != null && last.plus(ResendAfter.multipliedBy(1L shl (throttle.issued.coerceIn(1, 10) - 1))).isAfter(now)) return@use null
-                previousLast = last
-                throttle.issued++
-                throttle.lastIssued = now
-            }
+            // La fila solo se crea si el usuario existe. La plaza se reserva con una sola sentencia atomica
+            // y se devuelve si no se emite.
+            val store = throttles(connection, companyCode)
+            val reservation = store.reserve(name, now) ?: return@use null
+            val previousLast = reservation.previousLast
             var kept = false
             try {
                 val recent = connection.prepareStatement("SELECT created_at FROM password_reset_codes WHERE user_id = ?").use { query ->
@@ -166,10 +160,9 @@ class AccountService(
                 kept = true
                 account to code
             } finally {
-                if (!kept) synchronized(throttle) {
-                    throttle.issued--
-                    throttle.lastIssued = previousLast
-                }
+                // Si la conexion quedo en error, devolver la plaza no debe tapar la excepcion original.
+                if (!kept) runCatching { store.release(name, previousLast) }
+                    .onFailure { log.warn("No se pudo devolver la plaza de envio de {}", name, it) }
             }
         } ?: return
         try {
@@ -198,12 +191,9 @@ class AccountService(
         if (companyCode == null && (newPassword.length < 16 || newPassword.any { it !in ' '..'~' })) {
             throw AccountException("WEAK_PASSWORD", "La contrasena del dueno del servidor debe tener al menos 16 caracteres ASCII.")
         }
-        // Tope acumulado de intentos fallidos por usuario en la ventana; pedir otro codigo no lo reinicia.
-        // Sin crear entrada: solo se consulta el contador si ya existe (las claves las controla quien llama).
-        val existing = throttle(throttleKey(name, companyCode), create = false)
-        if (existing != null && synchronized(existing) { existing.failures >= MaxFailuresPerWindow }) throw invalid
         val connection = databaseOrNull(companyCode) ?: throw invalid
         connection.use {
+            val store = throttles(connection, companyCode)
             val account = accountByUsername(connection, name, companyCode == null) ?: throw invalid
             val (hash, expiresAt, attempts) = connection.prepareStatement(
                 "SELECT code_hash, expires_at, attempts FROM password_reset_codes WHERE user_id = ?"
@@ -217,42 +207,203 @@ class AccountService(
                 deleteCode(connection, account.id)
                 throw invalid
             }
-            if (!MessageDigest.isEqual(hash.toByteArray(), codeHash(account.id, code.trim()).toByteArray())) {
-                connection.prepareStatement("UPDATE password_reset_codes SET attempts = attempts + 1 WHERE user_id = ?").use { update ->
-                    update.setObject(1, account.id)
-                    update.executeUpdate()
-                }
-                // La entrada se crea solo porque el usuario existe.
-                throttle(throttleKey(name, companyCode), create = true)?.let { synchronized(it) { it.failures++ } }
+            // Tope acumulado de intentos fallidos por usuario en la ventana; pedir otro codigo no lo reinicia.
+            // Se reserva el intento ANTES de comparar, con suma y chequeo en una sola sentencia (atomico entre
+            // peticiones concurrentes); la fila se crea unicamente si el usuario existe y tiene un codigo vigente.
+            if (!store.claimFailure(name, clock())) throw invalid
+            // Igual para los intentos de este codigo: si ya se agotaron (carrera), no se compara.
+            val remaining = connection.prepareStatement(
+                "UPDATE password_reset_codes SET attempts = attempts + 1 WHERE user_id = ? AND attempts < ? RETURNING attempts"
+            ).use { update ->
+                update.setObject(1, account.id)
+                update.setInt(2, MaxAttempts)
+                update.executeQuery().use { rows -> rows.next() }
+            }
+            if (!remaining) {
+                store.refundFailure(name)
+                deleteCode(connection, account.id)
                 throw invalid
             }
+            if (!MessageDigest.isEqual(hash.toByteArray(), codeHash(account.id, code.trim()).toByteArray())) throw invalid
             deleteCode(connection, account.id)
             setPassword(connection, account, companyCode, newPassword)
-            throttles.remove(throttleKey(name, companyCode))
+            store.clear(name)
         }
     }
 
-    // Contadores acumulados de una ventana de 24 h por usuario (en memoria; se pierden al reiniciar el servidor).
-    private class Throttle(val windowStart: Instant) {
-        var issued = 0
-        var failures = 0
-        var lastIssued: Instant? = null
+    // Plaza reservada para emitir un codigo; guarda el ultimo envio anterior para devolverla si no se emite.
+    private class Reservation(val previousLast: Instant?)
+
+    // Contadores acumulados de una ventana de 24 h por usuario.
+    private interface ThrottleStore {
+        /** Reserva una plaza de envio, o null si se agotaron los codigos de la ventana o aun no toca reenviar. */
+        fun reserve(name: String, now: Instant): Reservation?
+        fun release(name: String, previousLast: Instant?)
+        /** Suma un intento fallido si no se alcanzo el tope de la ventana (una sola operacion); false si ya se agoto. */
+        fun claimFailure(name: String, now: Instant): Boolean
+        fun refundFailure(name: String)
+        fun clear(name: String)
     }
 
-    private fun throttleKey(name: String, companyCode: String?) = "${companyCode.orEmpty()}:$name"
+    private fun throttles(connection: Connection, companyCode: String?): ThrottleStore =
+        if (companyCode == null) ownerThrottles else DatabaseThrottles(connection)
 
-    // Devuelve los contadores vigentes de la clave. Con create = false no crea nada; con create = true
-    // devuelve null si el mapa sigue lleno tras limpiar vencidos (tope duro contra crecimiento sin limite).
-    private fun throttle(key: String, create: Boolean): Throttle? {
-        val now = clock()
-        val current = throttles[key]?.takeIf { !it.windowStart.plus(Window).isBefore(now) }
-        if (current != null || !create) return current
-        if (throttles.size >= MaxThrottleEntries) {
-            throttles.entries.removeIf { it.value.windowStart.plus(Window).isBefore(now) }
-            if (throttles.size >= MaxThrottleEntries) return null
+    // Empresas: tabla account_reset_throttle de su base (tenant V008); sobrevive a reinicios.
+    // Cada operacion es una sola sentencia, asi que la reserva es atomica entre peticiones y servidores.
+    private class DatabaseThrottles(private val connection: Connection) : ThrottleStore {
+        private fun utc(instant: Instant): OffsetDateTime = instant.atOffset(ZoneOffset.UTC)
+
+        override fun reserve(name: String, now: Instant): Reservation? {
+            // Crea la fila o reinicia los contadores si la ventana ya vencio.
+            connection.prepareStatement(
+                """
+                INSERT INTO account_reset_throttle (user_name, window_start, issued, failures, last_issued)
+                VALUES (?, ?, 0, 0, NULL)
+                ON CONFLICT (user_name) DO UPDATE
+                SET window_start = EXCLUDED.window_start, issued = 0, failures = 0, last_issued = NULL
+                WHERE account_reset_throttle.window_start <= ?
+                """.trimIndent()
+            ).use { upsert ->
+                upsert.setString(1, name)
+                upsert.setObject(2, utc(now))
+                upsert.setObject(3, utc(now.minus(Window)))
+                upsert.executeUpdate()
+            }
+            // La espera entre envios crece con cada uno: ResendAfter * 2^(emitidos - 1), con tope de 2^9.
+            return connection.prepareStatement(
+                """
+                WITH old AS (SELECT user_name, last_issued FROM account_reset_throttle WHERE user_name = ? FOR UPDATE)
+                UPDATE account_reset_throttle t
+                SET issued = t.issued + 1, last_issued = ?
+                FROM old
+                WHERE t.user_name = old.user_name
+                  AND t.issued < ?
+                  AND (t.last_issued IS NULL
+                       OR t.last_issued + make_interval(secs => ? * (1 << (least(greatest(t.issued, 1), 10) - 1))) <= ?)
+                RETURNING old.last_issued
+                """.trimIndent()
+            ).use { update ->
+                update.setString(1, name)
+                update.setObject(2, utc(now))
+                update.setInt(3, MaxCodesPerWindow)
+                update.setDouble(4, ResendAfter.seconds.toDouble())
+                update.setObject(5, utc(now))
+                update.executeQuery().use { rows ->
+                    if (rows.next()) Reservation(rows.getObject(1, OffsetDateTime::class.java)?.toInstant()) else null
+                }
+            }
         }
-        return throttles.compute(key) { _, old ->
-            if (old == null || old.windowStart.plus(Window).isBefore(now)) Throttle(now) else old
+
+        override fun release(name: String, previousLast: Instant?) {
+            connection.prepareStatement(
+                "UPDATE account_reset_throttle SET issued = greatest(issued - 1, 0), last_issued = ? WHERE user_name = ?"
+            ).use { update ->
+                update.setObject(1, previousLast?.let { utc(it) }, java.sql.Types.TIMESTAMP_WITH_TIMEZONE)
+                update.setString(2, name)
+                update.executeUpdate()
+            }
+        }
+
+        override fun claimFailure(name: String, now: Instant): Boolean = connection.prepareStatement(
+            """
+            INSERT INTO account_reset_throttle (user_name, window_start, issued, failures, last_issued)
+            VALUES (?, ?, 0, 1, NULL)
+            ON CONFLICT (user_name) DO UPDATE SET
+                window_start = CASE WHEN account_reset_throttle.window_start <= ? THEN EXCLUDED.window_start ELSE account_reset_throttle.window_start END,
+                issued = CASE WHEN account_reset_throttle.window_start <= ? THEN 0 ELSE account_reset_throttle.issued END,
+                failures = CASE WHEN account_reset_throttle.window_start <= ? THEN 1 ELSE account_reset_throttle.failures + 1 END,
+                last_issued = CASE WHEN account_reset_throttle.window_start <= ? THEN NULL ELSE account_reset_throttle.last_issued END
+            WHERE account_reset_throttle.window_start <= ? OR account_reset_throttle.failures < ?
+            RETURNING failures
+            """.trimIndent()
+        ).use { upsert ->
+            // Suma y chequeo del tope en una sola sentencia: sin fila devuelta, el tope ya se alcanzo.
+            val expired = utc(now.minus(Window))
+            upsert.setString(1, name)
+            upsert.setObject(2, utc(now))
+            for (index in 3..7) upsert.setObject(index, expired)
+            upsert.setInt(8, MaxFailuresPerWindow)
+            upsert.executeQuery().use { rows -> rows.next() }
+        }
+
+        override fun refundFailure(name: String) {
+            connection.prepareStatement(
+                "UPDATE account_reset_throttle SET failures = greatest(failures - 1, 0) WHERE user_name = ?"
+            ).use { update ->
+                update.setString(1, name)
+                update.executeUpdate()
+            }
+        }
+
+        override fun clear(name: String) {
+            connection.prepareStatement("DELETE FROM account_reset_throttle WHERE user_name = ?").use { delete ->
+                delete.setString(1, name)
+                delete.executeUpdate()
+            }
+        }
+    }
+
+    // Duenos del servidor: la base central no tiene la tabla por empresa, asi que sus contadores
+    // siguen en memoria (pocos usuarios; se pierden al reiniciar).
+    private inner class MemoryThrottles : ThrottleStore {
+        private inner class Entry(val windowStart: Instant) {
+            var issued = 0
+            var failures = 0
+            var lastIssued: Instant? = null
+        }
+
+        private val entries = ConcurrentHashMap<String, Entry>()
+
+        private fun current(name: String, now: Instant, create: Boolean): Entry? {
+            val live = entries[name]?.takeIf { !it.windowStart.plus(Window).isBefore(now) }
+            if (live != null || !create) return live
+            if (entries.size >= MaxThrottleEntries) {
+                entries.entries.removeIf { it.value.windowStart.plus(Window).isBefore(now) }
+                if (entries.size >= MaxThrottleEntries) return null
+            }
+            return entries.compute(name) { _, old ->
+                if (old == null || old.windowStart.plus(Window).isBefore(now)) Entry(now) else old
+            }
+        }
+
+        override fun reserve(name: String, now: Instant): Reservation? {
+            val entry = current(name, now, create = true) ?: return null
+            synchronized(entry) {
+                if (entry.issued >= MaxCodesPerWindow) return null
+                val last = entry.lastIssued
+                if (last != null && last.plus(ResendAfter.multipliedBy(1L shl (entry.issued.coerceIn(1, 10) - 1))).isAfter(now)) return null
+                entry.issued++
+                entry.lastIssued = now
+                return Reservation(last)
+            }
+        }
+
+        override fun release(name: String, previousLast: Instant?) {
+            val entry = entries[name] ?: return
+            synchronized(entry) {
+                // Nunca negativo: la ventana pudo reiniciarse entre reservar y devolver.
+                entry.issued = (entry.issued - 1).coerceAtLeast(0)
+                entry.lastIssued = previousLast
+            }
+        }
+
+        override fun claimFailure(name: String, now: Instant): Boolean {
+            // Con la tabla llena no se cuenta (igual que antes), pero tampoco se bloquea al dueno.
+            val entry = current(name, now, create = true) ?: return true
+            synchronized(entry) {
+                if (entry.failures >= MaxFailuresPerWindow) return false
+                entry.failures++
+                return true
+            }
+        }
+
+        override fun refundFailure(name: String) {
+            val entry = entries[name] ?: return
+            synchronized(entry) { entry.failures = (entry.failures - 1).coerceAtLeast(0) }
+        }
+
+        override fun clear(name: String) {
+            entries.remove(name)
         }
     }
 

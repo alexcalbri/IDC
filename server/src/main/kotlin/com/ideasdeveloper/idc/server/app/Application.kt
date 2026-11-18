@@ -26,6 +26,7 @@ import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.CompanyFiles
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleJobScheduler
+import com.ideasdeveloper.idc.server.modules.JdbcModuleUnsignedAuthorizationStore
 import com.ideasdeveloper.idc.server.modules.ModulePackageBuilder
 import com.ideasdeveloper.idc.server.modules.ModulePackageLoader
 import com.ideasdeveloper.idc.server.modules.ModuleRequirements
@@ -194,7 +195,11 @@ fun Application.module() {
         remoteModuleCatalog = remoteModuleCatalog,
         defaultCatalogUrl = environment.config.propertyOrNull("modules.catalogUrl")?.getString().orEmpty(),
         modulePackagesRoot = modulePackagesRoot,
-        modulePackageBuilder = ModulePackageBuilder.forRunningServer(modulePackagesRoot, githubToken),
+        modulePackageBuilder = ModulePackageBuilder.forRunningServer(
+            modulePackagesRoot,
+            githubToken,
+            JdbcModuleUnsignedAuthorizationStore { DatabaseFactory.getDataSource().connection },
+        ),
         requestRestart = ::restartToLoadModules,
         companyFiles = companyFiles,
     )

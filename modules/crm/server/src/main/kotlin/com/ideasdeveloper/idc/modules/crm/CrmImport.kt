@@ -10,11 +10,7 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import java.math.BigDecimal
-import java.net.InetAddress
 import java.net.URI
-import java.net.http.HttpClient
-import java.net.http.HttpRequest
-import java.net.http.HttpResponse
 import java.security.MessageDigest
 import java.sql.Connection
 import java.sql.Timestamp
@@ -24,6 +20,8 @@ import java.time.LocalDate
 import java.time.ZoneOffset
 import java.util.UUID
 import com.ideasdeveloper.idc.server.modules.ModuleFiles
+import com.ideasdeveloper.idc.server.net.PinnedHost
+import com.ideasdeveloper.idc.server.net.PinnedHostException
 
 // How a job turns columns into CRM fields and source values into stages, users and interests.
 data class CrmImportMapping(
@@ -67,7 +65,7 @@ object CrmImport {
     const val ListingsColumn = "__listings"
     const val BoardColumn = "Tablero"
     private val json = Json { ignoreUnknownKeys = true }
-    private val http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).followRedirects(HttpClient.Redirect.NEVER).build()
+    private const val MondayHost = "api.monday.com"
 
     private fun JsonElement?.obj() = this as? JsonObject
     private fun JsonElement?.arr() = (this as? JsonArray).orEmpty()
@@ -81,22 +79,30 @@ object CrmImport {
         repeat(4) {
             val uri = runCatching { URI.create(current) }.getOrNull()
             if (uri == null || uri.scheme != "https" || uri.host.isNullOrBlank()) throw CrmImportException("Usa una direccion https:// publica.")
-            val addresses = runCatching { InetAddress.getAllByName(uri.host).toList() }.getOrElse { throw CrmImportException("No se encontro ${uri.host}.") }
-            if (addresses.isEmpty() || addresses.any(CrmWordPress::blockedAddress)) {
-                throw CrmImportException("Esa direccion apunta a una red privada.")
+            // Una sola resolucion por salto: se valida y la conexion va a esa misma IP (anti DNS rebinding).
+            val validated = try {
+                PinnedHost.resolveValidated(uri.host)
+            } catch (failure: PinnedHostException) {
+                throw CrmImportException(if (failure.message.orEmpty().startsWith("No se encontro")) "No se encontro ${uri.host}." else "Esa direccion apunta a una red privada.")
             }
-            val response = try {
-                http.send(HttpRequest.newBuilder(uri).timeout(Duration.ofSeconds(30)).GET().build(), HttpResponse.BodyHandlers.ofInputStream())
+            // Todo dentro de use: el socket se cierra aunque algo falle entre abrir y leer.
+            val (location, bytes) = try {
+                PinnedHost.openPinnedHttps(uri, validated, uri.host, timeoutMillis = 30_000, totalMillis = 120_000, maxBodyBytes = MaxBytes + 1L).use { response ->
+                    when {
+                        response.status in 300..399 -> response.header("Location").orEmpty() to null
+                        response.status !in 200..299 -> throw CrmImportException("La descarga respondio HTTP ${response.status}.")
+                        else -> null to response.body.readNBytes(MaxBytes + 1)
+                    }
+                }
+            } catch (failure: CrmImportException) {
+                throw failure
             } catch (failure: Exception) {
                 throw CrmImportException("No se pudo descargar el archivo.")
             }
-            if (response.statusCode() in 300..399) {
-                current = response.headers().firstValue("Location").orElse("").let { uri.resolve(it).toString() }
-                response.body().close()
+            if (bytes == null) {
+                current = runCatching { uri.resolve(location.orEmpty()).toString() }.getOrElse { throw CrmImportException("Usa una direccion https:// publica.") }
                 return@repeat
             }
-            if (response.statusCode() !in 200..299) throw CrmImportException("La descarga respondio HTTP ${response.statusCode()}.")
-            val bytes = response.body().use { it.readNBytes(MaxBytes + 1) }
             if (bytes.size > MaxBytes) throw CrmImportException("El archivo supera los 20 MB.")
             return if (bytes.size > 1 && bytes[0] == 'P'.code.toByte() && bytes[1] == 'K'.code.toByte()) CrmImportParse.xlsx(bytes) else CrmImportParse.csv(bytes.decodeToString())
         }
@@ -209,22 +215,22 @@ object CrmImport {
     internal fun mondayQuery(token: String, query: String): JsonObject = monday(token, query)
 
     private fun monday(token: String, query: String): JsonObject {
-        val request = HttpRequest.newBuilder(URI.create("https://api.monday.com/v2"))
-            .timeout(Duration.ofSeconds(30))
-            .header("Authorization", token.trim())
-            .header("API-Version", "2024-10")
-            .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString(JsonObject(mapOf("query" to JsonPrimitive(query))).toString()))
-            .build()
-        val response = try {
-            http.send(request, HttpResponse.BodyHandlers.ofString())
+        val payload = JsonObject(mapOf("query" to JsonPrimitive(query))).toString().toByteArray(Charsets.UTF_8)
+        // Se resuelve una vez y la conexion va a esa IP validada (anti DNS rebinding).
+        val (status, text) = try {
+            val validated = PinnedHost.resolveValidated(MondayHost)
+            PinnedHost.openPinnedHttps(
+                URI.create("https://$MondayHost/v2"), validated, MondayHost, "POST",
+                mapOf("Authorization" to token.trim(), "API-Version" to "2024-10", "Content-Type" to "application/json"),
+                payload, timeoutMillis = 30_000, totalMillis = 60_000, maxBodyBytes = MaxBytes + 1L,
+            ).use { response -> response.status to response.body.readNBytes(MaxBytes + 1).decodeToString() }
         } catch (failure: Exception) {
             throw CrmImportException("No se pudo contactar monday.")
         }
-        val body = runCatching { json.parseToJsonElement(response.body()) }.getOrNull().obj()
-        if (response.statusCode() == 401 || response.statusCode() == 403) throw CrmImportException("monday rechazo el token.")
+        val body = runCatching { json.parseToJsonElement(text) }.getOrNull().obj()
+        if (status == 401 || status == 403) throw CrmImportException("monday rechazo el token.")
         body?.get("errors").arr().firstOrNull()?.let { throw CrmImportException("monday: ${it.obj()?.get("message").str()}") }
-        return body?.get("data").obj() ?: throw CrmImportException("monday respondio HTTP ${response.statusCode()}.")
+        return body?.get("data").obj() ?: throw CrmImportException("monday respondio HTTP $status.")
     }
 
     /** Leads of CT Leads Pro read through the IDC Connector plugin (stage, agent, source, tags, notes, messages, listings). */

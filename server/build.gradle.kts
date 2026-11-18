@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.ideasdeveloper.idc"
-version = "0.7.0"
+version = "0.7.2"
 application {
     mainClass = "com.ideasdeveloper.idc.server.app.ApplicationKt"
 }
@@ -18,6 +18,7 @@ val moduleCompiler: Configuration = configurations.create("moduleCompiler") {
 
 dependencies {
     testImplementation(kotlin("test"))
+    testImplementation(libs.ktor.serverTestHost)
     api(project(":core"))
     implementation(libs.logback)
     implementation(libs.ktor.serverCore)
