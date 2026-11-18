@@ -18,8 +18,7 @@ class HotspotSettingsTest {
         consentText = "Acepto", termsUrl = null, privacyUrl = null,
         footerText = "", successUrl = null, unifiConsoleId = "console:1", unifiSiteId = "site-1", unifiApiKey = "secret",
         accessMinutes = 60, dataLimitMb = 0, rxKbps = 0, txKbps = 0, reconnectMinutes = 1440, codeTtlMinutes = 15,
-        smtpMode = "servidor", smtpHost = null, smtpPort = 587, smtpUsername = null, smtpPassword = "smtp-secret",
-        smtpFrom = null, smtpSecurity = "starttls", emailSubject = "Codigo",
+        emailSubject = "Codigo",
         crmAccessEnabled = false, crmStageId = null, crmScheduleMode = "daily",
         crmCheckIntervalMinutes = 60, crmCheckTime = LocalTime.of(7, 0),
     )
@@ -28,16 +27,14 @@ class HotspotSettingsTest {
 
     @Test
     fun blankSecretsKeepStoredValues() {
-        val merged = HotspotSettingsRepository.merge(defaults, values("unifiApiKey" to "", "smtpPassword" to ""))
+        val merged = HotspotSettingsRepository.merge(defaults, values("unifiApiKey" to ""))
         assertEquals("secret", merged.unifiApiKey)
-        assertEquals("smtp-secret", merged.smtpPassword)
     }
 
     @Test
     fun unchangedMaskKeepsStoredValuesAndNewSecretReplacesThem() {
-        val kept = HotspotSettingsRepository.merge(defaults, values("unifiApiKey" to "********", "smtpPassword" to "********"))
+        val kept = HotspotSettingsRepository.merge(defaults, values("unifiApiKey" to "********"))
         assertEquals("secret", kept.unifiApiKey)
-        assertEquals("smtp-secret", kept.smtpPassword)
         assertEquals("nueva", HotspotSettingsRepository.merge(defaults, values("unifiApiKey" to "nueva")).unifiApiKey)
     }
 
@@ -55,7 +52,13 @@ class HotspotSettingsTest {
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("accessMinutes" to "0")) }
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("logoUrl" to "javascript:alert(1)")) }
         assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("unifiSiteId" to "../../x?y")) }
-        assertFailsWith<HotspotValidationException> { HotspotSettingsRepository.merge(defaults, values("smtpMode" to "otro")) }
+    }
+
+    @Test
+    fun smtpFieldsAreIgnoredBecauseHotspotHasNoOwnSmtp() {
+        val merged = HotspotSettingsRepository.merge(defaults, values("smtpMode" to "empresa", "smtpHost" to "smtp.propio.test", "emailSubject" to "Tu codigo"))
+        assertEquals("Tu codigo", merged.emailSubject)
+        assertFalse(HotspotSettingsRepository.toFormValues(merged, "Activo", sendingAvailable = true).keys.any { it.startsWith("smtp") })
     }
 
     @Test
@@ -85,20 +88,31 @@ class HotspotSettingsTest {
 
     @Test
     fun formValuesNeverExposeSecrets() {
-        val form = HotspotSettingsRepository.toFormValues(defaults, "Activo", serverMailAvailable = false)
+        val form = HotspotSettingsRepository.toFormValues(defaults, "Activo", sendingAvailable = false)
         assertEquals("********", form["unifiApiKey"])
-        assertEquals("********", form["smtpPassword"])
-        val empty = HotspotSettingsRepository.toFormValues(defaults.copy(unifiApiKey = null), "Activo", serverMailAvailable = false)
+        val empty = HotspotSettingsRepository.toFormValues(defaults.copy(unifiApiKey = null), "Activo", sendingAvailable = false)
         assertEquals("", empty["unifiApiKey"])
     }
 
     @Test
-    fun companySmtpRequiresCompleteSettings() {
-        val server = SmtpSettings("smtp.server", 587, "", "", "no-reply@server.test")
-        assertEquals(server, defaults.smtp(server))
-        assertNull(defaults.copy(smtpMode = "empresa").smtp(server))
-        val company = defaults.copy(smtpMode = "empresa", smtpHost = "smtp.company", smtpFrom = "wifi@company.test")
-        assertEquals("smtp.company", company.smtp(server)?.host)
+    fun hotspotSendsWithTheCompanySmtpAndFallsBackToTheServerOne() {
+        val server = SmtpSettings("smtp.server", 587, "", "", "no-reply@server.test", trusted = true)
+        val company = SmtpSettings("smtp.company", 587, "u", "p", "wifi@company.test")
+        assertEquals("smtp.company", HotspotMail.resolveSmtp(company, server)?.host)
+        assertEquals(server, HotspotMail.resolveSmtp(null, server))
+        assertNull(HotspotMail.resolveSmtp(null, null))
+        // Un SMTP incompleto no sirve para enviar.
+        assertNull(HotspotMail.resolveSmtp(company.copy(from = ""), null))
+    }
+
+    @Test
+    fun withoutSecretsTheCompanySmtpIsNotReadAndTheServerOneIsUsed() {
+        val untouched = java.lang.reflect.Proxy.newProxyInstance(javaClass.classLoader, arrayOf(java.sql.Connection::class.java)) { _, method, _ ->
+            throw AssertionError("No debia usar la conexion: ${method.name}")
+        } as java.sql.Connection
+        val server = SmtpSettings("smtp.server", 587, "", "", "no-reply@server.test", trusted = true)
+        assertNull(HotspotMail.companySmtp(untouched, null))
+        assertEquals(server, HotspotMail.smtp(untouched, server, null))
     }
 
     @Test

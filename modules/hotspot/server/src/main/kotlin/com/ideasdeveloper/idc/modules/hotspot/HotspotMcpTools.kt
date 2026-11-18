@@ -20,7 +20,7 @@ import java.util.UUID
 
 /**
  * Agent tools of the hotspot, with the same permissions and validations as its screens. Secrets
- * (UniFi API key, SMTP password) and the UniFi console are not offered: they are typed or picked in
+ * (UniFi API key) and the UniFi console are not offered: they are typed or picked in
  * the app, so credentials never pass through the agent.
  */
 object HotspotMcpTools {
@@ -49,12 +49,6 @@ object HotspotMcpTools {
         "dataLimitMb" to McpSchema.integer("Limite de datos por sesion en MB; 0 sin limite.", 0, 1048576),
         "rxKbps" to McpSchema.integer("Velocidad de descarga en kbps; 0 sin limite.", 0, 10000000),
         "txKbps" to McpSchema.integer("Velocidad de subida en kbps; 0 sin limite.", 0, 10000000),
-        "smtpMode" to McpSchema.string("Con que se envian los correos: el SMTP del servidor o el de la empresa.", listOf("servidor", "empresa")),
-        "smtpHost" to McpSchema.string("Servidor SMTP de la empresa."),
-        "smtpPort" to McpSchema.integer("Puerto SMTP.", 1, 65535),
-        "smtpSecurity" to McpSchema.string("Seguridad SMTP.", listOf("starttls", "ssl", "none")),
-        "smtpUsername" to McpSchema.string("Usuario SMTP."),
-        "smtpFrom" to McpSchema.string("Remitente de los correos.", format = "email"),
         "emailSubject" to McpSchema.string("Asunto del correo con el codigo."),
     )
 
@@ -66,7 +60,7 @@ object HotspotMcpTools {
         "Hotspot es el portal cautivo del WiFi de la empresa. Cada red (SSID) tiene un tipo de acceso: formulario (el visitante se registra " +
             "con su correo y recibe un codigo), codigo de cliente (el codigo de Clientes) o codigo de usuario (el codigo WiFi de cada usuario). " +
             "Las redes no configuradas usan el formulario y los tiempos generales. Los cambios de configuracion, redes e integraciones afectan " +
-            "de inmediato a quienes se conectan: confirma con el usuario antes. Las credenciales (API key de UniFi, contrasena SMTP) se " +
+            "de inmediato a quienes se conectan: confirma con el usuario antes. Las credenciales (API key de UniFi) se " +
             "configuran solo en la app; nunca las pidas ni las recibas."
 
     val tools = listOf(
@@ -105,7 +99,7 @@ object HotspotMcpTools {
             name = "update_settings",
             title = "Cambiar configuracion del hotspot",
             description = "Cambia la configuracion del portal. Solo cambia los campos enviados. Afecta de inmediato a los visitantes del WiFi: " +
-                "confirma los cambios con el usuario antes. La API key de UniFi, la consola y la contrasena SMTP se configuran en la app.",
+                "confirma los cambios con el usuario antes. La API key de UniFi y la consola se configuran en la app. El envio de correo usa el SMTP de la empresa y no se cambia desde aqui.",
             permission = HotspotScreens.SettingsManage,
             inputSchema = McpSchema.obj(settingArguments),
         ) { call -> updateSettings(call) },
@@ -313,14 +307,10 @@ object HotspotMcpTools {
             put("dataLimitMb", settings.dataLimitMb)
             put("rxKbps", settings.rxKbps)
             put("txKbps", settings.txKbps)
-            put("smtpMode", settings.smtpMode)
             put("serverMailAvailable", call.access.serverMail != null)
-            put("smtpHost", text(settings.smtpHost))
-            put("smtpPort", settings.smtpPort)
-            put("smtpSecurity", settings.smtpSecurity)
-            put("smtpUsername", text(settings.smtpUsername))
-            put("smtpPasswordConfigured", !settings.smtpPassword.isNullOrBlank())
-            put("smtpFrom", text(settings.smtpFrom))
+            // El envio (SMTP) es el de la empresa; aqui solo se informa si hay con que enviar (nunca credenciales).
+            put("companySmtpConfigured", HotspotMail.companySmtp(call.tenant, call.access.secrets) != null)
+            put("sendingAvailable", HotspotMail.smtp(call.tenant, call.access.serverMail, call.access.secrets) != null)
             put("emailSubject", settings.emailSubject)
             put("networkController", text(controller?.name))
             put("networkControllerConfigured", controller?.isConfigured(settings) ?: false)

@@ -84,7 +84,7 @@ object HotspotServerModule : ServerModule {
 
     /**
      * A duplicated company gets the same portal, times, networks and integrations between modules.
-     * Visitors, codes and accesses stay behind; the UniFi connection, the company SMTP and the
+     * Visitors, codes and accesses stay behind; the UniFi connection and the
      * portal domain are cleared, so the copy never controls or answers for the original's WiFi.
      */
     override val duplicatedSettings = listOf(
@@ -95,6 +95,8 @@ object HotspotServerModule : ServerModule {
                 "unifi_console_id" to null,
                 "unifi_site_id" to null,
                 "unifi_api_key" to null,
+                // Columnas de SMTP en desuso desde 0.10.0 (el SMTP es el de la empresa): la copia nunca hereda lo que aun quede ahi.
+                // Quitarlas junto con la migracion SQL que las borre.
                 "smtp_mode" to "servidor",
                 "smtp_host" to null,
                 "smtp_username" to null,
@@ -112,7 +114,7 @@ object HotspotServerModule : ServerModule {
         id = HotspotModule.id,
         displayName = HotspotModule.displayName,
         description = "Portal cautivo WiFi con acceso por formulario, codigo de cliente validado por etapa CRM y codigo de usuario revocable.",
-        version = "0.9.4",
+        version = "0.10.0",
         permissions = listOf(
             ModulePermissionDefinition(HotspotScreens.View, "Usar el hotspot", "Permite abrir el modulo y ver el propio codigo de acceso WiFi."),
             ModulePermissionDefinition(HotspotScreens.SettingsView, "Ver configuracion del hotspot", "Permite consultar la configuracion del portal WiFi."),
@@ -131,6 +133,18 @@ object HotspotServerModule : ServerModule {
 
     // Checks CRM stage access and handles scheduled or owner-requested disconnects.
     override val jobs = listOf(
+        // Una sola vez por empresa: el SMTP propio de Hotspot pasa al SMTP de la empresa si esta aun no tiene uno (el del CRM gana).
+        ModuleJob(id = "mail-migration", interval = Duration.ofMinutes(5)) { context ->
+            val result = HotspotMailMigration.run(context.tenant, context.access.secrets)
+            when (result.outcome) {
+                HotspotMailMigration.Outcome.Migrated -> log.info("Hotspot {}: SMTP propio de Hotspot sembrado en el SMTP de la empresa (fuente: Hotspot, {}).", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.KeptCompany -> log.info("Hotspot {}: la empresa ya tenia SMTP; no se pisa y se descarta el de Hotspot ({}).", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.Skipped -> log.info("Hotspot {}: SMTP propio de Hotspot sin uso, se limpia ({}).", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.Waiting -> log.warn("Hotspot {}: el SMTP propio de Hotspot sigue sin migrar ({}).", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.Failed -> log.warn("Hotspot {}: {}.", context.companyCode, result.detail)
+                HotspotMailMigration.Outcome.Absent -> Unit
+            }
+        },
         ModuleJob(
             id = "code-sessions",
             interval = Duration.ofMinutes(1),
@@ -310,8 +324,9 @@ object HotspotServerModule : ServerModule {
     ): UiScreen {
         val settings = HotspotSettingsRepository.load(tenant)
         val (status, active) = domainState(access, permissions.companyCode, settings.domain)
+        // El estado del envio solo se muestra cuando la pantalla se arma desde lo guardado (no desde lo enviado): una consulta, no varias.
         return HotspotScreens.build(
-            screen, tenant, permissions, params, status, active, access.serverMail != null, notice, submittedValues,
+            screen, tenant, permissions, params, status, active, submittedValues == null && HotspotMail.smtp(tenant, access.serverMail, access.secrets) != null, notice, submittedValues,
             pickers = extraNodes, networkValues = networkValues, customBody = customBody,
         )
     }
@@ -391,7 +406,7 @@ object HotspotServerModule : ServerModule {
         fun failed(message: String): UiScreen {
             // Keep what the user typed so the error can be corrected without retyping.
             val (status, _) = domainState(access, permissions.companyCode, current.domain)
-            val shown = HotspotSettingsRepository.toFormValues(current, status, access.serverMail != null) + submitted
+            val shown = HotspotSettingsRepository.toFormValues(current, status, HotspotMail.smtp(tenant, access.serverMail, access.secrets) != null) + submitted
             return render(access, tenant, permissions, screen, emptyMap(), UiNotice(message, UiTone.Danger), shown)
         }
         val updated = try {
@@ -434,10 +449,11 @@ object HotspotServerModule : ServerModule {
         val submitted = values.mapValues { it.value.jsonPrimitive.contentOrNull.orEmpty() } - "unifiApiKey"
         fun screen(notice: UiNotice, picker: UiNode? = null): UiScreen {
             val (status, active) = domainState(access, permissions.companyCode, settings.domain)
-            val saved = HotspotSettingsRepository.toFormValues(settings, status, access.serverMail != null)
+            val sending = HotspotMail.smtp(tenant, access.serverMail, access.secrets) != null
+            val saved = HotspotSettingsRepository.toFormValues(settings, status, sending)
             // The ids just chosen win over what the form had; the API key always shows the saved mask.
             val shown = saved + submitted + mapOf("unifiConsoleId" to saved.getValue("unifiConsoleId"), "unifiSiteId" to saved.getValue("unifiSiteId"))
-            return HotspotScreens.build("settings", tenant, permissions, emptyMap(), status, active, access.serverMail != null, notice, shown, listOfNotNull(picker))
+            return HotspotScreens.build("settings", tenant, permissions, emptyMap(), status, active, sending, notice, shown, listOfNotNull(picker))
         }
         fun store(vararg changes: Pair<String, String>) {
             settings = HotspotSettingsRepository.merge(settings, JsonObject(changes.associate { it.first to JsonPrimitive(it.second) }))

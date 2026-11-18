@@ -125,7 +125,7 @@ class CrmExtensionsTest {
 
     @Test
     fun manifestsRequireTheModuleVersionThatShipsThem() {
-        assertEquals("0.25.1", CrmServerModule.definition.version)
+        assertEquals("0.26.0", CrmServerModule.definition.version)
         CrmServerModule.bundledExtensions.forEach { assertEquals(CrmServerModule.definition.version, it.manifest.minModuleVersion) }
         assertEquals(CrmExtensions.MinModuleVersion, CrmServerModule.definition.version)
         assertEquals("0.7.0", CrmServerModule.definition.minCoreVersion)
@@ -307,7 +307,7 @@ class CrmExtensionsTest {
                 "crm_meta_server_app.app_secret", "crm_meta_server_app.verify_token",
                 "crm_wordpress_settings.secret", "crm_encuentra24_settings.api_key", "crm_cloudbeds_settings.api_key",
                 "crm_settings.monday_token", "crm_settings.translation_api_key",
-                "crm_mail_settings.smtp_password", "crm_mail_settings.imap_password",
+                "crm_mail_settings.imap_password",
             ),
             columns,
         )

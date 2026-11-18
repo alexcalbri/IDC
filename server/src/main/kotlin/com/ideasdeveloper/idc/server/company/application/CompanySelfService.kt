@@ -16,13 +16,22 @@ import com.ideasdeveloper.idc.server.company.api.UpdateCompanyUserRequest
 import com.ideasdeveloper.idc.server.company.api.UpdateBusinessOwnerRequest
 import com.ideasdeveloper.idc.server.company.api.BusinessOwnerResponse
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyProfileRequest
+import com.ideasdeveloper.idc.server.modules.CompanyMail
+import com.ideasdeveloper.idc.server.modules.CompanyMailForm
+import com.ideasdeveloper.idc.server.modules.CompanyMailInput
+import com.ideasdeveloper.idc.server.modules.MailException
 import com.ideasdeveloper.idc.server.modules.ModuleRegistry
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import com.ideasdeveloper.idc.server.security.MasterKeySecretBox
+import com.ideasdeveloper.idc.server.security.SecretBox
+import com.ideasdeveloper.idc.server.security.SecretsUnavailableException
 import org.postgresql.ds.PGSimpleDataSource
+import org.slf4j.LoggerFactory
 import java.nio.file.Files
 import java.nio.file.Path
+import java.sql.SQLException
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.util.UUID
@@ -41,6 +50,12 @@ import kotlin.io.path.outputStream
 // Error de dominio para operaciones de autoservicio de empresa.
 class CompanySelfException(message: String) : Exception(message)
 
+// Datos del correo de la empresa que no se aceptan (400).
+class CompanyMailRejectedException(message: String) : Exception(message)
+
+// Fallo interno al guardar el correo de la empresa (500, mensaje generico).
+class CompanyMailStorageException(message: String) : Exception(message)
+
 // Servicio de autoservicio para que el business_owner administre solo su propia empresa
 // y, en futuras rutas, usuarios/permisos dentro de su propia base tenant.
 // Este servicio no cambia disponibilidad de modulos; esa decision pertenece a server_owner.
@@ -52,6 +67,8 @@ class CompanySelfService(
     // Edits the business owner (a PostgreSQL role shared by the companies it owns); see
     // CompanyProvisioningService.updateBusinessOwnerBySelf. Null where owners cannot be edited.
     private val ownerEditor: ((companyCode: String, request: UpdateBusinessOwnerRequest) -> BusinessOwnerResponse)? = null,
+    // Sella la contrasena del SMTP de la empresa; sin llave maestra no se puede guardar una contrasena.
+    private val secrets: SecretBox? = null,
 ) {
     // Reutiliza el hash de sesion para validar tokens sin exponerlos en base de datos.
     private val tokenGenerator = SessionTokenGenerator()
@@ -187,6 +204,40 @@ class CompanySelfService(
             createdAt = Files.getLastModifiedTime(output).toInstant().toString(),
             downloadUrl = "/companies/me/backups/${output.name}/download",
         )
+    }
+
+    // SMTP de la empresa para el dueno (o el dueno del servidor en su espacio). Nunca devuelve la contrasena.
+    fun mailSettings(companyCode: String, accessToken: String): CompanyMailForm {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        tenantConnection(context.tenant).use { connection -> return CompanyMail.load(connection) }
+    }
+
+    // Guarda el SMTP de la empresa. Falla de autorizacion: CompanySelfException; datos no validos: CompanyMailRejectedException;
+    // fallo al guardar: CompanyMailStorageException (mensaje generico, el detalle va al log).
+    fun updateMailSettings(companyCode: String, accessToken: String, input: CompanyMailInput): CompanyMailForm {
+        val context = authorizeUserAdministrator(companyCode, accessToken)
+        try {
+            CompanyMail.validate(input)
+        } catch (failure: MailException) {
+            throw CompanyMailRejectedException(failure.message ?: "Servidor de correo no valido.")
+        }
+        val box = secrets
+        if (!input.password.isNullOrEmpty() && (box == null || !box.available)) {
+            throw CompanyMailRejectedException("No se pueden guardar secretos: falta la llave maestra del servidor (IDC_MASTER_KEY). Avisa al dueno del servidor.")
+        }
+        try {
+            tenantConnection(context.tenant).use { connection ->
+                CompanyMail.save(connection, box ?: MasterKeySecretBox(null), input)
+                return CompanyMail.load(connection)
+            }
+        } catch (failure: SecretsUnavailableException) {
+            throw CompanyMailRejectedException("No se pueden guardar secretos: falta la llave maestra del servidor (IDC_MASTER_KEY). Avisa al dueno del servidor.")
+        } catch (failure: IllegalArgumentException) {
+            throw CompanyMailRejectedException("La contrasena no es valida.")
+        } catch (failure: SQLException) {
+            LoggerFactory.getLogger(CompanySelfService::class.java).error("No se pudo guardar el correo de la empresa {}", companyCode, failure)
+            throw CompanyMailStorageException("No se pudo guardar el correo de la empresa.")
+        }
     }
 
     fun users(companyCode: String, accessToken: String): CompanyUsersResponse {

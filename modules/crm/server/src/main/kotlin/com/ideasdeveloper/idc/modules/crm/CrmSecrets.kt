@@ -75,7 +75,7 @@ object CrmSecrets {
         Column("crm_encuentra24_settings", listOf("id"), listOf("api_key")),
         Column("crm_cloudbeds_settings", listOf("id"), listOf("api_key")),
         Column("crm_settings", listOf("id"), listOf("monday_token", "translation_api_key")),
-        Column("crm_mail_settings", listOf("id"), listOf("smtp_password", "imap_password")),
+        Column("crm_mail_settings", listOf("id"), listOf("imap_password")),
     )
 
     /** Columnas del espacio del servidor (la app de Meta del dueno del servidor). */

@@ -1341,6 +1341,11 @@ class CompanyProvisioningService(
                     } catch (failure: Exception) {
                         log.error("Extensions migration failed for company {}", companyCode, failure)
                     }
+                    try {
+                        applyCompanyMailMigration(tenant)
+                    } catch (failure: Exception) {
+                        log.error("Company mail migration failed for company {}", companyCode, failure)
+                    }
                     val enabled = tenant.prepareStatement("SELECT module_id FROM tenant_modules WHERE status = 'enabled'").use { query ->
                         query.executeQuery().use { rows -> buildSet { while (rows.next()) add(rows.getString(1)) } }
                     }
@@ -1611,6 +1616,16 @@ class CompanyProvisioningService(
         applyUserProfileMigration(connection)
         applyNotificationsMigration(connection)
         applyExtensionsMigration(connection)
+        applyCompanyMailMigration(connection)
+    }
+
+    // SMTP de la empresa (tenant V007); tambien se aplica a las empresas existentes al arrancar.
+    private fun applyCompanyMailMigration(connection: Connection) {
+        val relativePath = "database/tenant/migrations/V007__create_company_mail_settings.sql"
+        applyMigration(connection, "tenant", relativePath, Files.readString(Path.of(config.migrationsRoot).resolve(relativePath)))
+        connection.createStatement().use { statement ->
+            statement.executeUpdate("GRANT SELECT, INSERT, UPDATE ON company_mail_settings TO ${quoteIdentifier(config.runtimeUser)}")
+        }
     }
 
     // Encrypted secrets (SecretBox) and per-company extensions (tenant V006, EXTENSIONS.md); also

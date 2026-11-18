@@ -87,7 +87,7 @@ Tenant migrations through `V008__remove_hotspot_user_code.sql`
 
 | Table | Purpose |
 | --- | --- |
-| `hotspot_settings` | Singleton portal configuration (domain, UniFi, limits, SMTP, appearance). The portal's colors are `portal_primary_color`, `portal_secondary_color` and `portal_text_color` (Hotspot > Diseño, V011); a NULL one uses the company's (central `companies` primary, secondary and accent colors, IDC's until changed). The old `primary_color`/`text_color` columns are no longer used. |
+| `hotspot_settings` | Singleton portal configuration (domain, UniFi, limits, email subject, appearance; the old `smtp_*` columns are unused since 0.10.0). The portal's colors are `portal_primary_color`, `portal_secondary_color` and `portal_text_color` (Hotspot > Diseño, V011); a NULL one uses the company's (central `companies` primary, secondary and accent colors, IDC's until changed). The old `primary_color`/`text_color` columns are no longer used. |
 | `hotspot_registrations` | One row per form submission or code access (`access_mode`), linked to `customers`; `roamed_from` (V009) marks a continued access from a linked company. |
 | `hotspot_codes` | One-time codes (SHA-256 only), expiry, attempts, use. |
 | `hotspot_accesses` | Every UniFi authorization attempt; successful rows drive reconnection. |
@@ -101,7 +101,7 @@ Tenant migrations through `V008__remove_hotspot_user_code.sql`
 | `hotspot_code_sessions` | One shared session per customer or user code (V005); `hotspot_accesses.session_id` links each device. |
 
 Central table `public_domains` (control migration V005) maps each portal domain
-to its company. The UniFi API key and company SMTP password are stored in the
+to its company. The UniFi API key is stored in the
 tenant database and never returned to the client.
 
 ## Shared sessions per code
@@ -236,7 +236,7 @@ validations as the screens:
 | `hotspot_unifi_list_consoles`, `hotspot_unifi_choose_console`, `hotspot_unifi_choose_site` | `hotspot.settings.manage` | Pick the UniFi console and site with the API key saved in the app (like *Buscar consolas*). |
 | `hotspot_list_controller_ssids` | `hotspot.settings.view` | SSIDs of the network controller, to create networks. |
 
-Not offered, so credentials never pass through an agent: the UniFi API key and the SMTP password
+Not offered, so credentials never pass through an agent: the UniFi API key
 (typed only in the app; the UniFi tools use the stored key server side). Read-only agent tokens
 only get the reading tools. The module's own agent instructions are in `HotspotMcpTools.kt`.
 
@@ -258,10 +258,17 @@ configuration again retries a domain in `error`.
 
 ## Email
 
-`smtpMode = servidor` uses the server SMTP from `/etc/ideascore/server.env`
+Since 0.10.0 Hotspot has no SMTP of its own. Codes are sent with the company SMTP
+(`company_mail_settings`, read with `CompanyMail.read`; the company owner sets it) and, when
+the company has none, with the server SMTP from `/etc/ideascore/server.env`
 (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_FROM`,
 `SMTP_SECURITY` = `starttls`|`ssl`|`none`; restart `ideascore` after editing).
-`smtpMode = empresa` uses the company's own SMTP from the configuration screen.
+
+A company that had its own SMTP in Hotspot is migrated once by the job `mail-migration`: the
+SMTP is copied to the company SMTP only if the company has none yet (the CRM one has priority),
+and the old plain-text password is sealed with the company key. The `smtp_*` columns of
+`hotspot_settings` are then cleared (`smtp_mode` back to `servidor`); a later SQL migration will drop
+them. Without `IDC_MASTER_KEY` the job waits.
 
 ## Setup checklist
 

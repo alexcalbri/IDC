@@ -24,6 +24,30 @@ data class UpdateCompanyProfileRequest(
 )
 
 @Serializable
+// Configuracion SMTP de la empresa; la contrasena nunca vuelve del servidor, solo si existe.
+data class CompanyMailForm(
+    val host: String = "",
+    val port: Int = 587,
+    val username: String = "",
+    val from: String = "",
+    // starttls, ssl o none.
+    val security: String = "starttls",
+    val passwordSet: Boolean = false,
+)
+
+@Serializable
+// Payload para guardar el SMTP. password null conserva la guardada, "" la borra y un valor la reemplaza.
+// Con el Json del cliente (encodeDefaults apagado) el null se omite del cuerpo, que es lo que pide el contrato.
+data class CompanyMailInput(
+    val host: String,
+    val port: Int,
+    val username: String,
+    val from: String,
+    val security: String,
+    val password: String? = null,
+)
+
+@Serializable
 // Representa un ZIP de backup disponible para descargar o eliminar.
 data class CompanyBackupResponse(
     val fileName: String,

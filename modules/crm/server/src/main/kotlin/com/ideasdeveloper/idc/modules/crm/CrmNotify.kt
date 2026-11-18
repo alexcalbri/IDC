@@ -327,6 +327,22 @@ object CrmNotify {
         tenant.prepareStatement("UPDATE crm_settings SET digest_sent_on = ? WHERE id = 1").use { it.setObject(1, today); it.executeUpdate() }
     }
 
+    // Ultima vez que se aviso, por empresa: el job corre cada minuto, el aviso sale como mucho cada hora.
+    private val noSmtpWarnedAt = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    /** Avisa en el log (1 vez por hora y empresa) que hay correos en cola y ningun SMTP con que enviarlos. */
+    fun warnNoSmtp(tenant: Connection, companyCode: String, now: Long = System.currentTimeMillis()) {
+        val last = noSmtpWarnedAt[companyCode]
+        if (last != null && now - last < 3_600_000L) return
+        val pending = tenant.prepareStatement("SELECT COUNT(*) FROM crm_outbox WHERE sent_at IS NULL AND attempts < ?").use { query ->
+            query.setInt(1, MaxAttempts)
+            query.executeQuery().use { rows -> if (rows.next()) rows.getInt(1) else 0 }
+        }
+        if (pending == 0) return
+        noSmtpWarnedAt[companyCode] = now
+        org.slf4j.LoggerFactory.getLogger(CrmNotify::class.java).warn("CRM {}: {} correo(s) en cola y no hay SMTP (ni de la empresa ni del servidor).", companyCode, pending)
+    }
+
     /** Sends up to [limit] queued emails; failed ones are retried up to [MaxAttempts] times. */
     fun sendQueued(tenant: Connection, smtp: SmtpSettings?, limit: Int): Int {
         if (smtp == null) return 0

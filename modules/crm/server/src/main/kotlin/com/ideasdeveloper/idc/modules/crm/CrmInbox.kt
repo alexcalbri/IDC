@@ -413,12 +413,12 @@ object CrmEmailChannel : CrmChannel {
 
     override fun unavailable(context: CrmChannelContext, lead: CrmLead): String? = when {
         lead.email.isBlank() -> "El lead no tiene correo."
-        CrmMail.load(context.tenant).smtp(context.serverMail) == null -> "Configura el correo del CRM (SMTP)."
+        CrmMail.smtp(context.tenant, context.serverMail) == null -> "Configura el correo de la empresa (SMTP)."
         else -> null
     }
 
     override fun send(context: CrmChannelContext, lead: CrmLead, email: CrmEmail): String? {
-        val smtp = CrmMail.load(context.tenant).smtp(context.serverMail) ?: throw CrmChannelException("Configura el correo del CRM (SMTP).")
+        val smtp = CrmMail.smtp(context.tenant, context.serverMail) ?: throw CrmChannelException("Configura el correo de la empresa (SMTP).")
         if (email.subject.isBlank()) throw CrmChannelException("Escribe el asunto del correo.")
         try {
             MailSender.sendHtml(smtp, lead.email, email.subject, email.html, email.text)

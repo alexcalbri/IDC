@@ -6,6 +6,22 @@ Empresa owns company administration, company identity, tenant provisioning
 and company-level configuration. It is part of Core and is always active for
 server-owner and business-owner dashboards.
 
+Company SMTP (Core 0.8.0): the outgoing mail server of a company lives in the
+Core, not in any optional module. Table `company_mail_settings` in each tenant
+database (tenant migration V007, a single row `id = 1`; the password is stored
+sealed as `password_enc` with the company `SecretBox` and is never returned).
+Routes for the business owner (or the server owner in the server workspace):
+
+- `GET /companies/me/mail` returns `{host, port, username, from, security, passwordSet}`.
+- `PUT /companies/me/mail` receives `{host, port, username, from, security, password}`
+  (`password`: absent/null keeps the stored one, `""` deletes it, a value replaces it).
+  It rejects ports outside `MailHostGuard.AllowedPorts` and private hosts with 400
+  before saving. An empty `host` clears the configuration.
+
+Modules read it with `CompanyMail.read(tenantConnection, secretBox)`, which returns
+`SmtpSettings?` (always `trusted = false`; `MailSender` repeats the anti-SSRF check
+when sending). `CompanyMail.load` / `CompanyMail.save` serve the routes.
+
 Initial visibility rule:
 
 - `server_owner` can see Empresa from the dashboard.

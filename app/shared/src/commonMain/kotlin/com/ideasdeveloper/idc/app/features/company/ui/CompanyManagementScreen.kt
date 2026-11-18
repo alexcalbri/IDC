@@ -385,6 +385,14 @@ fun CompanyManagementScreen(
                             )
                         }
                     }
+
+                    // Servidor SMTP de la empresa; el estado y el guardado viven en la propia seccion.
+                    CompanyMailSection(
+                        serverUrl = serverUrl,
+                        accessToken = session?.accessToken,
+                        companyCode = session?.companyCode,
+                        primaryColor = primaryCompose,
+                    )
                     }
 
                     CompanyUsersSection(

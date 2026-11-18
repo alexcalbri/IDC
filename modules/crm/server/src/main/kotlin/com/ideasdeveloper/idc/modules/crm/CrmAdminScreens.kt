@@ -106,17 +106,8 @@ object CrmAdminScreens {
 
     fun mail(context: CrmScreens.Context, submitted: Map<String, String>?): List<UiNode> {
         val settings = CrmMail.load(context.tenant)
-        val own = UiFieldCondition("smtpMode", listOf("Cuenta propia"))
         val imapOn = UiFieldCondition("imapEnabled", listOf("true"))
         val fields = listOf(
-            UiField("smtpMode", "Enviar con", type = "select", options = listOf("SMTP del servidor", "Cuenta propia"), section = "Envio (SMTP)",
-                help = if (context.serverMail == null) "El servidor no tiene SMTP configurado: usa una cuenta propia." else ""),
-            UiField("smtpHost", "Servidor SMTP", visibleWhen = own, section = "Envio (SMTP)"),
-            UiField("smtpPort", "Puerto", type = "number", visibleWhen = own, section = "Envio (SMTP)"),
-            UiField("smtpSecurity", "Seguridad", type = "dropdown", options = listOf("starttls", "ssl", "none"), visibleWhen = own, section = "Envio (SMTP)"),
-            UiField("smtpUsername", "Usuario", visibleWhen = own, section = "Envio (SMTP)"),
-            UiField("smtpPassword", "Contrasena", type = "password", visibleWhen = own, section = "Envio (SMTP)"),
-            UiField("smtpFrom", "Remitente", type = "email", visibleWhen = own, section = "Envio (SMTP)"),
             UiField("imapEnabled", "Leer las respuestas de los clientes (IMAP)", type = "boolean", section = "Recepcion (IMAP)",
                 help = "Cada 5 minutos se leen los correos nuevos del buzon; se agregan a la conversacion del lead o crean uno nuevo."),
             UiField("imapHost", "Servidor IMAP", visibleWhen = imapOn, section = "Recepcion (IMAP)"),
@@ -132,7 +123,12 @@ object CrmAdminScreens {
             settings.imapCheckedAt != null -> UiStatus("Ultima lectura: ${time(settings.imapCheckedAt)}", UiTone.Success)
             else -> UiStatus("Esperando la primera lectura", UiTone.Warning)
         }
-        val sending = if (settings.smtp(context.serverMail) == null) UiStatus("No hay SMTP disponible: los correos no se pueden enviar", UiTone.Danger) else UiStatus("Envio de correo listo", UiTone.Success)
+        // El envio usa el SMTP de la empresa; sin el, el del servidor.
+        val sending = if (CrmMail.smtp(context.tenant, context.serverMail) == null) {
+            UiStatus("No hay SMTP disponible: el dueno de la empresa debe configurar el correo de la empresa para enviar correos", UiTone.Danger)
+        } else {
+            UiStatus("Envio de correo listo", UiTone.Success)
+        }
         return listOf(
             UiCard(listOf(sending, status)),
             UiCard(
@@ -140,7 +136,7 @@ object CrmAdminScreens {
                     UiForm(
                         "mail", fields, CrmMail.toFormValues(settings) + submitted.orEmpty(),
                         submit = UiButton("Guardar", UiRequest(UiRoute + "/mail", params = mapOf("op" to "save"), formId = "mail")),
-                        // Sending (SMTP) and reading the inbox (IMAP) are configured once: each one closed.
+                        // Reading the inbox (IMAP) is configured once: closed. Sending uses the company SMTP.
                         collapsibleSections = true,
                     ),
                 ),

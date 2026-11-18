@@ -4,10 +4,13 @@ import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningExce
 import com.ideasdeveloper.idc.server.company.application.CoreUpdateOutcome
 import com.ideasdeveloper.idc.server.company.application.CoreUpdateService
 import com.ideasdeveloper.idc.server.company.application.CompanyProvisioningService
+import com.ideasdeveloper.idc.server.company.application.CompanyMailRejectedException
+import com.ideasdeveloper.idc.server.company.application.CompanyMailStorageException
 import com.ideasdeveloper.idc.server.company.application.CompanySelfException
 import com.ideasdeveloper.idc.server.company.application.CompanySelfService
 import com.ideasdeveloper.idc.server.company.application.ServerOwnerAuthorizer
 import com.ideasdeveloper.idc.server.app.RecentServerErrors
+import com.ideasdeveloper.idc.server.modules.CompanyMailInput
 import com.ideasdeveloper.idc.server.app.ServerLogsResponse
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -82,6 +85,51 @@ fun Route.companyRoutes(
             call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateProfile(context.companyCode, context.token, request) })
         } catch (exception: CompanySelfException) {
             call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_PROFILE_NOT_UPDATED", exception.message ?: "No se pudo actualizar la empresa."))
+        }
+    }
+
+    // SMTP de la empresa (correo saliente); la contrasena nunca se devuelve, solo passwordSet.
+    get("/companies/me/mail") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val context = call.businessOwnerContext()
+        val service = selfService
+        if (context == null || service == null) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            return@get
+        }
+        try {
+            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.mailSettings(context.companyCode, context.token) })
+        } catch (exception: CompanySelfException) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_MAIL_UNAVAILABLE", exception.message ?: "No se pudo cargar el correo."))
+        }
+    }
+
+    // Guarda el SMTP de la empresa; rechaza puertos no permitidos y hosts privados antes de guardar.
+    put("/companies/me/mail") {
+        call.response.headers.append(HttpHeaders.CacheControl, "no-store")
+        val context = call.businessOwnerContext()
+        val service = selfService
+        if (context == null || service == null) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("BUSINESS_OWNER_REQUIRED", "Debes iniciar sesion como business_owner."))
+            return@put
+        }
+        val request = try {
+            call.receive<CompanyMailInput>()
+        } catch (_: BadRequestException) {
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            return@put
+        } catch (_: ContentTransformationException) {
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("INVALID_REQUEST", "Debes enviar un JSON valido."))
+            return@put
+        }
+        try {
+            call.respond(HttpStatusCode.OK, withContext(Dispatchers.IO) { service.updateMailSettings(context.companyCode, context.token, request) })
+        } catch (exception: CompanyMailRejectedException) {
+            call.respond(HttpStatusCode.BadRequest, CompanyErrorResponse("COMPANY_MAIL_NOT_SAVED", exception.message ?: "Datos de correo no validos."))
+        } catch (exception: CompanyMailStorageException) {
+            call.respond(HttpStatusCode.InternalServerError, CompanyErrorResponse("COMPANY_MAIL_STORAGE_FAILED", "No se pudo guardar el correo de la empresa."))
+        } catch (exception: CompanySelfException) {
+            call.respond(HttpStatusCode.Forbidden, CompanyErrorResponse("COMPANY_MAIL_UNAVAILABLE", exception.message ?: "No tienes permiso para cambiar el correo."))
         }
     }
 

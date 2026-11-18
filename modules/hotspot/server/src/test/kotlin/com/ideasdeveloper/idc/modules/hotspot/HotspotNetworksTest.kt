@@ -16,8 +16,7 @@ class HotspotNetworksTest {
         consentText = "Acepto", termsUrl = null, privacyUrl = null,
         footerText = "", successUrl = null, unifiConsoleId = "console:1", unifiSiteId = "site-1", unifiApiKey = "secret",
         accessMinutes = 60, dataLimitMb = 0, rxKbps = 0, txKbps = 0, reconnectMinutes = 1440, codeTtlMinutes = 15,
-        smtpMode = "servidor", smtpHost = null, smtpPort = 587, smtpUsername = null, smtpPassword = null,
-        smtpFrom = null, smtpSecurity = "starttls", emailSubject = "Codigo",
+        emailSubject = "Codigo",
         crmAccessEnabled = false, crmStageId = null, crmScheduleMode = "daily",
         crmCheckIntervalMinutes = 60, crmCheckTime = LocalTime.of(7, 0),
     )

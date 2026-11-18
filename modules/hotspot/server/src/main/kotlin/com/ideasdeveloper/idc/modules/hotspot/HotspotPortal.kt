@@ -191,7 +191,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         }
         if (!acceptedTerms) return retry("Debes aceptar los terminos para continuar.")
 
-        val smtp = settings.smtp(access.serverMail)
+        val smtp = HotspotMail.smtp(connection, access.serverMail, access.secrets)
             ?: return HotspotPortalPages.message(settings, "Portal no disponible", "El envio de codigos no esta configurado. Avisa al personal del local.")
 
         minutesUntilReconnect(connection, values.email, settings.reconnectMinutes)?.let { remaining ->

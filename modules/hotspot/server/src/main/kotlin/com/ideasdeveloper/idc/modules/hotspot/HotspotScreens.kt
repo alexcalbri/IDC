@@ -73,7 +73,7 @@ object HotspotScreens {
         params: Map<String, String>,
         domainStatus: String,
         domainActive: Boolean,
-        serverMailAvailable: Boolean,
+        sendingAvailable: Boolean,
         notice: UiNotice? = null,
         submittedValues: Map<String, String>? = null,
         // Console and site pickers of the UniFi connection.
@@ -89,7 +89,7 @@ object HotspotScreens {
             return frame(settings, permissions, screen, title, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
         }
         val values = submittedValues ?: HotspotSettingsRepository.toFormValues(
-            settings, domainStatus, serverMailAvailable, HotspotCrmPipeline.stageName(tenant, settings.crmStageId),
+            settings, domainStatus, sendingAvailable, HotspotCrmPipeline.stageName(tenant, settings.crmStageId),
         )
         val body = customBody ?: when (screen) {
             "dashboard" -> dashboard(tenant, settings, permissions, domainActive)
@@ -695,15 +695,8 @@ object HotspotScreens {
 
     // Codes are emailed the same way whatever network controller is enabled.
     private val mailFields = listOf(
-        UiField("smtpMode", "Enviar correos con", "select", required = true, options = listOf("servidor", "empresa"),
-            help = "servidor: SMTP configurado por el administrador del servidor. empresa: los datos de abajo."),
-        UiField("serverMailAvailable", "SMTP del servidor disponible", readOnly = true),
-        UiField("smtpHost", "Servidor SMTP"),
-        UiField("smtpPort", "Puerto SMTP", "number"),
-        UiField("smtpSecurity", "Seguridad SMTP", "select", options = listOf("starttls", "ssl", "none")),
-        UiField("smtpUsername", "Usuario SMTP"),
-        UiField("smtpPassword", "Contrasena SMTP", "password", help = "Si ya hay una contrasena guardada se muestra oculta; dejala asi para conservarla."),
-        UiField("smtpFrom", "Remitente", "email"),
+        UiField("mailSource", "Correo de envio", readOnly = true,
+            help = "Los codigos se envian con el SMTP de la empresa (lo configura el dueno de la empresa); si no hay, con el del servidor."),
         UiField("emailSubject", "Asunto del correo", required = true),
     )
 }

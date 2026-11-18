@@ -161,13 +161,28 @@ object CrmServerModule : ServerModule {
     override val jobs = listOf(
         // Notifications, digests and scheduled emails queued in crm_outbox.
         ModuleJob("outbox", Duration.ofMinutes(1)) { context ->
-            CrmNotify.sendQueued(context.tenant, CrmMail.load(context.tenant).smtp(context.access.serverMail), 30)
+            val smtp = CrmMail.smtp(context.tenant, context.access.serverMail, context.access.secrets)
+            if (smtp == null) CrmNotify.warnNoSmtp(context.tenant, context.companyCode)
+            CrmNotify.sendQueued(context.tenant, smtp, 30)
+        },
+        // Una sola vez por empresa: el SMTP propio que tuviera el CRM pasa al SMTP de la empresa (company_mail_settings); gana sobre el de Hotspot.
+        ModuleJob("mail-migration", Duration.ofMinutes(5)) { context ->
+            val log = org.slf4j.LoggerFactory.getLogger("CrmMailMigration")
+            val result = CrmMailMigration.run(context.tenant, context.access.secrets)
+            when (result.outcome) {
+                CrmMailMigration.Outcome.Migrated -> log.info("CRM {}: SMTP propio del CRM sembrado en el SMTP de la empresa (fuente: CRM, {}).", context.companyCode, result.detail)
+                CrmMailMigration.Outcome.KeptCompany -> log.info("CRM {}: la empresa ya tenia SMTP; no se pisa y se descarta el del CRM ({}).", context.companyCode, result.detail)
+                CrmMailMigration.Outcome.Skipped -> log.info("CRM {}: SMTP propio del CRM sin uso, se limpia ({}).", context.companyCode, result.detail)
+                CrmMailMigration.Outcome.Waiting -> log.warn("CRM {}: el SMTP propio del CRM sigue sin migrar ({}).", context.companyCode, result.detail)
+                CrmMailMigration.Outcome.Failed -> log.warn("CRM {}: {}.", context.companyCode, result.detail)
+                CrmMailMigration.Outcome.Absent -> Unit
+            }
         },
         ModuleJob("digest", Duration.ofMinutes(15)) { context -> CrmNotify.digestIfDue(context.tenant, LocalDateTime.now()) },
         // Follow-ups due: in-app notice (and email) to the assigned users, once per lead and date.
         ModuleJob("followups", Duration.ofMinutes(15)) { context -> CrmNotify.followUpsDue(context.tenant, context.notifier, java.time.Instant.now()) },
         // Replies of customers by email.
-        ModuleJob("imap", Duration.ofMinutes(5)) { context -> readMailbox(context.tenant) },
+        ModuleJob("imap", Duration.ofMinutes(5)) { context -> readMailbox(context.tenant, context.access.secrets) },
         // Contacts of the company listings in Encuentra24.
         // Cloudbeds: welcome emails before check-in and reservation statuses (archive after check-out).
         ModuleJob("cloudbeds-welcome", Duration.ofMinutes(15)) { context -> CrmCloudbeds.sendWelcomes(context.tenant, LocalDateTime.now()) },
@@ -208,11 +223,13 @@ object CrmServerModule : ServerModule {
     )
 
     /** Reads new mail of the company's mailbox into the conversation of each sender's lead. */
-    private fun readMailbox(tenant: Connection) {
+    private fun readMailbox(tenant: Connection, secrets: com.ideasdeveloper.idc.server.security.SecretBox) {
         val settings = CrmMail.load(tenant)
         if (!settings.imapReady) return
+        // El remitente del SMTP de la empresa: sus propios correos no se importan como respuestas de clientes.
+        val ownFrom = CrmMail.companySmtp(tenant, secrets)?.from
         val (validity, last) = try {
-            CrmMail.poll(settings, 50) { mail ->
+            CrmMail.poll(settings, 50, ownFrom) { mail ->
                 CrmInbox.receive(
                     tenant,
                     CrmInbound(
@@ -238,7 +255,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.25.1",
+        version = "0.26.0",
         minCoreVersion = "0.7.0",
         minAppVersion = "0.7.0",
         permissions = listOf(

@@ -101,6 +101,26 @@ class CompanyApi(serverUrl: String) {
         }
     }
 
+    // Carga la configuracion SMTP de la empresa de la sesion business_owner.
+    suspend fun mailSettings(accessToken: String, companyCode: String): CompanyMailForm =
+        call("No se pudo cargar la configuracion de correo.") {
+            client.get("$baseUrl/companies/me/mail") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+            }
+        }
+
+    // Guarda el SMTP; el servidor responde 400 con un mensaje en espanol si algun dato no es valido.
+    suspend fun updateMailSettings(accessToken: String, companyCode: String, input: CompanyMailInput): CompanyMailForm =
+        call("No se pudo guardar la configuracion de correo.") {
+            client.put("$baseUrl/companies/me/mail") {
+                bearerAuth(accessToken)
+                header("X-Company-Code", companyCode)
+                contentType(ContentType.Application.Json)
+                setBody(input)
+            }
+        }
+
     // Lista los ZIPs de backup creados o importados para esta empresa.
     suspend fun listBackups(accessToken: String, companyCode: String): List<CompanyBackupResponse> {
         try {

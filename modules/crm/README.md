@@ -66,7 +66,7 @@ Tabs of **Configuracion**:
 | General | `settings` | Interests switch, interest catalog, interests per user, custom fields, **Resumen diario** hour (action `settings:digest`), stages and stage templates. |
 | Automatizaciones | `automations` | The rules of the company (`CrmAutomationScreens`, actions `automations:save` / `toggle` / `delete` / `welcomeOff`; see "Automations and button fields") and the **Automatizacion de salida** (`CrmExitScreens.card`, action `settings:exitSave`). |
 | Equipo | `team` | Notification email and options per user. |
-| Correo | `mail` | SMTP and IMAP. |
+| Correo | `mail` | Reading the inbox (IMAP); sending uses the company SMTP. |
 | Plantillas | `templates` | Message templates. |
 | Anti-spam | `spam` | Anti-spam rules. |
 | Integraciones | `integrations` | Meta, WordPress, Encuentra24, Cloudbeds. |
@@ -238,8 +238,14 @@ today email).
 
 ## Email
 
-- **Sending** (`crm_mail_settings`): the server SMTP or the company's own
-  account. Replies and queued mail use it.
+- **Sending** (0.26.0): the CRM has no SMTP of its own any more. It sends with the
+  company SMTP (`company_mail_settings`, read with `CompanyMail.read`) and, when the
+  company has none, with the server SMTP. Replies and queued mail use it. A company that
+  had "Cuenta propia" configured is migrated once by the job `mail-migration`: the SMTP
+  is copied to the company SMTP only if the company has none yet (the password is sealed with the company key; an SMTP the owner already set is never overwritten), and the CRM
+  wins over Hotspot because its job runs first (single-threaded scheduler). The `smtp_*` columns of `crm_mail_settings` are
+  then cleared (`smtp_mode` back to `servidor`); a later SQL migration will drop them.
+  Without `IDC_MASTER_KEY` a stored password cannot be moved, so the job waits.
 - **Templates** (`crm_email_templates`): subject and HTML or plain-text body
   with placeholders `{nombre}`, `{correo}`, `{telefono}`, `{codigo_cliente}`
   (the customer code, also the WiFi code of the hotspot), `{responsable}` (every assigned user, names separated by comma),
@@ -299,7 +305,7 @@ of the card of an extension that is not enabled.
 **Encrypted secrets:** every read goes through `CrmSecrets.open` and every write through `CrmSecrets.seal` (`SecretBox` of the Core, data key of
 the database of the connection); screens and tools still show only the mask. Sealed columns: `crm_meta_settings` (app secret, verify token, system,
 page, Messenger, Instagram and login tokens), `crm_meta_server_app` (server workspace), `crm_wordpress_settings.secret`, `crm_encuentra24_settings.api_key`,
-`crm_cloudbeds_settings.api_key`, `crm_settings.monday_token` and `translation_api_key`, `crm_mail_settings.smtp_password` and `imap_password`.
+`crm_cloudbeds_settings.api_key`, `crm_settings.monday_token` and `translation_api_key`, and `crm_mail_settings.imap_password` (the SMTP password of 0.25.x moved to the company SMTP in 0.26.0).
 Without `IDC_MASTER_KEY` nothing is sealed and saving a secret is refused ("falta la llave maestra"). V022 drops the old CHECKs of the WordPress
 secret and the monday token (a sealed value does not fit them).
 
@@ -316,7 +322,8 @@ registers and tries again later. The server workspace also seals `crm_meta_serve
 
 | Job | Interval | Work |
 | --- | --- | --- |
-| `outbox` | 1 min | Send queued mail. |
+| `outbox` | 1 min | Send queued mail (company SMTP, else the server's). |
+| `mail-migration` | 5 min | Once per company (0.26.0): moves the old own SMTP of the CRM to the company SMTP. |
 | `digest` | 15 min | Daily digest once the digest hour has passed. |
 | `followups` | 15 min | Follow-up due notices (in-app and email) to the assigned users, once the digest hour has passed in the company zone (0.24.0). |
 | `imap` | 5 min | Read the company mailbox. |
@@ -831,7 +838,7 @@ settings screens; edits change only what is sent:
 | `crm_get_settings` | Interests and who sees each, stages (with lead counts), stage templates, mail (no passwords), template variables, anti-spam, team notifications, digest hour, exit automation (`exitAutomation`). |
 | `crm_set_interests_enabled`, `crm_save_interest`, `crm_delete_interest`, `crm_set_user_interests` | Interests and per-user visibility. |
 | `crm_save_stage`, `crm_delete_stage`, `crm_apply_pipeline_template` | Pipeline stages (templates only while there are no leads; marked destructive). |
-| `crm_update_mail_settings` | SMTP and IMAP, except passwords. |
+| `crm_update_mail_settings` | IMAP, except the password. SMTP fields were removed in 0.26.0 (sending is the company's). |
 | `crm_save_message_template`, `crm_delete_message_template` | Message templates. |
 | `crm_update_spam_rules` | Anti-spam rules (lists sent replace the current ones). |
 | `crm_update_user_notifications`, `crm_set_digest_hour` | Team email notifications and daily digest hour. |
@@ -871,7 +878,7 @@ file).
 
 Changes appear in the lead activity as `usuario (agente <nombre>)`. **Credentials never pass through
 an agent**: API keys, tokens, the Meta app secret and verify token, the WordPress shared secret and
-the SMTP/IMAP passwords are typed (or generated) only in the app. No tool takes or returns them
+the IMAP password is typed (or generated) only in the app. No tool takes or returns them
 (only "configured" flags); to save other settings the tools send the stored values back to the same
 save functions server side. `ModuleRegistryTest.noModuleToolTakesCredentials` fails if a tool of any
 module takes an argument named like a credential.

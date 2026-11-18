@@ -327,6 +327,7 @@ fun Application.module() {
                 ?: "build/company-backups"
         ),
         ownerEditor = companyProvisioning::updateBusinessOwnerBySelf,
+        secrets = secretBox,
     )
     monitor.subscribe(ApplicationStopped) {
         moduleJobs.stop()

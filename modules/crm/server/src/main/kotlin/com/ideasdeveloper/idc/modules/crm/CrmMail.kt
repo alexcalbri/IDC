@@ -1,8 +1,12 @@
 package com.ideasdeveloper.idc.modules.crm
 
+import com.ideasdeveloper.idc.server.modules.CompanyMail
+import com.ideasdeveloper.idc.server.modules.CompanyMailResult
 import com.ideasdeveloper.idc.server.modules.MailException
 import com.ideasdeveloper.idc.server.modules.MailHostGuard
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
+import com.ideasdeveloper.idc.server.security.SecretBox
+import com.ideasdeveloper.idc.server.security.SecretsUnavailableException
 import jakarta.mail.Folder
 import jakarta.mail.Multipart
 import jakarta.mail.Part
@@ -14,14 +18,8 @@ import java.time.Instant
 import java.util.Properties
 import java.util.UUID
 
+// Solo la lectura del buzon (IMAP): el envio (SMTP) es el de la empresa (CompanyMail), ya no hay SMTP propio del CRM.
 data class CrmMailSettings(
-    val smtpMode: String,
-    val smtpHost: String?,
-    val smtpPort: Int,
-    val smtpUsername: String?,
-    val smtpPassword: String?,
-    val smtpFrom: String?,
-    val smtpSecurity: String,
     val imapEnabled: Boolean,
     val imapHost: String?,
     val imapPort: Int,
@@ -34,15 +32,6 @@ data class CrmMailSettings(
     val imapCheckedAt: Instant?,
     val imapLastError: String,
 ) {
-    // SMTP the CRM sends with: the server's or the company's own, null when none is usable.
-    fun smtp(serverMail: SmtpSettings?): SmtpSettings? =
-        if (smtpMode == "empresa") {
-            // Una contrasena ilegible (cifrada que no se pudo abrir) nunca se envia como credencial: queda vacia.
-            SmtpSettings(smtpHost.orEmpty(), smtpPort, smtpUsername.orEmpty(), smtpPassword.takeUnless { CrmSecrets.isUnreadable(it) }.orEmpty(), smtpFrom.orEmpty(), smtpSecurity)
-        } else {
-            serverMail
-        }?.takeIf { it.isUsable }
-
     val imapReady get() = imapEnabled && !imapHost.isNullOrBlank() && !imapUsername.isNullOrBlank() && !imapPassword.isNullOrBlank() && !CrmSecrets.isUnreadable(imapPassword)
 }
 
@@ -71,12 +60,57 @@ object CrmMail {
         "reserva" to "Numero de reserva",
     )
 
+    // ---- Envio (SMTP de la empresa) ----
+
+    private val log = org.slf4j.LoggerFactory.getLogger(CrmMail::class.java)
+
+    // Empresas cuyo SMTP roto ya se aviso: se llama en cada envio y cada pantalla, el aviso sale una vez (luego debug).
+    private val brokenWarned = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * SMTP de la empresa (Empresa > Correo). null si no hay uno guardado o esta roto (falta IDC_MASTER_KEY o la contrasena no se
+     * puede descifrar): en ese caso se avisa en el log y quien llama cae al SMTP del servidor.
+     */
+    fun companySmtp(tenant: Connection, secrets: SecretBox?): SmtpSettings? {
+        val company = runCatching { tenant.catalog }.getOrNull() ?: "?"
+        if (secrets == null) {
+            warnBroken(company, "no hay caja de cifrado", null)
+            return null
+        }
+        return when (val result = CompanyMail.readOrNull(tenant, secrets)) {
+            is CompanyMailResult.Ok -> result.settings
+            is CompanyMailResult.Unset -> null
+            is CompanyMailResult.Broken -> {
+                warnBroken(company, result.reason, result.cause)
+                null
+            }
+        }
+    }
+
+    private fun warnBroken(company: String, reason: String, cause: Throwable?) {
+        if (!brokenWarned.add(company)) {
+            log.debug("CRM {}: el SMTP de la empresa sigue roto ({}); se usa el del servidor.", company, reason)
+            return
+        }
+        if (cause == null || cause is SecretsUnavailableException) {
+            log.warn("CRM {}: el SMTP de la empresa no se puede usar ({}); se usa el del servidor.", company, reason)
+        } else {
+            log.error("CRM {}: el SMTP de la empresa no se puede descifrar ({}); se usa el del servidor.", company, reason, cause)
+        }
+    }
+
+    /** Con que envia el CRM: el SMTP de la empresa y, si no hay, el del servidor; null cuando ninguno sirve. */
+    fun resolveSmtp(company: SmtpSettings?, serverMail: SmtpSettings?): SmtpSettings? = CompanyMail.resolveUsable(company, serverMail)
+
+    /** [resolveSmtp] leyendo el SMTP de la empresa de su base; [secrets] es la caja de cifrado de la empresa. */
+    fun smtp(tenant: Connection, serverMail: SmtpSettings?, secrets: SecretBox? = CrmSecrets.box): SmtpSettings? =
+        resolveSmtp(companySmtp(tenant, secrets), serverMail)
+
     // ---- Settings ----
 
     fun load(tenant: Connection): CrmMailSettings = tenant.prepareStatement(
         """
-        SELECT smtp_mode, smtp_host, smtp_port, smtp_username, smtp_password, smtp_from, smtp_security,
-               imap_enabled, imap_host, imap_port, imap_username, imap_password, imap_folder, imap_ssl,
+        SELECT imap_enabled, imap_host, imap_port, imap_username, imap_password, imap_folder, imap_ssl,
                imap_uid_validity, imap_last_uid, imap_checked_at, imap_last_error
         FROM crm_mail_settings WHERE id = 1
         """.trimIndent()
@@ -84,21 +118,13 @@ object CrmMail {
         query.executeQuery().use { rows ->
             rows.next()
             CrmMailSettings(
-                rows.getString(1), rows.getString(2), rows.getInt(3), rows.getString(4), CrmSecrets.open(tenant, rows.getString(5)), rows.getString(6), rows.getString(7),
-                rows.getBoolean(8), rows.getString(9), rows.getInt(10), rows.getString(11), CrmSecrets.open(tenant, rows.getString(12)), rows.getString(13), rows.getBoolean(14),
-                rows.getObject(15) as Long?, rows.getLong(16), rows.getTimestamp(17)?.toInstant(), rows.getString(18),
+                rows.getBoolean(1), rows.getString(2), rows.getInt(3), rows.getString(4), CrmSecrets.open(tenant, rows.getString(5)), rows.getString(6), rows.getBoolean(7),
+                rows.getObject(8) as Long?, rows.getLong(9), rows.getTimestamp(10)?.toInstant(), rows.getString(11),
             )
         }
     }
 
     fun toFormValues(settings: CrmMailSettings): Map<String, String> = mapOf(
-        "smtpMode" to if (settings.smtpMode == "empresa") "Cuenta propia" else "SMTP del servidor",
-        "smtpHost" to settings.smtpHost.orEmpty(),
-        "smtpPort" to settings.smtpPort.toString(),
-        "smtpUsername" to settings.smtpUsername.orEmpty(),
-        "smtpPassword" to masked(settings.smtpPassword),
-        "smtpFrom" to settings.smtpFrom.orEmpty(),
-        "smtpSecurity" to settings.smtpSecurity,
         "imapEnabled" to settings.imapEnabled.toString(),
         "imapHost" to settings.imapHost.orEmpty(),
         "imapPort" to settings.imapPort.toString(),
@@ -116,16 +142,7 @@ object CrmMail {
         fun secret(key: String, saved: String?) = values[key]?.takeIf { it.isNotBlank() && !CrmSecrets.isPlaceholder(it) } ?: saved
         fun port(key: String, label: String) = values[key].orEmpty().trim().toIntOrNull()?.takeIf { it in 1..65535 }
             ?: throw CrmValidationException("$label debe ser un numero entre 1 y 65535.")
-        val security = values["smtpSecurity"].orEmpty().ifBlank { current.smtpSecurity }
-        if (security !in setOf("starttls", "ssl", "none")) throw CrmValidationException("La seguridad SMTP debe ser starttls, ssl o none.")
         val merged = current.copy(
-            smtpMode = if (values["smtpMode"] == "Cuenta propia") "empresa" else "servidor",
-            smtpHost = text("smtpHost"),
-            smtpPort = port("smtpPort", "El puerto SMTP"),
-            smtpUsername = text("smtpUsername"),
-            smtpPassword = secret("smtpPassword", current.smtpPassword),
-            smtpFrom = text("smtpFrom"),
-            smtpSecurity = security,
             imapEnabled = values["imapEnabled"] == "true",
             imapHost = text("imapHost"),
             imapPort = port("imapPort", "El puerto IMAP"),
@@ -135,12 +152,7 @@ object CrmMail {
             imapSsl = values["imapSsl"] == "true",
         )
         // El servidor de correo lo escribe el usuario: puerto de correo y host publico (evita SSRF hacia la red interna).
-        if (merged.smtpMode == "empresa") checkMailHost(merged.smtpHost, merged.smtpPort)
         if (merged.imapEnabled) checkMailHost(merged.imapHost, merged.imapPort)
-        merged.smtpFrom?.let { if (!CrmContacts.isEmail(it)) throw CrmValidationException("El remitente debe ser un correo valido.") }
-        if (merged.smtpMode == "empresa" && (merged.smtpHost == null || merged.smtpFrom == null)) {
-            throw CrmValidationException("Con cuenta propia escribe el servidor SMTP y el remitente.")
-        }
         if (merged.imapEnabled && (merged.imapHost == null || merged.imapUsername == null || merged.imapPassword.isNullOrBlank())) {
             throw CrmValidationException("Para leer el correo escribe el servidor IMAP, el usuario y la contrasena.")
         }
@@ -161,28 +173,20 @@ object CrmMail {
     fun save(tenant: Connection, settings: CrmMailSettings) {
         tenant.prepareStatement(
             """
-            UPDATE crm_mail_settings SET smtp_mode = ?, smtp_host = ?, smtp_port = ?, smtp_username = ?, smtp_password = ?, smtp_from = ?,
-                smtp_security = ?, imap_enabled = ?, imap_host = ?, imap_port = ?, imap_username = ?, imap_password = ?, imap_folder = ?,
+            UPDATE crm_mail_settings SET imap_enabled = ?, imap_host = ?, imap_port = ?, imap_username = ?, imap_password = ?, imap_folder = ?,
                 imap_ssl = ?, imap_uid_validity = ?, imap_last_uid = ?, updated_at = CURRENT_TIMESTAMP
             WHERE id = 1
             """.trimIndent()
         ).use { update ->
-            update.setString(1, settings.smtpMode)
-            update.setString(2, settings.smtpHost)
-            update.setInt(3, settings.smtpPort)
-            update.setString(4, settings.smtpUsername)
-            update.setString(5, CrmSecrets.seal(tenant, settings.smtpPassword))
-            update.setString(6, settings.smtpFrom)
-            update.setString(7, settings.smtpSecurity)
-            update.setBoolean(8, settings.imapEnabled)
-            update.setString(9, settings.imapHost)
-            update.setInt(10, settings.imapPort)
-            update.setString(11, settings.imapUsername)
-            update.setString(12, CrmSecrets.seal(tenant, settings.imapPassword))
-            update.setString(13, settings.imapFolder)
-            update.setBoolean(14, settings.imapSsl)
-            update.setObject(15, settings.imapUidValidity)
-            update.setLong(16, settings.imapLastUid)
+            update.setBoolean(1, settings.imapEnabled)
+            update.setString(2, settings.imapHost)
+            update.setInt(3, settings.imapPort)
+            update.setString(4, settings.imapUsername)
+            update.setString(5, CrmSecrets.seal(tenant, settings.imapPassword))
+            update.setString(6, settings.imapFolder)
+            update.setBoolean(7, settings.imapSsl)
+            update.setObject(8, settings.imapUidValidity)
+            update.setLong(9, settings.imapLastUid)
             update.executeUpdate()
         }
     }
@@ -311,7 +315,7 @@ object CrmMail {
      * The first read of a mailbox only records where it stands, so old mail is not imported.
      * Returns the new UIDVALIDITY and last UID to save.
      */
-    fun poll(settings: CrmMailSettings, limit: Int, handle: (InboundEmail) -> Unit): Pair<Long, Long> {
+    fun poll(settings: CrmMailSettings, limit: Int, ownFrom: String? = null, handle: (InboundEmail) -> Unit): Pair<Long, Long> {
         val properties = Properties().apply {
             put("mail.imap.connectiontimeout", "10000")
             put("mail.imap.timeout", "20000")
@@ -334,7 +338,7 @@ object CrmMail {
                     // New mailbox (or the server renumbered it): continue from its newest message.
                     return validity to (uids.uidNext - 1).coerceAtLeast(0)
                 }
-                val own = setOfNotNull(settings.imapUsername?.lowercase(), settings.smtpFrom?.lowercase())
+                val own = setOfNotNull(settings.imapUsername?.lowercase(), ownFrom?.lowercase())
                 var last = settings.imapLastUid
                 uids.getMessagesByUID(settings.imapLastUid + 1, UIDFolder.LASTUID)
                     .filter { uids.getUID(it) > settings.imapLastUid }

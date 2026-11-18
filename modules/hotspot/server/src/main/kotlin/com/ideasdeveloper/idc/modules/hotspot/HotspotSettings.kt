@@ -1,8 +1,5 @@
 package com.ideasdeveloper.idc.modules.hotspot
 
-import com.ideasdeveloper.idc.server.modules.MailException
-import com.ideasdeveloper.idc.server.modules.MailHostGuard
-import com.ideasdeveloper.idc.server.modules.SmtpSettings
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -33,13 +30,6 @@ data class HotspotSettings(
     val txKbps: Int,
     val reconnectMinutes: Int,
     val codeTtlMinutes: Int,
-    val smtpMode: String,
-    val smtpHost: String?,
-    val smtpPort: Int,
-    val smtpUsername: String?,
-    val smtpPassword: String?,
-    val smtpFrom: String?,
-    val smtpSecurity: String,
     val emailSubject: String,
     val crmAccessEnabled: Boolean,
     val crmStageId: UUID?,
@@ -59,25 +49,11 @@ data class HotspotSettings(
 
     val unifiConfigured: Boolean
         get() = !unifiConsoleId.isNullOrBlank() && !unifiSiteId.isNullOrBlank() && !unifiApiKey.isNullOrBlank()
-
-    fun smtp(serverMail: SmtpSettings?): SmtpSettings? = if (smtpMode == "empresa") {
-        SmtpSettings(
-            host = smtpHost.orEmpty(),
-            port = smtpPort,
-            username = smtpUsername.orEmpty(),
-            password = smtpPassword.orEmpty(),
-            from = smtpFrom.orEmpty(),
-            security = smtpSecurity,
-        ).takeIf { it.isUsable }
-    } else {
-        serverMail
-    }
 }
 
 object HotspotSettingsRepository {
     private val domainPattern = Regex("^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$")
     private val unifiIdPattern = Regex("^[A-Za-z0-9:._-]{1,200}$")
-    private val emailPattern = Regex("^[^\\s@<>\"]+@[^\\s@<>\"]+\\.[^\\s@<>\"]+$")
 
     fun load(connection: Connection): HotspotSettings = connection.prepareStatement(
         "SELECT * FROM hotspot_settings WHERE id = 1"
@@ -134,13 +110,6 @@ object HotspotSettingsRepository {
             txKbps = number("txKbps", current.txKbps, 0..10000000, "La velocidad de subida"),
             reconnectMinutes = number("reconnectMinutes", current.reconnectMinutes, 0..525600, "El tiempo de reconexion"),
             codeTtlMinutes = number("codeTtlMinutes", current.codeTtlMinutes, 1..1440, "La vigencia del codigo"),
-            smtpMode = required("smtpMode", current.smtpMode, "El origen del correo"),
-            smtpHost = optional("smtpHost", current.smtpHost),
-            smtpPort = number("smtpPort", current.smtpPort, 1..65535, "El puerto SMTP"),
-            smtpUsername = optional("smtpUsername", current.smtpUsername),
-            smtpPassword = secret("smtpPassword", current.smtpPassword),
-            smtpFrom = optional("smtpFrom", current.smtpFrom),
-            smtpSecurity = required("smtpSecurity", current.smtpSecurity, "La seguridad SMTP"),
             emailSubject = required("emailSubject", current.emailSubject, "El asunto del correo"),
             crmAccessEnabled = boolean("crmAccessEnabled", current.crmAccessEnabled),
             crmStageId = optional("crmStageId", current.crmStageId?.toString())?.let {
@@ -186,19 +155,6 @@ object HotspotSettingsRepository {
         listOf(settings.unifiConsoleId, settings.unifiSiteId).forEach { id ->
             if (id != null && !unifiIdPattern.matches(id)) throw HotspotValidationException("El identificador de consola o sitio de UniFi no es valido.")
         }
-        if (settings.smtpMode !in setOf("servidor", "empresa")) throw HotspotValidationException("El origen del correo debe ser servidor o empresa.")
-        if (settings.smtpSecurity !in setOf("starttls", "ssl", "none")) throw HotspotValidationException("La seguridad SMTP debe ser starttls, ssl o none.")
-        // El servidor SMTP propio lo escribe el usuario: puerto de correo y host publico (evita SSRF hacia la red interna).
-        if (settings.smtpMode == "empresa" && !settings.smtpHost.isNullOrBlank()) {
-            try {
-                MailHostGuard.check(settings.smtpHost, settings.smtpPort)
-            } catch (failure: MailException) {
-                throw HotspotValidationException(failure.message.orEmpty())
-            }
-        }
-        settings.smtpFrom?.let {
-            if (!emailPattern.matches(it.substringAfterLast('<').removeSuffix(">").trim())) throw HotspotValidationException("El remitente SMTP no es un correo valido.")
-        }
     }
 
     fun save(connection: Connection, settings: HotspotSettings) {
@@ -209,8 +165,7 @@ object HotspotSettingsRepository {
                 consent_text = ?, terms_url = ?, privacy_url = ?,
                 footer_text = ?, success_url = ?, unifi_console_id = ?, unifi_site_id = ?, unifi_api_key = ?,
                 access_minutes = ?, data_limit_mb = ?, rx_kbps = ?, tx_kbps = ?, reconnect_minutes = ?,
-                code_ttl_minutes = ?, smtp_mode = ?, smtp_host = ?, smtp_port = ?, smtp_username = ?,
-                smtp_password = ?, smtp_from = ?, smtp_security = ?, email_subject = ?,
+                code_ttl_minutes = ?, email_subject = ?,
                 crm_access_enabled = ?, crm_stage_id = ?, crm_schedule_mode = ?, crm_check_interval_minutes = ?,
                 crm_check_time = ?,
                 updated_at = CURRENT_TIMESTAMP
@@ -222,8 +177,7 @@ object HotspotSettingsRepository {
                 settings.consentText, settings.termsUrl, settings.privacyUrl,
                 settings.footerText, settings.successUrl, settings.unifiConsoleId, settings.unifiSiteId, settings.unifiApiKey,
                 settings.accessMinutes, settings.dataLimitMb, settings.rxKbps, settings.txKbps, settings.reconnectMinutes,
-                settings.codeTtlMinutes, settings.smtpMode, settings.smtpHost, settings.smtpPort, settings.smtpUsername,
-                settings.smtpPassword, settings.smtpFrom, settings.smtpSecurity, settings.emailSubject,
+                settings.codeTtlMinutes, settings.emailSubject,
                 settings.crmAccessEnabled, settings.crmStageId, settings.crmScheduleMode, settings.crmCheckIntervalMinutes,
                 settings.crmCheckTime,
             ).forEachIndexed { index, value -> update.setObject(index + 1, value) }
@@ -240,10 +194,9 @@ object HotspotSettingsRepository {
     fun toFormValues(
         settings: HotspotSettings,
         domainStatus: String,
-        serverMailAvailable: Boolean,
+        sendingAvailable: Boolean,
         crmStageName: String = "",
     ): Map<String, String> {
-        fun yesNo(value: Boolean) = if (value) "Si" else "No"
         val values = mapOf(
             "domain" to settings.domain.orEmpty(),
             "portalUrl" to settings.domain?.let { "$it/guest/s/default/" }.orEmpty(),
@@ -257,14 +210,7 @@ object HotspotSettingsRepository {
             "txKbps" to settings.txKbps.toString(),
             "reconnectMinutes" to settings.reconnectMinutes.toString(),
             "codeTtlMinutes" to settings.codeTtlMinutes.toString(),
-            "smtpMode" to settings.smtpMode,
-            "serverMailAvailable" to yesNo(serverMailAvailable),
-            "smtpHost" to settings.smtpHost.orEmpty(),
-            "smtpPort" to settings.smtpPort.toString(),
-            "smtpUsername" to settings.smtpUsername.orEmpty(),
-            "smtpPassword" to masked(settings.smtpPassword),
-            "smtpFrom" to settings.smtpFrom.orEmpty(),
-            "smtpSecurity" to settings.smtpSecurity,
+            "mailSource" to if (sendingAvailable) "SMTP de la empresa (o del servidor): listo" else "Sin SMTP: configura el correo de la empresa",
             "emailSubject" to settings.emailSubject,
             "networkName" to settings.networkName,
             "portalTitle" to settings.portalTitle,
@@ -305,13 +251,6 @@ object HotspotSettingsRepository {
         txKbps = getInt("tx_kbps"),
         reconnectMinutes = getInt("reconnect_minutes"),
         codeTtlMinutes = getInt("code_ttl_minutes"),
-        smtpMode = getString("smtp_mode"),
-        smtpHost = getString("smtp_host"),
-        smtpPort = getInt("smtp_port"),
-        smtpUsername = getString("smtp_username"),
-        smtpPassword = getString("smtp_password"),
-        smtpFrom = getString("smtp_from"),
-        smtpSecurity = getString("smtp_security"),
         emailSubject = getString("email_subject"),
         crmAccessEnabled = getBoolean("crm_access_enabled"),
         crmStageId = getObject("crm_stage_id", UUID::class.java),

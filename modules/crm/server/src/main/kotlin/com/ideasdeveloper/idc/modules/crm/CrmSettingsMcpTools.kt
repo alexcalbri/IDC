@@ -37,12 +37,6 @@ object CrmSettingsMcpTools {
     )
 
     private val mailArguments = mapOf(
-        "smtpMode" to McpSchema.string("servidor: SMTP del servidor; empresa: cuenta propia.", listOf("servidor", "empresa")),
-        "smtpHost" to McpSchema.string("Servidor SMTP de la cuenta propia."),
-        "smtpPort" to McpSchema.integer("Puerto SMTP.", 1, 65535),
-        "smtpUsername" to McpSchema.string("Usuario SMTP."),
-        "smtpFrom" to McpSchema.string("Remitente de los correos.", format = "email"),
-        "smtpSecurity" to McpSchema.string("Seguridad SMTP.", listOf("starttls", "ssl", "none")),
         "imapEnabled" to McpSchema.boolean("Leer las respuestas del buzon por IMAP (necesita la contrasena IMAP guardada en la app)."),
         "imapHost" to McpSchema.string("Servidor IMAP."),
         "imapPort" to McpSchema.integer("Puerto IMAP.", 1, 65535),
@@ -136,8 +130,8 @@ object CrmSettingsMcpTools {
         ) { call -> applyTemplate(call) },
         McpTool(
             name = "update_mail_settings",
-            title = "Cambiar correo del CRM",
-            description = "Cambia como envia (SMTP) y lee (IMAP) correos el CRM. Solo cambia lo enviado. Las contrasenas se escriben en la app.$Confirm",
+            title = "Cambiar lectura de correo del CRM",
+            description = "Cambia como lee (IMAP) los correos el CRM. Solo cambia lo enviado. La contrasena IMAP se escribe en la app. El envio (SMTP) es el de la empresa y no se cambia desde aqui.$Confirm",
             permission = CrmScreens.Settings,
             inputSchema = McpSchema.obj(mailArguments),
         ) { call -> updateMail(call) },
@@ -309,14 +303,10 @@ object CrmSettingsMcpTools {
             put(
                 "mail",
                 buildJsonObject {
-                    put("smtpMode", mail.smtpMode)
+                    // El envio (SMTP) es el de la empresa; aqui solo se informa si hay con que enviar (nunca credenciales).
+                    put("companySmtpConfigured", CrmMail.companySmtp(tenant, call.access.secrets) != null)
                     put("serverMailAvailable", call.access.serverMail != null)
-                    put("smtpHost", text(mail.smtpHost))
-                    put("smtpPort", mail.smtpPort)
-                    put("smtpUsername", text(mail.smtpUsername))
-                    put("smtpPasswordConfigured", !mail.smtpPassword.isNullOrBlank())
-                    put("smtpFrom", text(mail.smtpFrom))
-                    put("smtpSecurity", mail.smtpSecurity)
+                    put("sendingAvailable", CrmMail.smtp(tenant, call.access.serverMail, call.access.secrets) != null)
                     put("imapEnabled", mail.imapEnabled)
                     put("imapHost", text(mail.imapHost))
                     put("imapPort", mail.imapPort)
@@ -433,12 +423,6 @@ object CrmSettingsMcpTools {
         val current = CrmMail.load(call.tenant)
         // CrmMail.merge reads the whole mail form; blank passwords keep the saved ones.
         val values = mutableMapOf(
-            "smtpMode" to if (current.smtpMode == "empresa") "Cuenta propia" else "SMTP del servidor",
-            "smtpHost" to current.smtpHost.orEmpty(),
-            "smtpPort" to current.smtpPort.toString(),
-            "smtpUsername" to current.smtpUsername.orEmpty(),
-            "smtpFrom" to current.smtpFrom.orEmpty(),
-            "smtpSecurity" to current.smtpSecurity,
             "imapEnabled" to current.imapEnabled.toString(),
             "imapHost" to current.imapHost.orEmpty(),
             "imapPort" to current.imapPort.toString(),
@@ -446,17 +430,9 @@ object CrmSettingsMcpTools {
             "imapFolder" to current.imapFolder,
             "imapSsl" to current.imapSsl.toString(),
         )
-        if (call.has("smtpMode")) {
-            values["smtpMode"] = when (call.string("smtpMode", 20)) {
-                "empresa" -> "Cuenta propia"
-                "servidor" -> "SMTP del servidor"
-                else -> throw McpToolException("'smtpMode' debe ser servidor o empresa.")
-            }
-        }
-        listOf("smtpHost", "smtpUsername", "smtpFrom", "smtpSecurity", "imapHost", "imapUsername", "imapFolder").forEach { key ->
+        listOf("imapHost", "imapUsername", "imapFolder").forEach { key ->
             if (call.has(key)) values[key] = call.string(key, 300)
         }
-        if (call.has("smtpPort")) values["smtpPort"] = call.int("smtpPort", current.smtpPort, 1..65535).toString()
         if (call.has("imapPort")) values["imapPort"] = call.int("imapPort", current.imapPort, 1..65535).toString()
         if (call.has("imapEnabled")) values["imapEnabled"] = call.boolean("imapEnabled").toString()
         if (call.has("imapSsl")) values["imapSsl"] = call.boolean("imapSsl").toString()
