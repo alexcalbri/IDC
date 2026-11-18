@@ -63,6 +63,7 @@ object HotspotServerModule : ServerModule {
         "modules/hotspot/migrations/V009__shared_networks.sql",
         "modules/hotspot/migrations/V010__portal_templates.sql",
         "modules/hotspot/migrations/V011__portal_colors.sql",
+        "modules/hotspot/migrations/V012__ip_throttle.sql",
     )
 
     override val runtimeTables = listOf(
@@ -73,6 +74,7 @@ object HotspotServerModule : ServerModule {
         "hotspot_networks",
         "hotspot_code_sessions",
         "hotspot_code_attempts",
+        "hotspot_ip_throttle",
         "hotspot_integrations",
         "hotspot_user_codes",
         "hotspot_user_network_grants",

@@ -5,6 +5,8 @@ import com.ideasdeveloper.idc.server.modules.CompanyMailResult
 import com.ideasdeveloper.idc.server.modules.MailException
 import com.ideasdeveloper.idc.server.modules.MailHostGuard
 import com.ideasdeveloper.idc.server.modules.SmtpSettings
+import com.ideasdeveloper.idc.server.net.PinnedHost
+import com.ideasdeveloper.idc.server.net.PinnedHostException
 import com.ideasdeveloper.idc.server.security.SecretBox
 import com.ideasdeveloper.idc.server.security.SecretsUnavailableException
 import jakarta.mail.Folder
@@ -325,6 +327,17 @@ object CrmMail {
         }
         // Se vuelve a validar justo antes de conectar (el nombre pudo cambiar de destino desde que se guardo).
         MailHostGuard.check(settings.imapHost.orEmpty(), settings.imapPort)
+        // Se resuelve una sola vez y la conexion va a esa IP (anti DNS rebinding); el nombre original sigue para el certificado.
+        val imapHost = settings.imapHost.orEmpty()
+        val validated = try {
+            PinnedHost.resolveValidated(imapHost)
+        } catch (failure: PinnedHostException) {
+            throw MailException(failure.message.orEmpty(), failure)
+        }
+        for (prefix in listOf("mail.imap", "mail.imaps")) {
+            properties.put("$prefix.socketFactory", PinnedHost.pinnedSocketFactory(validated))
+            properties.put("$prefix.ssl.socketFactory", PinnedHost.pinnedSslSocketFactory(validated, imapHost))
+        }
         if (CrmSecrets.isUnreadable(settings.imapPassword)) throw MailException("La contrasena IMAP guardada no se puede leer.")
         val store = Session.getInstance(properties).getStore(if (settings.imapSsl) "imaps" else "imap")
         store.connect(settings.imapHost, settings.imapPort, settings.imapUsername, settings.imapPassword)

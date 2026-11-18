@@ -95,6 +95,7 @@ Tenant migrations through `V008__remove_hotspot_user_code.sql`
 | `hotspot_pass_sources` | Modules that give access passes (V004); written by those modules. |
 | `hotspot_access_passes` | Access passes of customers (V004); written by the source modules, `minutes_balance` spent by the portal. |
 | `hotspot_code_attempts` | Wrong customer/user codes, for the guessing limits; kept one day (V002). |
+| `hotspot_ip_throttle` | Portal requests per source IP (IPv6 grouped by /64) and action (`register`, `code`) in 10-minute windows, for the per-IP limits; survives restarts, old windows are deleted (V012). |
 | `hotspot_integrations` | Integrations of the module and whether they are enabled (V003). |
 | `hotspot_user_codes` | Hotspot-specific WiFi access state only; user codes live in Core (V003, V006, V007, V008). |
 | `hotspot_user_network_grants` | Server company only: networks of other companies its users may join (V003). |

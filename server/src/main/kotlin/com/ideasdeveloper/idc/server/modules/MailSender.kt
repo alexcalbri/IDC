@@ -9,6 +9,8 @@ import jakarta.mail.internet.InternetAddress
 import jakarta.mail.internet.MimeBodyPart
 import jakarta.mail.internet.MimeMessage
 import jakarta.mail.internet.MimeMultipart
+import com.ideasdeveloper.idc.server.net.PinnedHost
+import com.ideasdeveloper.idc.server.net.PinnedHostException
 import java.util.Properties
 
 // SMTP connection used by modules that send email (server default or a company override).
@@ -42,10 +44,33 @@ object MailHostGuard {
         if (address.isLoopbackAddress || address.isAnyLocalAddress || address.isLinkLocalAddress || address.isSiteLocalAddress || address.isMulticastAddress) return true
         val bytes = address.address
         return when (bytes.size) {
-            4 -> bytes[0].toInt() == 0 || ((bytes[0].toInt() and 0xFF) == 100 && (bytes[1].toInt() and 0xC0) == 64)
-            16 -> (bytes[0].toInt() and 0xFE) == 0xFC
+            4 -> blockedIpv4(bytes)
+            16 -> {
+                if ((bytes[0].toInt() and 0xFE) == 0xFC) return true
+                // NAT64 64:ff9b::/96 (IPv4 en los ultimos 4 bytes) y 6to4 2002::/16 (IPv4 en los bytes 2 a 5): se revalida el IPv4 incrustado.
+                val nat64 = bytes[0].toInt() == 0x00 && bytes[1].toInt() == 0x64 && (bytes[2].toInt() and 0xFF) == 0xFF && (bytes[3].toInt() and 0xFF) == 0x9B &&
+                    (4..11).all { bytes[it].toInt() == 0 }
+                val sixToFour = (bytes[0].toInt() and 0xFF) == 0x20 && bytes[1].toInt() == 0x02
+                when {
+                    nat64 -> blockedAddress(java.net.InetAddress.getByAddress(bytes.copyOfRange(12, 16)))
+                    sixToFour -> blockedAddress(java.net.InetAddress.getByAddress(bytes.copyOfRange(2, 6)))
+                    else -> false
+                }
+            }
             else -> true
         }
+    }
+
+    // Rangos IPv4 no publicos que Java no marca: 0/8, CGNAT, 192.0.0/24, documentacion (TEST-NET), pruebas 198.18/15 y reservado 240/4 (incluye 255.255.255.255).
+    private fun blockedIpv4(bytes: ByteArray): Boolean {
+        val a = bytes[0].toInt() and 0xFF
+        val b = bytes[1].toInt() and 0xFF
+        val c = bytes[2].toInt() and 0xFF
+        return a == 0 || (a == 100 && (b and 0xC0) == 64) ||
+            (a == 192 && b == 0 && (c == 0 || c == 2)) ||
+            (a == 198 && ((b and 0xFE) == 18 || (b == 51 && c == 100))) ||
+            (a == 203 && b == 0 && c == 113) ||
+            a >= 240
     }
 
     /**
@@ -92,9 +117,16 @@ object MailSender {
         if (!settings.isUsable) throw MailException("El correo SMTP no esta configurado.")
         // Se valida justo antes de conectar (el nombre pudo cambiar de destino desde que se guardo).
         // El SMTP del servidor (settings.trusted) o un llamador de confianza puede usar un relay interno.
-        MailHostGuard.check(settings.host, settings.port, allowPrivate = allowPrivate || settings.trusted)
+        val trusted = allowPrivate || settings.trusted
+        MailHostGuard.check(settings.host, settings.port, allowPrivate = trusted)
+        // Se resuelve una sola vez y la conexion va a esa IP: JavaMail no vuelve a resolver el nombre (anti DNS rebinding).
+        val validated = try {
+            PinnedHost.resolveValidated(settings.host, trusted)
+        } catch (failure: PinnedHostException) {
+            throw MailException(failure.message.orEmpty(), failure)
+        }
         try {
-            val message = MimeMessage(session(settings)).apply {
+            val message = MimeMessage(session(settings, validated)).apply {
                 setFrom(InternetAddress(settings.from, true))
                 setRecipient(Message.RecipientType.TO, InternetAddress(to, true))
                 setSubject(subject, Charsets.UTF_8.name())
@@ -107,9 +139,15 @@ object MailSender {
         }
     }
 
-    private fun session(settings: SmtpSettings): Session {
+    private fun session(settings: SmtpSettings, validated: java.net.InetAddress): Session {
         val properties = Properties().apply {
             put("mail.smtp.host", settings.host)
+            // El nombre sigue siendo el original (EHLO, certificado), pero el TCP va a la IP ya validada.
+            put("mail.smtp.socketFactory", PinnedHost.pinnedSocketFactory(validated))
+            put("mail.smtp.ssl.socketFactory", PinnedHost.pinnedSslSocketFactory(validated, settings.host))
+            put("mail.smtps.socketFactory", PinnedHost.pinnedSocketFactory(validated))
+            put("mail.smtps.ssl.socketFactory", PinnedHost.pinnedSslSocketFactory(validated, settings.host))
+            put("mail.smtps.ssl.checkserveridentity", "true")
             put("mail.smtp.port", settings.port.toString())
             put("mail.smtp.connectiontimeout", "10000")
             put("mail.smtp.timeout", "15000")

@@ -317,7 +317,12 @@ Main responsibilities:
 - Use the runtime connection and `SET ROLE <server_owner>` after token
   validation.
 - Create tenant database.
-- Create `business_owner` PostgreSQL login role.
+- Create `business_owner` PostgreSQL login role. The password never reaches the
+  server in clear text in a `CREATE/ALTER ROLE ... PASSWORD` statement: the
+  server computes the SCRAM-SHA-256 verifier in Kotlin (`security/ScramSha256.kt`,
+  Core 0.7.2) and sends `PASSWORD 'SCRAM-SHA-256$...'`, so the plain password is
+  never logged or transmitted (the `SET log_statement = 'none'` call stays as
+  defense in depth). The same applies to every owner-password change.
 - Grant tenant DB connection to runtime and business owner roles.
 - Apply tenant/core migrations:
   - Core users;
@@ -328,7 +333,13 @@ Main responsibilities:
   - `clientes` customers;
   - `clientes` customer field definitions.
 - Seed the business owner in `application_users` and `business_owner`.
-- Grant runtime permissions on tenant tables.
+- Grant runtime permissions on tenant tables. The catch-up migrations applied to
+  existing tenants at startup (user profile, account throttle, notifications,
+  extensions) grant through an owner-aware helper (`grantIfMissing`, Core 0.7.2):
+  it skips a grant the runtime user already has, runs the `GRANT` as the table
+  owner (`SET ROLE`) when the provisioning role is not the owner, and only logs a
+  warning instead of aborting if it still cannot grant, so an upgrade never fails
+  with `permission denied for table`.
 - Insert company into central `companies`.
 - Insert audit records into `provisioning_audit_log`.
 - Register the tenant connection in `LoginDatabases`.

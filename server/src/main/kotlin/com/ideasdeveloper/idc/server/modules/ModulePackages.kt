@@ -1,6 +1,10 @@
 package com.ideasdeveloper.idc.server.modules
 
 import com.ideasdeveloper.idc.server.app.IdeasCoreVersion
+import com.ideasdeveloper.idc.server.extensions.ExtensionSignatureFile
+import com.ideasdeveloper.idc.server.extensions.packages.ExtensionPackageException
+import com.ideasdeveloper.idc.server.extensions.packages.ExtensionSignatureVerifier
+import com.ideasdeveloper.idc.server.extensions.packages.ExtensionTreeHash
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
@@ -88,9 +92,9 @@ data class BuiltModule(val jar: Path, val version: String, val sha256: String)
  * the classpath of the running server, so it uses exactly the installed core API. A module that
  * does not fit the installed core fails to compile and nothing is changed.
  *
- * TODO(seguridad): los modulos aun no se firman; compilar y cargar un paquete ejecuta codigo en el
- * servidor. Deberian exigir la misma compuerta de firma/commit fijado que las extensiones antes de
- * instalarse o actualizarse.
+ * Compilar y cargar un paquete ejecuta codigo en el servidor, asi que [verify] aplica antes de
+ * compilar la misma compuerta que las extensiones: firma Ed25519 valida de Ideas Core, o hash del
+ * arbol autorizado por el dueno del servidor para los paquetes sin firma.
  */
 class ModulePackageBuilder(
     private val packagesRoot: Path,
@@ -100,6 +104,10 @@ class ModulePackageBuilder(
     private val githubToken: String? = null,
     // Core instalado: un paquete que pide un Core mayor no se compila.
     private val coreVersion: String = IdeasCoreVersion,
+    // Mismas llaves publicas que las extensiones.
+    private val verifier: ExtensionSignatureVerifier = ExtensionSignatureVerifier(),
+    // Sin autorizaciones, un paquete sin firma se rechaza.
+    private val authorizations: ModuleUnsignedAuthorizationStore = DenyAllModuleAuthorizations,
 ) {
     private val log = LoggerFactory.getLogger(ModulePackageBuilder::class.java)
     private val http = HttpClient.newBuilder()
@@ -128,6 +136,10 @@ class ModulePackageBuilder(
         val manifest = validate(moduleId, moduleDir)
         val version = manifest["version"]!!.jsonPrimitive.content
 
+        // Nada se compila ni se carga hasta que el paquete esta firmado o autorizado por hash.
+        progress("Verificando la firma del paquete")
+        verify(moduleId, moduleDir)
+
         progress("Compilando contra el nucleo instalado")
         val classes = Files.createDirectories(work.resolve("classes"))
         compile(moduleDir.resolve("server/src/main/kotlin"), classes, work)
@@ -143,6 +155,102 @@ class ModulePackageBuilder(
             files.filter { it.isRegularFile() && it.extension == "jar" && it != target }.forEach(Files::deleteIfExists)
         }
         return BuiltModule(target, version, sha256(target))
+    }
+
+    /**
+     * Comprueba el hash del arbol del modulo contra extension.sig.json y su firma Ed25519. Sin firma
+     * exige una autorizacion del dueno del servidor para ese hash. Devuelve el hash verificado y
+     * lanza [ModuleBuildException] si el paquete no pasa la compuerta.
+     */
+    fun verify(moduleId: String, moduleDir: Path): String {
+        val actual = try {
+            ExtensionTreeHash.compute(moduleDir)
+        } catch (failure: ExtensionPackageException) {
+            throw ModuleBuildException(failure.message.orEmpty(), failure)
+        }
+        val signatureFile = moduleDir.resolve(ExtensionTreeHash.SignatureFileName).takeIf { Files.isRegularFile(it) }
+            ?.let {
+                try {
+                    signatureJson.decodeFromString(ExtensionSignatureFile.serializer(), it.readText())
+                } catch (failure: Exception) {
+                    throw ModuleBuildException("${ExtensionTreeHash.SignatureFileName} no es valido.", failure)
+                }
+            }
+        val signature = signatureFile?.signature
+        if (signature != null) {
+            if (!signatureFile.packageSha256.equals(actual, ignoreCase = true)) {
+                throw ModuleBuildException("El hash del paquete no coincide con ${ExtensionTreeHash.SignatureFileName}: el contenido cambio despues de firmarlo.")
+            }
+            verifier.verify(actual, signature)?.let { throw ModuleBuildException("Firma rechazada: $it.") }
+            return actual
+        }
+        if (signatureFile != null && !signatureFile.packageSha256.equals(actual, ignoreCase = true)) {
+            throw ModuleBuildException("El hash del paquete no coincide con ${ExtensionTreeHash.SignatureFileName}.")
+        }
+        if (!authorizations.isAuthorized(actual)) {
+            throw ModuleBuildException(
+                "El modulo '$moduleId' no esta firmado. El dueno del servidor debe autorizar el hash $actual antes de instalarlo.",
+            )
+        }
+        log.warn("Instalando el modulo sin firma {} (hash {}) por autorizacion del dueno del servidor.", moduleId, actual)
+        return actual
+    }
+
+    /**
+     * Descarga el modulo del catalogo y calcula su hash sin exigir firma ni autorizacion: sirve para
+     * saber que hash y commit tendria que autorizar el dueno del servidor.
+     */
+    fun inspect(moduleId: String, source: GitHubLocation): ModulePackageInspection {
+        val work = Files.createDirectories(packagesRoot.resolve(moduleId)).resolve("inspect-${System.currentTimeMillis()}")
+        Files.createDirectories(work)
+        try {
+            val commit = resolveCommit(source)
+            val archive = download(source.archiveUrl, work.resolve("source.zip"))
+            val moduleDir = extractModule(archive, "${source.path}/$moduleId", work.resolve("source"))
+            val hash = try {
+                ExtensionTreeHash.compute(moduleDir)
+            } catch (failure: ExtensionPackageException) {
+                throw ModuleBuildException(failure.message.orEmpty(), failure)
+            }
+            val signature = moduleDir.resolve(ExtensionTreeHash.SignatureFileName).takeIf { Files.isRegularFile(it) }
+                ?.let { runCatching { signatureJson.decodeFromString(ExtensionSignatureFile.serializer(), it.readText()) }.getOrNull() }
+                ?.takeIf { it.signature != null }
+            val problem = when {
+                signature == null -> null
+                !signature.packageSha256.equals(hash, ignoreCase = true) -> "el hash de extension.sig.json no coincide con el contenido"
+                else -> verifier.verify(hash, signature.signature!!)
+            }
+            return ModulePackageInspection(
+                id = moduleId,
+                commit = commit,
+                commitUrl = "https://github.com/${source.owner}/${source.repo}/tree/$commit/${source.path.trim('/')}/$moduleId",
+                packageSha256 = hash,
+                signed = signature != null && problem == null,
+                keyId = signature?.signature?.keyId,
+                signatureProblem = problem,
+            )
+        } finally {
+            work.toFile().deleteRecursively()
+        }
+    }
+
+    /** Guarda la autorizacion del dueno del servidor para un paquete sin firma (hash y commit revisados). */
+    fun authorizeUnsigned(packageSha256: String, moduleId: String, commit: String, actor: String, acknowledgement: String) =
+        authorizations.authorize(packageSha256, moduleId, commit, actor, acknowledgement)
+
+    // Commit de 40 hex al que apunta hoy la rama del catalogo (API de GitHub, respuesta de solo el sha).
+    private fun resolveCommit(source: GitHubLocation): String {
+        if (!RefPattern.matches(source.ref)) throw ModuleBuildException("La rama del catalogo no es valida.")
+        val url = "https://api.github.com/repos/${source.owner}/${source.repo}/commits/${source.ref}"
+        val request = HttpRequest.newBuilder(URI.create(url)).timeout(Duration.ofSeconds(30)).GET()
+            .header("Accept", "application/vnd.github.sha")
+        GitHubAuth.header(githubToken, url)?.let { request.header("Authorization", it) }
+        val response = http.send(request.build(), HttpResponse.BodyHandlers.ofString())
+        val commit = response.body().trim().lowercase()
+        if (response.statusCode() != 200 || !CommitPattern.matches(commit)) {
+            throw ModuleBuildException("No se pudo resolver el commit de ${source.ref} (HTTP ${response.statusCode()}).")
+        }
+        return commit
     }
 
     private fun download(url: String, target: Path): Path {
@@ -307,6 +415,9 @@ class ModulePackageBuilder(
         private const val MaxArchiveBytes = 300L * 1024 * 1024
         private const val MaxModuleBytes = 50L * 1024 * 1024
         private val MigrationName = Regex("V[0-9]{3}__[a-z0-9_]+\\.sql")
+        private val signatureJson = Json { ignoreUnknownKeys = true }
+        private val CommitPattern = Regex("[a-f0-9]{40}")
+        private val RefPattern = Regex("[A-Za-z0-9._/-]+")
 
         fun providerClassName(moduleId: String): String =
             "com.ideasdeveloper.idc.modules.$moduleId." +
@@ -316,12 +427,16 @@ class ModulePackageBuilder(
          * Builder for the installed server: compiler/ next to lib/ in the distribution and the
          * running server's classpath. Returns null outside an installed distribution (e.g. :server:run).
          */
-        fun forRunningServer(packagesRoot: Path, githubToken: String? = null): ModulePackageBuilder? {
+        fun forRunningServer(
+            packagesRoot: Path,
+            githubToken: String? = null,
+            authorizations: ModuleUnsignedAuthorizationStore = DenyAllModuleAuthorizations,
+        ): ModulePackageBuilder? {
             val location = runCatching { Path.of(ModulePackageBuilder::class.java.protectionDomain.codeSource.location.toURI()) }.getOrNull()
                 ?: return null
             val compilerDir = location.parent?.parent?.resolve("compiler")?.takeIf { Files.isDirectory(it) } ?: return null
             val java = ProcessHandle.current().info().command().orElse("java")
-            return ModulePackageBuilder(packagesRoot, compilerDir, System.getProperty("java.class.path"), java, githubToken)
+            return ModulePackageBuilder(packagesRoot, compilerDir, System.getProperty("java.class.path"), java, githubToken, authorizations = authorizations)
         }
     }
 }

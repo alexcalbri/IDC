@@ -475,6 +475,12 @@ serialized values) and its forms only exist inside WordPress.
   plugin. Both directions send `X-IDC-Timestamp` and
   `X-IDC-Signature = hex(HMAC-SHA256(secret, timestamp + "." + body))`;
   more than 5 minutes of difference is rejected.
+- **Host pinning (anti-SSRF / anti DNS-rebinding, 0.25.2)**: outbound fetches from
+  the CRM (URL import, monday API and file download, WordPress connector) resolve
+  the host once, reject non-public IPs, and connect to that validated IP while
+  keeping the original hostname for SNI and certificate validation
+  (`server/.../net/PinnedHost.kt`, Core 0.7.2). This closes the window between
+  validating the DNS answer and opening the socket.
 - **IDC -> site** (`POST /wp-json/idc/v1/rpc`): `ping`, `search` (text or MLS,
   taxonomy filters, price range, 20 per page), `listing` (every field of the
   theme: price, MLS, size, lot, year, parking, taxonomies, agent, co-agent,

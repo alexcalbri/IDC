@@ -33,6 +33,15 @@ Implementación actual:
 - `DELETE /server/modules/{moduleId}` elimina un modulo opcional del catalogo
   activo del servidor solo si ninguna empresa lo tiene activo, y elimina su
   fila de `server_modules`.
+- `GET /server/modules/{moduleId}/inspect` (solo `server_owner`) descarga el
+  paquete del modulo y devuelve su commit, URL, hash SHA-256, si viene firmado y
+  el problema de firma si lo hay. `POST /server/modules/{moduleId}/authorize-unsigned`
+  (solo `server_owner`) autoriza un modulo SIN firmar fijando su hash y commit
+  (igual que las extensiones): antes de compilar, `ModulePackageBuilder.verify`
+  exige firma Ed25519 valida o, si no viene firmada, que su hash este autorizado
+  aqui. Sin firma ni autorizacion, la instalacion se rechaza. La autorizacion de
+  modulos es independiente de la de extensiones (se guarda con prefijo
+  `module-commit:`).
 - `PUT /companies/{code}/modules/{moduleId}` habilita o deshabilita modulos
   opcionales por empresa. Esta accion requiere `server_owner`; `business_owner`
   no puede cambiar disponibilidad de modulos. `clientes` queda bloqueado como
