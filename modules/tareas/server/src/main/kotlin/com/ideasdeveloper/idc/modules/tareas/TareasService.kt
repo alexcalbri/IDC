@@ -150,7 +150,6 @@ object TareasService {
             previous == TaskStatus.Review && applied.status == TaskStatus.InProgress -> TareasNotify.returned(tenant, notifier, updated, scope.userId)
             previous == TaskStatus.Review && applied.status == TaskStatus.Done -> TareasNotify.approved(tenant, notifier, updated, scope.userId)
         }
-        if (applied.status == TaskStatus.Done && previous != TaskStatus.Done) TareasCustomerEvents.completed(tenant, access, updated, name)
         return StatusResult(updated, applied.status, applied.redirectedToReview)
     }
 

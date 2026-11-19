@@ -1,6 +1,6 @@
 # Tareas
 
-Version 0.2.0 (in development). Replaces the Monday boards: tasks organized in boards and groups, with several
+Version 0.3.0 (in development). Replaces the Monday boards: tasks organized in boards and groups, with several
 responsibles, an optional reviewer, checklist, comments, attachments, due reminders and list, kanban, agenda and
 workload views.
 
@@ -65,8 +65,16 @@ change is never notified. Target: screen `task` with the task id.
 
 ## Customer history
 
-A task with a customer that reaches `done` writes "Tarea completada: <titulo>" in the customer's history
-(`TareasCustomerEvents.completed`, `sourceRef = task:<id>:done`, so it is written once). The customer is checked when it
+The module adds to the customer's history in Clientes through `CustomerTimeline` (`TareasCustomerTimeline`): it is computed
+when read and nothing is written in `customer_history` (since 0.3.0; what older versions wrote stays there). Clientes lists
+it only when the module is enabled for the company and the user holds `tareas.view`. The user sees only the tasks they may
+see in the module (`TareasScope.seesTask`: admins and owners all; otherwise an active company or member board, or being a
+responsible or the reviewer), and archived tasks never appear. Entries, newest first, link to the task (`UiOpenModule("tareas", "task")`):
+
+- `task_created` ("Tarea: <titulo>", detail: board and status), at the creation date.
+- `task_done` ("Tarea completada: <titulo>"), at the completion date.
+
+The Monday imports write nothing there: imported tasks show up with their own dates. The customer is checked when it
 is linked. `GET /modules/tareas/ui/suggest/customers` needs `tareas.manage` and `clientes.view`.
 
 ## Extension point for other modules

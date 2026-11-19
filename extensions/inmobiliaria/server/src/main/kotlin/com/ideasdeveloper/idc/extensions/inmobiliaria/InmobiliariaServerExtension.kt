@@ -12,6 +12,7 @@ import com.ideasdeveloper.idc.modules.crm.CrmImportTarget
 import com.ideasdeveloper.idc.modules.crm.CrmLead
 import com.ideasdeveloper.idc.modules.crm.CrmScreenProvider
 import com.ideasdeveloper.idc.modules.crm.CrmScreens
+import com.ideasdeveloper.idc.server.extensions.ExtensionAccess
 import com.ideasdeveloper.idc.server.extensions.ExtensionContext
 import com.ideasdeveloper.idc.server.extensions.ExtensionManifest
 import com.ideasdeveloper.idc.server.extensions.ExtensionSource
@@ -24,6 +25,7 @@ import com.ideasdeveloper.idc.server.extensions.UninstallDefault
 import com.ideasdeveloper.idc.server.extensions.UninstallItem
 import com.ideasdeveloper.idc.server.modules.McpTool
 import com.ideasdeveloper.idc.ui.UiNode
+import io.ktor.server.routing.Route
 import java.sql.Connection
 
 /**
@@ -41,7 +43,7 @@ object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider, CrmImpo
         module = "crm",
         displayName = "Inmobiliaria (corretaje)",
         description = "Convierte el CRM en una herramienta de corretaje: inventario de propiedades con enlaces por portal e historial de precios, captaciones, transacciones con partes y comisiones, y herramientas para agentes de IA.",
-        version = "1.0.0",
+        version = "1.1.0",
         minModuleVersion = "0.28.0",
         source = ExtensionSource(
             ExtensionSourceType.GitHub,
@@ -73,6 +75,11 @@ object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider, CrmImpo
         InmobiliariaStore.DealsTable,
         InmobiliariaStore.PartiesTable,
     )
+
+    /** Sin rutas propias: solo toma el acceso a Clientes para escribir en el historial del cliente. */
+    override fun routes(route: Route, access: ExtensionAccess) {
+        InmobiliariaCustomerEvents.access = access.modules
+    }
 
     /** Crea las etapas de la plantilla si la empresa aun no tiene ninguna. */
     override fun onEnable(context: ExtensionContext) {

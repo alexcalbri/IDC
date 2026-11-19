@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.propietarios
 
 import com.ideasdeveloper.idc.server.extensions.ServerExtension
+import com.ideasdeveloper.idc.server.modules.CustomerTimeline
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleJob
@@ -94,11 +95,14 @@ object PropietariosServerModule : ServerModule {
     override val mcp: ModuleMcp
         get() = PropietariosMcpTools.mcp
 
+    override val customerTimeline: CustomerTimeline
+        get() = PropietariosCustomerTimeline.timeline
+
     override val definition = ModuleDefinition(
         id = PropietariosModule.id,
         displayName = PropietariosModule.displayName,
         description = "Registro de desarrollos, lotes y propietarios: area, numero de registro y estado de cada lote, titulares vigentes con su porcentaje, historial de cambios de titularidad y adjuntos como escrituras y planos.",
-        version = "0.1.0",
+        version = "0.2.0",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.7.0",
         permissions = listOf(

@@ -1,8 +1,8 @@
 # Eventos
 
-Version 0.1.0 (in development). Events of the business: **public events** with capacity, waiting list, registrations,
+Version 0.2.0 (in development). Events of the business: **public events** with capacity, waiting list, registrations,
 attendance and member prices (workshops, music nights, talks), and **private events** with a client, an agreed amount and
-payments (abonos) (weddings, celebrations, retreats). Out of scope in 0.1.0: public registration page, online payments and
+payments (abonos) (weddings, celebrations, retreats). Out of scope in 0.2.0: public registration page, online payments and
 tickets with codes: the team registers people and marks payment by hand.
 
 ## Data (company database)
@@ -65,12 +65,24 @@ reuse the visible one with the same e-mail; Clientes is told with `access.custom
 
 ## Customer history
 
-Written with `access.recordCustomerEvent` (module `eventos`, link to the `evento` screen, one record per `sourceRef`):
+Nothing is written in `customer_history` (since 0.2.0). Clientes asks `EventosCustomerTimeline.timeline` (permission
+`eventos.view`, only while the module is enabled for the company), which reads the module's tables, newest first, at most
+`query.limit` entries, each with a link to the `evento` screen. `eventos.view` shows every event in the screens, so the
+timeline has no extra restriction, except that private events in draft are not listed:
 
-- `evento_inscripcion` "Inscripción: ..." (`registration:<id>:created`; also when moved from the waiting list, not while waiting).
-- `evento_asistencia` "Asistió: ..." (`registration:<id>:attended`).
-- `evento_privado` "Evento privado: ..." for the client when a private event is confirmed or created confirmed (`event:<id>:booked`).
-- `evento_cancelado` for the client when a confirmed private event is cancelled (`event:<id>:cancelled`).
+- `evento_inscripcion` "Inscripción: ..." (registered or cancelled; never the waiting list). Date: the earlier of the record
+  creation and the event start, so imported or back-dated events show their real date. Detail: event date, seats, the
+  customer's amount and currency, "Pagado" or "Pago pendiente".
+- `evento_pago` "Pago de inscripción: ..." (date of payment).
+- `evento_asistencia` "Asistió: ..." (date of attendance).
+- `evento_inscripcion_cancelada` "Inscripción cancelada: ..." (date of cancellation).
+- `evento_privado` "Evento privado: ..." for the client of a confirmed, done or cancelled private event; detail: date, space,
+  agreed amount and total paid.
+- `evento_pago` "Pago del evento privado: ..." one per payment (abono), with the amount only; notes and methods are not shown.
+- `evento_cancelado` "Evento cancelado: ..." (date of cancellation; the reason is never shown, it can be internal).
+
+The Monday import writes nothing in the history; its events show with their real date through the same timeline.
+The pure function `EventosCustomerTimeline.entries` (rows to entries) is covered by tests.
 
 ## Notices (Core notification center)
 
@@ -96,7 +108,7 @@ It decides the proposed member price and the line "Miembro vigente: {plan} hasta
 
 `EventosService` (operations with permission, transaction and after-commit work; synchronous, callers use
 `withContext(Dispatchers.IO)`), `EventosRepository` (parameterized JDBC), `EventosRules`, `EventosNotify`,
-`EventosCustomerEvents`, `EventosMembership`, `EventosMcpTools`, `EventosImport` (contract) and `EventosImportApply`.
+`EventosCustomerTimeline`, `EventosMembership`, `EventosMcpTools`, `EventosImport` (contract) and `EventosImportApply`.
 `EventosRoutes.install` is where the native screens are added; `respondEventos` opens the company database for a route.
 
 ## MCP tools
@@ -128,7 +140,7 @@ Eventos does not know where data comes from: import **extensions** (for example 
   `import_key`; the client is the one already linked to that event, else the visible customer with the same e-mail, else a new
   customer (`customer_type 'eventos'`). The responsible is matched by e-mail; without a match a line "Responsable en Monday: ..."
   goes at the end of the notes. Payments are inserted with `ON CONFLICT (import_key) DO NOTHING`. Long texts are cut with "…".
-  A confirmed or done event writes `evento_privado` in the client's history. Importing again updates only the fields
+  It writes nothing in the customer history: the event shows in the client's timeline with its real date. Importing again updates only the fields
   Monday owns (title, description, category, space, dates, client, amount, guests; the responsible only when matched) and
   never series, host, notes or an unmatched responsible; the state changes only from draft or towards cancelled.
 - The screen `importar` and the agent tools of the sources are added by the screens and `EventosMcpTools.mcp`.
@@ -166,8 +178,9 @@ Lists never show the e-mail or phone of a customer.
 - Calendar view: the native pieces have no calendar; upcoming events are shown by ISO week.
 - Needs from the Core: `ModuleAccessService.isEnabled` (the integration with Membresia reads `tenant_modules` itself).
 - "Today" for attendance and the job uses the server time zone; companies have no time zone yet.
-- No recurrence in 0.1.0: use "Duplicar evento"; no BEO, menus or signed contracts for private events.
+- No recurrence in 0.2.0: use "Duplicar evento"; no BEO, menus or signed contracts for private events.
 
 ## Versions
 
 - 0.1.0: first version.
+- 0.2.0: the customer history is read from the module's own tables (`CustomerTimeline`) instead of being written in `customer_history`.

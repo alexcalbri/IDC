@@ -245,7 +245,7 @@ object MembresiaRoutes {
                     val amount = parseOptionalAmount(values["amount"], errors)
                     if (errors.isNotEmpty()) return show("renovar", mapOf("id" to id.toString()), failure(errors.joinToString(" ")), values)
                     try {
-                        val renewed = MembresiaService.renew(access, tenant, id, RenewalInput(plan?.id, startsOn, amount), author, today)
+                        val renewed = MembresiaService.renew(tenant, id, RenewalInput(plan?.id, startsOn, amount), author, today)
                             ?: return show("recepcion", emptyMap(), failure("Membresía no encontrada."))
                         member(renewed.customerId, notice("Membresía renovada: ${renewed.startsOn} a ${renewed.endsOn}.", UiTone.Success))
                     } catch (invalid: MembresiaValidationException) {
@@ -265,7 +265,7 @@ object MembresiaRoutes {
                     val host = hostOf(values["host"], hosts, currentMembership)
                     try {
                         val edited = MembresiaService.edit(
-                            access, tenant, id,
+                            tenant, id,
                             MembershipEdit(endsOn, amount, values["source"].orEmpty().trim(), host?.userId, host?.name.orEmpty(), values["unit"].orEmpty(), values["notes"].orEmpty()),
                             today,
                         ) ?: return show("recepcion", emptyMap(), failure("Membresía no encontrada."))
@@ -277,7 +277,7 @@ object MembresiaRoutes {
                 "cancelar" -> {
                     val id = uuid(values["id"]) ?: return show("recepcion", emptyMap(), failure("La membresía no es válida."))
                     try {
-                        val cancelled = MembresiaService.cancel(access, tenant, id, values["reason"].orEmpty(), author)
+                        val cancelled = MembresiaService.cancel(tenant, id, values["reason"].orEmpty())
                             ?: return show("recepcion", emptyMap(), failure("Membresía no encontrada o ya cancelada."))
                         member(cancelled.customerId, notice("Membresía cancelada.", UiTone.Success))
                     } catch (invalid: MembresiaValidationException) {

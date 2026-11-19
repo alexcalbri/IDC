@@ -370,8 +370,7 @@ object PropietariosRoutes {
                 "add-owner" -> {
                     PropietariosService.require(permissions, PropietariosModule.Manage)
                     val lotId = requireId("id")
-                    val result = PropietariosService.addOwner(tenant, lotId, PropietariosActions.coOwner(values), null, "", author, actorId)
-                    PropietariosCustomerEvents.after(tenant, access, result, author)
+                    PropietariosService.addOwner(tenant, lotId, PropietariosActions.coOwner(values), null, "", author, actorId)
                     lotOutcome(lotId, "Cotitular añadido.")
                 }
                 "archive" -> {
@@ -391,7 +390,6 @@ object PropietariosRoutes {
                     val date = PropietariosActions.date(values["date"]) ?: throw missing("Escribe la fecha del cambio.")
                     val newOwners = PropietariosActions.newOwners(values)
                     val result = PropietariosService.transfer(tenant, lotId, date, newOwners, values["notes"].orEmpty(), author, actorId)
-                    PropietariosCustomerEvents.after(tenant, access, result, author)
                     lotOutcome(lotId, if (newOwners.isEmpty()) "Baja registrada." else "Cambio de titularidad registrado.")
                 }
                 else -> throw missing("Acción no disponible.")
@@ -405,7 +403,6 @@ object PropietariosRoutes {
                     val result = PropietariosService.editOwnership(
                         tenant, id, share, PropietariosActions.date(values["starts_on"]), PropietariosActions.date(values["ends_on"]), values["notes"].orEmpty(), author,
                     )
-                    PropietariosCustomerEvents.after(tenant, access, result, author)
                     lotOutcome(result.lotId, "Titularidad guardada.")
                 }
                 else -> throw missing("Acción no disponible.")

@@ -341,7 +341,6 @@ object PropietariosMcpTools {
         if (owners.isNotEmpty() && !canSeeCustomers(call)) throw McpToolException("El usuario no puede ver Clientes, así que no puede elegir titulares.")
         val who = author(call)
         val result = PropietariosService.transfer(call.tenant, lotId, date, owners, call.string("notes", PropietariosRules.MaxNotes + 1), who, call.permissions.userId)
-        PropietariosCustomerEvents.after(call.tenant, call.access, result, who)
         val lot = PropietariosRepository.getLot(call.tenant, lotId) ?: throw McpToolException("Lote no encontrado.")
         return buildJsonObject {
             put("kind", result.kind)

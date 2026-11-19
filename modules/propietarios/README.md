@@ -2,7 +2,7 @@
 
 Registro de desarrollos (urbanizaciones o proyectos), sus lotes y quienes son sus propietarios. Cada lote guarda su número, número de
 registro, área en m², tipo de propiedad y estado, sus titulares vigentes (con porcentaje opcional), el historial de cambios de
-titularidad y archivos adjuntos como escrituras y planos. Versión 0.1.0.
+titularidad y archivos adjuntos como escrituras y planos. Versión 0.2.0.
 
 Los propietarios son clientes de **Clientes** (módulo base): aquí solo se guarda quién es titular de qué lote y desde/hasta cuándo.
 Los datos de contacto no se duplican.
@@ -51,8 +51,7 @@ Rutas de apoyo: `POST /files` y `GET /files/{id}` (adjuntos, máximo 25 MB, desc
 En una transacción, con el lote bloqueado (`FOR UPDATE`): cierra las titularidades abiertas (`ends_on` = fecha del cambio), abre las nuevas
 (los clientes deben ser visibles, sin repetidos, porcentajes sumando 100 % como máximo), pasa el lote a `vendido` si estaba `disponible` o
 `reservado` y escribe el historial (`traspaso`, o `baja` si no hay titulares nuevos). Una fecha anterior al inicio de una titularidad
-abierta se rechaza. Tras confirmar, y sin deshacer nada si falla, escribe en el historial del cliente (`propietario_alta`,
-`propietario_baja`) con enlace al lote.
+abierta se rechaza. No escribe en `customer_history`: el historial del cliente se lee de las tablas del módulo (ver "Historial del cliente").
 
 ## MCP (agentes)
 
@@ -67,18 +66,34 @@ Las extensiones (por ejemplo `propietarios_monday`) implementan `PropietariosImp
 `PropietariosImportApply`: `summary` (vista previa pura), `ensureDevelopment`, `apply` (una transacción por fila, candado por `import_key`,
 idempotente) y `attachFile`. Reglas de `apply`: lote por `import_key`; un lote del mismo número sin clave se adopta; propietarios por correo
 (cliente visible) o por nombre exacto entre clientes de tipo `propietarios`, y si no existen se crean; si los porcentajes suman más de 100 la
-fila se aplica sin porcentajes y se anota en el historial. Tras confirmar escribe el historial del cliente y avisa a Clientes de los clientes
-nuevos. El trabajo `import-runner` corre cada minuto con un presupuesto de 40 segundos.
+fila se aplica sin porcentajes y se anota en el historial. Tras confirmar avisa a Clientes de los clientes nuevos; no escribe nada en el historial del cliente. El trabajo `import-runner` corre cada minuto con un presupuesto de 40 segundos.
 
 Nota: quien tiene `propietarios.import` crea clientes nuevos en Clientes al aplicar una importación (igual que Membresía), sin necesitar
-permisos de Clientes. Un traspaso no cobra cuotas ni cargos: eso queda fuera de 0.1.0.
+permisos de Clientes. Un traspaso no cobra cuotas ni cargos: eso queda fuera de 0.2.0.
+
+## Historial del cliente
+
+Desde 0.2.0 el módulo ya no escribe en `customer_history`. Clientes pregunta a `PropietariosCustomerTimeline.timeline` (permiso
+`propietarios.view`, solo si el módulo está activo en la empresa), que lee `propietarios_ownerships` de ese cliente, de la más nueva a la
+más vieja y como mucho `query.limit` entradas, cada una con enlace a la pantalla `lote`. Igual que las pantallas, no muestra lotes ni
+desarrollos archivados:
+
+- `propietario_alta` "Propietario del lote N": fecha `starts_on` (o la de creación si no hay); detalle "{desarrollo} · desde {fecha}" y
+  "Participación: X%" si hay.
+- `propietario_baja` "Dejó de ser propietario del lote N": solo si `ends_on` ya llegó (hoy o antes), con esa fecha.
+- Traspaso: si en el mismo lote otra persona empezó el mismo día en que esta terminó, la salida es `propietario_traspaso_salida`
+  "Traspasó el lote N" y la entrada del otro cliente `propietario_traspaso_entrada` "Recibió el lote N por traspaso", en lugar de baja y
+  alta. El otro titular no se nombra ni se lee (solo se comprueba que exista); tampoco hay notas ni adjuntos.
+
+Las importaciones de Monday no escriben nada: lo importado sale con su fecha real. La función pura `PropietariosCustomerTimeline.entries`
+(filas a entradas) tiene pruebas.
 
 ## Mapa
 
 No hay una pieza nativa de mapa en la interfaz del Core: **Ver en mapa** abre un enlace externo (el `map_url` del lote si empieza por
 `https://`; si no, `https://www.google.com/maps?q=<lat>,<lng>`). Pieza faltante: un mapa interactivo con los lotes (pendiente en el Core).
 
-## Fuera de 0.1.0: cuotas y cargos
+## Fuera de 0.2.0: cuotas y cargos
 
 Las tablas previstas para una versión posterior, sin cambios en V001: `propietarios_fee_plans`, `propietarios_charges (lot_id, customer_id, …)`
 y `propietarios_payments`.

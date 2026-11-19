@@ -1,4 +1,4 @@
-# Extensión `inmobiliaria` (CRM) — 1.0.0
+# Extensión `inmobiliaria` (CRM) — 1.1.0
 
 Convierte el CRM en una herramienta de corretaje inmobiliario: inventario maestro de propiedades, captaciones,
 transacciones (deals) con sus partes y comisiones, vistas por agente y herramientas MCP. Pensada para reemplazar los
@@ -80,6 +80,32 @@ es visible) o queda como parte. Al reimportar, lo que la fuente trae vacío no b
   modelo de confianza de extensiones: cualquier extensión del CRM podría llamarlo, así que la llamante debe comprobar
   `crm.settings` antes. La clave `import_key` queda en los datos aunque la extensión de origen se desinstale.
 
+## Historial del cliente
+
+La extensión escribe hitos en el historial del cliente de la empresa (Clientes, pestaña de cada empresa) con
+`ModuleAccessService.recordCustomerEvent`, atribuidos al módulo `crm`. Nunca rompe la operación: si Clientes no está no escribe nada; si
+la escritura falla, `recordCustomerEvent` la deshace en su savepoint y registra un aviso y el cierre o la captación siguen.
+
+- **Venta cerrada** (`inmueble_compra` / `inmueble_venta`): al entrar una transacción en una etapa ganada, una entrada
+  "Compra de propiedad {código}" por cada comprador (el de la transacción y las partes Comprador con cliente) y
+  "Venta de propiedad {código}" por cada vendedor (partes Vendedor con cliente y el propietario de la propiedad). El detalle
+  es solo "Cerrada el {fecha}"; la entrada lleva la fecha de cierre (inicio del día, UTC) y enlaza a la
+  transacción. `sourceRef` = `deal:{id}:won:{buyer|seller}:{cliente}`: cerrar otra vez no duplica.
+- **Captación** (`inmueble_captacion`): al crear a mano una propiedad con propietario, o asignarle o cambiarle el propietario a
+  mano, "Propiedad en captación {código}" (sin detalle, con enlace a la propiedad) para el propietario (`property:{id}:owner:{cliente}`).
+- No se escribe nada por cada vínculo propiedad-lead: eso ya queda como ítem del lead en el CRM.
+
+**Privacidad.** Hoy las filas de `customer_history` las ve quien tenga `clientes.view` en Clientes, sin filtrar por los
+permisos del CRM. Por eso solo llevan el código de la propiedad y la fecha de cierre: nunca su título, zona, precio acordado,
+comisiones, porcentajes, notas ni los nombres de las otras partes. El detalle está en la transacción o la propiedad, a las
+que enlaza la entrada y que exigen el permiso del CRM.
+
+**Importaciones.** Las importaciones (p. ej. `inmobiliaria_monday`) solo generan la entrada de venta cerrada, con la fecha de
+cierre real; crear propiedades importadas (con `import_key`) no escribe captaciones, para no inundar el historial.
+
+**Venta reabierta.** Si una transacción ganada se reabre o se cancela, las entradas ya escritas se quedan (el historial
+cuenta lo que pasó); al volver a cerrarla no se duplican.
+
 ## Desinstalar
 
 Los ajustes y las etapas sin transacciones se borran siempre. Opciones: `properties` (inventario, enlaces, historial y
@@ -120,5 +146,6 @@ migración pasa `MigrationTableValidator`. El SQL del almacén aún no se ha pro
 
 ## Versiones
 
+- **1.1.0** — historial del cliente: venta cerrada (compra y venta) y captación de propiedades con propietario.
 - **1.0.0** — primera versión: inventario, captaciones, transacciones con partes y comisiones, etapas configurables
   (plantilla ERE), vistas por agente, cierres por mes, panel en la ficha del lead y 7 herramientas MCP.

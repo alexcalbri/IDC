@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.eventos
 
 import com.ideasdeveloper.idc.server.extensions.ServerExtension
+import com.ideasdeveloper.idc.server.modules.CustomerTimeline
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleJob
@@ -88,11 +89,14 @@ object EventosServerModule : ServerModule {
     override val mcp: ModuleMcp
         get() = EventosMcpTools.mcp
 
+    override val customerTimeline: CustomerTimeline
+        get() = EventosCustomerTimeline.timeline
+
     override val definition = ModuleDefinition(
         id = EventosModule.id,
         displayName = EventosModule.displayName,
         description = "Eventos publicos con cupo, lista de espera, inscripciones, asistencia y precio de miembro, y eventos privados con contratante, monto acordado y abonos.",
-        version = "0.1.0",
+        version = "0.2.0",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.7.0",
         permissions = listOf(

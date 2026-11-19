@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.tareas
 
 import com.ideasdeveloper.idc.server.extensions.ServerExtension
+import com.ideasdeveloper.idc.server.modules.CustomerTimeline
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleJob
@@ -105,6 +106,9 @@ object TareasServerModule : ServerModule {
         TareasImportSources.link(extensions)
     }
 
+    override val customerTimeline: CustomerTimeline
+        get() = TareasCustomerTimeline.timeline
+
     override val mcp: ModuleMcp
         get() = TareasMcpTools.mcp
 
@@ -112,7 +116,7 @@ object TareasServerModule : ServerModule {
         id = TareasModule.id,
         displayName = TareasModule.displayName,
         description = "Tableros de tareas con grupos, varios responsables, revisor, lista de comprobacion, comentarios, adjuntos, avisos de vencimiento y vistas de lista, kanban, agenda y carga de trabajo.",
-        version = "0.2.0",
+        version = "0.3.0",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.7.0",
         permissions = listOf(

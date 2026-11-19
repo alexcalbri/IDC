@@ -1,11 +1,7 @@
 package com.ideasdeveloper.idc.modules.propietarios
 
-import com.ideasdeveloper.idc.server.modules.CustomerHistoryEvent
-import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
 import com.ideasdeveloper.idc.ui.UiFileRef
-import com.ideasdeveloper.idc.ui.UiOpenModule
-import org.slf4j.LoggerFactory
 import java.math.BigDecimal
 import java.sql.Connection
 import java.time.LocalDate
@@ -104,7 +100,7 @@ object PropietariosService {
     /**
      * Cambio de titularidad: en una transaccion y con el lote bloqueado, cierra las titularidades abiertas (fin = [date]), abre las de
      * [newOwners] (inicio = [date]), pasa el lote a vendido si estaba disponible o reservado y escribe el historial ('traspaso'; 'baja' si
-     * la lista esta vacia). No avisa a nadie: tras confirmar, quien llama usa [PropietariosCustomerEvents.after].
+     * la lista esta vacia). No avisa a nadie ni escribe en el historial del cliente (lo lee [PropietariosCustomerTimeline]).
      */
     fun transfer(
         tenant: Connection,
@@ -221,52 +217,5 @@ object PropietariosService {
         if (PropietariosRepository.markDeleted(tenant, lotId, ids) > 0) {
             PropietariosRepository.addHistory(tenant, lotId, "edicion", today, "Adjuntos quitados: ${ids.size}.", author)
         }
-    }
-}
-
-/**
- * Lo que el modulo escribe en el historial del cliente (Clientes): cuando pasa a ser titular de un lote y cuando deja de serlo.
- * Se escribe una vez por titularidad (mismo sourceRef) y se llama despues de confirmar: un fallo se registra y no deshace nada.
- */
-object PropietariosCustomerEvents {
-    private val log = LoggerFactory.getLogger(PropietariosCustomerEvents::class.java)
-
-    fun started(tenant: Connection, access: ModuleAccessService, lotId: UUID, lotNumber: String, developmentName: String, change: OwnershipChange, date: LocalDate, author: String) {
-        write(tenant, access, change.customerId, "propietario_alta", "Propietario del lote $lotNumber", "$developmentName · desde $date", lotId, "ownership:${change.ownershipId}:start", author)
-    }
-
-    fun ended(tenant: Connection, access: ModuleAccessService, lotId: UUID, lotNumber: String, developmentName: String, change: OwnershipChange, date: LocalDate, author: String) {
-        write(tenant, access, change.customerId, "propietario_baja", "Dejó de ser propietario del lote $lotNumber", "$developmentName · hasta $date", lotId, "ownership:${change.ownershipId}:end", author)
-    }
-
-    private fun write(tenant: Connection, access: ModuleAccessService, customerId: UUID, kind: String, title: String, detail: String, lotId: UUID, sourceRef: String, author: String) {
-        try {
-            access.recordCustomerEvent(
-                tenant,
-                CustomerHistoryEvent(
-                    customerId = customerId,
-                    moduleId = PropietariosModule.id,
-                    kind = kind,
-                    title = title.take(200),
-                    detail = detail.take(500),
-                    author = author,
-                    link = UiOpenModule(PropietariosModule.id, "lote", mapOf("id" to lotId.toString())),
-                    sourceRef = sourceRef,
-                ),
-            )
-        } catch (stop: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw stop
-        } catch (stop: java.util.concurrent.CancellationException) {
-            throw stop
-        } catch (failure: Exception) {
-            log.warn("No se pudo escribir en el historial del cliente ({}).", failure.javaClass.simpleName)
-        }
-    }
-
-    /** Escribe los eventos de un resultado: altas de los nuevos titulares y bajas de los salientes. Nunca lanza. */
-    fun after(tenant: Connection, access: ModuleAccessService, result: OwnershipResult, author: String) {
-        result.started.forEach { started(tenant, access, result.lotId, result.lotNumber, result.developmentName, it, result.date, author) }
-        result.ended.forEach { ended(tenant, access, result.lotId, result.lotNumber, result.developmentName, it, result.date, author) }
     }
 }

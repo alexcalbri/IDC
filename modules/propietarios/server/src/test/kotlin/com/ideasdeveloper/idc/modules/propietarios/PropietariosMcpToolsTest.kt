@@ -108,7 +108,7 @@ class PropietariosMcpToolsTest {
         assertEquals(listOf("propietarios.import.write"), definition.extensionPermissions)
         assertTrue(definition.supportsExtensions)
         assertEquals("desarrollos", definition.ui?.home)
-        assertEquals("0.1.0", definition.version)
+        assertEquals("0.2.0", definition.version)
     }
 
     // ---- lector de titulares ----

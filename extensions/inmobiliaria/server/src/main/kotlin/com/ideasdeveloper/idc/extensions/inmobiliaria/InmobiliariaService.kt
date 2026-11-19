@@ -192,7 +192,10 @@ object InmobiliariaService {
         return InmobiliariaStore.inTransaction(s.tenant) {
             val code = checked.code?.takeIf { it.isNotEmpty() } ?: InmobiliariaStore.nextCode(s.tenant)
             val currency = checked.currency ?: InmobiliariaStore.loadSettings(s.tenant).currency
-            InmobiliariaStore.createProperty(s.tenant, checked, code, currency, validPrice, status, s.access.userId, importKey)
+            InmobiliariaStore.createProperty(s.tenant, checked, code, currency, validPrice, status, s.access.userId, importKey).also {
+                // Captada a mano con propietario: queda en su historial (las importaciones no: intakeEvents lo decide por importKey).
+                InmobiliariaCustomerEvents.intake(s.tenant, it, s.actor.name)
+            }
         }
     }
 
@@ -203,6 +206,10 @@ object InmobiliariaService {
         val checked = checkedFields(s, fields, current.ownerCustomerId)
         InmobiliariaStore.inTransaction(s.tenant) {
             InmobiliariaStore.updateProperty(s.tenant, id, checked, checked.code?.takeIf { it.isNotEmpty() } ?: current.code, checked.currency ?: current.currency)
+            // Propietario nuevo o cambiado a mano: entrada de captacion para el nuevo.
+            if (checked.ownerCustomerId != null && checked.ownerCustomerId != current.ownerCustomerId) {
+                InmobiliariaStore.findProperty(s.tenant, id)?.let { InmobiliariaCustomerEvents.intake(s.tenant, it, s.actor.name) }
+            }
         }
         return requireProperty(s, id)
     }
@@ -485,6 +492,8 @@ object InmobiliariaService {
                     addLeadActivity(s, lead, "Transaccion cerrada en la etapa ${stage.name}.")
                 }
                 if (canEditProperty && external) property.wordpressListingId?.let { effects.sale = WordPressSale(it, deal.agreedPrice, closed) }
+                // Historial del comprador y del vendedor; las importaciones tambien, con la fecha real de cierre.
+                InmobiliariaCustomerEvents.sold(tenant, deal, property, closed, s.actor.name)
             }
             DealOutcome.Lost, DealOutcome.Open -> {
                 undoSale(s, deal, property, previous, effects)

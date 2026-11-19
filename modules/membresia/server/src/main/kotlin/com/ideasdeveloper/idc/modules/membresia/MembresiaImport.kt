@@ -327,7 +327,6 @@ object MembresiaImportApply {
             if (membership == null) {
                 log.warn("La membresía importada {} no se pudo releer.", applied.membershipId)
             } else {
-                effect("escribir el historial de la membresía ${applied.membershipId}") { MembresiaHistory.created(access, tenant, membership, author) }
                 effect("sincronizar el pase del hotspot de ${applied.membershipId}") { MembresiaHotspot.syncPass(tenant, membership, plan.wifiAccess) }
             }
         }
