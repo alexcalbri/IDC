@@ -114,11 +114,11 @@ object EventosImportApply {
             statement.executeUpdate()
         }
 
-    private class Applied(val outcome: ImportOutcome, val eventId: UUID, val customerId: UUID, val createdCustomer: Boolean, val booked: Boolean)
+    private class Applied(val outcome: ImportOutcome, val eventId: UUID, val customerId: UUID, val createdCustomer: Boolean)
 
     /**
      * Creates or updates the private event of [row] (one transaction, same result when repeated) with its client, and adds the
-     * payments not there yet. Sends no notices. A row without key, date, or title and client is skipped.
+     * payments not there yet. Sends no notices and writes nothing in the customer history (the timeline reads the event with its own date). A row without key, date, or title and client is skipped.
      */
     fun apply(
         access: ModuleAccessService,
@@ -137,13 +137,6 @@ object EventosImportApply {
         if (applied.createdCustomer) {
             runCatching { access.customerChanged(tenant, applied.customerId) }
                 .onFailure { log.warn("No se pudo avisar a Clientes de un cliente importado ({}).", it.javaClass.simpleName) }
-        }
-        if (applied.booked) {
-            runCatching {
-                EventosRepository.getEvent(tenant, applied.eventId)?.event?.let { event ->
-                    EventosCustomerEvents.booked(tenant, access, event, applied.customerId, author.ifBlank { ImportAuthor })
-                }
-            }.onFailure { log.warn("No se pudo escribir el historial de un evento importado ({}).", it.javaClass.simpleName) }
         }
         return applied.outcome
     }
@@ -245,7 +238,6 @@ object EventosImportApply {
             )
         }
 
-        val booked = status == EventStatus.Published || status == EventStatus.Done
-        return Applied(if (created) ImportOutcome.Created(eventId) else ImportOutcome.Updated(eventId), eventId, customerId, createdCustomer, booked)
+        return Applied(if (created) ImportOutcome.Created(eventId) else ImportOutcome.Updated(eventId), eventId, customerId, createdCustomer)
     }
 }

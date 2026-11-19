@@ -26,7 +26,7 @@ object EventosService {
     private const val UniqueViolation = "23505"
     private const val LiveRegistrationIndex = "eventos_registrations_live_idx"
 
-    /** Work after the commit (Clientes, history, notices) never turns a saved change into an error. */
+    /** Work after the commit (Clientes, notices) never turns a saved change into an error. */
     private fun afterCommit(what: String, block: () -> Unit) {
         try {
             block()
@@ -78,8 +78,7 @@ object EventosService {
     // ---- events ----
 
     /**
-     * Creates an event (state Draft, or Published when [publish]). A private event confirmed on creation writes "Evento privado"
-     * in its client's history. [requireClient]: a private event needs its client (the app asks for it).
+     * Creates an event (state Draft, or Published when [publish]). [requireClient]: a private event needs its client (the app asks for it).
      */
     fun createEvent(
         tenant: Connection,
@@ -100,11 +99,7 @@ object EventosService {
         EventosRepository.transaction(tenant) {
             EventosRepository.insertEvent(tenant, id, input, status, currency, author)
         }
-        val event = loadEvent(tenant, id).event
-        if (EventosRules.isBooked(event.kind, event.status)) {
-            event.clientCustomerId?.let { client -> afterCommit("el historial del evento privado") { EventosCustomerEvents.booked(tenant, access, event, client, author) } }
-        }
-        return event
+        return loadEvent(tenant, id).event
     }
 
     /**
@@ -114,8 +109,6 @@ object EventosService {
     fun updateEvent(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, id: UUID, input: EventInput): Event {
         requirePermission(permissions, EventosModule.Manage)
         validate(input, requireClient = false)
-        val author = actorName(tenant, access, permissions)
-        var previousClient: UUID? = null
         EventosRepository.transaction(tenant) {
             val current = lockedEvent(tenant, id)
             val event = current.event
@@ -123,17 +116,11 @@ object EventosService {
             EventosRules.capacityError(input.capacity, current.stats.occupied)?.let { throw EventosValidationException(it) }
             if (input.clientCustomerId != event.clientCustomerId) requireClient(tenant, input)
             if (input.responsibleUserId != event.responsibleUserId) requireResponsible(tenant, input.responsibleUserId)
-            previousClient = event.clientCustomerId
             EventosRepository.updateEvent(tenant, id, input)
             val status = EventosRules.statusAfterOccupancy(event.status, input.capacity, current.stats.occupied)
             if (status != event.status) EventosRepository.setStatus(tenant, id, status)
         }
-        val event = loadEvent(tenant, id).event
-        val client = event.clientCustomerId
-        if (client != null && client != previousClient && EventosRules.isBooked(event.kind, event.status)) {
-            afterCommit("el historial del evento privado") { EventosCustomerEvents.booked(tenant, access, event, client, author) }
-        }
-        return event
+        return loadEvent(tenant, id).event
     }
 
     /**
@@ -173,30 +160,18 @@ object EventosService {
 
     /**
      * Publishes (Draft to Published), cancels with [reason], marks as done or reopens (Cancelled to Draft) an event, following
-     * [EventosRules.transitionError]. Confirming a private event writes "Evento privado" in its client's history and
-     * cancelling a confirmed one writes "Evento cancelado".
+     * [EventosRules.transitionError].
      */
     fun changeStatus(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, id: UUID, target: EventStatus, reason: String = ""): Event {
         requirePermission(permissions, EventosModule.Manage)
-        val author = actorName(tenant, access, permissions)
-        var previous = EventStatus.Draft
         EventosRepository.transaction(tenant) {
             val current = lockedEvent(tenant, id)
             val event = current.event
             EventosRules.transitionError(event.kind, event.status, target, reason)?.let { throw EventosValidationException(it) }
-            previous = event.status
             val next = if (target == EventStatus.Published) EventosRules.statusAfterOccupancy(target, event.capacity, current.stats.occupied) else target
             EventosRepository.setStatus(tenant, id, next, reason)
         }
-        val event = loadEvent(tenant, id).event
-        val client = event.clientCustomerId
-        if (client != null && event.kind == EventKind.Private) {
-            afterCommit("el historial del evento privado") {
-                if (target == EventStatus.Published) EventosCustomerEvents.booked(tenant, access, event, client, author)
-                if (target == EventStatus.Cancelled && previous == EventStatus.Published) EventosCustomerEvents.cancelled(tenant, access, event, client, author)
-            }
-        }
-        return event
+        return loadEvent(tenant, id).event
     }
 
     // ---- registrations ----
@@ -262,8 +237,7 @@ object EventosService {
         val registration = loadRegistration(tenant, placed.id)
         val event = loadEvent(tenant, input.eventId).event
         val waitlisted = placed.status == RegistrationStatus.Waitlist
-        afterCommit("el historial y los avisos de una inscripcion") {
-            if (!waitlisted) EventosCustomerEvents.registered(tenant, access, event, registration, author)
+        afterCommit("los avisos de una inscripcion") {
             val notifier = access.notificationsFor(EventosModule.id)
             EventosNotify.newRegistration(tenant, notifier, event, placed.customerName, registration.seats, waitlisted, actor)
             if (placed.becameFull) EventosNotify.eventFull(tenant, notifier, event, actor)
@@ -304,7 +278,6 @@ object EventosService {
     /** Moves somebody from the waiting list to "inscrito" (the team decides); the seats must fit, otherwise the capacity has to grow. */
     fun promote(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, registrationId: UUID): Registration {
         requirePermission(permissions, EventosModule.Register)
-        val author = actorName(tenant, access, permissions)
         val eventId = loadRegistration(tenant, registrationId).eventId
         EventosRepository.transaction(tenant) {
             val current = lockedEvent(tenant, eventId)
@@ -319,11 +292,7 @@ object EventosService {
             val next = EventosRules.statusAfterOccupancy(event.status, event.capacity, current.stats.occupied + registration.seats)
             if (next != event.status) EventosRepository.setStatus(tenant, eventId, next)
         }
-        val registration = loadRegistration(tenant, registrationId)
-        afterCommit("el historial de una inscripcion") {
-            EventosCustomerEvents.registered(tenant, access, loadEvent(tenant, eventId).event, registration, author)
-        }
-        return registration
+        return loadRegistration(tenant, registrationId)
     }
 
     /** Marks or unmarks the payment of a registration (the date is recorded; [note] is optional, up to 200 characters). */
@@ -345,9 +314,7 @@ object EventosService {
         if ((registration.attendedAt != null) == attended) return registration
         val author = actorName(tenant, access, permissions)
         EventosRepository.setAttendance(tenant, registrationId, attended, author)
-        val updated = loadRegistration(tenant, registrationId)
-        if (attended) afterCommit("el historial de asistencia") { EventosCustomerEvents.attended(tenant, access, event, updated, author) }
-        return updated
+        return loadRegistration(tenant, registrationId)
     }
 
     // ---- payments (abonos) of private events ----

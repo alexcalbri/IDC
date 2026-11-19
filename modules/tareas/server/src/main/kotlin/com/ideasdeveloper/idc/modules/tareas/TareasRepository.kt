@@ -431,6 +431,16 @@ object TareasRepository {
         return readTasks(tenant, where.toString(), params, "t.due_date NULLS LAST, $PriorityOrder, t.position, t.created_at, t.id", filter.limit)
     }
 
+    /**
+     * The tasks of a customer the scope sees (same rule as [list]), not archived, the most recently created or completed
+     * first. For the customer's history in Clientes.
+     */
+    fun customerTasks(tenant: Connection, scope: TareasScope, customerId: UUID, limit: Int): List<Task> {
+        val params = mutableListOf<Any?>(customerId)
+        val visible = visibleTasks(tenant, scope, params)
+        return readTasks(tenant, "t.customer_id = ? AND t.archived_at IS NULL AND $visible", params, "COALESCE(CASE WHEN t.status = 'done' THEN t.completed_at END, t.created_at) DESC, t.id", limit)
+    }
+
     fun get(tenant: Connection, id: UUID): Task? = readTasks(tenant, "t.id = ?", listOf(id), "t.id", 1).firstOrNull()
 
     /** Tasks in review that [reviewerId] has to approve or return (active boards only): they show in "Mis tareas". */

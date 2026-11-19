@@ -497,7 +497,7 @@ object MembresiaRepository {
         listOf(today, limit.coerceIn(1, MaxLimit)),
     )
 
-    /** activa -> vencida cuando su fin ya paso. Devuelve las membresias vencidas ahora (para el historial). */
+    /** activa -> vencida cuando su fin ya paso. Devuelve las membresias vencidas ahora. */
     fun expireEnded(tenant: Connection, today: LocalDate, limit: Int = 500): List<Membership> = transaction(tenant) {
         val ids = query(
             tenant,
@@ -510,18 +510,6 @@ object MembresiaRepository {
         ) { rows -> rows.uuid(1) }
         membershipsByIds(tenant, ids)
     }
-
-    /** Vencidas en los ultimos [days] dias (para escribir su evento de historial de forma idempotente, el sourceRef deduplica). */
-    fun recentlyExpired(tenant: Connection, today: LocalDate, days: Int = 7, limit: Int = 500): List<Membership> = query(
-        tenant,
-        """
-        SELECT $MembershipColumns $MembershipFrom
-        WHERE m.status = 'vencida' AND m.ends_on < ? AND m.ends_on >= ? AND c.status <> 'archived'
-        ORDER BY m.ends_on, m.id LIMIT ?
-        """.trimIndent(),
-        listOf(today, today.minusDays(days.toLong()), limit.coerceIn(1, MaxLimit)),
-        ::readMembership,
-    )
 
     /** Activas que vencen entre hoy y hoy + [days] y aun no se avisaron (lote acotado). */
     fun expiringToNotify(tenant: Connection, today: LocalDate, days: Int, limit: Int = 200): List<Membership> = query(

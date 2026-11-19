@@ -1,6 +1,7 @@
 package com.ideasdeveloper.idc.modules.membresia
 
 import com.ideasdeveloper.idc.server.extensions.ServerExtension
+import com.ideasdeveloper.idc.server.modules.CustomerTimeline
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleMcp
@@ -57,6 +58,9 @@ object MembresiaServerModule : ServerModule {
 
     override val mcp: ModuleMcp
         get() = MembresiaMcpTools.mcp
+
+    override val customerTimeline: CustomerTimeline
+        get() = MembresiaCustomerTimeline.timeline
 
     override fun routes(route: Route, access: ModuleAccessService) = MembresiaRoutes.install(route, access)
 }

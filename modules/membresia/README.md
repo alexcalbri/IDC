@@ -1,6 +1,6 @@
 # Membresia Module
 
-Status: in development (marked with `.development`; not released to `master`). Version 0.2.0.
+Status: in development (marked with `.development`; not released to `master`). Version 0.3.0.
 
 Front desk, plans, memberships, visits and guest passes for a coworking space or club. It replaces the
 "Esc Members & Memberships (PMS)" board in Monday: the team registers members, sells and renews memberships,
@@ -79,15 +79,24 @@ answer the next screen with a notice; `GET /modules/membresia/ui/suggest/members
 `membresia-diario` runs every day at 07:00 (each step is guarded, bounded and idempotent):
 
 1. `programada` to `activa` when it started.
-2. `activa` to `vencida` when it ended, with a history event.
+2. `activa` to `vencida` when it ended.
 3. Expiry warning: for current memberships ending in the next `expiring_days` days and not yet warned, notifies the host (if still active), the business owners and the users with `membresia.manage`. Title "Membresia por vencer"; it opens the member screen. Each membership is warned once; a renewal starts clean. The member is **not** emailed in 0.1.0.
 4. Hotspot: registers the source and syncs the passes.
 
 ## Customer history
 
-Events written to the customer's history in Clientes (`module_id = membresia`, link to the member screen):
-`membresia_alta`, `membresia_renovada`, `membresia_cancelada`, `membresia_vencida`. Visits are not written (too many).
-Writing the same event twice leaves one entry; a failure here never breaks the operation.
+The module adds to the customer's history in Clientes through `CustomerTimeline` (`MembresiaCustomerTimeline`): it is
+computed when read and nothing is written in `customer_history`. Clientes lists it only when the module is enabled for the
+company and the user holds `membresia.view`; the customer must be visible as in the screens (own or shared, not archived).
+Entries (link to the member screen), newest first:
+
+- `membresia_alta` ("Membresía {plan}") and `membresia_renovada` ("... renovada"): date is the earlier of the creation and the start day (UTC), so an imported membership shows its real date and a scheduled one its creation date. Detail: dates, amount and, if the plan has guest passes, "Pases de invitado: usados/total".
+- `membresia_cancelada`: date of the cancellation; the reason and the notes are not shown (they can be internal).
+- `membresia_vencida`: the day after the end date.
+- `membresia_visitas`: visits aggregated per month ("Visitas de noviembre 2026: N"), with "Con invitado: M" when there were guest visits. Guest names and visit notes are never shown.
+
+The Monday imports write nothing: imported memberships show up with their real dates. Since 0.3.0 the module no longer writes
+events in `customer_history`; the ones written by older versions stay there but Clientes keeps showing them only to users with `clientes.view`.
 
 ## Notifications
 
@@ -180,5 +189,6 @@ Tools are named `membresia_<name>`; each respects the user's live permissions an
 
 ## Changelog
 
+- 0.3.0: the customer history is a `CustomerTimeline` (permission `membresia.view`, visits aggregated per month, real dates for imports); no more writes in `customer_history`.
 - 0.2.0: import of memberships through extensions (`MembresiaImportSource`, idempotent by `import_key`, V002, permission `membresia.import`, extension `membresia_monday`); WiFi code on the member screen; agent tools list is dynamic so extensions can add tools.
 - 0.1.0: first version: plans, memberships, visits and guest passes, reception, expiry warnings to the team, customer history, revenue, Hotspot passes, `membresia_active_members` and agent tools.

@@ -2,7 +2,7 @@
   "id": "tareas",
   "displayName": "Tareas",
   "description": "Tableros de tareas con grupos, varios responsables, revisor, lista de comprobacion, comentarios, adjuntos, avisos de vencimiento y vistas de lista, kanban, agenda y carga de trabajo.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minCoreVersion": "0.8.0",
   "minAppVersion": "0.7.0"
 }

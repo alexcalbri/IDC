@@ -314,19 +314,13 @@ object PropietariosImportApply {
     private class Applied(
         val lotId: UUID,
         val created: Boolean,
-        val lotNumber: String,
-        val developmentName: String,
-        val started: List<OwnershipChange>,
         val createdCustomers: List<UUID>,
-        // Titularidades de esta fila que ya existian: su evento se vuelve a emitir (el sourceRef evita duplicados) por si el efecto se perdio.
-        val existing: List<OwnershipChange> = emptyList(),
     )
 
     /**
      * Crea o actualiza el lote de [row] en [developmentId] (una transaccion por fila, mismo resultado al repetir) y le agrega los
      * propietarios que aun no tiene. Si la fila trae [ImportedLot.developmentName] se usa (o se crea) el desarrollo con ese nombre.
-     * Una fila sin identificador o sin numero de lote se omite. Tras confirmar, cada efecto (historial del cliente, aviso a Clientes)
-     * va en su propio try/catch: su fallo se registra y no convierte la fila en fallida.
+     * Una fila sin identificador o sin numero de lote se omite. Tras confirmar, el aviso a Clientes va en su propio try/catch: su fallo se registra y no convierte la fila en fallida.
      */
     fun apply(tenant: Connection, access: ModuleAccessService, developmentId: UUID, row: ImportedLot, author: String, actorId: UUID?, today: LocalDate): LotImportOutcome {
         skipReason(row)?.let { return LotImportOutcome.Skipped(it) }
@@ -336,11 +330,6 @@ object PropietariosImportApply {
             PropietariosRepository.transaction(tenant) { write(tenant, developmentId, row, key, lotNumber, author, actorId, today) }
         } catch (failure: PropietariosValidationException) {
             return LotImportOutcome.Skipped(failure.message.orEmpty())
-        }
-        (applied.started + applied.existing).forEach { change ->
-            effect("escribir el historial del cliente ${change.customerId}") {
-                PropietariosCustomerEvents.started(tenant, access, applied.lotId, applied.lotNumber, applied.developmentName, change, today, author)
-            }
         }
         applied.createdCustomers.forEach { customerId ->
             effect("avisar a Clientes del cliente $customerId") { access.customerChanged(tenant, customerId) }
@@ -448,21 +437,16 @@ object PropietariosImportApply {
         }
 
         // Propietarios: los que ya tienen su titularidad (por clave) no se tocan.
-        val existingOwnerships = mutableListOf<OwnershipChange>()
         // Orden fijo por clave de candado: dos importaciones a la vez toman los candados de clientes en el mismo orden (sin interbloqueo).
         val fresh = candidates.values.filter { candidate ->
-            val found = tenant.rows("SELECT id, customer_id FROM propietarios_ownerships WHERE lot_id = ? AND import_key = ?", listOf(lotId, candidate.ownerKey)) {
-                OwnershipChange(it.getObject("id", UUID::class.java), it.getObject("customer_id", UUID::class.java))
-            }
-            existingOwnerships += found
-            found.isEmpty()
+            tenant.rows("SELECT id FROM propietarios_ownerships WHERE lot_id = ? AND import_key = ?", listOf(lotId, candidate.ownerKey)) { it.getObject("id", UUID::class.java) }.isEmpty()
         }.sortedBy { lockKey(it) }
         val createdCustomers = mutableListOf<UUID>()
         val resolved = fresh.map { candidate -> candidate to findOrCreateCustomer(tenant, candidate, createdCustomers) }
         val assigned = PropietariosRepository.assignedShare(tenant, lotId, today)
         val given = resolved.mapNotNull { it.first.share }
         val dropShares = given.any { !PropietariosRules.validShare(it) } || given.fold(assigned) { sum, share -> sum + share } > BigDecimal(100)
-        val started = mutableListOf<OwnershipChange>()
+        var started = 0
         resolved.forEach { (candidate, customerId) ->
             val ownershipId = UUID.randomUUID()
             val share = candidate.share?.takeIf { !dropShares }
@@ -474,16 +458,16 @@ object PropietariosImportApply {
                 """.trimIndent(),
                 listOf(ownershipId, lotId, customerId, share, candidate.startsOn, actorId, candidate.ownerKey),
             )
-            if (inserted > 0) started += OwnershipChange(ownershipId, customerId)
+            if (inserted > 0) started++
         }
 
         val note = if (dropShares && given.isNotEmpty()) " Los porcentajes no eran válidos o sumaban más de 100 %: se importó sin porcentajes." else ""
         if (created) {
-            PropietariosRepository.addHistory(tenant, lotId, "importacion", today, "Lote importado con ${started.size} titulares.$note", author)
-        } else if (started.isNotEmpty() || note.isNotEmpty()) {
-            PropietariosRepository.addHistory(tenant, lotId, "importacion", today, "Importación: ${started.size} titulares añadidos.$note", author)
+            PropietariosRepository.addHistory(tenant, lotId, "importacion", today, "Lote importado con $started titulares.$note", author)
+        } else if (started > 0 || note.isNotEmpty()) {
+            PropietariosRepository.addHistory(tenant, lotId, "importacion", today, "Importación: $started titulares añadidos.$note", author)
         }
-        return Applied(lotId, created, lotNumber, development.name, started, createdCustomers, existingOwnerships)
+        return Applied(lotId, created, createdCustomers)
     }
 
     // La clave del candado de un candidato: su correo en minusculas o, sin correo, su identidad.

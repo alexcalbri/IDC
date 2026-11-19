@@ -301,7 +301,7 @@ object MembresiaMcpTools {
         val days = expiringDays(call)
         val input = RenewalInput(call.uuid("plan_id"), call.date("starts_on"), call.decimal("amount"))
         val author = MembresiaService.authorName(call.access, call.tenant, call.permissions)
-        val membership = MembresiaService.renew(call.access, call.tenant, call.requiredUuid("membership_id"), input, author, today)
+        val membership = MembresiaService.renew(call.tenant, call.requiredUuid("membership_id"), input, author, today)
             ?: throw McpToolException("Membresía no encontrada.")
         return buildJsonObject {
             put("result", "renewed")

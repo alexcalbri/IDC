@@ -27,9 +27,8 @@ sealed class GuestPassOutcome {
 }
 
 /**
- * Orquesta cada cambio: el repositorio escribe solo en las tablas del modulo; aqui se agregan el historial del
- * cliente, el pase del hotspot y el aviso a Clientes. JDBC sincrono: el llamador usa withContext(Dispatchers.IO).
- * Los fallos del historial y del hotspot se registran y nunca rompen la operacion (ver MembresiaHistory y MembresiaHotspot).
+ * Orquesta cada cambio: el repositorio escribe solo en las tablas del modulo; aqui se agregan el pase del hotspot y el aviso a Clientes. JDBC sincrono: el llamador usa withContext(Dispatchers.IO).
+ * Los fallos del hotspot se registran y nunca rompen la operacion (ver MembresiaHotspot). El historial del cliente no se escribe: lo calcula MembresiaCustomerTimeline al leer.
  */
 object MembresiaService {
     /** Nombre de quien hace el cambio, para el historial y las visitas; vacio si no se conoce. */
@@ -53,30 +52,27 @@ object MembresiaService {
         val (membership, customerCreated) = MembresiaRepository.createMembershipWithCustomer(tenant, input, newCustomer, plan, today, author)
         // Ya hizo commit: ahora si se avisa a Clientes.
         if (customerCreated) access.customerChanged(tenant, membership.customerId)
-        MembresiaHistory.created(access, tenant, membership, author)
         MembresiaHotspot.syncPass(tenant, membership, MembresiaRepository.planWifi(tenant, membership.planId))
         return membership
     }
 
     /** Renueva; null si la membresia no existe o su cliente no es visible (sin historial ni hotspot). */
-    fun renew(access: ModuleAccessService, tenant: Connection, membershipId: UUID, input: RenewalInput, author: String, today: LocalDate): Membership? {
+    fun renew(tenant: Connection, membershipId: UUID, input: RenewalInput, author: String, today: LocalDate): Membership? {
         val membership = MembresiaRepository.renew(tenant, membershipId, input, today, author) ?: return null
-        MembresiaHistory.renewed(access, tenant, membership, author)
         MembresiaHotspot.syncPass(tenant, membership, MembresiaRepository.planWifi(tenant, membership.planId))
         return membership
     }
 
     /** Edita la membresia (null si no existe) y vuelve a sincronizar el pase por si cambio el fin. */
-    fun edit(access: ModuleAccessService, tenant: Connection, membershipId: UUID, edit: MembershipEdit, today: LocalDate): Membership? {
+    fun edit(tenant: Connection, membershipId: UUID, edit: MembershipEdit, today: LocalDate): Membership? {
         val membership = MembresiaRepository.edit(tenant, membershipId, edit, today) ?: return null
         MembresiaHotspot.syncPass(tenant, membership, MembresiaRepository.planWifi(tenant, membership.planId))
         return membership
     }
 
     /** Cancela (null si no existe o ya estaba cancelada) y quita el pase WiFi. */
-    fun cancel(access: ModuleAccessService, tenant: Connection, membershipId: UUID, reason: String, author: String): Membership? {
+    fun cancel(tenant: Connection, membershipId: UUID, reason: String): Membership? {
         val membership = MembresiaRepository.cancel(tenant, membershipId, reason) ?: return null
-        MembresiaHistory.cancelled(access, tenant, membership, author)
         MembresiaHotspot.removePass(tenant, membership.id)
         return membership
     }

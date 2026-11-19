@@ -42,13 +42,9 @@ object MembresiaJobs {
         runGuarded(log, "Membresías ${ctx.companyCode}: no se pudieron activar las programadas") {
             repeatWhileFull { MembresiaRepository.activateStarted(tenant, today, BatchSize) }
         }
-        // 2. activa -> vencida cuando su fin paso; luego el evento de historial de las vencidas de los ultimos 7 dias
-        // (idempotente: el sourceRef deduplica, asi un fallo de ayer se repara hoy).
+        // 2. activa -> vencida cuando su fin paso.
         runGuarded(log, "Membresías ${ctx.companyCode}: no se pudieron vencer las terminadas") {
             repeatWhileFull { MembresiaRepository.expireEnded(tenant, today, BatchSize).size }
-        }
-        runGuarded(log, "Membresías ${ctx.companyCode}: no se pudo escribir el historial de las vencidas") {
-            MembresiaRepository.recentlyExpired(tenant, today).forEach { MembresiaHistory.expired(ctx.access, tenant, it) }
         }
         // 3. aviso al equipo de las que estan por vencer.
         runGuarded(log, "Membresías ${ctx.companyCode}: no se pudieron avisar los vencimientos") {
