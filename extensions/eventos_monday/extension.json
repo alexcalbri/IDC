@@ -1,0 +1,19 @@
+{
+  "id": "eventos_monday",
+  "module": "eventos",
+  "displayName": "Importacion de eventos desde monday",
+  "description": "Importa un tablero de monday (por ejemplo La Jolla Eventos) como eventos privados: lee el tablero con el token de la empresa, mapea sus columnas y crea el evento y su cliente por cada elemento.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.1.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/eventos_monday" },
+  "permissions": [
+    "network.outbound:api.monday.com",
+    "secrets.write",
+    "eventos.import.write"
+  ],
+  "settings": [],
+  "migrations": ["migrations/V001__settings.sql"],
+  "uninstall": { "options": [
+    { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
+  ] }
+}
