@@ -457,6 +457,9 @@ SQL
         die 'No se encontro modules/clientes/migrations/V003__add_customer_type.sql.'
     [[ -f modules/clientes/migrations/V004__add_customer_code.sql ]] ||
         die 'No se encontro modules/clientes/migrations/V004__add_customer_code.sql.'
+    local tenant_list
+    tenant_list=$(runuser -u postgres -- psql -X -d "$db_name" -At -c "SELECT database_name FROM companies ORDER BY code") ||
+        die 'No se pudo leer la lista de empresas (companies); no se migro ninguna base.'
     while IFS= read -r tenant_db; do
         [[ -n $tenant_db ]] || continue
         if [[ ! $tenant_db =~ ^[a-z][a-z0-9_]{0,62}$ ]]; then
@@ -477,7 +480,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON application_permissions, application_use
 GRANT SELECT, INSERT, UPDATE, DELETE ON application_user_credentials TO :"db_user";
 GRANT SELECT, INSERT, DELETE, UPDATE (read_at) ON notifications TO :"db_user";
 SQL
-    done < <(runuser -u postgres -- psql -X -d "$db_name" -At -c "SELECT database_name FROM companies ORDER BY code")
+    done <<< "$tenant_list"
     cd /
 }
 

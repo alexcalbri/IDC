@@ -296,16 +296,20 @@ clean_postgres_objects() {
     local role_delete_confirm
     tenant_roles_file=$(mktemp)
     if [[ ${CLEAN_TENANT_DATABASES:-no} == si ]]; then
+        local tenant_dbs
+        tenant_dbs=$(pg_admin -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'idc\_%' AND datname <> '$db_name' ORDER BY datname") ||
+            die 'No se pudo listar las bases tenant; se aborta antes de borrar nada.'
         while IFS= read -r tenant_db; do
             [[ -n $tenant_db ]] || continue
             printf 'Leyendo usuarios PostgreSQL de tenant %s...\n' "$tenant_db"
-            pg_admin -d "$tenant_db" -Atc "SELECT postgres_role FROM application_users ORDER BY postgres_role" >>"$tenant_roles_file" 2>/dev/null || true
+            pg_admin -d "$tenant_db" -Atc "SELECT postgres_role FROM application_users ORDER BY postgres_role" >>"$tenant_roles_file" ||
+                printf 'AVISO: no se pudieron leer los usuarios PostgreSQL de %s; sus roles no se detectaran para borrar.\n' "$tenant_db" >&2
             printf 'Borrando base tenant %s...\n' "$tenant_db"
             pg_admin -v tenant_db="$tenant_db" <<'SQL'
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'tenant_db';
 DROP DATABASE IF EXISTS :"tenant_db";
 SQL
-        done < <(pg_admin -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'idc\_%' AND datname <> '$db_name' ORDER BY datname")
+        done <<< "$tenant_dbs"
     fi
     pg_admin -v db_name="$db_name" <<'SQL'
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :'db_name';

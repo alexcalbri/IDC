@@ -260,7 +260,13 @@ publish_domain() {
 }
 
 # 1. Remove sites whose domain is no longer registered (domain changed or company deleted).
-mapfile -t registered < <(central_psql -Atc "SELECT domain FROM public_domains")
+# Si la consulta falla (PostgreSQL caido o reiniciando) no se retira nada: una lista vacia por error borraria todos los sitios.
+if ! registered_output=$(central_psql -Atc "SELECT domain FROM public_domains"); then
+    log 'ERROR: no se pudo leer public_domains; no se retira ningun dominio.'
+    exit 1
+fi
+# La cadena aqui (<<<) siempre produce al menos un elemento (vacio si no hay dominios), asi "${registered[@]}" es valido con set -u.
+mapfile -t registered <<< "$registered_output"
 changed=false
 for file in "$SITES_AVAILABLE/$SITE_PREFIX"*; do
     [[ -e $file ]] || continue
