@@ -23,14 +23,19 @@ class RepositoryExtensionsPackageTest {
     private val json = Json { ignoreUnknownKeys = true }
 
     // Permisos propios de cada modulo (ModuleDefinition.extensionPermissions); el servidor no depende de los modulos.
-    private val crmPermissions = listOf(
-        "crm.leads.create", "crm.leads.update", "crm.fields.create",
-        "crm.messages.write", "crm.items.write", "crm.reservations.write",
+    private val permissionsByModule = mapOf(
+        "crm" to listOf(
+            "crm.leads.create", "crm.leads.update", "crm.fields.create",
+            "crm.messages.write", "crm.items.write", "crm.reservations.write",
+        ),
+        "tareas" to listOf("tareas.import.write"),
+        "membresia" to listOf("membresia.import.write"),
+        "compras" to listOf("compras.requests.import"),
     )
 
     private val validator = ExtensionManifestValidator(
         installedModuleVersion = { "999.0.0" },
-        modulePermissions = { module -> if (module == "crm") crmPermissions else emptyList() },
+        modulePermissions = { module -> permissionsByModule[module].orEmpty() },
     )
 
     /** Sube desde el directorio de trabajo (server/ con Gradle) hasta la carpeta con settings.gradle.kts. */
@@ -50,9 +55,12 @@ class RepositoryExtensionsPackageTest {
     }
 
     @Test
-    fun `the repository ships the eight extensions`() {
+    fun `the repository ships the eleven extensions`() {
         assertEquals(
-            listOf("cloudbeds", "encuentra24", "inmobiliaria", "inmobiliaria_monday", "meta", "monday", "unifi", "wordpress"),
+            listOf(
+                "cloudbeds", "compras_monday", "encuentra24", "inmobiliaria", "inmobiliaria_monday", "membresia_monday",
+                "meta", "monday", "tareas_monday", "unifi", "wordpress",
+            ),
             extensionFolders().map { it.name },
         )
     }
