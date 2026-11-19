@@ -129,6 +129,23 @@ class CrmScreenProviderTest {
     }
 
     @Test
+    fun importTargetsAreListedAfterLinkingAndClearedWithoutExtensions() {
+        val target = object : ServerExtension, CrmImportTarget {
+            override val manifest = ExtensionManifest(id = "destino", module = "crm", displayName = "Destino", version = "1.0.0")
+            override val extensionId = "destino"
+            override val importKinds = listOf(CrmImportKind("item", "Item", listOf(CrmImportField("title", "Titulo", required = true))))
+            override fun importRecords(tenant: java.sql.Connection, actor: CrmActor, kind: String, records: List<CrmImportRecord>) =
+                CrmImportOutcome(records.size, 0, 0, emptyList())
+        }
+        assertTrue(CrmModuleExtensions.importTargets().isEmpty())
+        CrmModuleExtensions.link(listOf(target))
+        assertEquals(listOf("destino"), CrmModuleExtensions.importTargets().map { it.extensionId })
+        assertEquals("item", CrmModuleExtensions.importTargets().single().importKinds.single().id)
+        CrmModuleExtensions.link(emptyList())
+        assertTrue(CrmModuleExtensions.importTargets().isEmpty())
+    }
+
+    @Test
     fun withoutProvidersNothingExtraIsRecognized() {
         CrmModuleExtensions.link(emptyList())
         assertFalse(CrmScreens.isScreen("demo_list"))

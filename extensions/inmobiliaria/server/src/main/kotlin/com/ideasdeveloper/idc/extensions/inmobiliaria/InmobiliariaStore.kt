@@ -105,12 +105,12 @@ object InmobiliariaStore {
 
     private const val PropertyColumns =
         "id, code, title, kind, zone, development, status, listing_agent_id, owner_customer_id, lot_area_m2, built_area_m2, bedrooms, " +
-            "bathrooms, price, previous_price, currency, description, notes, wordpress_listing_id, published_on, sold_on, created_by, created_at, updated_at"
+            "bathrooms, price, previous_price, currency, description, notes, wordpress_listing_id, published_on, sold_on, created_by, created_at, updated_at, import_key"
 
     private const val DealColumns =
         "d.id, d.property_id, d.buyer_lead_id, d.buyer_customer_id, d.stage_id, d.agreed_price, d.commission_pct, d.commission_amount, d.currency, " +
             "d.estimated_close_on, d.closed_on, d.comments, d.created_by, d.created_at, d.updated_at, " +
-            "s.name AS stage_name, s.outcome AS stage_outcome, p.code AS property_code, p.title AS property_title, p.listing_agent_id AS property_agent"
+            "d.import_key, s.name AS stage_name, s.outcome AS stage_outcome, p.code AS property_code, p.title AS property_title, p.listing_agent_id AS property_agent"
 
     private const val DealFrom =
         "FROM $DealsTable d JOIN $PropertiesTable p ON p.id = d.property_id JOIN $StagesTable s ON s.id = d.stage_id"
@@ -222,6 +222,7 @@ object InmobiliariaStore {
         createdBy = uuidOrNull("created_by"),
         createdAt = getTimestamp("created_at").toInstant(),
         updatedAt = getTimestamp("updated_at").toInstant(),
+        importKey = getString("import_key"),
     )
 
     fun findProperty(tenant: Connection, id: UUID): Property? =
@@ -236,6 +237,30 @@ object InmobiliariaStore {
             query.setString(1, code)
             query.executeQuery().use { rows -> if (rows.next()) rows.property() else null }
         }
+
+    /** La propiedad importada con esa clave de la fuente, o nulo. */
+    fun findPropertyByImportKey(tenant: Connection, importKey: String): Property? =
+        tenant.prepareStatement("SELECT $PropertyColumns FROM $PropertiesTable WHERE import_key = ?").use { query ->
+            query.setString(1, importKey)
+            query.executeQuery().use { rows -> if (rows.next()) rows.property() else null }
+        }
+
+    /** Asigna la clave de la fuente a una propiedad que aun no tiene ninguna (`WHERE import_key IS NULL`); devuelve si la asigno. */
+    fun setImportKey(tenant: Connection, id: UUID, importKey: String): Boolean =
+        tenant.prepareStatement("UPDATE $PropertiesTable SET import_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND import_key IS NULL").use { update ->
+            update.setString(1, importKey)
+            update.setObject(2, id)
+            update.executeUpdate() > 0
+        }
+
+    /** La transaccion importada con esa clave de la fuente (con sus partes), sin filtrar por visibilidad, o nulo. */
+    fun findDealByImportKey(tenant: Connection, importKey: String): Deal? {
+        val deal = tenant.prepareStatement("SELECT $DealColumns $DealFrom WHERE d.import_key = ?").use { query ->
+            query.setString(1, importKey)
+            query.executeQuery().use { rows -> if (rows.next()) rows.deal() else null }
+        }
+        return deal?.let { withParties(tenant, listOf(it)).first() }
+    }
 
     fun findPropertyByWordPressListing(tenant: Connection, listingId: Long): Property? =
         tenant.prepareStatement("SELECT $PropertyColumns FROM $PropertiesTable WHERE wordpress_listing_id = ? ORDER BY created_at LIMIT 1").use { query ->
@@ -312,14 +337,14 @@ object InmobiliariaStore {
      * Crea la propiedad. [code] y [currency] ya vienen resueltos. Si hay [price] queda en el historial de precios (sin precio
      * anterior). Con estado En venta la fecha de publicacion es hoy si no se dio; con Vendida, la de venta es hoy.
      */
-    fun createProperty(tenant: Connection, fields: PropertyFields, code: String, currency: String, price: BigDecimal?, status: PropertyStatus, createdBy: UUID?): Property {
+    fun createProperty(tenant: Connection, fields: PropertyFields, code: String, currency: String, price: BigDecimal?, status: PropertyStatus, createdBy: UUID?, importKey: String? = null): Property {
         val id = UUID.randomUUID()
         uniqueCode(code) {
             tenant.prepareStatement(
                 """
                 INSERT INTO $PropertiesTable (id, code, title, kind, zone, development, status, listing_agent_id, owner_customer_id, lot_area_m2,
-                    built_area_m2, bedrooms, bathrooms, price, currency, description, notes, wordpress_listing_id, published_on, sold_on, created_by)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    built_area_m2, bedrooms, bathrooms, price, currency, description, notes, wordpress_listing_id, published_on, sold_on, created_by, import_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """.trimIndent()
             ).use { insert ->
                 insert.setObject(1, id)
@@ -343,6 +368,7 @@ object InmobiliariaStore {
                 insert.date(19, fields.publishedOn ?: if (status == PropertyStatus.ForSale) LocalDate.now() else null)
                 insert.date(20, if (status == PropertyStatus.Sold) LocalDate.now() else null)
                 insert.uuid(21, createdBy)
+                insert.setString(22, importKey)
                 insert.executeUpdate()
             }
         }
@@ -612,6 +638,7 @@ object InmobiliariaStore {
         propertyCode = getString("property_code"),
         propertyTitle = getString("property_title"),
         propertyListingAgentId = uuidOrNull("property_agent"),
+        importKey = getString("import_key"),
     )
 
     private fun withParties(tenant: Connection, deals: List<Deal>): List<Deal> {
@@ -705,13 +732,13 @@ object InmobiliariaStore {
         }
     }
 
-    fun createDeal(tenant: Connection, propertyId: UUID, stageId: UUID, edit: DealEdit, createdBy: UUID?): UUID {
+    fun createDeal(tenant: Connection, propertyId: UUID, stageId: UUID, edit: DealEdit, createdBy: UUID?, importKey: String? = null): UUID {
         val id = UUID.randomUUID()
         tenant.prepareStatement(
             """
             INSERT INTO $DealsTable (id, property_id, buyer_lead_id, buyer_customer_id, stage_id, agreed_price, commission_pct, commission_amount, currency,
-                estimated_close_on, closed_on, comments, created_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                estimated_close_on, closed_on, comments, created_by, import_key)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """.trimIndent()
         ).use { insert ->
             insert.setObject(1, id)
@@ -727,6 +754,7 @@ object InmobiliariaStore {
             insert.date(11, edit.closedOn)
             insert.setString(12, edit.comments)
             insert.uuid(13, createdBy)
+            insert.setString(14, importKey)
             insert.executeUpdate()
         }
         return id

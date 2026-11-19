@@ -32,6 +32,8 @@ CREATE TABLE ext_inmobiliaria__properties (
     wordpress_listing_id BIGINT CHECK (wordpress_listing_id IS NULL OR wordpress_listing_id > 0),
     published_on DATE,
     sold_on DATE,
+    -- Clave estable de la fuente de una importacion (p. ej. monday:123): reimportar actualiza, no duplica.
+    import_key VARCHAR(120) CHECK (import_key IS NULL OR (length(import_key) >= 1 AND length(import_key) <= 120)),
     created_by UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -46,6 +48,7 @@ CREATE INDEX ext_inmobiliaria__properties_updated_idx ON ext_inmobiliaria__prope
 CREATE UNIQUE INDEX ext_inmobiliaria__properties_code_uq ON ext_inmobiliaria__properties (lower(code));
 CREATE UNIQUE INDEX ext_inmobiliaria__properties_wordpress_uq ON ext_inmobiliaria__properties (wordpress_listing_id) WHERE wordpress_listing_id IS NOT NULL;
 CREATE INDEX ext_inmobiliaria__properties_created_by_idx ON ext_inmobiliaria__properties (created_by);
+CREATE UNIQUE INDEX ext_inmobiliaria__properties_import_uq ON ext_inmobiliaria__properties (import_key) WHERE import_key IS NOT NULL;
 
 -- Enlaces de la propiedad por portal (sitio web, Craigslist, Encuentra24, Google Drive u otro).
 CREATE TABLE ext_inmobiliaria__property_links (
@@ -93,6 +96,8 @@ CREATE TABLE ext_inmobiliaria__deals (
     estimated_close_on DATE,
     closed_on DATE,
     comments TEXT NOT NULL DEFAULT '' CHECK (length(comments) <= 5000),
+    -- Clave estable de la fuente de una importacion (ver properties.import_key).
+    import_key VARCHAR(120) CHECK (import_key IS NULL OR (length(import_key) >= 1 AND length(import_key) <= 120)),
     created_by UUID,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -103,6 +108,7 @@ CREATE INDEX ext_inmobiliaria__deals_property_idx ON ext_inmobiliaria__deals (pr
 CREATE INDEX ext_inmobiliaria__deals_close_idx ON ext_inmobiliaria__deals (estimated_close_on);
 CREATE INDEX ext_inmobiliaria__deals_lead_idx ON ext_inmobiliaria__deals (buyer_lead_id);
 CREATE INDEX ext_inmobiliaria__deals_created_by_idx ON ext_inmobiliaria__deals (created_by);
+CREATE UNIQUE INDEX ext_inmobiliaria__deals_import_uq ON ext_inmobiliaria__deals (import_key) WHERE import_key IS NOT NULL;
 
 -- Partes de la transaccion: un agente interno (user_id), un cliente (customer_id) o un externo (name).
 CREATE TABLE ext_inmobiliaria__deal_parties (

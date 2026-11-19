@@ -31,6 +31,8 @@ data class DealDraft(
     val estimatedCloseOn: LocalDate? = null,
     val comments: String = "",
     val parties: List<PartyInput> = emptyList(),
+    // Clave de la fuente cuando la transaccion viene de una importacion.
+    val importKey: String? = null,
 )
 
 /**
@@ -177,14 +179,20 @@ object InmobiliariaService {
      * Capta una propiedad. Sin agente del listado queda el usuario que la capta; sin codigo se genera uno (P-0001).
      * Con precio queda el primer registro del historial de precios.
      */
-    fun createProperty(s: InmobiliariaSession, fields: PropertyFields, price: BigDecimal? = null, status: PropertyStatus = PropertyStatus.Intake): Property {
+    fun createProperty(
+        s: InmobiliariaSession,
+        fields: PropertyFields,
+        price: BigDecimal? = null,
+        status: PropertyStatus = PropertyStatus.Intake,
+        importKey: String? = null,
+    ): Property {
         requireCreate(s)
         val checked = checkedFields(s, fields.copy(listingAgentId = fields.listingAgentId ?: s.access.userId))
         val validPrice = price?.let { InmobiliariaInput.requireMoney(it, "El precio") }
         return InmobiliariaStore.inTransaction(s.tenant) {
             val code = checked.code?.takeIf { it.isNotEmpty() } ?: InmobiliariaStore.nextCode(s.tenant)
             val currency = checked.currency ?: InmobiliariaStore.loadSettings(s.tenant).currency
-            InmobiliariaStore.createProperty(s.tenant, checked, code, currency, validPrice, status, s.access.userId)
+            InmobiliariaStore.createProperty(s.tenant, checked, code, currency, validPrice, status, s.access.userId, importKey)
         }
     }
 
@@ -322,14 +330,17 @@ object InmobiliariaService {
     /**
      * Abre una transaccion de una propiedad. Si hay lead comprador su item pasa a Elegida; si la propiedad estaba En venta
      * pasa a En negociacion. Crea las etapas de la plantilla si la empresa aun no tiene ninguna.
+     *
+     * Con [applyPropertyEffects] en falso (importaciones) la transaccion se crea sin tocar el estado de la propiedad ni exigir que no
+     * este vendida o retirada; con [external] en falso no se llama a WordPress.
      */
-    fun createDeal(s: InmobiliariaSession, draft: DealDraft): DealResult {
+    fun createDeal(s: InmobiliariaSession, draft: DealDraft, applyPropertyEffects: Boolean = true, external: Boolean = true): DealResult {
         requireCreate(s)
         val effects = StageEffects()
         val deal = InmobiliariaStore.inTransaction(s.tenant) {
             InmobiliariaStore.lockProperty(s.tenant, draft.propertyId)
             val property = requireProperty(s, draft.propertyId)
-            if (property.status == PropertyStatus.Sold || property.status == PropertyStatus.Withdrawn) {
+            if (applyPropertyEffects && (property.status == PropertyStatus.Sold || property.status == PropertyStatus.Withdrawn)) {
                 throw InmobiliariaException("No se puede abrir una transaccion de una propiedad ${property.status.label.lowercase()}.")
             }
             val stages = InmobiliariaStore.stages(s.tenant).ifEmpty {
@@ -359,10 +370,10 @@ object InmobiliariaService {
                 null,
             )
             val parties = checkedParties(s, draft.parties)
-            val id = InmobiliariaStore.createDeal(s.tenant, property.id, stage.id, edit, s.access.userId)
+            val id = InmobiliariaStore.createDeal(s.tenant, property.id, stage.id, edit, s.access.userId, draft.importKey)
             InmobiliariaStore.replaceParties(s.tenant, id, parties)
             val created = requireNotNull(InmobiliariaStore.findDeal(s.tenant, id)) { "La transaccion recien creada no existe" }
-            enterStage(s, created, null, stage, null, effects)
+            enterStage(s, created, null, stage, null, effects, applyPropertyEffects, external)
             requireNotNull(InmobiliariaStore.findDeal(s.tenant, id))
         }
         finishWordPress(s, effects)
@@ -404,8 +415,16 @@ object InmobiliariaService {
      * - Abierta: la propiedad En venta pasa a En negociacion.
      * Salir de una etapa ganada deshace la venta (propiedad, fecha de cierre e item). Una propiedad solo admite una transaccion ganada.
      * El estado de la propiedad sale de [InmobiliariaRules.propertyStatusAfter].
+     * Con [applyPropertyEffects] en falso (importaciones) no se toca la propiedad; con [external] en falso no se llama a WordPress.
      */
-    fun moveDeal(s: InmobiliariaSession, dealId: UUID, stageId: UUID, closedOn: LocalDate? = null): DealResult {
+    fun moveDeal(
+        s: InmobiliariaSession,
+        dealId: UUID,
+        stageId: UUID,
+        closedOn: LocalDate? = null,
+        applyPropertyEffects: Boolean = true,
+        external: Boolean = true,
+    ): DealResult {
         requireCreate(s)
         val effects = StageEffects()
         val deal = InmobiliariaStore.inTransaction(s.tenant) {
@@ -416,12 +435,12 @@ object InmobiliariaService {
             val stage = InmobiliariaStore.stages(s.tenant).firstOrNull { it.id == stageId } ?: throw InmobiliariaException("La etapa ya no existe.")
             if (current.stageId != stage.id) {
                 InmobiliariaStore.moveDeal(s.tenant, dealId, stage.id)
-                enterStage(s, current, current.stageOutcome, stage, closedOn, effects)
+                enterStage(s, current, current.stageOutcome, stage, closedOn, effects, applyPropertyEffects, external)
             } else if (stage.outcome == DealOutcome.Won && closedOn != null) {
                 InmobiliariaStore.setClosedOn(s.tenant, dealId, closedOn)
                 // La fecha de venta de la propiedad sigue a la fecha de cierre de su venta.
                 val property = InmobiliariaStore.findProperty(s.tenant, current.propertyId)
-                if (property != null && property.status == PropertyStatus.Sold && property.soldOn != closedOn) {
+                if (applyPropertyEffects && property != null && property.status == PropertyStatus.Sold && property.soldOn != closedOn) {
                     if (s.access.canEditProperty(property)) InmobiliariaStore.changeStatus(s.tenant, property.id, PropertyStatus.Sold, closedOn)
                     else effects.warnings += PropertyNotUpdatedWarning
                 }
@@ -435,14 +454,23 @@ object InmobiliariaService {
     // Efectos de entrar a [stage] (previous = resultado de la etapa de la que sale; nulo al abrir la transaccion).
     // El estado de la PROPIEDAD y WordPress solo cambian si el usuario puede editarla (agente del listado, quien la capto o gerente);
     // si no, se mueve solo la transaccion y queda un aviso. El item del lead comprador sigue la regla de visibilidad del lead.
-    private fun enterStage(s: InmobiliariaSession, deal: Deal, previous: DealOutcome?, stage: DealStage, requestedClose: LocalDate?, effects: StageEffects) {
+    private fun enterStage(
+        s: InmobiliariaSession,
+        deal: Deal,
+        previous: DealOutcome?,
+        stage: DealStage,
+        requestedClose: LocalDate?,
+        effects: StageEffects,
+        applyPropertyEffects: Boolean = true,
+        external: Boolean = true,
+    ) {
         val tenant = s.tenant
         val property = InmobiliariaStore.findProperty(tenant, deal.propertyId) ?: return
-        val canEditProperty = s.access.canEditProperty(property)
+        val canEditProperty = applyPropertyEffects && s.access.canEditProperty(property)
         val lead = deal.buyerLeadId?.let { visibleLeadOrNull(s, it) }
         if (deal.buyerLeadId != null && lead == null) effects.warnings += "No se actualizo el lead comprador: no esta a tu alcance."
         // Aplica un cambio de la propiedad solo con permiso; sin permiso lo recuerda para avisar una vez.
-        val onProperty: (() -> Unit) -> Unit = { change -> if (canEditProperty) change() else effects.propertyDenied = true }
+        val onProperty: (() -> Unit) -> Unit = { change -> if (canEditProperty) change() else if (applyPropertyEffects) effects.propertyDenied = true }
         val otherWon = InmobiliariaStore.wonDealCount(tenant, property.id, deal.id)
         if (stage.outcome == DealOutcome.Won && otherWon > 0) throw InmobiliariaException("Esa propiedad ya tiene una transaccion cerrada.")
         val otherOpen = InmobiliariaStore.openDealCount(tenant, property.id, deal.id)
@@ -456,7 +484,7 @@ object InmobiliariaService {
                     setLeadItem(s, lead, property, "sold", deal.agreedPrice, "Venta cerrada: ${itemTitle(property)}.")
                     addLeadActivity(s, lead, "Transaccion cerrada en la etapa ${stage.name}.")
                 }
-                if (canEditProperty) property.wordpressListingId?.let { effects.sale = WordPressSale(it, deal.agreedPrice, closed) }
+                if (canEditProperty && external) property.wordpressListingId?.let { effects.sale = WordPressSale(it, deal.agreedPrice, closed) }
             }
             DealOutcome.Lost, DealOutcome.Open -> {
                 undoSale(s, deal, property, previous, effects)

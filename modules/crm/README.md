@@ -843,6 +843,20 @@ An extension package can add screens to the CRM by implementing `CrmScreenProvid
 - `mcpTools`: added to the CRM's MCP tools (each tool checks the user's live permissions and that the extension is active).
 - `leadPanel(...)`: nodes added at the end of the lead detail (only for users that can edit the lead, not for mention-only readers).
 
+### Import targets (`CrmImportTarget`, 0.28.0)
+
+An extension that can receive imported data (for example `inmobiliaria`) implements `CrmImportTarget` next to
+`ServerExtension`; the CRM lists them with `CrmModuleExtensions.importTargets()`. Another extension (a one-off importer
+such as `inmobiliaria_monday`) cannot see its classes, so they talk through this interface: `importKinds`
+(`CrmImportKind` with its `CrmImportField`s) and `importRecords(tenant, actor, kind, records)`, which applies a batch and
+returns a `CrmImportOutcome` (created, updated, skipped, `problems`, `failedKeys`, `warnings`): `problems` holds only
+errors (records not saved, or a problem of the whole batch), `failedKeys` the `importKey` of every record that was not
+saved, and `warnings` the `"<importKey>: <warning>"` of records that were saved with something to review. Each
+`CrmImportRecord.importKey` is the stable key of the source (e.g. `monday:<itemId>`): importing again updates, never
+duplicates. The caller must check that the user has `crm.settings` first: any extension of the CRM could call a target
+(it is inside the extension trust model), and the target applies the batch with import permissions (sees everything).
+Additive: nothing the CRM did before changes.
+
 ## Not in this version
 
 Webhooks, leaving to "Old Guest" and distribution by assigned user.

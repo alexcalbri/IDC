@@ -50,9 +50,9 @@ class RepositoryExtensionsPackageTest {
     }
 
     @Test
-    fun `the repository ships the seven extensions`() {
+    fun `the repository ships the eight extensions`() {
         assertEquals(
-            listOf("cloudbeds", "encuentra24", "inmobiliaria", "meta", "monday", "unifi", "wordpress"),
+            listOf("cloudbeds", "encuentra24", "inmobiliaria", "inmobiliaria_monday", "meta", "monday", "unifi", "wordpress"),
             extensionFolders().map { it.name },
         )
     }

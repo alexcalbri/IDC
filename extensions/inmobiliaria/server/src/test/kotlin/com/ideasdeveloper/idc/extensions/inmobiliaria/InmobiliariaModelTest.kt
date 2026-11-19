@@ -390,7 +390,7 @@ class InmobiliariaModelTest {
 
     @Test
     fun `the migration passes the validator of extension migrations`() {
-        val file = listOf("../migrations/V001__inmobiliaria.sql", "extensions/inmobiliaria/migrations/V001__inmobiliaria.sql")
+        val file = listOf("../migrations/V001__inmobiliaria.sql", "extensions/inmobiliaria/migrations/V001__inmobiliaria.sql", "../extensions/inmobiliaria/migrations/V001__inmobiliaria.sql")
             .map { java.io.File(it) }.firstOrNull { it.exists() } ?: return
         val problems = com.ideasdeveloper.idc.server.extensions.packages.MigrationTableValidator.validate("inmobiliaria", file.readText())
         assertTrue(problems.isEmpty(), problems.joinToString("; "))

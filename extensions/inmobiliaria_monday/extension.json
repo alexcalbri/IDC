@@ -1,0 +1,19 @@
+{
+  "id": "inmobiliaria_monday",
+  "module": "crm",
+  "displayName": "Importacion de monday para Inmobiliaria",
+  "description": "Migra desde monday los tableros de listados y de deals hacia la extension Inmobiliaria: lee el tablero con el token de la empresa, mapea sus columnas y aplica la importacion. Se desinstala al terminar.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.28.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/inmobiliaria_monday" },
+  "permissions": [
+    "network.outbound:api.monday.com",
+    "secrets.write",
+    "crm.items.write"
+  ],
+  "settings": [],
+  "migrations": ["migrations/V001__inmobiliaria_monday.sql"],
+  "uninstall": { "options": [
+    { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
+  ] }
+}

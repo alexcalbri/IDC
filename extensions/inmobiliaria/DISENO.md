@@ -93,6 +93,20 @@ el código comprueba que existan y que el usuario los vea. Dinero en `numeric(14
   broker, seller_lawyer, buyer_lawyer, referral, other), `user_id` (agente interno) o `customer_id` o `name` (externo),
   `share_pct` (de la comisión), `notes`.
 
+- `import_key varchar(120)` (nula) en `properties` y `deals`, con índice único parcial `WHERE import_key IS NOT NULL`:
+  clave estable de la fuente de una importación.
+
+## Importación (`CrmImportTarget`, CRM 0.28.0)
+
+`InmobiliariaServerExtension` implementa `CrmImportTarget` y delega en `InmobiliariaImport` (tipos `property` y `deal`; campos y
+reglas en el README y en `extensions/inmobiliaria_monday/DISENO.md`). Decisiones: la interfaz solo da `tenant` y `actor`, así que
+se arma una `InmobiliariaSession` con permisos de importación (`crm.view`, `crm.leads.manage`, `crm.leads.all`, `crm.settings`) y la
+extensión llamante DEBE comprobar `crm.settings` del usuario. Un lote corre en una transacción y cada registro en un savepoint
+(un fallo va a `problems` y cuenta como omitido). Upsert por `import_key`: crea con el servicio o actualiza
+(`updateProperty`, `changePrice`, `replaceLinks` por etiqueta, `changeStatus` solo si no lo lleva el motor de transacciones;
+`updateDeal` y `moveDeal` solo si cambia la etapa). Una transacción sobre una propiedad vendida o retirada la reabre un instante
+(el servicio no abre transacciones sobre ellas) y la restaura salvo que la venta se cierre.
+
 ## Pantallas (secciones del CRM)
 
 - `inmobiliaria_inventory` "Propiedades" (menú, `crm.view`): filtros texto, zona, tipo, estado, agente, precio mín/máx,

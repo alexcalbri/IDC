@@ -41,6 +41,45 @@ Se publican como `crm_<nombre>` y heredan los permisos vivos del usuario:
 `inmobiliaria_search_properties`, `inmobiliaria_get_property`, `inmobiliaria_update_property` (precio y estado),
 `inmobiliaria_list_deals`, `inmobiliaria_create_deal`, `inmobiliaria_advance_deal`, `inmobiliaria_closings_by_month`.
 
+## Importar desde otras fuentes
+
+La extensión implementa `CrmImportTarget` (CRM 0.28.0): otra extensión de un solo uso (p. ej. `inmobiliaria_monday`) le
+entrega lotes de registros con una clave estable (`import_key`, hasta 120 caracteres, p. ej. `monday:<itemId>`) y
+reimportar **actualiza, nunca duplica**. Dos tipos:
+
+- `property`: `title`*, `code`, `kind`, `zone`, `development`, `status`, `agent` (nombre o correo de un usuario del CRM),
+  `owner_name`/`owner_email`/`owner_phone`, `lot_area`, `built_area`, `bedrooms`, `bathrooms`, `price`, `previous_price`,
+  `currency`, `description`, `notes`, enlaces `link_website`, `link_website_es`, `link_craigslist`, `link_encuentra24`,
+  `link_drive`, `link_other` (solo http/https) e `intake`.
+- `deal`: `property`* (clave de importación, código o título exacto), `buyer_name`/`buyer_email`, `stage`, `agreed_price`,
+  `commission_pct`, `commission_amount`, `estimated_close_on`, `closed_on`, `comments` y partes por nombre separadas por coma
+  (`seller`, `seller_agent`, `seller_lawyer`, `seller_referral`, `buyer`, `buyer_agent`, `buyer_lawyer`, `agents`, `brokers`).
+
+Reglas: estados FOR SALE/REDUCED → En venta, SOLD → Vendida, vacío → En venta (Captación con `intake`); fechas
+`AAAA-MM-DD` y `MM/DD/AAAA`. `intake` solo vale **al crear**: al actualizar nunca se baja una propiedad a Captación. Un
+estado o un tipo desconocido no omite la fila: se usa el de por defecto (al actualizar se deja el que tenía) y queda un aviso.
+Un agente o vendedor que no se encuentra queda escrito en las notas; el comprador se enlaza al lead abierto con ese correo (si
+es visible) o queda como parte. Al reimportar, lo que la fuente trae vacío no borra lo que ya hay, el precio cambia con
+`changePrice` (con historial) y los efectos de etapa solo se aplican si la etapa cambia.
+
+- **Deduplicación entre tableros:** si no hay propiedad con esa `import_key`, se busca por `code` (sin distinguir
+  mayúsculas) y, si el registro no trae código, por título normalizado + zona cuando hay UNA sola coincidencia. Si se encuentra
+  se actualiza esa propiedad y, si no tenía `import_key`, se le asigna la de este registro; si ya tenía otra, se deja y el
+  aviso dice "Fusionada con <código o título>".
+- **Etapas:** el nombre se recorta a 60 caracteres. Una etapa abierta desconocida usa la primera abierta (con aviso); una
+  ganada o perdida usa la primera con ese resultado y solo se crea si no existe ninguna.
+- **Transacciones sobre propiedades Vendidas/Retiradas:** no se reabren; la transacción se crea sin efectos sobre la propiedad
+  (con aviso). Una Ganada sobre una propiedad que ya tiene una ganada se omite con error. Sin `closed_on` se usa la fecha de
+  venta de la propiedad y, si no hay, hoy (con aviso).
+- **Sin efectos externos:** la importación no llama a WordPress ni marca nada vendido allí.
+- **Topes:** hasta 500 registros por lote (si no, se rechaza entero con `failedKeys` de todos) y 5000 caracteres por valor;
+  los enlaces por encima de 20 se recortan con aviso.
+- **Resultado:** `problems` solo lleva errores (registros no guardados, cuya clave va a `failedKeys`); los avisos de registros
+  guardados van a `warnings` ("<importKey>: aviso").
+- **Permisos y confianza:** el importador ve todo (actúa como gerente con `crm.settings`). `CrmImportTarget` está dentro del
+  modelo de confianza de extensiones: cualquier extensión del CRM podría llamarlo, así que la llamante debe comprobar
+  `crm.settings` antes. La clave `import_key` queda en los datos aunque la extensión de origen se desinstale.
+
 ## Desinstalar
 
 Los ajustes y las etapas sin transacciones se borran siempre. Opciones: `properties` (inventario, enlaces, historial y
@@ -51,7 +90,7 @@ leads y los clientes nunca se borran.
 
 `server/src/main/kotlin/com/ideasdeveloper/idc/extensions/inmobiliaria/`: `InmobiliariaServerExtension` (+ proveedor),
 `InmobiliariaModel` (tipos y cálculos puros), `InmobiliariaAccess` (permisos), `InmobiliariaStore` (SQL parametrizado),
-`InmobiliariaService` (operaciones), `InmobiliariaMcpTools`, `InmobiliariaScreens`/`*PropertyScreens`/`*DealScreens`/`Ui`.
+`InmobiliariaService` (operaciones), `InmobiliariaImport` (destino de importación), `InmobiliariaMcpTools`, `InmobiliariaScreens`/`*PropertyScreens`/`*DealScreens`/`Ui`.
 
 El build central no compila `extensions/**`. Para compilar y probar este paquete junto con el servidor sin tocar el
 build, se usa un init script de Gradle que añade sus fuentes al sourceSet de pruebas de `:server`:

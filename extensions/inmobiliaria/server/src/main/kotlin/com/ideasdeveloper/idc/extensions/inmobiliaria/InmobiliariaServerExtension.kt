@@ -5,6 +5,10 @@ import com.ideasdeveloper.idc.modules.crm.CrmExtensionActionResult
 import com.ideasdeveloper.idc.modules.crm.CrmExtensionPermissions
 import com.ideasdeveloper.idc.modules.crm.CrmExtensionSection
 import com.ideasdeveloper.idc.modules.crm.CrmExtensions
+import com.ideasdeveloper.idc.modules.crm.CrmImportKind
+import com.ideasdeveloper.idc.modules.crm.CrmImportOutcome
+import com.ideasdeveloper.idc.modules.crm.CrmImportRecord
+import com.ideasdeveloper.idc.modules.crm.CrmImportTarget
 import com.ideasdeveloper.idc.modules.crm.CrmLead
 import com.ideasdeveloper.idc.modules.crm.CrmScreenProvider
 import com.ideasdeveloper.idc.modules.crm.CrmScreens
@@ -20,12 +24,13 @@ import com.ideasdeveloper.idc.server.extensions.UninstallDefault
 import com.ideasdeveloper.idc.server.extensions.UninstallItem
 import com.ideasdeveloper.idc.server.modules.McpTool
 import com.ideasdeveloper.idc.ui.UiNode
+import java.sql.Connection
 
 /**
  * Extension "inmobiliaria": inventario de propiedades, captaciones, transacciones con partes y comisiones, y herramientas MCP
  * para agentes. Aporta sus pantallas al CRM como [CrmScreenProvider]. Sus datos viven en las tablas ext_inmobiliaria__*.
  */
-object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider {
+object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider, CrmImportTarget {
     const val ExtensionId = "inmobiliaria"
     const val PropertiesOption = "properties"
     const val DealsOption = "deals"
@@ -102,6 +107,13 @@ object InmobiliariaServerExtension : ServerExtension, CrmScreenProvider {
     ): CrmExtensionActionResult = InmobiliariaScreens.action(context, actor, screen, op, params, values)
 
     override fun leadPanel(context: CrmScreens.Context, lead: CrmLead): List<UiNode> = InmobiliariaScreens.leadPanel(context, lead)
+
+    // ---- CrmImportTarget: importar propiedades y transacciones desde otra fuente (la llamante comprueba crm.settings) ----
+
+    override val importKinds: List<CrmImportKind> get() = InmobiliariaImport.kinds
+
+    override fun importRecords(tenant: Connection, actor: CrmActor, kind: String, records: List<CrmImportRecord>): CrmImportOutcome =
+        InmobiliariaImport.importRecords(tenant, actor, kind, records)
 
     // ---- Desinstalacion ----
 

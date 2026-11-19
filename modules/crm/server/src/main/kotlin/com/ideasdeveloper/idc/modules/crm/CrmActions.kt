@@ -206,11 +206,18 @@ object CrmModuleExtensions {
     @Volatile
     private var screens: List<CrmScreenProvider> = emptyList()
 
+    @Volatile
+    private var targets: List<CrmImportTarget> = emptyList()
+
     fun link(extensions: List<ServerExtension>) {
         linked = extensions
         providers = extensions.filterIsInstance<CrmActionProvider>()
         screens = extensions.filterIsInstance<CrmScreenProvider>()
+        targets = extensions.filterIsInstance<CrmImportTarget>()
     }
+
+    /** Extensiones que reciben datos importados por otras extensiones (ver [CrmImportTarget]). */
+    fun importTargets(): List<CrmImportTarget> = targets
 
     fun actionProviders(): List<CrmActionProvider> = providers
 

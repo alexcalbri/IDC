@@ -111,6 +111,8 @@ data class Property(
     val createdBy: UUID?,
     val createdAt: Instant,
     val updatedAt: Instant,
+    // Clave de la fuente de una importacion (nula si se creo a mano).
+    val importKey: String? = null,
 ) {
     /** "Rebajada": el precio actual es menor que el anterior (no es un estado, sale del historial de precios). */
     val reduced: Boolean get() = InmobiliariaMath.reduced(price, previousPrice)
@@ -160,6 +162,8 @@ data class Deal(
     val propertyTitle: String = "",
     val propertyListingAgentId: UUID? = null,
     val parties: List<DealParty> = emptyList(),
+    // Clave de la fuente de una importacion (nula si se creo a mano).
+    val importKey: String? = null,
 ) {
     /** Comision total: el monto fijado a mano o precio acordado x porcentaje. */
     val commissionTotal: BigDecimal? get() = InmobiliariaMath.commissionTotal(agreedPrice, commissionPct, commissionAmount)
