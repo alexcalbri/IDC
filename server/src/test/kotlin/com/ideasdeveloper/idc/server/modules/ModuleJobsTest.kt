@@ -6,6 +6,10 @@ import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -70,5 +74,49 @@ class ModuleJobsTest {
         val html = body.getBodyPart(1) as MimeBodyPart
         assertEquals("<p>Hola</p>", html.content)
         assertTrue(html.dataHandler.contentType.startsWith("text/html"))
+    }
+
+    @Test
+    fun anErrorInOneJobDoesNotStopTheNextJobNorTheNextPass() {
+        val log = org.slf4j.LoggerFactory.getLogger(ModuleJobsTest::class.java)
+        val secondJobRuns = AtomicInteger()
+        val passes = CountDownLatch(2)
+        val executor = Executors.newSingleThreadScheduledExecutor()
+        // ModuleJobContext necesita base de datos; el trabajo se representa con una lambda.
+        val jobs = listOf<Pair<String, () -> Unit>>(
+            "falla" to { throw NoClassDefFoundError("falta una clase") },
+            "sigue" to { secondJobRuns.incrementAndGet() },
+        )
+        // Mismo recorrido que usa el planificador (runEachGuarded), una pasada tras otra en el mismo hilo.
+        fun pass() = runEachGuarded(log, jobs, { "job ${it.first} failed" }) { job -> job.second() }
+        try {
+            executor.scheduleWithFixedDelay({
+                runGuarded(log, "pass failed", ::pass)
+                passes.countDown()
+            }, 0, 10, TimeUnit.MILLISECONDS)
+            assertTrue(passes.await(5, TimeUnit.SECONDS))
+            assertTrue(secondJobRuns.get() >= 2)
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun interruptedThreadLeavesTheTraversal() {
+        val log = org.slf4j.LoggerFactory.getLogger(ModuleJobsTest::class.java)
+        val seen = mutableListOf<Int>()
+        runEachGuarded(log, listOf(1, 2, 3), { "item $it" }) { item ->
+            seen += item
+            if (item == 1) throw InterruptedException()
+        }
+        assertEquals(listOf(1), seen)
+        assertTrue(Thread.interrupted())
+    }
+
+    @Test
+    fun interruptionRestoresTheFlagAndReturns() {
+        val log = org.slf4j.LoggerFactory.getLogger(ModuleJobsTest::class.java)
+        runGuarded(log, "interrupted") { throw InterruptedException() }
+        assertTrue(Thread.interrupted())
     }
 }

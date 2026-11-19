@@ -28,6 +28,97 @@ import javax.sql.DataSource
 
 class AccountException(val code: String, message: String) : Exception(message)
 
+/**
+ * Regla del cambio de correo propio: cambiarlo exige la contrasena actual (si no, una sesion robada
+ * redirigiria "olvide mi contrasena" a otro correo). Comparacion sin mayusculas ni espacios.
+ */
+object EmailChangeRule {
+    // Solo A-Z pasan a minuscula: lowercase() de Unicode trata, por ejemplo, el signo Kelvin (U+212A) como "k".
+    private fun normalize(email: String): String =
+        email.trim().map { if (it in 'A'..'Z') it + 32 else it }.joinToString("")
+
+    fun isChange(storedEmail: String?, requestedEmail: String): Boolean =
+        normalize(storedEmail.orEmpty()) != normalize(requestedEmail)
+
+    /**
+     * Lanza PASSWORD_REQUIRED, INVALID_PASSWORD o TOO_MANY_ATTEMPTS; [passwordMatches] solo se llama si el
+     * correo cambia y hay contrasena. Con [attempts] y [attemptKey] cuenta los fallos por usuario.
+     */
+    fun check(
+        storedEmail: String?,
+        requestedEmail: String,
+        currentPassword: String?,
+        attempts: PasswordAttemptLimiter? = null,
+        attemptKey: String = "",
+        passwordMatches: (String) -> Boolean,
+    ) {
+        if (!isChange(storedEmail, requestedEmail)) return
+        PasswordConfirmation.require(
+            currentPassword, attempts, attemptKey, "Escribe tu contrasena actual para cambiar el correo.", passwordMatches,
+        )
+    }
+}
+
+/** Confirmacion de la contrasena actual antes de un cambio sensible, con tope de fallos por usuario. */
+object PasswordConfirmation {
+    /** El business owner confirma la contrasena al cambiar su correo o al poner una contrasena nueva. */
+    fun ownerChangeNeedsPassword(storedEmail: String?, requestedEmail: String, newPassword: String): Boolean =
+        newPassword.isNotEmpty() || EmailChangeRule.isChange(storedEmail, requestedEmail)
+
+    fun require(
+        currentPassword: String?,
+        attempts: PasswordAttemptLimiter?,
+        attemptKey: String,
+        requiredMessage: String,
+        passwordMatches: (String) -> Boolean,
+    ) {
+        if (currentPassword.isNullOrEmpty()) throw AccountException("PASSWORD_REQUIRED", requiredMessage)
+        // El bloqueo se mira antes de comparar: un usuario bloqueado no sirve de oraculo de contrasenas.
+        if (attempts != null && attempts.isBlocked(attemptKey)) {
+            throw AccountException("TOO_MANY_ATTEMPTS", "Demasiados intentos. Espera unos minutos e intentalo de nuevo.")
+        }
+        if (!passwordMatches(currentPassword)) {
+            attempts?.recordFailure(attemptKey)
+            throw AccountException("INVALID_PASSWORD", "La contrasena actual no es correcta.")
+        }
+    }
+}
+
+/**
+ * Tope de intentos FALLIDOS de contrasena actual por usuario y empresa (en memoria: la tabla de throttles
+ * del reset tiene ventana de 24 h y su propio tope, y compartirla mezclaria ambos contadores). Un acierto no cuenta.
+ */
+class PasswordAttemptLimiter(
+    private val maxFailures: Int = MaxFailures,
+    private val window: Duration = Window,
+    private val clock: () -> Instant = Instant::now,
+) {
+    private class Entry(val windowStart: Instant, var failures: Int)
+
+    private val entries = ConcurrentHashMap<String, Entry>()
+
+    companion object {
+        const val MaxFailures = 5
+        val Window: Duration = Duration.ofMinutes(15)
+        const val MaxEntries = 10_000
+    }
+
+    fun isBlocked(key: String): Boolean {
+        val entry = entries[key] ?: return false
+        synchronized(entry) { return entry.failures >= maxFailures && live(entry, clock()) }
+    }
+
+    fun recordFailure(key: String) {
+        val now = clock()
+        if (entries.size >= MaxEntries) entries.entries.removeIf { !live(it.value, now) }
+        if (entries.size >= MaxEntries && !entries.containsKey(key)) return
+        val entry = entries.compute(key) { _, old -> if (old == null || !live(old, now)) Entry(now, 0) else old }!!
+        synchronized(entry) { entry.failures++ }
+    }
+
+    private fun live(entry: Entry, now: Instant) = entry.windowStart.plus(window).isAfter(now)
+}
+
 @Serializable
 data class AccountProfile(
     val username: String,
@@ -53,7 +144,11 @@ class AccountService(
     private val loginDatabases: LoginDatabases,
     private val mail: () -> SmtpSettings?,
     private val passwords: AccountPasswords,
+    // Verifica la contrasena actual como el login (LoginDatabases.verifyPassword); sin ella no se puede cambiar el correo.
+    private val verifyPassword: (companyCode: String?, username: String, password: String) -> Boolean = { _, _, _ -> false },
     private val clock: () -> Instant = Instant::now,
+    // Fallos de contrasena actual por usuario; se comparte con CompanySelfService para que ambas rutas sumen en el mismo contador.
+    private val passwordAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(),
 ) {
     private val log = LoggerFactory.getLogger(AccountService::class.java)
     private val tokens = SessionTokenGenerator()
@@ -86,16 +181,46 @@ class AccountService(
         account.profile(ApplicationUserCodes.ensure(connection, account.id))
     }
 
-    fun updateProfile(accessToken: String, companyCode: String?, displayName: String, email: String): AccountProfile {
+    fun updateProfile(
+        accessToken: String,
+        companyCode: String?,
+        displayName: String,
+        email: String,
+        currentPassword: String? = null,
+    ): AccountProfile {
         UserProfileRules.problem(displayName, email)?.let { throw AccountException("INVALID_PROFILE", it.replaceFirstChar(Char::uppercase)) }
         return database(companyCode).use { connection ->
             val account = sessionAccount(connection, accessToken, companyCode == null)
                 ?: throw AccountException("INVALID_SESSION", "La sesion no es valida.")
-            connection.prepareStatement("UPDATE application_users SET display_name = ?, email = ? WHERE id = ?").use { update ->
-                update.setString(1, displayName.trim())
-                update.setString(2, email.trim())
-                update.setObject(3, account.id)
-                update.executeUpdate()
+            // Cambiar el correo propio exige la contrasena actual; cambiar solo el nombre no.
+            val emailChanges = EmailChangeRule.isChange(account.email, email)
+            val attemptKey = "${companyCode.orEmpty()}/${account.username}"
+            EmailChangeRule.check(account.email, email, currentPassword, passwordAttempts, attemptKey) { password -> verifyPassword(companyCode, account.username, password) }
+            // El cambio de correo y el cierre de las demas sesiones van en una sola transaccion.
+            connection.autoCommit = false
+            try {
+                connection.prepareStatement("UPDATE application_users SET display_name = ?, email = ? WHERE id = ?").use { update ->
+                    update.setString(1, displayName.trim())
+                    update.setString(2, email.trim())
+                    update.setObject(3, account.id)
+                    update.executeUpdate()
+                }
+                // Con otro correo, las demas sesiones (la de un posible atacante) se cierran; la actual se conserva.
+                if (emailChanges) {
+                    connection.prepareStatement(
+                        "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL AND token_hash <> ?"
+                    ).use { revoke ->
+                        revoke.setObject(1, account.id)
+                        revoke.setString(2, tokens.hash(accessToken))
+                        revoke.executeUpdate()
+                    }
+                }
+                connection.commit()
+            } catch (failure: Throwable) {
+                runCatching { connection.rollback() }
+                throw failure
+            } finally {
+                connection.autoCommit = true
             }
             Account(account.id, account.username, displayName.trim(), email.trim(), account.userCode)
                 .profile(ApplicationUserCodes.ensure(connection, account.id))

@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.server.app
 
+import com.ideasdeveloper.idc.server.company.application.CoreUpdateService
 import kotlinx.serialization.Serializable
 
 const val IdeasCoreVersion = "0.8.0"
@@ -13,7 +14,7 @@ data class VersionResponse(
     val moduleUpdates: List<ModuleVersionUpdate> = emptyList(),
 ) {
     val coreUpdateAvailable: Boolean
-        get() = !latestCoreVersion.isNullOrBlank() && latestCoreVersion != coreVersion
+        get() = CoreUpdateService.isUpdateAvailable(coreVersion, latestCoreVersion)
     val modulesUpdateAvailable: Boolean
         get() = moduleUpdates.isNotEmpty()
 }

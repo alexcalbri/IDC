@@ -77,6 +77,31 @@ internal class ModuleJobClock {
 private fun ModuleJob.scheduleForDefault(): ModuleJobSchedule =
     dailyAt?.let { ModuleJobSchedule(dailyAt = it) } ?: ModuleJobSchedule(interval = interval)
 
+/**
+ * Runs [action] without letting anything escape, not even an Error (NoClassDefFoundError, LinkageError,
+ * OutOfMemoryError): it is logged and the caller keeps going. An interruption restores the flag and returns.
+ */
+fun runGuarded(log: org.slf4j.Logger, description: String, action: () -> Unit) {
+    try {
+        action()
+    } catch (interrupted: InterruptedException) {
+        Thread.currentThread().interrupt()
+    } catch (failure: Throwable) {
+        log.error(description, failure)
+    }
+}
+
+/**
+ * Recorre [items] ejecutando [action] con cada uno dentro de [runGuarded]: el fallo de uno (incluso un Error)
+ * no impide los siguientes. Si el hilo fue interrumpido, sale del recorrido.
+ */
+fun <T> runEachGuarded(log: org.slf4j.Logger, items: Iterable<T>, description: (T) -> String, action: (T) -> Unit) {
+    for (item in items) {
+        if (Thread.currentThread().isInterrupted) return
+        runGuarded(log, description(item)) { action(item) }
+    }
+}
+
 class ModuleJobScheduler(
     private val registry: ModuleRegistry,
     private val access: ModuleAccessService,
@@ -90,7 +115,7 @@ class ModuleJobScheduler(
         if (executor != null) return
         executor = Executors.newSingleThreadScheduledExecutor { task -> Thread(task, "module-jobs").apply { isDaemon = true } }.also {
             // The first tick waits a little so startup work (migrations) goes first.
-            it.scheduleWithFixedDelay(::runDueJobs, 30, tick.seconds, TimeUnit.SECONDS)
+            it.scheduleWithFixedDelay(::runDueJobsSafely, 30, tick.seconds, TimeUnit.SECONDS)
         }
     }
 
@@ -99,16 +124,24 @@ class ModuleJobScheduler(
         executor = null
     }
 
+    // Cuerpo del planificador: nada (ni un Error) puede escapar, o scheduleWithFixedDelay cancelaria las pasadas siguientes.
+    private fun runDueJobsSafely() = runGuarded(log, "Module jobs pass failed", ::runDueJobs)
+
     internal fun runDueJobs() {
         runCoreJobs()
         try {
-            registry.installedModuleIds().sorted().forEach { moduleId ->
+            runEachGuarded(log, registry.installedModuleIds().sorted(), { "Jobs of module $it failed" }) { moduleId ->
                 val jobs = registry.module(moduleId)?.jobs.orEmpty()
-                if (jobs.isEmpty()) return@forEach
-                access.companiesWithModule(moduleId).forEach { companyCode -> runForCompany(moduleId, jobs, companyCode) }
+                if (jobs.isNotEmpty()) {
+                    runEachGuarded(log, access.companiesWithModule(moduleId), { "Jobs of module $moduleId failed for company $it" }) { companyCode ->
+                        runForCompany(moduleId, jobs, companyCode)
+                    }
+                }
             }
-        } catch (failure: Exception) {
-            // Never let an error stop the scheduler thread.
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (failure: Throwable) {
+            // Never let an error (even a LinkageError or OutOfMemoryError) stop the scheduler thread.
             log.error("Module jobs tick failed", failure)
         }
     }
@@ -117,10 +150,14 @@ class ModuleJobScheduler(
     // older than 90 days once a day.
     private fun runCoreJobs() {
         try {
-            access.activeCompanies().forEach { companyCode ->
-                coreJobs.forEach { job -> runJob(CoreJobsId, job, companyCode) }
+            runEachGuarded(log, access.activeCompanies(), { "Core jobs failed for company $it" }) { companyCode ->
+                runEachGuarded(log, coreJobs, { "Core job ${it.id} failed for company $companyCode" }) { job ->
+                    runJob(CoreJobsId, job, companyCode)
+                }
             }
-        } catch (failure: Exception) {
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (failure: Throwable) {
             log.error("Core jobs tick failed", failure)
         }
     }
@@ -133,7 +170,9 @@ class ModuleJobScheduler(
     )
 
     private fun runForCompany(moduleId: String, jobs: List<ModuleJob>, companyCode: String) {
-        jobs.forEach { job -> runJob(moduleId, job, companyCode) }
+        runEachGuarded(log, jobs, { "Job ${it.id} of module $moduleId failed for company $companyCode" }) { job ->
+            runJob(moduleId, job, companyCode)
+        }
     }
 
     private fun runJob(moduleId: String, job: ModuleJob, companyCode: String) {
@@ -145,7 +184,9 @@ class ModuleJobScheduler(
                 clock.ran(moduleId, job, companyCode, now)
                 job.run(ModuleJobContext(companyCode, tenant, access, access.notificationsFor(moduleId)))
             }
-        } catch (failure: Exception) {
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+        } catch (failure: Throwable) {
             log.error("Job {} of module {} failed for company {}", job.id, moduleId, companyCode, failure)
         }
     }

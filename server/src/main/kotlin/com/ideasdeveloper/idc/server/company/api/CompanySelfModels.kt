@@ -92,6 +92,8 @@ data class UpdateCompanyUserRequest(
     val isActive: Boolean = true,
     val permissions: List<String> = emptyList(),
     val password: String = "",
+    // Solo cuando el business owner cambia SU PROPIO correo: su contrasena actual.
+    val currentPassword: String? = null,
 )
 
 // Empresa del servidor: la empresa que el server_owner administra sin crear una empresa.

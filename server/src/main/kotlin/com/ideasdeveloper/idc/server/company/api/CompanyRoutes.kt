@@ -229,6 +229,10 @@ fun Route.companyRoutes(
                 HttpStatusCode.OK,
                 withContext(Dispatchers.IO) { service.updateUser(context.companyCode, context.token, call.parameters["userId"].orEmpty(), request) },
             )
+        } catch (exception: com.ideasdeveloper.idc.server.auth.application.AccountException) {
+            // PASSWORD_REQUIRED / INVALID_PASSWORD: mismo contrato que PUT /auth/profile (400).
+            val status = if (exception.code == "TOO_MANY_ATTEMPTS") HttpStatusCode.TooManyRequests else HttpStatusCode.BadRequest
+            call.respond(status, CompanyErrorResponse(exception.code, exception.message.orEmpty()))
         } catch (exception: CompanySelfException) {
             call.respond(HttpStatusCode.Conflict, CompanyErrorResponse("COMPANY_USER_NOT_UPDATED", exception.message ?: "No se pudo actualizar el usuario."))
         } catch (exception: CompanyProvisioningException) {

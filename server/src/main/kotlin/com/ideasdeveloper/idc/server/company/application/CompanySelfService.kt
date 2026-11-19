@@ -12,6 +12,8 @@ import com.ideasdeveloper.idc.server.company.api.CompanyUserResponse
 import com.ideasdeveloper.idc.server.company.api.CompanyUsersResponse
 import com.ideasdeveloper.idc.server.company.api.CreateCompanyUserRequest
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyUserPermissionsRequest
+import com.ideasdeveloper.idc.server.auth.application.PasswordAttemptLimiter
+import com.ideasdeveloper.idc.server.auth.application.PasswordConfirmation
 import com.ideasdeveloper.idc.server.company.api.UpdateCompanyUserRequest
 import com.ideasdeveloper.idc.server.company.api.UpdateBusinessOwnerRequest
 import com.ideasdeveloper.idc.server.company.api.BusinessOwnerResponse
@@ -67,6 +69,11 @@ class CompanySelfService(
     // Edits the business owner (a PostgreSQL role shared by the companies it owns); see
     // CompanyProvisioningService.updateBusinessOwnerBySelf. Null where owners cannot be edited.
     private val ownerEditor: ((companyCode: String, request: UpdateBusinessOwnerRequest) -> BusinessOwnerResponse)? = null,
+    // Contrasena actual del business owner, como en el login (LoginDatabases.verifyPassword). Sin ella, el
+    // business owner no puede cambiar su propio correo.
+    private val verifyOwnerPassword: ((companyCode: String, username: String, password: String) -> Boolean)? = null,
+    // Tope de fallos de contrasena actual por usuario; se comparte con AccountService (misma clave "empresa/usuario").
+    private val passwordAttempts: PasswordAttemptLimiter = PasswordAttemptLimiter(),
     // Sella la contrasena del SMTP de la empresa; sin llave maestra no se puede guardar una contrasena.
     private val secrets: SecretBox? = null,
 ) {
@@ -369,6 +376,36 @@ class CompanySelfService(
         }
         if (targetUserId == context.businessOwnerUserId) {
             val editor = ownerEditor ?: throw CompanySelfException("El business owner no se puede editar en este servidor.")
+            // El business owner cambia SU PROPIO correo: exige la contrasena actual (misma regla que /auth/profile).
+            val storedEmail = tenantConnection(context.tenant).use { connection ->
+                connection.prepareStatement("SELECT email FROM application_users WHERE id = ?").use { query ->
+                    query.setObject(1, targetUserId)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+            }
+            // Tambien al poner una contrasena nueva: con una sesion robada no se debe poder tomar la cuenta.
+            // Solo aqui (quien firma es el propio business owner); un administrador que edita a otro usuario no pasa por esta rama.
+            val sensitiveChange = PasswordConfirmation.ownerChangeNeedsPassword(storedEmail, email, password)
+            if (sensitiveChange) {
+                val role = context.businessOwnerRole.orEmpty()
+                PasswordConfirmation.require(
+                    request.currentPassword, passwordAttempts, "${context.companyCode}/$role",
+                    "Escribe tu contrasena actual para cambiar el correo o la contrasena.",
+                ) { current -> verifyOwnerPassword?.invoke(context.companyCode, role, current) ?: false }
+            }
+            if (sensitiveChange) {
+                // Se cierran las demas sesiones del business owner (la actual se conserva) ANTES de editar: el editor
+                // usa su propia transaccion, y revocar de mas si la edicion falla es seguro; no revocar, no.
+                tenantConnection(context.tenant).use { connection ->
+                    connection.prepareStatement(
+                        "UPDATE application_sessions SET revoked_at = CURRENT_TIMESTAMP WHERE user_id = ? AND revoked_at IS NULL AND token_hash <> ?"
+                    ).use { revoke ->
+                        revoke.setObject(1, targetUserId)
+                        revoke.setString(2, tokenGenerator.hash(accessToken))
+                        revoke.executeUpdate()
+                    }
+                }
+            }
             editor(context.companyCode, UpdateBusinessOwnerRequest(username, displayName, email, password))
             return tenantConnection(context.tenant).use { connection -> loadUser(connection, targetUserId) }
                 ?: throw CompanySelfException("Usuario no encontrado.")

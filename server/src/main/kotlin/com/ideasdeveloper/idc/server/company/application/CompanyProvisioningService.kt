@@ -100,54 +100,85 @@ class CompanyProvisioningService(
             }
         }
 
-        adminConnection(provisioningRole).use { admin ->
-            admin.autoCommit = true
-            if (admin.existsDatabase(databaseName)) {
-                throw CompanyProvisioningException("La base de datos de la empresa ya existe.")
-            }
-            if (admin.existsRole(ownerUsername) || roleUsedInAnyCompany(ownerUsername)) {
-                throw CompanyProvisioningException("El usuario PostgreSQL del business owner ya existe.")
-            }
-
-            admin.createStatement().use { statement ->
-                silenceStatementLog(statement)
-                statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
-                // Por defecto PUBLIC puede conectarse a cualquier base: solo el runtime y el owner.
-                statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
-                statement.executeUpdate(
-                    "CREATE ROLE ${quoteIdentifier(ownerUsername)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(ScramSha256.verifier(ownerPassword))}"
-                )
-                statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
-                statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(ownerUsername)}")
-            }
-        }
-
+        // Lo que este intento creo, para borrarlo si algo falla antes de registrar la empresa.
+        var databaseCreated = false
+        var roleCreated = false
+        var registered = false
         val tenantConfig = tenantConfig(databaseName)
+        try {
+            adminConnection(provisioningRole).use { admin ->
+                admin.autoCommit = true
+                if (admin.existsDatabase(databaseName)) {
+                    throw CompanyProvisioningException("La base de datos de la empresa ya existe.")
+                }
+                if (admin.existsRole(ownerUsername) || roleUsedInAnyCompany(ownerUsername)) {
+                    throw CompanyProvisioningException("El usuario PostgreSQL del business owner ya existe.")
+                }
 
-        tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
-            applyTenantCoreMigrations(tenant)
-            applyBaseModuleMigrations(tenant)
-            seedBusinessOwner(tenant, ownerUsername, ownerName, ownerEmail)
-            grantTenantPermissions(tenant, ownerUsername)
-        }
-
-        central.connection.use { connection ->
-            connection.autoCommit = false
-            try {
-                insertCompany(connection, companyId, request, databaseName)
-                insertAudit(
-                    connection = connection,
-                    actorRole = provisioningRole,
-                    action = "company.created",
-                    companyCode = code,
-                    moduleId = null,
-                    details = """{"databaseName":"$databaseName","businessOwnerUsername":"$ownerUsername"}""",
-                )
-                connection.commit()
-            } catch (failure: Exception) {
-                connection.rollback()
-                throw failure
+                admin.createStatement().use { statement ->
+                    silenceStatementLog(statement)
+                    statement.executeUpdate("CREATE DATABASE ${quoteIdentifier(databaseName)}")
+                    databaseCreated = true
+                    // Por defecto PUBLIC puede conectarse a cualquier base: solo el runtime y el owner.
+                    statement.executeUpdate("REVOKE CONNECT ON DATABASE ${quoteIdentifier(databaseName)} FROM PUBLIC")
+                    statement.executeUpdate(
+                        "CREATE ROLE ${quoteIdentifier(ownerUsername)} LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE PASSWORD ${quoteLiteral(ScramSha256.verifier(ownerPassword))}"
+                    )
+                    roleCreated = true
+                    statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(config.runtimeUser)}")
+                    statement.executeUpdate("GRANT CONNECT ON DATABASE ${quoteIdentifier(databaseName)} TO ${quoteIdentifier(ownerUsername)}")
+                }
             }
+
+            tenantAdminConnection(tenantConfig.jdbcUrl, provisioningRole).use { tenant ->
+                applyTenantCoreMigrations(tenant)
+                applyBaseModuleMigrations(tenant)
+                seedBusinessOwner(tenant, ownerUsername, ownerName, ownerEmail)
+                grantTenantPermissions(tenant, ownerUsername)
+            }
+
+            central.connection.use { connection ->
+                connection.autoCommit = false
+                try {
+                    insertCompany(connection, companyId, request, databaseName)
+                    insertAudit(
+                        connection = connection,
+                        actorRole = provisioningRole,
+                        action = "company.created",
+                        companyCode = code,
+                        moduleId = null,
+                        details = """{"databaseName":"$databaseName","businessOwnerUsername":"$ownerUsername"}""",
+                    )
+                    connection.commit()
+                    // Confirmado: desde aqui la empresa existe y no se debe borrar nada, aunque el cierre falle.
+                    registered = true
+                } catch (failure: Exception) {
+                    connection.rollback()
+                    throw failure
+                }
+            }
+        } catch (failure: Throwable) {
+            // Nada apunta aun a una base a medias: se borra para poder reutilizar el codigo (sin ocultar el error original).
+            if (!registered && (databaseCreated || roleCreated)) {
+                // Si un commit incierto si dejo la empresa registrada (o no se puede comprobar), no se borra nada.
+                val alreadyRegistered = runCatching { central.connection.use { it.exists("companies", "code", code) } }
+                    .getOrElse { check ->
+                        log.error("No se pudo comprobar si la empresa {} quedo registrada; no se borra su base ni su rol", code, check)
+                        true
+                    }
+                if (alreadyRegistered) {
+                    log.error("La empresa {} esta registrada pese al fallo; se conservan su base {} y su rol", code, databaseName)
+                } else runCatching {
+                    adminConnection(provisioningRole).use { admin ->
+                        admin.autoCommit = true
+                        admin.createStatement().use { statement ->
+                            if (databaseCreated) statement.executeUpdate("DROP DATABASE IF EXISTS ${quoteIdentifier(databaseName)}")
+                            if (roleCreated) statement.executeUpdate("DROP ROLE IF EXISTS ${quoteIdentifier(ownerUsername)}")
+                        }
+                    }
+                }.onFailure { log.warn("No se pudo borrar la base incompleta {}", databaseName, it) }
+            }
+            throw failure
         }
 
         loginDatabases.registerTenant(tenantConfig)
@@ -1011,7 +1042,7 @@ class CompanyProvisioningService(
                 action = if (enabled) "module.enabled" else "module.disabled",
                 companyCode = normalizedCompanyCode,
                 moduleId = definition.id,
-                details = """{"displayName":"${definition.displayName}"}""",
+                details = """{"displayName":"${definition.displayName.escapeJson()}"}""",
             )
         }
 

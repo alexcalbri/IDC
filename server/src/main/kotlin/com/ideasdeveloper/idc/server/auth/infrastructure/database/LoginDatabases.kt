@@ -57,6 +57,26 @@ class LoginDatabases(
         companyScope = { name -> tenantScope(name) },
     )
 
+    /**
+     * Whether [password] is right for [username] in [companyCode] (null: the server), with the same
+     * mechanism as the login but without opening a session. For re-authenticating sensitive changes.
+     */
+    fun verifyPassword(companyCode: String?, username: String, password: String): Boolean {
+        val scope = if (companyCode == null) {
+            serverScope
+        } else {
+            if (!tenantDatabaseNamePattern.matches(companyCode)) return false
+            val database = central.connection.use { connection ->
+                connection.prepareStatement("SELECT database_name FROM companies WHERE code = ? AND is_active = TRUE").use { query ->
+                    query.setString(1, companyCode)
+                    query.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+                }
+            } ?: return false
+            tenantScope(database) ?: return false
+        }
+        return scope.verifyCredentials(LoginCredentials(username, password, companyCode))
+    }
+
     @Synchronized
     fun tenantConfig(databaseName: String): TenantDatabaseConfig? = configurations[databaseName]
         ?: databaseName.takeIf { it.matches(tenantDatabaseNamePattern) }?.let { inferredTenantConfig(it) }
@@ -298,6 +318,9 @@ class LoginDatabases(
             val user = authentication.authenticate(credentials) ?: return null
             return respond(user, credentials.companyCode)
         }
+
+        // Misma comprobacion que el login (rol de PostgreSQL para duenos, contrasena de aplicacion para el resto), sin abrir sesion.
+        fun verifyCredentials(credentials: LoginCredentials): Boolean = authentication.authenticate(credentials) != null
 
         fun isOwner(user: ApplicationUser): Boolean = source.connection.use { connection ->
             val table = if (server) "server_owners" else "business_owner"

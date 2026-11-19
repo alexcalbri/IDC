@@ -91,17 +91,7 @@ fun Application.module() {
                 refillPeriod = 60.seconds,
             )
 
-            requestKey { call ->
-                val remoteAddress = call.request.local.remoteAddress
-
-                if (remoteAddress == "127.0.0.1") {
-                    call.request.headers["X-Real-IP"]
-                        ?.takeIf { it.isNotBlank() }
-                        ?: remoteAddress
-                } else {
-                    remoteAddress
-                }
-            }
+            requestKey { call -> clientAddress(call) }
         }
         register(RateLimitName("admin")) {
             rateLimiter(
@@ -129,14 +119,7 @@ fun Application.module() {
                 limit = 300,
                 refillPeriod = 60.seconds,
             )
-            requestKey { call ->
-                val remoteAddress = call.request.local.remoteAddress
-                if (remoteAddress == "127.0.0.1") {
-                    call.request.headers["X-Real-IP"]?.takeIf { it.isNotBlank() } ?: remoteAddress
-                } else {
-                    remoteAddress
-                }
-            }
+            requestKey { call -> clientAddress(call) }
         }
     }
     DatabaseFactory.init(environment.config)
@@ -303,10 +286,14 @@ fun Application.module() {
         }
     }, "extension-compatibility").apply { isDaemon = true }.start()
     // Name and email of each user and password recovery by email code.
+    // Un solo contador de fallos de contrasena actual para /auth/profile y la edicion del business owner.
+    val passwordAttempts = com.ideasdeveloper.idc.server.auth.application.PasswordAttemptLimiter()
     val accountService = AccountService(
         central = DatabaseFactory.getDataSource(),
         loginDatabases = loginDatabases,
         mail = serverMailSettings().let { settings -> { settings } },
+        verifyPassword = loginDatabases::verifyPassword,
+        passwordAttempts = passwordAttempts,
         passwords = AccountPasswords(
             serverOwner = { userId, password ->
                 try {
@@ -335,6 +322,8 @@ fun Application.module() {
                 ?: "build/company-backups"
         ),
         ownerEditor = companyProvisioning::updateBusinessOwnerBySelf,
+        verifyOwnerPassword = { companyCode, username, password -> loginDatabases.verifyPassword(companyCode, username, password) },
+        passwordAttempts = passwordAttempts,
         secrets = secretBox,
     )
     monitor.subscribe(ApplicationStopped) {
@@ -372,10 +361,19 @@ fun Application.module() {
                 switchTargets = loginDatabases::switchTargets,
                 switchTo = loginDatabases::switchTo,
                 logout = loginDatabases::logout,
+                includeSession = false,
             )
             passwordResetRoutes(accountService)
         }
         rateLimit(RateLimitName("admin")) {
+            // Cierre de sesion y cambio de empresa: no deben gastar el cubo estricto del login (5/min).
+            authRoutes(
+                loginService = loginDatabases.service,
+                switchTargets = loginDatabases::switchTargets,
+                switchTo = loginDatabases::switchTo,
+                logout = loginDatabases::logout,
+                includeLogin = false,
+            )
             accountProfileRoutes(accountService)
         }
         rateLimit(RateLimitName("admin")) {

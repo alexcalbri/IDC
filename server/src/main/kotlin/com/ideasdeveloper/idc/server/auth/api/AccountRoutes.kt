@@ -19,7 +19,12 @@ import kotlinx.serialization.Serializable
 import java.sql.SQLException
 
 @Serializable
-data class UpdateAccountProfileRequest(val displayName: String, val email: String)
+data class UpdateAccountProfileRequest(
+    val displayName: String,
+    val email: String,
+    // Obligatoria solo si el correo cambia.
+    val currentPassword: String? = null,
+)
 
 @Serializable
 data class PasswordResetRequest(val username: String, val companyCode: String? = null)
@@ -41,7 +46,7 @@ fun Route.accountProfileRoutes(service: AccountService) {
         call.response.headers.append(HttpHeaders.CacheControl, "no-store")
         val token = call.bearer() ?: return@put call.respond(HttpStatusCode.Unauthorized, AuthErrorResponse("INVALID_SESSION", "La sesion es requerida."))
         val request = call.receiveOrNull<UpdateAccountProfileRequest>() ?: return@put
-        call.answer { service.updateProfile(token, call.companyCode(), request.displayName, request.email) }
+        call.answer { service.updateProfile(token, call.companyCode(), request.displayName, request.email, request.currentPassword) }
     }
 }
 
@@ -90,6 +95,7 @@ private suspend inline fun <reified T : Any> ApplicationCall.answer(crossinline 
         val status = when (failure.code) {
             "INVALID_SESSION" -> HttpStatusCode.Unauthorized
             "MAIL_NOT_CONFIGURED" -> HttpStatusCode.ServiceUnavailable
+            "TOO_MANY_ATTEMPTS" -> HttpStatusCode.TooManyRequests
             else -> HttpStatusCode.BadRequest
         }
         return respond(status, AuthErrorResponse(failure.code, failure.message.orEmpty()))
