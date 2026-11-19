@@ -252,7 +252,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.27.0",
+        version = "0.27.1",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.7.0",
         supportsExtensions = true,
@@ -351,6 +351,8 @@ object CrmServerModule : ServerModule {
                     CrmScreens.customerSuggestions(
                         CrmRepository.customerSuggestions(
                             tenant,
+                            // Without "see all" only customers with a lead in the user's scope are suggested.
+                            CrmRepository.scope(tenant, permissions),
                             field = query["field"].orEmpty(),
                             query = query["q"].orEmpty().take(200),
                             email = query["email"].orEmpty().take(254),
@@ -523,7 +525,11 @@ object CrmServerModule : ServerModule {
                     // Without the assign permission the assigned user stays as the form defaulted it (the user).
                     val owned = if (context.canAssign) input else input.copy(ownerUserIds = listOfNotNull(context.scope.userId?.takeIf { id -> context.users.any { it.id == id } }))
                     val chosen = values["customerId"]?.let { runCatching { UUID.fromString(it) }.getOrNull() }
-                    val id = CrmRepository.createLead(tenant, owned, stage, actor, chosen, context.fields)
+                    // A customer picked by id must pass the same filter as the suggestions (otherwise it is "not found").
+                    if (chosen != null && !CrmRepository.customerInScope(tenant, context.scope, chosen)) {
+                        return show("new", UiNotice("Ese cliente ya no esta disponible.", UiTone.Warning), emptyMap(), values)
+                    }
+                    val id = CrmRepository.createLead(tenant, owned, stage, actor, chosen, context.fields, context.scope)
                     CrmNotify.newLead(tenant, id)
                     CrmNotify.assigned(tenant, notifier, id, owned.ownerUserIds.orEmpty(), context.scope.userId)
                     show("lead", UiNotice("Lead creado.", UiTone.Success), mapOf("id" to id.toString()))

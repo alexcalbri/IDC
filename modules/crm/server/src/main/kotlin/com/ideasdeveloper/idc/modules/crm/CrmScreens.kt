@@ -743,7 +743,7 @@ object CrmScreens {
                 }
                 UiSuggestion(
                     title = customer.name.ifBlank { customer.email.ifBlank { customer.phone } },
-                    subtitle = listOf(customer.code.orEmpty(), customer.email, customer.phone, leads).filter { it.isNotBlank() }.joinToString(" - "),
+                    subtitle = listOf(customer.email, customer.phone, leads).filter { it.isNotBlank() }.joinToString(" - "),
                     values = mapOf("name" to customer.name, "email" to customer.email, "phone" to customer.phone, "customerId" to customer.id.toString()),
                 )
             },
@@ -827,8 +827,10 @@ object CrmScreens {
             listOf(
                 UiForm(
                     "lead",
-                    leadFields(context, readOnly = !canEdit, currentInterest = lead.interestId, legacyOwners = legacyOwners, showCustomerCode = true),
-                    leadValues(context, lead, legacyOwners) + submitted.orEmpty() + ("customerCode" to lead.customerCode),
+                    leadFields(context, readOnly = !canEdit, currentInterest = lead.interestId, legacyOwners = legacyOwners, showCustomerCode = context.scope.seesAll),
+                    // The customer code (WiFi portal credential) is only for who sees every lead.
+                    leadValues(context, lead, legacyOwners).let { if (context.scope.seesAll) it else it - "customerCode" } + submitted.orEmpty() +
+                        (if (context.scope.seesAll) mapOf("customerCode" to lead.customerCode) else emptyMap()),
                     // owners0: the assigned users the form was drawn with; saving applies only the difference to them.
                     submit = if (canEdit) UiButton("Guardar cambios", UiRequest(UiRoute + "/lead", params = id + ("op" to "save") + (OwnersBeforeKey to lead.ownerUserIds.joinToString(",")), formId = "lead")) else null,
                     collapsibleSections = true,

@@ -322,16 +322,22 @@ object CrmRepository {
      * The customer keeps its data; only an email or phone it did not have yet is added. Without a
      * match a new prospect customer is created in Clientes.
      */
-    fun createLead(tenant: Connection, entered: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID? = null, fields: List<CrmField> = emptyList()): UUID =
-        insertLead(tenant, entered, stage, actor, chosenCustomerId, fields).also { id ->
+    fun createLead(
+        tenant: Connection, entered: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID? = null, fields: List<CrmField> = emptyList(),
+        scope: CrmScope? = null,
+    ): UUID =
+        insertLead(tenant, entered, stage, actor, chosenCustomerId, fields, scope).also { id ->
             // Once saved: the "lead creado" automations (best effort, never fails the creation).
             CrmAutomationEvents.leadCreated(tenant, id)
         }
 
-    private fun insertLead(tenant: Connection, entered: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID?, fields: List<CrmField>): UUID = transaction(tenant) {
+    private fun insertLead(tenant: Connection, entered: CrmLeadInput, stage: CrmStage, actor: CrmActor, chosenCustomerId: UUID?, fields: List<CrmField>, scope: CrmScope?): UUID = transaction(tenant) {
         // target_start and target_end are copied from the mapped date fields (empty without mapping).
         val input = withStayDates(tenant, entered, JsonObject(emptyMap()), fields)
-        val existing = chosenCustomerId?.takeIf { activeCustomer(tenant, it) } ?: matchCustomer(tenant, input.email, input.phone)
+        // A restricted user never links (nor completes the data of) a customer outside their scope: a new one is created instead.
+        fun allowed(id: UUID) = acceptCustomer(scope?.let(::customerSearchRestricted) ?: false) { customerInScope(tenant, scope!!, id) }
+        val existing = chosenCustomerId?.takeIf { activeCustomer(tenant, it) && allowed(it) }
+            ?: matchCustomer(tenant, input.email, input.phone)?.takeIf { allowed(it) }
         val customerId = existing?.also { CrmInbox.fillMissingContact(tenant, it, input.email, input.phone) } ?: UUID.randomUUID().also { id ->
             tenant.prepareStatement(
                 "INSERT INTO customers (id, display_name, primary_email, primary_phone, status, customer_type) VALUES (?, ?, ?, ?, 'prospect', 'crm')"
@@ -382,14 +388,41 @@ object CrmRepository {
             ?: digits.takeIf { it.isNotEmpty() }?.let { first("regexp_replace(primary_phone, '[^0-9]', '', 'g') = ?", it) }
     }
 
-    data class CustomerSuggestion(val id: UUID, val name: String, val email: String, val phone: String, val code: String?, val openLeads: Int, val exact: Boolean)
+    // Never carries the customer code: it is the credential of the WiFi portal, not something a lead form may show.
+    data class CustomerSuggestion(val id: UUID, val name: String, val email: String, val phone: String, val openLeads: Int, val exact: Boolean)
+
+    /** Whether the customer search must be limited to customers with a lead inside the user's scope (only "see all" searches every customer). */
+    fun customerSearchRestricted(scope: CrmScope): Boolean = !scope.seesAll
+
+    /**
+     * Extra SQL condition over customers aliased "c" that keeps only the ones with at least one lead inside [scope]
+     * (the same predicate as the lead list, [CrmScope.sqlCondition]); null when the search is not restricted.
+     */
+    fun customerScopeSql(scope: CrmScope): Pair<String, List<Any>>? {
+        if (!customerSearchRestricted(scope)) return null
+        val (visible, params) = scope.sqlCondition()
+        return "EXISTS (SELECT 1 FROM crm_leads l WHERE l.customer_id = c.id AND $visible)" to params
+    }
+
+    /** Pure decision: a customer found for a new lead is used when the user is not restricted or the customer is inside their scope ([inScope] only runs then). */
+    fun acceptCustomer(restricted: Boolean, inScope: () -> Boolean): Boolean = !restricted || inScope()
+
+    /** Whether [customerId] may be linked to a new lead by this user: any customer for "see all", otherwise one with a lead in their scope. */
+    fun customerInScope(tenant: Connection, scope: CrmScope, customerId: UUID): Boolean {
+        val (condition, params) = customerScopeSql(scope) ?: ("TRUE" to emptyList())
+        return tenant.prepareStatement("SELECT 1 FROM customers c WHERE c.id = ? AND c.status <> 'archived' AND $condition").use { statement ->
+            statement.bind(tenant, listOf<Any>(customerId) + params)
+            statement.executeQuery().use { it.next() }
+        }
+    }
 
     /**
      * Customers that match what is being typed in the new lead form: [query] in the [field] being
      * typed (name contains it, email or phone digits start/contain it), plus any customer that
-     * already has exactly the [email] or [phone] of the form, which comes first.
+     * already has exactly the [email] or [phone] of the form, which comes first. Without "see all"
+     * only customers with a lead inside the user's [scope] are searched.
      */
-    fun customerSuggestions(tenant: Connection, field: String, query: String, email: String, phone: String, limit: Int = 6): List<CustomerSuggestion> {
+    fun customerSuggestions(tenant: Connection, scope: CrmScope, field: String, query: String, email: String, phone: String, limit: Int = 6): List<CustomerSuggestion> {
         fun like(text: String) = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         val typed = query.trim()
         val typedDigits = typed.filter { it.isDigit() }
@@ -402,26 +435,28 @@ object CrmRepository {
         val exactPhone = phoneDigits(phone)
         if (typedValue.isEmpty() && exactEmail.isEmpty() && exactPhone.isEmpty()) return emptyList()
         val exact = "((? <> '' AND lower(c.primary_email) = lower(?)) OR (? <> '' AND regexp_replace(c.primary_phone, '[^0-9]', '', 'g') = ?))"
+        val restriction = customerScopeSql(scope)
+        // The count of open leads only counts the ones inside the scope too (its parameters come first in the statement).
+        val visible = if (restriction != null) scope.sqlCondition() else null
         return tenant.prepareStatement(
             """
-            SELECT c.id, c.display_name, c.primary_email, c.primary_phone, c.customer_code,
-                (SELECT count(*) FROM crm_leads l WHERE l.customer_id = c.id AND l.closed_at IS NULL) AS open_leads,
+            SELECT c.id, c.display_name, c.primary_email, c.primary_phone,
+                (SELECT count(*) FROM crm_leads l WHERE l.customer_id = c.id AND l.closed_at IS NULL${visible?.let { " AND ${it.first}" }.orEmpty()}) AS open_leads,
                 $exact AS exact
             FROM customers c
-            WHERE c.status <> 'archived' AND ($exact OR (? <> '' AND $typedCondition))
+            WHERE c.status <> 'archived' AND ($exact OR (? <> '' AND $typedCondition))${restriction?.let { " AND ${it.first}" }.orEmpty()}
             ORDER BY exact DESC, c.display_name
             LIMIT ?
             """.trimIndent()
         ).use { statement ->
             val exactValues = listOf(exactEmail, exactEmail, exactPhone, exactPhone)
-            (exactValues + exactValues + listOf(typedValue, typedValue)).forEachIndexed { index, value -> statement.setString(index + 1, value) }
-            statement.setInt(11, limit)
+            statement.bind(tenant, visible?.second.orEmpty() + exactValues + exactValues + listOf(typedValue, typedValue) + restriction?.second.orEmpty() + limit)
             statement.executeQuery().use { rows ->
                 buildList {
                     while (rows.next()) add(
                         CustomerSuggestion(
                             rows.getObject(1, UUID::class.java), rows.getString(2).orEmpty(), rows.getString(3).orEmpty(), rows.getString(4).orEmpty(),
-                            rows.getString(5), rows.getInt(6), rows.getBoolean(7),
+                            rows.getInt(5), rows.getBoolean(6),
                         )
                     )
                 }

@@ -479,7 +479,7 @@ object CrmMcpTools {
             else listOfNotNull(context.scope.userId?.takeIf { id -> context.users.any { it.id == id } }),
         )
         val stage = context.stage(input.stageId)!!
-        val id = CrmRepository.createLead(call.tenant, owned, stage, actor(call), fields = context.fields)
+        val id = CrmRepository.createLead(call.tenant, owned, stage, actor(call), fields = context.fields, scope = context.scope)
         CrmNotify.newLead(call.tenant, id)
         CrmNotify.assigned(call.tenant, call.notifier, id, owned.ownerUserIds.orEmpty(), context.scope.userId)
         return json(CrmRepository.lead(call.tenant, id)!!, context, brief = false)

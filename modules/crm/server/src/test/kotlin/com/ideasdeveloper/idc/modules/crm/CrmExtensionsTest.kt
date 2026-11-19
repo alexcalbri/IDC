@@ -66,8 +66,9 @@ class CrmExtensionsTest {
 
     @Test
     fun manifestsRequireTheModuleVersionThatShipsThem() {
-        assertEquals("0.27.0", CrmServerModule.definition.version)
-        assertEquals(CrmExtensions.MinModuleVersion, CrmServerModule.definition.version)
+        assertEquals("0.27.1", CrmServerModule.definition.version)
+        // Las extensiones piden la version del CRM que las saco del modulo; el modulo puede ir por delante.
+        assertEquals("0.27.0", CrmExtensions.MinModuleVersion)
         assertEquals("0.8.0", CrmServerModule.definition.minCoreVersion)
         assertEquals("0.7.0", CrmServerModule.definition.minAppVersion)
         assertTrue("modules/crm/migrations/V022__extensions_and_secrets.sql" in CrmServerModule.migrationPaths)
