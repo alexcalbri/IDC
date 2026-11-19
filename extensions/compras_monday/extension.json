@@ -1,0 +1,19 @@
+{
+  "id": "compras_monday",
+  "module": "compras",
+  "displayName": "Importacion desde monday",
+  "description": "Importa tableros de monday como solicitudes de compra: eliges los grupos de cada tablero, mapeas sus columnas y traen cotizaciones y archivos.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.2.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/compras_monday" },
+  "permissions": [
+    "network.outbound:api.monday.com",
+    "secrets.write",
+    "compras.requests.import"
+  ],
+  "settings": [],
+  "migrations": ["migrations/V001__staging.sql"],
+  "uninstall": { "options": [
+    { "id": "import_history", "label": "Historial de importaciones de monday (token, lecturas y filas preparadas)", "default": "delete" }
+  ] }
+}
