@@ -109,6 +109,8 @@ class ExtensionPackageService(
     /** Ids de las extensiones incluidas en sus modulos: un paquete externo no puede usarlos. */
     private val bundledIds: () -> Set<String>,
     private val catalogSource: () -> List<RemoteExtensionPackage>,
+    /** Por que no se pudo leer el catalogo (GitHub limito o no respondio), o null si la ultima lectura fue buena. */
+    private val catalogProblem: () -> String? = { null },
     private val builder: ExtensionPackageBuilding?,
     private val authorizations: UnsignedAuthorizationStore,
     private val requestRestart: () -> Unit,
@@ -163,10 +165,14 @@ class ExtensionPackageService(
         )
     }
 
+    // Si el catalogo no se pudo leer, el fallo es de GitHub y no de la extension: se dice asi y no "no esta en el catalogo".
+    private fun notInCatalog(id: String): ExtensionPackageServiceException = catalogProblem()
+        ?.let { ExtensionPackageServiceException(it, "CATALOG_UNAVAILABLE") }
+        ?: ExtensionPackageServiceException("La extension '$id' no esta en el catalogo configurado.", "NOT_FOUND")
+
     /** Empieza a compilar el paquete en un hilo aparte y devuelve el estado inicial. */
     fun install(id: String, actorRole: String): ExtensionPackageStatus {
-        val remote = catalogSource().firstOrNull { it.manifest.id == id }
-            ?: throw ExtensionPackageServiceException("La extension '$id' no esta en el catalogo configurado.", "NOT_FOUND")
+        val remote = catalogSource().firstOrNull { it.manifest.id == id } ?: throw notInCatalog(id)
         val stored = store.find(id)
         if (id in bundledIds() || stored?.sourceType == ExtensionSourceType.Bundled) {
             throw ExtensionPackageServiceException("La extension '$id' ya viene incluida en su modulo.", "ALREADY_BUNDLED")
@@ -422,8 +428,7 @@ class ExtensionPackageService(
 
     /** Descarga el paquete y devuelve commit, URL y hash del arbol calculado, para revisarlo antes de autorizar. */
     fun inspect(id: String): ExtensionPackageInspection {
-        val remote = catalogSource().firstOrNull { it.manifest.id == id }
-            ?: throw ExtensionPackageServiceException("La extension '$id' no esta en el catalogo configurado.", "NOT_FOUND")
+        val remote = catalogSource().firstOrNull { it.manifest.id == id } ?: throw notInCatalog(id)
         val activeBuilder = builder
             ?: throw ExtensionPackageServiceException("Este servidor no puede revisar paquetes: falta la carpeta compiler/ de la instalacion.", "BUILDER_UNAVAILABLE")
         val inspected = try {

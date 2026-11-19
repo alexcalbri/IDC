@@ -114,6 +114,7 @@ class ExtensionPackageServiceTest {
         packages: List<RemoteExtensionPackage>,
         bundled: Set<String> = emptySet(),
         val root: java.nio.file.Path = Files.createTempDirectory("ext-packages"),
+        catalogProblem: String? = null,
     ) {
         val store = FakeStore()
         val authorizations = FakeAuthorizations()
@@ -124,6 +125,7 @@ class ExtensionPackageServiceTest {
             packagesRoot = root,
             bundledIds = { bundled },
             catalogSource = { packages },
+            catalogProblem = { catalogProblem },
             builder = builder,
             authorizations = authorizations,
             requestRestart = { restarts++ },
@@ -133,6 +135,27 @@ class ExtensionPackageServiceTest {
     }
 
     private fun harness(builder: FakeBuilder? = FakeBuilder(), signed: Boolean = true) = Harness(builder, listOf(remote(signed = signed)))
+
+    // GitHub corta por limite de llamadas: el catalogo llega vacio y el motivo no puede ser "no esta en el catalogo".
+    @Test
+    fun `a catalog that could not be read is reported as unavailable and not as a missing extension`() {
+        val limited = Harness(packages = emptyList(), catalogProblem = "GitHub alcanzo el limite de llamadas.")
+        val install = assertFailsWith<ExtensionPackageServiceException> { limited.service.install("monday_import", "r") }
+        assertEquals("CATALOG_UNAVAILABLE", install.code)
+        assertEquals("GitHub alcanzo el limite de llamadas.", install.message)
+        assertEquals("CATALOG_UNAVAILABLE", assertFailsWith<ExtensionPackageServiceException> { limited.service.inspect("monday_import") }.code)
+        val missing = Harness(packages = emptyList())
+        assertEquals("NOT_FOUND", assertFailsWith<ExtensionPackageServiceException> { missing.service.install("monday_import", "r") }.code)
+    }
+
+    @Test
+    fun `the rate limit message says how long to wait and offers the token only when there is none`() {
+        val anonymous = RemoteExtensionCatalog.rateLimitMessage(resetEpochSeconds = 3_600, nowMillis = 3_000_000, anonymous = true)
+        assertTrue("unos 11 minutos" in anonymous, anonymous)
+        assertTrue("MODULE_GITHUB_TOKEN" in anonymous)
+        val withToken = RemoteExtensionCatalog.rateLimitMessage(resetEpochSeconds = null, nowMillis = 0, anonymous = false)
+        assertTrue("mas tarde" in withToken && "MODULE_GITHUB_TOKEN" !in withToken, withToken)
+    }
 
     @Test
     fun `install stores the package as pending_restart audits and asks for restart`() {

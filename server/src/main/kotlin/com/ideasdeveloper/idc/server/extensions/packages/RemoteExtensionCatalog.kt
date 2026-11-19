@@ -8,8 +8,10 @@ import com.ideasdeveloper.idc.server.modules.GitHubLocation
 import io.ktor.client.HttpClient
 import io.ktor.client.request.get
 import io.ktor.client.request.header
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
@@ -17,7 +19,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import java.util.Base64
 
 /** Extension disponible en el catalogo, ya fijada a un commit. */
 data class RemoteExtensionPackage(
@@ -42,6 +43,9 @@ data class RemoteExtensionPackage(
  * es una extension si trae un extension.json valido cuyo id es el nombre de la carpeta. La lectura se
  * fija a un commit (si la URL trae una rama se resuelve a su commit) para que lo que se lista sea
  * exactamente lo que se instala. Cache de 5 minutos, con el mismo token de GitHub de los modulos.
+ *
+ * Sin token, la API de GitHub solo admite 60 llamadas por hora y por IP: cada lectura gasta dos (el commit y
+ * el listado) y los archivos de cada extension se leen de raw.githubusercontent.com, que no cuenta para ese limite.
  */
 class RemoteExtensionCatalog(
     private val githubToken: String? = null,
@@ -62,6 +66,11 @@ class RemoteExtensionCatalog(
 
     private val cache = java.util.concurrent.ConcurrentHashMap<String, Cached>()
 
+    private val problems = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Por que fallo la ultima lectura de [catalogUrl] (GitHub limito o no respondio), o null si fue buena. */
+    fun problem(catalogUrl: String): String? = problems[catalogUrl.trim()]
+
     fun extensions(catalogUrl: String): List<RemoteExtensionPackage> {
         val key = catalogUrl.trim()
         val location = GitHubLocation.parse(key) ?: return emptyList()
@@ -71,9 +80,15 @@ class RemoteExtensionCatalog(
             try {
                 val commit = if (CommitPattern.matches(location.ref)) location.ref else resolveCommit(location)
                 val pinned = location.copy(ref = commit)
-                read(pinned).sortedBy { it.manifest.id }.also { cache[key] = Cached(now, it) }
-            } catch (_: Exception) {
-                // GitHub no responde o limita: se sigue ofreciendo la ultima lectura buena.
+                read(pinned).sortedBy { it.manifest.id }.also {
+                    cache[key] = Cached(now, it)
+                    problems.remove(key)
+                }
+            } catch (failure: Exception) {
+                // GitHub no responde o limita: se sigue ofreciendo la ultima lectura buena y se guarda el motivo.
+                problems[key] = (failure as? CatalogUnavailable)?.message
+                    ?: "No se pudo leer el catalogo de extensiones en GitHub. Intenta de nuevo en unos minutos."
+                log.warn("No se pudo leer el catalogo de extensiones {}: {}", key, failure.message)
                 cache[key]?.packages ?: emptyList()
             }
         }
@@ -81,6 +96,7 @@ class RemoteExtensionCatalog(
 
     fun forget(catalogUrl: String) {
         cache.remove(catalogUrl.trim())
+        problems.remove(catalogUrl.trim())
     }
 
     private suspend fun resolveCommit(location: GitHubLocation): String {
@@ -89,6 +105,7 @@ class RemoteExtensionCatalog(
             header(HttpHeaders.Accept, "application/vnd.github.sha")
             GitHubAuth.header(githubToken, url)?.let { header(HttpHeaders.Authorization, it) }
         }
+        failIfLimited(response)
         val sha = response.bodyAsText().trim().lowercase()
         check(response.status.isSuccess() && CommitPattern.matches(sha)) { "No se pudo resolver ${location.ref}" }
         return sha
@@ -117,15 +134,26 @@ class RemoteExtensionCatalog(
             }
     }
 
-    // Contenido de un archivo de la carpeta de una extension, o null si no existe.
-    private suspend fun file(location: GitHubLocation, folder: String, name: String): String? {
-        val element = json.parseToJsonElement(get(contentsUrl(location, "${location.path}/$folder/$name")) ?: return null) as? JsonObject
-        return element?.get("content")?.jsonPrimitive?.contentOrNull?.let { String(Base64.getMimeDecoder().decode(it)) }
-    }
+    // Contenido de un archivo de la carpeta de una extension, o null si no existe. Se lee del commit fijado en
+    // raw.githubusercontent.com, que no gasta el limite de llamadas de la API.
+    private suspend fun file(location: GitHubLocation, folder: String, name: String): String? =
+        get("https://raw.githubusercontent.com/${location.owner}/${location.repo}/${location.ref}/${location.path.trim('/')}/$folder/$name")
 
+    // Cuerpo de la respuesta, o null si el recurso no existe; cualquier otro fallo (limite, caida) es CatalogUnavailable.
     private suspend fun get(url: String): String? {
         val response = client.get(url) { GitHubAuth.header(githubToken, url)?.let { header(HttpHeaders.Authorization, it) } }
-        return if (response.status.isSuccess()) response.bodyAsText() else null
+        if (response.status.isSuccess()) return response.bodyAsText()
+        if (response.status == HttpStatusCode.NotFound) return null
+        failIfLimited(response)
+        throw CatalogUnavailable("GitHub respondio ${response.status.value} al leer el catalogo de extensiones. Intenta de nuevo en unos minutos.")
+    }
+
+    private fun failIfLimited(response: HttpResponse) {
+        val limited = response.status == HttpStatusCode.TooManyRequests ||
+            (response.status == HttpStatusCode.Forbidden && response.headers["x-ratelimit-remaining"] == "0")
+        if (limited) {
+            throw CatalogUnavailable(rateLimitMessage(response.headers["x-ratelimit-reset"]?.toLongOrNull(), clock(), githubToken.isNullOrBlank()))
+        }
     }
 
     private fun contentsUrl(location: GitHubLocation, path: String) =
@@ -137,7 +165,19 @@ class RemoteExtensionCatalog(
         client.close()
     }
 
+    private class CatalogUnavailable(message: String) : Exception(message)
+
     companion object {
+        private val log = org.slf4j.LoggerFactory.getLogger(RemoteExtensionCatalog::class.java)
+
+        /** Mensaje para el dueno del servidor cuando GitHub corta por limite de llamadas; [resetEpochSeconds] viene de x-ratelimit-reset. */
+        fun rateLimitMessage(resetEpochSeconds: Long?, nowMillis: Long, anonymous: Boolean): String {
+            val minutes = resetEpochSeconds?.let { ((it * 1000 - nowMillis) / 60_000L).coerceAtLeast(0) + 1 }
+            val wait = if (minutes != null) "Intenta de nuevo en unos $minutes minutos" else "Intenta de nuevo mas tarde"
+            val hint = if (anonymous) ", o configura MODULE_GITHUB_TOKEN para tener un limite mayor" else ""
+            return "GitHub alcanzo el limite de llamadas al leer el catalogo de extensiones. $wait$hint."
+        }
+
         private const val CacheMillis = 5 * 60_000L
         private val CommitPattern = Regex("[0-9a-f]{40}")
 

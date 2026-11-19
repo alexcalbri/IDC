@@ -69,7 +69,7 @@ fun Route.extensionPackageRoutes(
         val status = when (failure.code) {
             "NOT_FOUND" -> HttpStatusCode.NotFound
             "PACKAGE_CHANGED" -> HttpStatusCode.Conflict
-            "BUILDER_UNAVAILABLE" -> HttpStatusCode.ServiceUnavailable
+            "BUILDER_UNAVAILABLE", "CATALOG_UNAVAILABLE" -> HttpStatusCode.ServiceUnavailable
             "PACKAGE_UNAVAILABLE" -> HttpStatusCode.BadGateway
             "PAYLOAD_TOO_LARGE" -> HttpStatusCode.PayloadTooLarge
             else -> HttpStatusCode.BadRequest

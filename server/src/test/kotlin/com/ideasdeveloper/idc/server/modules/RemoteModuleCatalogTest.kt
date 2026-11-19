@@ -56,6 +56,8 @@ class RemoteModuleCatalogTest {
     fun githubTokenGoesOnlyToGitHub() {
         assertEquals("Bearer t", GitHubAuth.header("t", "https://api.github.com/repos/o/r/contents/modules?ref=develop"))
         assertEquals("Bearer t", GitHubAuth.header(" t ", "https://codeload.github.com/o/r/zip/develop"))
+        assertEquals("Bearer t", GitHubAuth.header("t", "https://raw.githubusercontent.com/o/r/develop/modules/crm/module.json"))
+        assertNull(GitHubAuth.header("t", "https://raw.githubusercontent.com.evil.example/o/r/develop/x"))
         assertNull(GitHubAuth.header("t", "http://api.github.com/repos/o/r"))
         assertNull(GitHubAuth.header("t", "https://api.github.com.evil.example/x"))
         assertNull(GitHubAuth.header("t", "https://example.com/catalog.json"))

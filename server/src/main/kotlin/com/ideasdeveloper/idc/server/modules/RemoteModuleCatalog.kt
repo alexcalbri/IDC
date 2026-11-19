@@ -77,7 +77,7 @@ class RemoteModuleCatalog(
         val source = GitHubLocation.parse(catalogUrl)
         return runBlocking {
             try {
-                modulesFrom(url)
+                modulesFrom(url, source)
                     .filter(::isValid)
                     .map { it.copy(source = source) }
                     .distinctBy { it.definition.id }
@@ -95,11 +95,11 @@ class RemoteModuleCatalog(
         cache.remove(catalogUrl.trim())
     }
 
-    private suspend fun modulesFrom(url: String): List<RemoteModulePackage> {
+    private suspend fun modulesFrom(url: String, source: GitHubLocation?): List<RemoteModulePackage> {
         val text = get(url)
         return when (val element = json.parseToJsonElement(text)) {
             is JsonObject -> modulesFromObject(element)
-            is JsonArray -> modulesFromGitHubDirectory(element)
+            is JsonArray -> modulesFromGitHubDirectory(element, source)
             else -> emptyList()
         }
     }
@@ -114,19 +114,24 @@ class RemoteModuleCatalog(
         return decodeModuleManifest(element, expectedFolder = null)?.let(::listOf).orEmpty()
     }
 
-    private suspend fun modulesFromGitHubDirectory(entries: JsonArray): List<RemoteModulePackage> =
+    // Sin token la API de GitHub admite 60 llamadas por hora: solo el listado la usa. Cada module.json se lee de
+    // raw.githubusercontent.com, que no cuenta para ese limite.
+    private suspend fun modulesFromGitHubDirectory(entries: JsonArray, source: GitHubLocation?): List<RemoteModulePackage> =
         entries
             .mapNotNull { it as? JsonObject }
             .filter { it.string("type") == "dir" }
             .mapNotNull { directory ->
                 val directoryName = directory.string("name") ?: return@mapNotNull null
                 val directoryUrl = directory.string("url") ?: return@mapNotNull null
-                loadModuleManifest(githubChildUrl(directoryUrl, "module.json"), expectedFolder = directoryName)
+                val manifestUrl = source?.let { "https://raw.githubusercontent.com/${it.owner}/${it.repo}/${it.ref}/${it.path.trim('/')}/$directoryName/module.json" }
+                    ?: githubChildUrl(directoryUrl, "module.json")
+                loadModuleManifest(manifestUrl, expectedFolder = directoryName)
             }
 
     private suspend fun loadModuleManifest(url: String, expectedFolder: String): RemoteModulePackage? {
+        // Una carpeta sin module.json (404 con texto plano) no es un modulo: se salta sin tumbar el catalogo.
         val text = get(url)
-        return when (val element = json.parseToJsonElement(text)) {
+        return when (val element = runCatching { json.parseToJsonElement(text) }.getOrNull()) {
             is JsonObject -> decodeModuleManifest(element, expectedFolder)
             else -> null
         }

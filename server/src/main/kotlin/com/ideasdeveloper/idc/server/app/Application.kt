@@ -239,6 +239,7 @@ fun Application.module() {
         packagesRoot = extensionPackagesRoot,
         bundledIds = { serverModules.flatMap { module -> module.bundledExtensions.map { it.manifest.id } }.toSet() },
         catalogSource = { remoteExtensionCatalog.extensions(extensionCatalogUrl) },
+        catalogProblem = { remoteExtensionCatalog.problem(extensionCatalogUrl) },
         builder = ExtensionPackageBuilder.forRunningServer(
             packagesRoot = extensionPackagesRoot,
             validator = ExtensionManifestValidator(

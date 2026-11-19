@@ -45,7 +45,7 @@ import kotlin.io.path.walk
  * only in the server's configuration file and sent only to GitHub hosts over HTTPS.
  */
 object GitHubAuth {
-    private val hosts = setOf("api.github.com", "codeload.github.com", "github.com")
+    private val hosts = setOf("api.github.com", "codeload.github.com", "github.com", "raw.githubusercontent.com")
 
     // Header value for [url], or null when there is no token or the URL is not GitHub over HTTPS.
     fun header(token: String?, url: String): String? {

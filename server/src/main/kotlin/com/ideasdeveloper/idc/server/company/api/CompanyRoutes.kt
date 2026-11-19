@@ -1129,7 +1129,7 @@ private fun io.ktor.server.application.ApplicationCall.businessOwnerContext(): B
 private fun modulePackageStatus(exception: CompanyProvisioningException): HttpStatusCode = when (exception.code) {
     "NOT_FOUND" -> HttpStatusCode.NotFound
     "PACKAGE_CHANGED" -> HttpStatusCode.Conflict
-    "BUILDER_UNAVAILABLE" -> HttpStatusCode.ServiceUnavailable
+    "BUILDER_UNAVAILABLE", "CATALOG_UNAVAILABLE" -> HttpStatusCode.ServiceUnavailable
     "PACKAGE_UNAVAILABLE" -> HttpStatusCode.BadGateway
     else -> HttpStatusCode.BadRequest
 }
