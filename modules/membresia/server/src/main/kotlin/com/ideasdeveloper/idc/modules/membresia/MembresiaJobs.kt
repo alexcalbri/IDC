@@ -15,6 +15,27 @@ object MembresiaJobs {
 
     val daily = ModuleJob("membresia-diario", Duration.ofDays(1), dailyAt = LocalTime.of(7, 0)) { ctx -> run(ctx, LocalDate.now()) }
 
+    /**
+     * El Core solo programa los jobs de los modulos, no los de las extensiones: cada minuto se le da su turno a las fuentes
+     * de importacion activadas en la empresa (leer un tablero, aplicar filas) con un presupuesto de 20 segundos.
+     */
+    val imports = ModuleJob("membresia-import", Duration.ofMinutes(1)) { ctx -> runImports(ctx) }
+
+    fun runImports(ctx: ModuleJobContext) {
+        for (source in MembresiaImportSources.enabled(ctx.tenant, ctx.companyCode)) {
+            try {
+                source.runPending(ctx, Duration.ofSeconds(20))
+            } catch (cancellation: kotlin.coroutines.cancellation.CancellationException) {
+                throw cancellation
+            } catch (interrupted: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw interrupted
+            } catch (failure: Exception) {
+                log.error("Membresías {}: la fuente de importación {} falló", ctx.companyCode, source.sourceId, failure)
+            }
+        }
+    }
+
     fun run(ctx: ModuleJobContext, today: LocalDate) {
         val tenant = ctx.tenant
         // 1. programada -> activa cuando ya empezo (lotes mientras haya mas, con tope).

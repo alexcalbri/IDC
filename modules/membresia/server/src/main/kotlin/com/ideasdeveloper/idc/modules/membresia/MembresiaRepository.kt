@@ -178,6 +178,16 @@ object MembresiaRepository {
         ) { rows -> MemberSummary(rows.uuid(1), rows.getString(2), rows.getString(3), rows.getString(4), null) }.firstOrNull()
 
     /**
+     * Codigo de cliente (la credencial WiFi) de un cliente visible. Unico lugar que lo lee: la ficha del miembro lo muestra solo
+     * a quien tenga membresia.visits o membresia.manage; nunca va en listas, busquedas, MCP ni avisos.
+     */
+    fun customerCode(tenant: Connection, customerId: UUID): String? =
+        query(tenant, "SELECT c.customer_code FROM customers c WHERE c.id = ? AND $VisibleCustomer", listOf(customerId)) { rows -> rows.getString(1) }.firstOrNull()
+
+    /** Ejecuta [block] en una transaccion (confirma al terminar, deshace ante un error); si ya hay una, participa en ella. */
+    fun <T> inTransaction(tenant: Connection, block: () -> T): T = transaction(tenant, block)
+
+    /**
      * Reutiliza el cliente visible con el mismo correo (sin distinguir mayusculas); si no hay, crea uno
      * (tipo membresia, activo). El llamador avisa a Clientes con access.customerChanged tras confirmar si [CustomerLookup.created].
      */

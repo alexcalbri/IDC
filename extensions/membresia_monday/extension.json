@@ -1,0 +1,19 @@
+{
+  "id": "membresia_monday",
+  "module": "membresia",
+  "displayName": "Importacion de membresias desde monday",
+  "description": "Importa un tablero de monday como membresias: lee el tablero con el token de la empresa, mapea sus columnas y trae planes, clientes, membresias y visitas.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.2.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/membresia_monday" },
+  "permissions": [
+    "network.outbound:api.monday.com",
+    "secrets.write",
+    "membresia.import.write"
+  ],
+  "settings": [],
+  "migrations": ["migrations/V001__settings.sql"],
+  "uninstall": { "options": [
+    { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
+  ] }
+}

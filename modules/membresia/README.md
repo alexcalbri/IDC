@@ -1,6 +1,6 @@
 # Membresia Module
 
-Status: in development (marked with `.development`; not released to `master`). Version 0.1.0.
+Status: in development (marked with `.development`; not released to `master`). Version 0.2.0.
 
 Front desk, plans, memberships, visits and guest passes for a coworking space or club. It replaces the
 "Esc Members & Memberships (PMS)" board in Monday: the team registers members, sells and renews memberships,
@@ -12,7 +12,8 @@ manual and nothing is charged: the amount is only a record.
 
 ## Data
 
-Tenant migration `V001__create_membresia.sql` (one transaction):
+Tenant migrations `V001__create_membresia.sql` and `V002` (import support: the `import_key` columns the import engine
+uses to stay idempotent, see "Import (extensions)"), each in one transaction. `V001` creates:
 
 | Table | Purpose |
 | --- | --- |
@@ -53,6 +54,7 @@ from the dates, so it is right even when the daily job has not run yet (`Membres
 | `membresia.visits` | Register member visits and guest passes (including "register anyway"). |
 | `membresia.manage` | Create, renew, edit and cancel memberships; see revenue. |
 | `membresia.plans` | Create and edit plans; change currency, warning days and sources. |
+| `membresia.import` | Run imports of memberships from external sources (see "Import (extensions)"), screens and agent tools. |
 
 Customers are read with the Clientes visibility rule (own or shared, not archived); `customer_code` and custom
 fields are never shown.
@@ -111,6 +113,30 @@ current membership (so a failed delete is repaired the next day).
 Memberships and visits reference `customers` with `ON DELETE RESTRICT`: Clientes archives customers instead of deleting them,
 and the sales history must not disappear with a customer.
 
+Note: today Hotspot customer-code networks can only be configured and used while the **CRM integration is enabled** in
+Hotspot (a Hotspot requirement, not of this module).
+
+## WiFi code
+
+The member screen shows the member's WiFi code (the customer code from Clientes), read only, to the users who can record
+visits or manage memberships (`membresia.visits` or `membresia.manage`), so reception can tell it to the member. The member types it at the Hotspot portal, exactly like a CRM
+guest, and gets in while the membership is current. It is the member's WiFi credential, so it is shown only on that
+screen, never in lists or search results, and agent tools never return it.
+
+## Import (extensions)
+
+Memberships can be brought from other systems without the module knowing them. An extension registers a
+`MembresiaImportSource` in `MembresiaImportSources` (read at the moment it is needed, since extensions are linked after the
+module is built). The contract, in short: the source has an id and a name, reads its external records and gives each one a
+stable `import_key`; it may also offer agent tools (`mcpTools`), which must require `membresia.import`.
+
+The import engine is idempotent: each customer, plan and membership created by an import stores its `import_key` (V002), so
+running the same import again updates or skips what already exists and never duplicates it. Customers are matched by email
+among the visible ones before creating new ones. Running an import needs `membresia.import`.
+
+The first source is the extension `membresia_monday` (the Esc Members board in Monday). Once the migration is done the
+extension can be uninstalled: the imported data stays in the module.
+
 ## Contract for events: `membresia_active_members`
 
 View for other modules (for example a future `events` module) to know who is a member today:
@@ -132,7 +158,8 @@ those fields nor the `customer_code` (it is the WiFi credential).
 
 Tools are named `membresia_<name>`; each respects the user's live permissions and none takes or returns credentials,
 `customer_code` or custom fields. The agent receives the module's instructions: `record_visit` warns and only registers with
-`override=true` after the user confirms, and sensitive data lives in Clientes.
+`override=true` after the user confirms, and sensitive data lives in Clientes. Import sources can add their own tools
+(permission `membresia.import`); the list is read on every request, so installing an extension adds them.
 
 | Tool | Permission | Description |
 | --- | --- | --- |
@@ -145,13 +172,13 @@ Tools are named `membresia_<name>`; each respects the user's live permissions an
 | `renew_membership` | `membresia.manage` | Renews a membership, optionally with another plan, start or amount. |
 | `revenue_summary` | `membresia.manage` (read only) | Revenue by month and by plan for the last 1 to 24 months. |
 
-## Pending for 0.2.0
+## Pending
 
-- Public sign-up form on the web (in 0.1.0 the team registers members at reception).
+- Public sign-up form on the web (the team registers members at reception).
 - Email to the member before the membership expires.
 - Pause of a membership.
-- Import from the Monday board.
 
 ## Changelog
 
+- 0.2.0: import of memberships through extensions (`MembresiaImportSource`, idempotent by `import_key`, V002, permission `membresia.import`, extension `membresia_monday`); WiFi code on the member screen; agent tools list is dynamic so extensions can add tools.
 - 0.1.0: first version: plans, memberships, visits and guest passes, reception, expiry warnings to the team, customer history, revenue, Hotspot passes, `membresia_active_members` and agent tools.

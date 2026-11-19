@@ -38,13 +38,22 @@ import java.time.format.DateTimeFormatter
 import java.util.UUID
 
 /** Lo que el usuario puede hacer en el modulo (permisos efectivos); las pantallas solo ofrecen lo permitido. */
-data class MembresiaAccess(val view: Boolean, val visits: Boolean, val manage: Boolean, val plans: Boolean) {
+data class MembresiaAccess(
+    val view: Boolean,
+    val visits: Boolean,
+    val manage: Boolean,
+    val plans: Boolean,
+    val import: Boolean = false,
+    /** Hay al menos una fuente de importacion activa (la ruta lo calcula); sin ella no se ofrece "Importar". */
+    val importEnabled: Boolean = false,
+) {
     companion object {
         fun from(permissions: ModulePermissions) = MembresiaAccess(
             view = permissions.has(MembresiaModule.View),
             visits = permissions.has(MembresiaModule.Visits),
             manage = permissions.has(MembresiaModule.Manage),
             plans = permissions.has(MembresiaModule.Plans),
+            import = permissions.has(MembresiaModule.Import),
         )
     }
 }
@@ -75,6 +84,7 @@ object MembresiaScreens {
         Section("visitas", "Visitas") { it.view },
         Section("renovar", "Renovar") { it.manage },
         Section("editar", "Editar") { it.manage },
+        Section("importar", "Importar") { it.import },
     )
 
     fun isScreen(id: String): Boolean = (sections + inner).any { it.id == id }
@@ -87,7 +97,8 @@ object MembresiaScreens {
 
     fun navigation(access: MembresiaAccess, selected: String): UiNavigation = UiNavigation(
         title = MembresiaModule.DisplayName,
-        items = sections.filter { it.allowed(access) }.map { UiNavItem(it.id, it.label, UiNavigate(it.id)) },
+        items = (sections + Section("importar", "Importar") { it.import && it.importEnabled })
+            .filter { it.allowed(access) }.map { UiNavItem(it.id, it.label, UiNavigate(it.id)) },
         selected = selected,
     )
 
@@ -179,6 +190,7 @@ object MembresiaScreens {
         expiringDays: Int,
         notice: UiNotice? = null,
         overrideReason: String? = null,
+        wifiCode: String? = null,
     ): UiScreen {
         val member = detail.summary
         val current = member.current
@@ -189,6 +201,10 @@ object MembresiaScreens {
             add(UiStatus(status?.label ?: "Sin membresía", status?.tone ?: UiTone.Neutral))
             val contact = listOf(member.email, member.phone).filter { it.isNotBlank() }.joinToString(" · ")
             if (contact.isNotEmpty()) add(UiText(contact, UiTextStyle.Caption))
+            // Unico lugar donde se muestra el codigo WiFi: solo lectura y solo para quien registra visitas o gestiona.
+            if ((access.visits || access.manage) && !wifiCode.isNullOrBlank()) {
+                add(UiForm(id = "wifi", fields = listOf(UiField("wifiCode", "Código WiFi", readOnly = true)), values = mapOf("wifiCode" to wifiCode)))
+            }
             if (current != null) {
                 add(UiText("${current.planName} · ${current.startsOn} a ${current.endsOn}", UiTextStyle.Subtitle))
                 val place = listOf(current.unit.takeIf { it.isNotBlank() }?.let { "Unidad: $it" }, current.hostName.takeIf { it.isNotBlank() }?.let { "Anfitrión: $it" })
@@ -651,6 +667,33 @@ object MembresiaScreens {
             submit = UiButton("Guardar ajustes", post("ajustes-guardar", formId = "ajustes")),
         )
         return screen(access, "ajustes", "Ajustes", notice, listOf(form))
+    }
+
+    // ---------------------------------------------------------------- importar
+
+    /**
+     * Pantalla Importar. [sources] son (id, titulo) de las fuentes activas; con varias se eligen con botones y
+     * [nodes] es lo que dibuja la fuente elegida.
+     */
+    fun importar(
+        access: MembresiaAccess,
+        sources: List<Pair<String, String>>,
+        selectedId: String?,
+        nodes: List<UiNode>,
+        notice: UiNotice? = null,
+    ): UiScreen {
+        val body = buildList<UiNode> {
+            if (sources.isEmpty()) {
+                add(UiText("No hay una fuente de importación activa. Instala una extensión de importación (por ejemplo, Monday) desde Extensiones.", UiTextStyle.Body))
+            } else {
+                if (sources.size > 1) {
+                    add(UiRow(sources.map { (id, title) -> UiButton(title, UiNavigate("importar", mapOf("source" to id)), style = if (id == selectedId) "primary" else "secondary") }, spacing = 8))
+                    if (selectedId == null) add(UiText("Elige de dónde importar.", UiTextStyle.Caption))
+                }
+                addAll(nodes)
+            }
+        }
+        return screen(access, "importar", "Importar", notice, body)
     }
 
     // ---------------------------------------------------------------- sugerencias

@@ -58,6 +58,7 @@ object MembresiaRoutes {
         "plan-guardar" to MembresiaModule.Plans,
         "plan-activo" to MembresiaModule.Plans,
         "ajustes-guardar" to MembresiaModule.Plans,
+        "importar" to MembresiaModule.Import,
     )
 
     fun install(route: Route, access: ModuleAccessService) {
@@ -96,8 +97,9 @@ object MembresiaRoutes {
                 if (!MembresiaScreens.isScreen(screen)) return@get call.respond(HttpStatusCode.NotFound, ModuleAccessErrorResponse("UNKNOWN_SCREEN", "Sección no encontrada."))
                 if (!MembresiaScreens.allowed(rights, screen)) return@get call.forbidden()
                 val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
+                val env = ImportEnv(access, permissions, access.companyCode(call).orEmpty())
                 call.respondTenant(access, UiScreen.serializer()) { tenant ->
-                    render(tenant, rights, screen, params, today = LocalDate.now())
+                    render(tenant, rights, screen, params, today = LocalDate.now(), env = env)
                 }
             }
 
@@ -108,14 +110,21 @@ object MembresiaRoutes {
                     ?: return@post call.respond(HttpStatusCode.NotFound, ModuleAccessErrorResponse("UNKNOWN_ACTION", "Acción no encontrada."))
                 if (!permissions.has(required)) return@post call.forbidden()
                 val values = call.formValues() ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ModuleAccessErrorResponse("BODY_TOO_LARGE", "Los datos enviados son demasiado grandes."))
+                val env = ImportEnv(access, permissions, access.companyCode(call).orEmpty())
                 call.respondTenant(access, UiScreen.serializer()) { tenant ->
-                    perform(access, tenant, permissions, action, values, LocalDate.now())
+                    perform(access, tenant, permissions, action, values, LocalDate.now(), env)
                 }
             }
         }
     }
 
     // ---------------------------------------------------------------- pantallas
+
+    /** Lo que necesitan la pantalla Importar y el menu: acceso, permisos y empresa. */
+    private class ImportEnv(val access: ModuleAccessService, val permissions: ModulePermissions, val companyCode: String) {
+        fun context(tenant: Connection, today: LocalDate) =
+            MembresiaImportContext(access, tenant, companyCode, permissions, MembresiaService.authorName(access, tenant, permissions), today)
+    }
 
     private fun notice(text: String, tone: String = UiTone.Info) = UiNotice(text, tone)
 
@@ -128,14 +137,17 @@ object MembresiaRoutes {
     /** Arma la pantalla pedida con los datos de la empresa; un id invalido o inexistente vuelve a la pantalla de inicio con un aviso. */
     private fun render(
         tenant: Connection,
-        rights: MembresiaAccess,
+        baseRights: MembresiaAccess,
         screen: String,
         params: Map<String, String>,
         today: LocalDate,
         notice: UiNotice? = null,
         values: Map<String, String>? = null,
         overrideReason: String? = null,
+        env: ImportEnv? = null,
     ): UiScreen {
+        val importSources = if (env != null && baseRights.import) MembresiaImportSources.enabled(tenant, env.companyCode) else emptyList()
+        val rights = baseRights.copy(importEnabled = importSources.isNotEmpty())
         val settings = MembresiaRepository.settings(tenant)
         val expiringDays = settings.expiringDays
         fun fallback(message: String): UiScreen {
@@ -154,7 +166,8 @@ object MembresiaRoutes {
             "miembro" -> {
                 val customerId = uuid(params["customer"]) ?: return fallback("El miembro no es válido.")
                 val detail = MembresiaRepository.member(tenant, customerId, today, expiringDays) ?: return fallback("El miembro no existe o no está disponible.")
-                MembresiaScreens.miembro(rights, detail, today, expiringDays, notice, overrideReason)
+                val wifiCode = if (rights.visits || rights.manage) MembresiaRepository.customerCode(tenant, customerId) else null
+                MembresiaScreens.miembro(rights, detail, today, expiringDays, notice, overrideReason, wifiCode)
             }
             "miembros" -> {
                 val status = DisplayStatus.fromKey(params["estado"])
@@ -189,6 +202,11 @@ object MembresiaRoutes {
                 val rows = MembresiaRepository.revenueRows(tenant, today)
                 MembresiaScreens.ingresos(rights, MembresiaRules.revenueByMonth(rows, today, 12, settings.currency), MembresiaRules.revenueByPlan(rows, today, 12, settings.currency), settings.currency, notice)
             }
+            "importar" -> {
+                val selected = importSources.firstOrNull { it.sourceId == params["source"] } ?: importSources.singleOrNull()
+                val nodes = if (env != null && selected != null) selected.screen(env.context(tenant, today), params) else emptyList()
+                MembresiaScreens.importar(rights, importSources.map { it.sourceId to it.title }, selected?.sourceId, nodes, notice)
+            }
             "ajustes" -> MembresiaScreens.ajustes(rights, values ?: MembresiaScreens.ajustesValues(settings), notice)
             else -> fallback("Sección no encontrada.")
         }
@@ -203,10 +221,11 @@ object MembresiaRoutes {
         action: String,
         values: Map<String, String>,
         today: LocalDate,
+        env: ImportEnv,
     ): UiScreen {
         val rights = MembresiaAccess.from(permissions)
         fun show(screen: String, params: Map<String, String>, notice: UiNotice, form: Map<String, String>? = null, override: String? = null) =
-            render(tenant, rights, screen, params, today, notice, form, override)
+            render(tenant, rights, screen, params, today, notice, form, override, env)
         fun member(customerId: UUID, notice: UiNotice, override: String? = null) =
             show("miembro", mapOf("customer" to customerId.toString()), notice, override = override)
         val author = MembresiaService.authorName(access, tenant, permissions)
@@ -284,6 +303,12 @@ object MembresiaRoutes {
                     } catch (invalid: MembresiaValidationException) {
                         show("ajustes", emptyMap(), failure(invalid.errors.joinToString(" ")), values)
                     }
+                }
+                "importar" -> {
+                    val source = MembresiaImportSources.find(values["source"].orEmpty())?.takeIf { it.enabled(tenant, env.companyCode) }
+                        ?: return show("importar", emptyMap(), failure("La fuente de importación no está disponible."))
+                    val reply = source.action(env.context(tenant, today), values["op"].orEmpty(), values)
+                    show("importar", reply.params + ("source" to source.sourceId), notice(reply.notice, if (reply.error) UiTone.Danger else UiTone.Success))
                 }
                 else -> show("recepcion", emptyMap(), failure("Acción no encontrada."))
             }

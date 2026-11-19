@@ -27,7 +27,8 @@ object MembresiaMcpTools {
             "(sin override). Renovar crea una membresia nueva enlazada; no cobra nada: el monto es solo un registro. " +
             "Los datos sensibles del miembro (documento, fecha de nacimiento, contacto de emergencia) viven en Clientes y no se exponen aqui."
 
-    val tools: List<McpTool> = listOf(
+    /** Herramientas propias del modulo; las de importacion las aportan las extensiones (ver [tools]). */
+    val baseTools: List<McpTool> = listOf(
         McpTool(
             name = "search_members",
             title = "Buscar miembros",
@@ -123,7 +124,12 @@ object MembresiaMcpTools {
         ) { call -> guarded(call, MembresiaModule.Manage) { revenueSummary(call) } },
     )
 
-    val mcp: ModuleMcp = ModuleMcp(Instructions, tools)
+    // Las extensiones se enlazan despues de construir este objeto: se leen en cada consulta, no se congelan.
+    val tools: List<McpTool>
+        get() = baseTools + MembresiaImportSources.all.flatMap { it.mcpTools }
+
+    val mcp: ModuleMcp
+        get() = ModuleMcp(Instructions, tools)
 
     private const val DefaultMonths = 12
 

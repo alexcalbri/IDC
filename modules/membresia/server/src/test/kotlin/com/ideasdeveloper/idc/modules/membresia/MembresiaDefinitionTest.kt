@@ -64,7 +64,7 @@ class MembresiaDefinitionTest {
     fun permissionIdsUseTheModulePrefixAndMatchTheConstants() {
         val ids = MembresiaServerModule.definition.permissions.map { it.id }
         assertTrue(ids.all { it.startsWith("membresia.") })
-        assertEquals(setOf(MembresiaModule.View, MembresiaModule.Visits, MembresiaModule.Manage, MembresiaModule.Plans), ids.toSet())
+        assertEquals(setOf(MembresiaModule.View, MembresiaModule.Visits, MembresiaModule.Manage, MembresiaModule.Plans, MembresiaModule.Import), ids.toSet())
         assertEquals(ids.size, ids.toSet().size)
     }
 
@@ -78,8 +78,13 @@ class MembresiaDefinitionTest {
 
     @Test
     fun dailyJobIsScheduledEarlyInTheMorning() {
-        val job = MembresiaServerModule.jobs.single()
-        assertEquals("membresia-diario", job.id)
+        val job = MembresiaServerModule.jobs.single { it.id == "membresia-diario" }
         assertEquals(java.time.LocalTime.of(7, 0), job.dailyAt)
+    }
+
+    @Test
+    fun importJobRunsEveryMinuteBecauseTheCoreDoesNotScheduleExtensionJobs() {
+        val job = MembresiaServerModule.jobs.single { it.id == "membresia-import" }
+        assertEquals(java.time.Duration.ofMinutes(1), job.interval)
     }
 }

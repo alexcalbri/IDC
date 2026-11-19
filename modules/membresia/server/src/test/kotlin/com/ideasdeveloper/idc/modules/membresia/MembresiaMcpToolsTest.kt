@@ -7,7 +7,8 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 class MembresiaMcpToolsTest {
-    private val tools = MembresiaMcpTools.tools
+    // Solo las herramientas base: las de importacion dependen de las extensiones instaladas.
+    private val tools = MembresiaMcpTools.baseTools
     private val definition = MembresiaServerModule.definition
 
     @Test
@@ -59,10 +60,17 @@ class MembresiaMcpToolsTest {
     }
 
     @Test
+    fun importSourceToolsRequireTheImportPermission() {
+        MembresiaImportSources.all.flatMap { it.mcpTools }.forEach {
+            assertEquals(MembresiaModule.Import, it.permission, "${it.name} debe exigir ${MembresiaModule.Import}")
+        }
+    }
+
+    @Test
     fun instructionsAreProvidedAndMcpHoldsTheTools() {
         assertTrue(MembresiaMcpTools.Instructions.isNotBlank())
         assertTrue("override=true" in MembresiaMcpTools.Instructions)
-        assertEquals(tools.size, MembresiaMcpTools.mcp.tools.size)
+        assertTrue(MembresiaMcpTools.mcp.tools.size >= tools.size)
         assertEquals(MembresiaMcpTools.Instructions, MembresiaMcpTools.mcp.instructions)
         assertEquals(8, tools.size)
     }

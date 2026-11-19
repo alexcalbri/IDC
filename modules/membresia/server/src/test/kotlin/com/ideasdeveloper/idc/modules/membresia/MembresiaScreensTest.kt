@@ -153,6 +153,42 @@ class MembresiaScreensTest {
     }
 
     @Test
+    fun wifiCodeShowsOnlyOnTheMemberScreenForVisitsOrManage() {
+        val code = "WIFI-7Q4Z"
+        val visitsOnly = MembresiaAccess(view = true, visits = true, manage = false, plans = false)
+        val shown = bodyJson(MembresiaScreens.miembro(visitsOnly, detail(), today, 7, wifiCode = code))
+        assertTrue(shown.contains("Código WiFi") && shown.contains(code))
+        assertTrue(bodyJson(MembresiaScreens.miembro(everything, detail(), today, 7, wifiCode = code)).contains(code))
+        assertFalse(bodyJson(MembresiaScreens.miembro(viewOnly, detail(), today, 7, wifiCode = code)).contains(code))
+        // Ninguna otra pantalla lo recibe ni lo muestra.
+        val member = MemberSummary(customerId, "Ana Pérez", "ana@example.com", "555-0100", membership())
+        val others = listOf(
+            json(MembresiaScreens.recepcion(everything, "ana", listOf(member), emptyMap(), 0, today, 7)),
+            json(MembresiaScreens.miembros(everything, null, listOf(membership()), emptyMap(), today, 7)),
+            UiJson.encodeToString(com.ideasdeveloper.idc.ui.UiSuggestions.serializer(), MembresiaScreens.suggestions(listOf(member), today, 7)),
+        )
+        others.forEach { assertFalse(it.contains(code)) }
+    }
+
+    @Test
+    fun importSectionNeedsPermissionAndAnActiveSource() {
+        fun ids(access: MembresiaAccess) = MembresiaScreens.navigation(access, "recepcion").items.map { it.id }
+        assertFalse("importar" in ids(everything.copy(import = true, importEnabled = false)))
+        assertFalse("importar" in ids(everything.copy(import = false, importEnabled = true)))
+        assertTrue("importar" in ids(everything.copy(import = true, importEnabled = true)))
+    }
+
+    @Test
+    fun importScreenExplainsMissingSourcesAndOffersButtonsForSeveral() {
+        val access = everything.copy(import = true, importEnabled = true)
+        assertTrue(bodyJson(MembresiaScreens.importar(access, emptyList(), null, emptyList())).contains("Extensiones"))
+        val several = bodyJson(MembresiaScreens.importar(access, listOf("membresia_monday" to "Monday", "otra" to "Otra"), "otra", emptyList()))
+        assertTrue(several.contains("Monday") && several.contains("\"source\":\"membresia_monday\""))
+        assertTrue(MembresiaScreens.allowed(access, "importar"))
+        assertFalse(MembresiaScreens.allowed(everything, "importar"))
+    }
+
+    @Test
     fun receptionSearchUsesTheMemberSuggestionRoute() {
         val text = bodyJson(MembresiaScreens.recepcion(viewOnly, "", emptyList(), emptyMap(), 0, today, 7))
         assertTrue(text.contains("${MembresiaModule.UiRoute}/suggest/members"))
