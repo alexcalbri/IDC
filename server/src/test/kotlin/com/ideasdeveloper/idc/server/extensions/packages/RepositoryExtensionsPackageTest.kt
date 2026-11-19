@@ -31,6 +31,10 @@ class RepositoryExtensionsPackageTest {
         "tareas" to listOf("tareas.import.write"),
         "membresia" to listOf("membresia.import.write"),
         "compras" to listOf("compras.requests.import"),
+        "eventos" to listOf("eventos.import.write"),
+        "mantenimiento" to listOf("mantenimiento.import.write"),
+        "propietarios" to listOf("propietarios.import.write"),
+        "empleados" to listOf("empleados.import.write"),
     )
 
     private val validator = ExtensionManifestValidator(
@@ -55,11 +59,12 @@ class RepositoryExtensionsPackageTest {
     }
 
     @Test
-    fun `the repository ships the eleven extensions`() {
+    fun `the repository ships the fifteen extensions`() {
         assertEquals(
             listOf(
-                "cloudbeds", "compras_monday", "encuentra24", "inmobiliaria", "inmobiliaria_monday", "membresia_monday",
-                "meta", "monday", "tareas_monday", "unifi", "wordpress",
+                "cloudbeds", "compras_monday", "empleados_monday", "encuentra24", "eventos_monday", "inmobiliaria",
+                "inmobiliaria_monday", "mantenimiento_monday", "membresia_monday", "meta", "monday", "propietarios_monday",
+                "tareas_monday", "unifi", "wordpress",
             ),
             extensionFolders().map { it.name },
         )
