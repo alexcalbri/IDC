@@ -51,9 +51,10 @@ object ClientesServerModule : ServerModule {
         "modules/clientes/migrations/V006__create_customer_activity.sql",
         "modules/clientes/migrations/V007__customer_profile_sharing.sql",
         "modules/clientes/migrations/V008__company_links_and_merges.sql",
+        "modules/clientes/migrations/V009__customer_accounts.sql",
     )
 
-    override val runtimeTables = listOf("customer_activity", "customer_notes", "customer_history", "customer_link_jobs", "customer_merges")
+    override val runtimeTables = listOf("customer_activity", "customer_notes", "customer_history", "customer_link_jobs", "customer_merges", "customer_accounts")
 
     // Copies the company's customers to the companies linked with it, in the background.
     override val jobs: List<ModuleJob>
@@ -66,7 +67,7 @@ object ClientesServerModule : ServerModule {
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.9.0",
+        version = "0.10.0",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -74,6 +75,7 @@ object ClientesServerModule : ServerModule {
             ModulePermissionDefinition("clientes.edit", "Editar clientes", "Permite modificar clientes existentes."),
             ModulePermissionDefinition("clientes.delete", "Eliminar clientes", "Permite eliminar o desactivar clientes."),
             ModulePermissionDefinition("clientes.fields.manage", "Administrar campos de clientes", "Permite crear, editar, desactivar o eliminar campos dinamicos de clientes."),
+            ModulePermissionDefinition(ClientesAccounts.LinkPermission, "Enlazar cuentas de usuario a clientes", "Permite enlazar o desenlazar la cuenta de usuario de esta empresa con la ficha de un cliente con el mismo correo. El enlace no da permisos."),
             ModulePermissionDefinition("clientes.share", "Compartir clientes entre empresas", "Habilita las herramientas de agente de empresas vinculadas; vincular y desvincular siempre lo hace el business owner, y los clientes se comparten solos entre las empresas vinculadas."),
         ),
         views = listOf(

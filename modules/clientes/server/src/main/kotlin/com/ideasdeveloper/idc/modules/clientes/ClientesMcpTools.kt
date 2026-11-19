@@ -9,6 +9,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
@@ -62,7 +64,7 @@ object ClientesMcpTools {
         McpTool(
             name = "get_customer",
             title = "Ver cliente",
-            description = "Devuelve la ficha completa de un cliente por su id o por su codigo de cliente.",
+            description = "Devuelve la ficha completa de un cliente por su id o por su codigo de cliente, con sus roles (Cliente, y Usuario si tiene una cuenta enlazada; el nombre de la cuenta solo lo ve quien puede enlazar cuentas).",
             permission = "clientes.view",
             readOnly = true,
             inputSchema = McpSchema.obj(
@@ -150,6 +152,35 @@ object ClientesMcpTools {
             inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del campo (ver list_customer_fields).")), required = listOf("id")),
         ) { call -> deleteField(call) },
         McpTool(
+            name = "link_user_account",
+            title = "Enlazar cuenta de usuario a un cliente",
+            description = "Enlaza la cuenta de usuario de esta empresa (por userId o por el correo de la cuenta) con la ficha de cliente que tiene " +
+                "el MISMO correo; si no hay ficha con ese correo, la crea con el nombre y correo de la cuenta. Nunca enlaza a una ficha con otro " +
+                "correo. El enlace no da permisos a la cuenta. El correo de la cuenta no se verifica: confirma con el usuario que la cuenta es de esa persona antes de enlazar.",
+            permission = ClientesAccounts.LinkPermission,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "userId" to McpSchema.uuid("Id de la cuenta de usuario."),
+                    "email" to McpSchema.string("Correo de la cuenta, si no se tiene el id.", format = "email"),
+                ),
+            ),
+            handler = { call -> linkUserAccount(call) },
+        ),
+        McpTool(
+            name = "unlink_user_account",
+            title = "Desenlazar cuenta de usuario de un cliente",
+            description = "Quita el enlace entre una cuenta de usuario y su ficha de cliente (por el id de la cuenta o el id del cliente). " +
+                "No borra la ficha ni la cuenta. Confirma con el usuario antes.",
+            permission = ClientesAccounts.LinkPermission,
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "userId" to McpSchema.uuid("Id de la cuenta de usuario."),
+                    "customerId" to McpSchema.uuid("Id del cliente."),
+                ),
+            ),
+            handler = { call -> unlinkUserAccount(call) },
+        ),
+        McpTool(
             name = "get_company_links",
             title = "Empresas vinculadas",
             description = "Muestra las empresas vinculadas con la actual para compartir clientes, las que se pueden vincular, el avance " +
@@ -229,7 +260,59 @@ object ClientesMcpTools {
         val id = call.uuid("id")
         val code = call.string("customerCode", 64)
         if (id == null && code.isEmpty()) throw McpToolException("Envia el id o el codigo del cliente.")
-        return Json.encodeToJsonElement(find(call, id, code) ?: throw McpToolException("Cliente no encontrado."))
+        val found = find(call, id, code) ?: throw McpToolException("Cliente no encontrado.")
+        val link = customerId(found)?.let { cid -> if (ClientesAccounts.supported(call.tenant)) ClientesAccounts.linkOf(call.tenant, cid) else null }
+        val showAccount = ClientesAccounts.canSeeAccount(call.permissions)
+        // The account (name, email) is shown only to who may link accounts; everyone else just sees the role "Usuario".
+        val account = link?.account?.takeIf { showAccount }
+        return JsonObject(
+            Json.encodeToJsonElement(found).jsonObject +
+                ("roles" to JsonArray(ClientesAccounts.roles(link, showAccount).map { JsonPrimitive(it) })) +
+                (if (account != null) mapOf("userAccount" to buildJsonObject { put("id", account.id.toString()); put("name", account.name); put("email", account.email) }) else emptyMap()),
+        )
+    }
+
+    private fun customerId(customer: CustomerResponse): UUID? = runCatching { UUID.fromString(customer.id) }.getOrNull()
+
+    private fun accountFrom(call: McpToolCall): ClientesAccounts.Account? {
+        val userId = call.uuid("userId")
+        val email = call.string("email", 200)
+        if (userId == null && email.isEmpty()) throw McpToolException("Envia userId o email de la cuenta.")
+        return if (userId != null) ClientesAccounts.accountById(call.tenant, userId) else ClientesAccounts.accountByEmail(call.tenant, email)
+    }
+
+    private fun linkUserAccount(call: McpToolCall): JsonElement {
+        if (!ClientesAccounts.canLink(call.permissions)) throw McpToolException("No tienes permiso para enlazar cuentas de usuario a clientes.")
+        val account = accountFrom(call) ?: throw McpToolException("No hay una cuenta activa con ese id o correo (o el correo esta en varias cuentas: usa el userId).")
+        val result = try {
+            ClientesAccounts.linkAccount(call.access, call.tenant, call.permissions.companyCode, call.permissions, account.id, author(call))
+        } catch (failure: ClientesSharingException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        return buildJsonObject {
+            put("customerId", result.customerId.toString())
+            put("created", result.created)
+            put("result", result.message)
+        }
+    }
+
+    private fun unlinkUserAccount(call: McpToolCall): JsonElement {
+        if (!ClientesAccounts.canLink(call.permissions)) throw McpToolException("No tienes permiso para enlazar cuentas de usuario a clientes.")
+        val customerId = call.uuid("customerId") ?: run {
+            val userId = call.uuid("userId") ?: throw McpToolException("Envia userId o customerId.")
+            call.tenant.prepareStatement("SELECT customer_id FROM customer_accounts WHERE account_kind = ? AND account_id = ?").use { query ->
+                query.setString(1, ClientesAccounts.UserKind)
+                query.setObject(2, userId)
+                query.executeQuery().use { rows -> if (rows.next()) rows.getObject(1, UUID::class.java) else null }
+            } ?: throw McpToolException("Esa cuenta no esta enlazada a ningun cliente.")
+        }
+        if (!ClientesSharing.visible(call.tenant, customerId)) throw McpToolException("Cliente no encontrado.")
+        val message = try {
+            ClientesAccounts.unlink(call.tenant, customerId, call.permissions, author(call))
+        } catch (failure: ClientesSharingException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        return buildJsonObject { put("result", message) }
     }
 
     private fun create(call: McpToolCall): JsonElement {
@@ -277,7 +360,7 @@ object ClientesMcpTools {
     // Adds a warning to the result when the change did not reach every linked company (the next sync fixes it).
     private fun withWarning(result: JsonElement, failed: List<String>): JsonElement {
         if (failed.isEmpty() || result !is JsonObject) return result
-        return JsonObject(result + ("warning" to kotlinx.serialization.json.JsonPrimitive("El cambio no llego todavia a: ${failed.joinToString()}. Se corrige solo en el siguiente minuto.")))
+        return JsonObject(result + ("warning" to JsonPrimitive("El cambio no llego todavia a: ${failed.joinToString()}. Se corrige solo en el siguiente minuto.")))
     }
 
     private fun archive(call: McpToolCall): JsonElement {

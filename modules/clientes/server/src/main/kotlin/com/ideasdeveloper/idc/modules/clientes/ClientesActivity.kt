@@ -24,7 +24,7 @@ object ClientesActivity {
     }
 
     // Kinds that belong to one customer and kinds of the company (customer_id NULL); V008 checks them.
-    val customerKinds = setOf("created", "updated", "archived", "restored", "note_deleted", "history_deleted", "merged", "separated")
+    val customerKinds = setOf("created", "updated", "archived", "restored", "note_deleted", "history_deleted", "merged", "separated", "user_linked", "user_unlinked")
     val companyKinds = setOf("field_created", "field_deleted", "linked", "unlinked")
 
     /** Title shown for an activity kind in the customer's history and in "Registro de Clientes". */
@@ -40,6 +40,8 @@ object ClientesActivity {
         "field_deleted" -> "Campo personalizado borrado"
         "linked" -> "Empresa vinculada"
         "unlinked" -> "Empresa desvinculada"
+        "user_linked" -> "Cuenta de usuario enlazada"
+        "user_unlinked" -> "Cuenta de usuario desenlazada"
         else -> "Datos del cliente modificados"
     }
 

@@ -21,16 +21,16 @@ class ClientesActivityTest {
         assertTrue((ClientesActivity.customerKinds intersect ClientesActivity.companyKinds).isEmpty())
     }
 
-    // The kinds the code writes must be exactly the ones the CHECK of V008 accepts.
+    // The kinds the code writes must be exactly the ones the CHECK of V009 (the last migration that redefines it) accepts.
     @Test
-    fun kindsMatchTheCheckOfMigrationV008() {
+    fun kindsMatchTheCheckOfMigrationV009() {
         var dir: java.io.File? = java.io.File("").absoluteFile
         var migration: java.io.File? = null
         while (dir != null && migration == null) {
-            migration = java.io.File(dir, "modules/clientes/migrations/V008__company_links_and_merges.sql").takeIf { it.exists() }
+            migration = java.io.File(dir, "modules/clientes/migrations/V009__customer_accounts.sql").takeIf { it.exists() }
             dir = dir.parentFile
         }
-        val text = checkNotNull(migration) { "No se encontro V008 subiendo desde el directorio de pruebas." }.readText()
+        val text = checkNotNull(migration) { "No se encontro V009 subiendo desde el directorio de pruebas." }.readText()
         val check = text.substringAfter("customer_activity_kind_check CHECK (kind IN (").substringBefore("));")
         val inMigration = Regex("'([a-z_]+)'").findAll(check).map { it.groupValues[1] }.toSet()
         assertEquals(inMigration, ClientesActivity.customerKinds + ClientesActivity.companyKinds)

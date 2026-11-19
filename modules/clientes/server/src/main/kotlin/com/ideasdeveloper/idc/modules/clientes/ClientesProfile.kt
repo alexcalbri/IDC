@@ -245,6 +245,11 @@ internal object ClientesProfile {
                     )
                     UiNotice("Agregado al historial de ${ClientesSharing.companyName(access, currentCode, currentCode)}.", UiTone.Success)
                 }
+                "linkuser" -> {
+                    val accountId = params["account"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Cuenta invalida.")
+                    UiNotice(ClientesAccounts.link(connection, currentCode, permissions, id, accountId, author), UiTone.Success)
+                }
+                "unlinkuser" -> UiNotice(ClientesAccounts.unlink(connection, id, permissions, author), UiTone.Success)
                 "deletehistory" -> {
                     if (!permissions.has("clientes.edit")) throw ClientesSharingException("No tienes permiso para editar clientes.")
                     val entryId = params["entry"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Entrada invalida.")
@@ -356,6 +361,8 @@ internal object ClientesProfile {
         }
         val tabs = ClientesSharing.tabs(access, tenant, currentCode, customer, permissions.businessOwner)
         val linked = access.linkedCompanies(currentCode, ClientesLinking.LinkPurpose)
+        val accountsReady = ClientesAccounts.supported(tenant)
+        val userLink = if (accountsReady) ClientesAccounts.linkOf(tenant, customer.id) else null
         val tab = params["tab"].orEmpty().takeIf { requested -> requested == NotesTab || tabs.any { it.code == requested } } ?: NotesTab
         val originName = ClientesSharing.companyName(access, currentCode, customer.origin)
         fun open(nextTab: String) = UiNavigate("customer", mapOf("id" to customer.id.toString(), "tab" to nextTab))
@@ -370,6 +377,7 @@ internal object ClientesProfile {
                 customer.phone.takeIf { it.isNotBlank() }?.let { UiText("Telefono: $it") },
                 UiText("Creado en $originName", UiTextStyle.Caption),
                 UiText(linkText(linked.map { it.name }, originName), UiTextStyle.Caption),
+                UiText("Roles: " + ClientesAccounts.roles(userLink, ClientesAccounts.canSeeAccount(permissions)).joinToString(", "), UiTextStyle.Caption),
                 customer.archived.takeIf { it }?.let { UiText("Cliente archivado.", tone = UiTone.Warning) },
             ),
             actions = listOfNotNull(
@@ -382,6 +390,9 @@ internal object ClientesProfile {
                 if (ClientesLinkScreens.canSeeActivity(permissions)) UiButton("Registro de Clientes", UiNavigate("activity"), style = "secondary") else null,
             ),
         )
+
+        // Optional link with the user account of this company; it grants no permission. Only who may link sees it.
+        val accountCard = if (accountsReady && ClientesAccounts.canLink(permissions)) accountSection(tenant, customer, userLink, ::post) else null
 
         // What the customer did, by company of the visible tabs: the modules that have something and how much.
         val summary = UiCard(
@@ -482,8 +493,40 @@ internal object ClientesProfile {
                 },
             )
         }
-        return UiScreen(title = customer.name, notice = notice, body = listOf(details, summary, tabRow) + content)
+        return UiScreen(title = customer.name, notice = notice, body = listOfNotNull(details, accountCard, summary, tabRow) + content)
     }
+
+    // "Cuenta de usuario": the linked account with Desenlazar, or the free accounts with this card's email to link.
+    private fun accountSection(
+        tenant: Connection,
+        customer: ClientesSharing.Customer,
+        link: ClientesAccounts.Link?,
+        post: (String, Map<String, String>, String?, String?) -> UiRequest,
+    ): UiCard = UiCard(
+        title = "Cuenta de usuario",
+        children = buildList<UiNode> {
+            add(UiText("Opcional: enlaza la cuenta de usuario de esta empresa que tiene el mismo correo que la ficha. El enlace no da permisos a la cuenta. El correo de la cuenta no se verifica: confirma que la cuenta es de esta persona.", UiTextStyle.Caption))
+            when {
+                link != null -> {
+                    add(UiText(link.account?.let { "${it.name} (${it.email})" } ?: "La cuenta enlazada ya no existe."))
+                    add(UiText("Enlazada por ${link.linkedBy} el ${link.linkedAt.toLocalDate()}", UiTextStyle.Caption))
+                    if (link.account != null && !ClientesAccounts.emailMatches(link.account.email, customer.email)) {
+                        add(UiText(ClientesAccounts.MismatchWarning, tone = UiTone.Warning))
+                    }
+                    add(UiButton("Desenlazar cuenta", post("unlinkuser", emptyMap(), null, "La ficha y la cuenta siguen igual; solo se quita el enlace. Continuar?"), style = "danger"))
+                }
+                customer.archived -> add(UiText("Restaura el cliente para enlazar una cuenta.", UiTextStyle.Caption))
+                customer.email.isBlank() -> add(UiText("La ficha no tiene correo: agregalo para poder enlazar una cuenta.", tone = UiTone.Warning))
+                else -> {
+                    val candidates = ClientesAccounts.candidates(tenant, customer.email)
+                    if (candidates.isEmpty()) add(UiText("No hay una cuenta libre con el correo ${customer.email}.", UiTextStyle.Caption))
+                    candidates.forEach { account ->
+                        add(UiButton("Enlazar a ${account.name}", post("linkuser", mapOf("account" to account.id.toString()), null, "Enlazar la cuenta de ${account.name} (${account.email}) con esta ficha?"), style = "secondary"))
+                    }
+                }
+            }
+        },
+    )
 
     /** Says whether the company is linked: which companies share their customers with this one. [linkedNames] has the current company first. */
     fun linkText(linkedNames: List<String>, originName: String): String =

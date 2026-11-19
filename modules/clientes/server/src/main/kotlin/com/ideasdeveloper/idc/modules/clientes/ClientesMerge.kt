@@ -200,7 +200,9 @@ object ClientesMerge {
 
     // Short and generic on purpose: the SQL detail goes to the server log, not to the user.
     fun failureReason(company: String, table: String): String =
-        "No se pudo fusionar: la tabla $table de $company ya tiene datos que chocan con el cliente que se conserva. Nada se modifico."
+        if (table == "customer_accounts") {
+            "Las dos fichas tienen una cuenta de usuario enlazada; desenlaza una y pulsa Reintentar."
+        } else "No se pudo fusionar: la tabla $table de $company ya tiene datos que chocan con el cliente que se conserva. Nada se modifico."
 
     /** The winner's values before and after completing its empty fields, so Separar can put them back if nobody changed them since. */
     fun filledMoved(company: String, before: ClientesSharing.Row, filled: Filled): Moved? {

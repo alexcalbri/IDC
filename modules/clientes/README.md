@@ -126,3 +126,27 @@ unlinked. They appear in "Registro de Clientes" (`GET /modules/clientes/ui/activ
 - Unlinking keeps the merges already done; use "Separar" first if the records must go back.
 - Routes do their database work on `Dispatchers.IO`; archive and restore answer 404 for a hidden copy and 409
   for a visible copy (only the origin company archives or restores).
+
+## User accounts (V009, 0.10.0)
+
+A user account of the company (`application_users`) can be linked to a customer card (`customer_accounts`,
+`account_kind = 'user'`): the card is the person's record, so a user who also buys services has one record.
+It is optional and lives in the company of the account; the card must be visible there.
+
+- **Anti-absorption rule.** An account is only linked to the card whose email equals the account's email
+  (case ignored, never empty). A card with another email or without one is never used. If no visible card has
+  that email, the agent tool creates one with the account's name and email (activity `created`, then shared with
+  the linked companies). An account without email cannot be linked.
+- **Uniqueness.** One account, one card; one user account per card (clear error otherwise).
+- **No permissions.** The link grants nothing and no authorization check reads it.
+- **Who links.** The business owner or whoever holds `clientes.accounts.link`; there is no self-service, a user
+  cannot link their own account without that permission.
+- **Profile.** Roles line ("Cliente" always, "Usuario" when linked; the account's name and email only for who
+  may link) and a "Cuenta de usuario" section with Enlazar (free accounts with the card's email) and Desenlazar.
+  Both are ops of `POST /modules/clientes/ui/customer` (`linkuser`, `unlinkuser`) and are logged as
+  `user_linked` / `user_unlinked`. Employee, owner and agent roles are not derived (Clientes knows no module).
+- **Merge and Separar.** `customer_id` is a foreign key, so the link moves with the card when duplicates are
+  merged or separated, like any other record; if both cards of a merge have a linked account in the same company the merge goes to "Por revisar": unlink one and press Reintentar. The account's email is not verified: confirm the account belongs to that person (the profile warns when the account's email no longer matches the card).
+- **Agent tools** (permission `clientes.accounts.link`): `clientes_link_user_account` (by `userId` or account
+  email) and `clientes_unlink_user_account`; `clientes_get_customer` returns `roles` and, only to who may link,
+  `userAccount`.

@@ -246,6 +246,14 @@ class ClientesMergeTest {
     }
 
     @Test
+    fun linkedAccountsClashHasASpecificReason() {
+        assertEquals(
+            "Las dos fichas tienen una cuenta de usuario enlazada; desenlaza una y pulsa Reintentar.",
+            ClientesMerge.failureReason("Alfa", "customer_accounts"),
+        )
+    }
+
+    @Test
     fun failureReasonIsShortAndHasNoSql() {
         val reason = ClientesMerge.failureReason("Alfa", "ventas")
         assertContains(reason, "ventas")
