@@ -19,4 +19,12 @@ object ComprasModule {
 
     /** Departamentos, aprobadores, moneda; edita y mueve cualquier solicitud. */
     const val Manage = "compras.manage"
+
+    /** Importa solicitudes desde otras herramientas (las fuentes las aportan extensiones). */
+    const val Import = "compras.import"
+}
+
+/** Permisos que una extension pide sobre el modulo (se declaran en su extension.json). */
+object ComprasExtensionPermissions {
+    const val RequestsImport = "compras.requests.import"
 }

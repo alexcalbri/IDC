@@ -113,6 +113,7 @@ object ComprasScreens {
         "approvals" to "Por aprobar",
         "high" to "Altas y criticas",
         "totals" to "Totales",
+        "import" to "Importar",
         "request" to "Solicitud",
         "new" to "Nueva solicitud",
         "settings" to "Ajustes",
@@ -130,13 +131,14 @@ object ComprasScreens {
         "approvals" -> can(ComprasModule.Approve) && can(ComprasModule.View)
         "totals" -> can(ComprasModule.View) && (can(ComprasModule.ViewAll) || can(ComprasModule.Manage))
         "new" -> can(ComprasModule.View) && can(ComprasModule.Create)
+        "import" -> can(ComprasModule.View) && can(ComprasModule.Import)
         "settings" -> can(ComprasModule.View) && can(ComprasModule.Manage)
         else -> false
     }
 
     /** Secciones del menu para quien tiene [can]. */
     fun menu(can: (String) -> Boolean): List<Section> =
-        listOf("home", "requests", "board", "approvals", "high", "totals", "settings")
+        listOf("home", "requests", "board", "approvals", "high", "totals", "import", "settings")
             .filter { canOpen(it, can) }
             .map { Section(it, Titles.getValue(it)) }
 
@@ -220,6 +222,8 @@ object ComprasScreens {
         params: Map<String, String>,
         notice: UiNotice? = null,
         submitted: Map<String, String>? = null,
+        // Contexto para las fuentes de importacion (solo la pantalla Importar lo pide).
+        importContext: (() -> ComprasImportContext)? = null,
     ): UiScreen {
         if (!canOpen(screen, actor::can)) {
             return frame(actor, "home", ComprasModule.displayName, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
@@ -236,6 +240,11 @@ object ComprasScreens {
             "totals" -> loadTotals(tenant, actor, params, notice)
             "request" -> loadDetail(tenant, actor, params, notice, submitted)
             "new" -> newScreen(actor, NewData(ComprasRepository.departments(tenant, onlyActive = true), ComprasRepository.settings(tenant).defaultCurrency), notice, submitted)
+            "import" -> {
+                val ctx = importContext?.invoke()
+                val cards = if (ctx == null) emptyList() else ComprasActions.activeSources(ComprasImportSources.all) { it.isEnabled(ctx) }.map { ImportCard(it.id, it.label, it.screen(ctx, params)) }
+                importScreen(actor, cards, notice)
+            }
             "settings" -> ComprasAdminScreens.build(tenant, actor, notice, submitted)
             else -> loadHome(tenant, actor, notice)
         }
@@ -311,6 +320,20 @@ object ComprasScreens {
             departments = ComprasRepository.departments(tenant),
         )
         return detailScreen(actor, data, notice, submitted)
+    }
+
+    // ---- Importar ----
+
+    /** Tarjeta de una fuente de importacion: sus piezas las arma la extension. */
+    class ImportCard(val id: String, val label: String, val nodes: List<UiNode>)
+
+    fun importScreen(actor: Actor, cards: List<ImportCard>, notice: UiNotice? = null): UiScreen {
+        val body: List<UiNode> = if (cards.isEmpty()) {
+            listOf(UiText("Instala la extension Importar desde Monday para traer tus tableros.", UiTextStyle.Caption))
+        } else {
+            cards.map { UiCard(it.nodes, title = it.label) }
+        }
+        return frame(actor, "import", title("import"), notice, body)
     }
 
     // ---- Inicio ----

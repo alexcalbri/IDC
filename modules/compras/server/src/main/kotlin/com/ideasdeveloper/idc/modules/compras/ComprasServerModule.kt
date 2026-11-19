@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.modules.compras
 
+import com.ideasdeveloper.idc.server.extensions.ServerExtension
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleJob
@@ -53,6 +54,7 @@ object ComprasServerModule : ServerModule {
 
     override val migrationPaths = listOf(
         "modules/compras/migrations/V001__create_compras.sql",
+        "modules/compras/migrations/V002__import_keys.sql",
     )
 
     override val runtimeTables = listOf(
@@ -78,7 +80,7 @@ object ComprasServerModule : ServerModule {
         id = ComprasModule.id,
         displayName = ComprasModule.displayName,
         description = "Solicitudes de compra con cotizaciones opcionales, aprobadores con limite de monto, adjuntos de respaldo y totales por departamento, mes y moneda.",
-        version = "0.1.0",
+        version = "0.2.0",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.5.0",
         permissions = listOf(
@@ -86,13 +88,23 @@ object ComprasServerModule : ServerModule {
             ModulePermissionDefinition(ComprasModule.Create, "Solicitar compras", "Permite crear solicitudes de compra y editar, enviar o cancelar las suyas."),
             ModulePermissionDefinition(ComprasModule.ViewAll, "Ver todas las solicitudes", "Permite ver las solicitudes de todos, el tablero completo y los totales."),
             ModulePermissionDefinition(ComprasModule.Approve, "Aprobar compras", "Permite aprobar o rechazar solicitudes dentro de su limite de monto (ademas debe estar en la lista de aprobadores)."),
+            ModulePermissionDefinition(ComprasModule.Import, "Importar compras", "Permite importar solicitudes desde otras herramientas (por ejemplo Monday) con las extensiones de importacion instaladas."),
             ModulePermissionDefinition(ComprasModule.Manage, "Administrar compras", "Permite configurar departamentos, aprobadores y moneda, y editar o mover cualquier solicitud."),
         ),
         ui = ModuleUiEntry(type = "native", entry = ComprasScreens.UiRoute, home = "home"),
+        supportsExtensions = true,
+        // Lo que una extension de importacion puede declarar (EXTENSIONS.md).
+        extensionPermissions = listOf(ComprasExtensionPermissions.RequestsImport),
     )
 
+    // Herramientas propias mas las que aportan las fuentes de importacion instaladas (permiso compras.import).
     override val mcp: ModuleMcp
-        get() = ComprasMcpTools.mcp
+        get() = ComprasMcpTools.mcp.let { own -> ModuleMcp(own.instructions, own.tools + ComprasImportSources.all.flatMap { it.mcpTools }) }
+
+    // Las fuentes de importacion son extensiones del modulo (p. ej. compras_monday).
+    override fun linkExtensions(extensions: List<ServerExtension>) {
+        ComprasImportSources.link(extensions)
+    }
 
     override val jobs = listOf(
         // Archivos de adjuntos quitados, de solicitudes borradas y de subidas que no se guardaron.
@@ -103,6 +115,19 @@ object ComprasServerModule : ServerModule {
                 log.warn("La limpieza de adjuntos de compras fallo en {}.", context.companyCode, failure)
             }
         },
+        // Lecturas y aplicaciones pendientes de cada fuente de importacion; el fallo de una no frena a las demas.
+        ModuleJob("imports", Duration.ofMinutes(1)) { context ->
+            val ctx = ComprasImportContext(
+                context.tenant, context.companyCode, null, context.access.files(context.companyCode, ComprasModule.id), context.notifier, context.access.secrets,
+            )
+            ComprasActions.activeSources(ComprasImportSources.all) { it.isEnabled(ctx) }.forEach { source ->
+                try {
+                    source.runPending(ctx, 200)
+                } catch (failure: Exception) {
+                    log.warn("La importacion {} de compras fallo en {}.", source.id, context.companyCode, failure)
+                }
+            }
+        },
     )
 
     // Permiso del usuario antes de abrir datos: el dueno del negocio y el del servidor tienen todos.
@@ -110,6 +135,11 @@ object ComprasServerModule : ServerModule {
 
     private fun actorOf(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions) =
         Actor(permissions.userId, access.userIdentity(tenant, permissions)?.name ?: "Usuario", permissions)
+
+    // Lo que el modulo ofrece a las fuentes de importacion durante una peticion (el actor es el usuario).
+    private fun importContextOf(access: ModuleAccessService, permissions: ModulePermissions, tenant: Connection, actor: Actor) = ComprasImportContext(
+        tenant, permissions.companyCode, actor, access.files(permissions.companyCode, ComprasModule.id), access.notificationsFor(ComprasModule.id), access.secrets,
+    )
 
     private suspend fun ApplicationCall.forbidden() =
         respond(HttpStatusCode.Forbidden, ComprasErrorResponse("missing_permission", "No tienes permiso para esta accion."))
@@ -205,7 +235,7 @@ object ComprasServerModule : ServerModule {
                 val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
                 call.respondScreen(access) { tenant ->
                     val actor = actorOf(tenant, access, permissions)
-                    homeOnInvalid(tenant, actor) { ComprasScreens.build(tenant, actor, screen, params) }
+                    homeOnInvalid(tenant, actor) { ComprasScreens.build(tenant, actor, screen, params, importContext = { importContextOf(access, permissions, tenant, actor) }) }
                 }
             }
 
@@ -228,8 +258,9 @@ object ComprasServerModule : ServerModule {
                 call.respondScreen(access) { tenant ->
                     val actor = actorOf(tenant, access, permissions)
                     homeOnInvalid(tenant, actor) {
-                        val outcome = ComprasActions.run(tenant, actor, access.notificationsFor(ComprasModule.id), screen, params, values)
-                        ComprasScreens.build(tenant, actor, outcome.screen, outcome.params, outcome.notice, outcome.submitted)
+                        val importContext = { importContextOf(access, permissions, tenant, actor) }
+                        val outcome = ComprasActions.run(tenant, actor, access.notificationsFor(ComprasModule.id), screen, params, values, importContext)
+                        ComprasScreens.build(tenant, actor, outcome.screen, outcome.params, outcome.notice, outcome.submitted, importContext)
                     }
                 }
             }

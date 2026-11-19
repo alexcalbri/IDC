@@ -28,6 +28,8 @@ object ComprasActions {
     /** El permiso exacto de la operacion `screen:op`. [can] ya cuenta al dueno. Una operacion desconocida se rechaza. */
     fun permitted(screen: String, params: Map<String, String>, can: (String) -> Boolean): Boolean {
         if (!can(ComprasModule.View)) return false
+        // Importar: la operacion es "<fuente>:<op>" y pide compras.import; la fuente valida el resto.
+        if (screen == "import") return can(ComprasModule.Import) && params["op"]?.contains(':') == true
         val writer = can(ComprasModule.Create) || can(ComprasModule.Manage)
         return when ("$screen:${params["op"]}") {
             "new:create" -> can(ComprasModule.Create)
@@ -44,6 +46,20 @@ object ComprasActions {
             else -> false
         }
     }
+
+    /**
+     * Las fuentes de importacion activas en la empresa: las que [enabled] confirma. Si [enabled] lanza, se registra
+     * y la fuente cuenta como no activa (la cancelacion de corrutina no aplica: es codigo bloqueante).
+     */
+    fun activeSources(sources: List<ComprasImportSource>, enabled: (ComprasImportSource) -> Boolean): List<ComprasImportSource> =
+        sources.filter { source ->
+            try {
+                enabled(source)
+            } catch (failure: Exception) {
+                log.warn("No se pudo saber si la importacion {} esta activa ({}).", source.id, failure.javaClass.simpleName)
+                false
+            }
+        }
 
     private fun uuid(text: String?): UUID? = text?.let { runCatching { UUID.fromString(it) }.getOrNull() }
 
@@ -129,18 +145,30 @@ object ComprasActions {
     }
 
     /** Ejecuta la operacion `screen:op` ya autorizada con [permitted]. */
-    fun run(tenant: Connection, actor: Actor, notifier: ModuleNotifier?, screen: String, params: Map<String, String>, values: Map<String, String>): Outcome {
+    fun run(tenant: Connection, actor: Actor, notifier: ModuleNotifier?, screen: String, params: Map<String, String>, values: Map<String, String>, importContext: (() -> ComprasImportContext)? = null): Outcome {
         val back = params - setOf("op", "to", "quote", "active", "card", "column", "user", "submit")
         return try {
-            execute(tenant, actor, notifier, screen, params, values, back)
+            execute(tenant, actor, notifier, screen, params, values, back, importContext)
         } catch (failure: ComprasValidationException) {
-            val target = if (screen in setOf("approvals", "board", "settings", "new")) screen else "request"
-            Outcome(target, back, UiNotice(failure.message.orEmpty(), UiTone.Danger), values)
+            val target = if (screen in setOf("approvals", "board", "settings", "new", "import")) screen else "request"
+            // En Importar no se reflejan los valores (pueden traer el token de una fuente).
+            Outcome(target, back, UiNotice(failure.message.orEmpty(), UiTone.Danger), if (screen == "import") null else values)
         }
     }
 
-    private fun execute(tenant: Connection, actor: Actor, notifier: ModuleNotifier?, screen: String, params: Map<String, String>, values: Map<String, String>, back: Map<String, String>): Outcome {
+    private fun execute(tenant: Connection, actor: Actor, notifier: ModuleNotifier?, screen: String, params: Map<String, String>, values: Map<String, String>, back: Map<String, String>, importContext: (() -> ComprasImportContext)?): Outcome {
         fun ok(target: String, text: String, targetParams: Map<String, String> = back) = Outcome(target, targetParams, UiNotice(text, UiTone.Success))
+        if (screen == "import") {
+            // "<fuente>:<op>": la extension de la fuente atiende la operacion y devuelve el aviso.
+            val full = params["op"].orEmpty()
+            val source = ComprasImportSources.byId(full.substringBefore(':')) ?: throw invalid("Esa fuente de importacion no esta instalada.")
+            val ctx = importContext?.invoke() ?: throw invalid("No se pudo preparar la importacion.")
+            if (activeSources(listOf(source)) { it.isEnabled(ctx) }.isEmpty()) {
+                throw invalid("La importacion desde ${source.label} no esta activa en esta empresa.")
+            }
+            val notice = source.action(ctx, full.substringAfter(':'), values) ?: UiNotice("Listo.", UiTone.Success)
+            return Outcome("import", back, notice)
+        }
         val id = uuid(params["id"])
         return when ("$screen:${params["op"]}") {
             "new:create" -> {

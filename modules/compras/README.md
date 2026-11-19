@@ -1,6 +1,6 @@
 # Modulo Compras
 
-Version 0.1.0. Estado: en desarrollo (`.development`).
+Version 0.2.0. Estado: en desarrollo (`.development`).
 
 Solicitudes de compra por empresa: se solicita, se aprueba y se procede. Cotizar es opcional. Cada negocio es una empresa de IdeasCore, por eso no hay catalogo de sedes; el departamento si es un catalogo configurable.
 
@@ -60,6 +60,7 @@ Ejemplo: Martin hasta 1000 USD, Taylor hasta 5000 USD, Jackson sin limite. Una c
 | `compras.create` | Crea solicitudes y edita o cancela las suyas. |
 | `compras.view_all` | Ve todas las solicitudes y los totales. |
 | `compras.approve` | Aprueba o rechaza dentro de su limite (ademas debe estar en la lista de aprobadores). |
+| `compras.import` | Importa solicitudes desde otras herramientas (Monday) con las extensiones de importacion instaladas. |
 | `compras.manage` | Departamentos, aprobadores y limites, moneda; edita y mueve cualquier solicitud. |
 
 Un usuario ve una solicitud si tiene `view_all` o `manage`, si la pidio, si la decidio, o si tiene `approve` y esta pendiente de aprobacion con un monto que su limite cubre. La misma regla (un solo helper SQL parametrizado) vale en listas, tablero, totales, busquedas, detalle, descargas de adjuntos y MCP. Los totales y el informe de altas y criticas son para `view_all` o `manage`; sin ellos el informe se calcula sobre las solicitudes visibles.
@@ -100,10 +101,20 @@ Facturas, proformas, cotizaciones y otros respaldos, hasta 25 MB por archivo y 1
 
 `compras_requests.source_kind` y `source_ref` guardan de donde viene una solicitud, por ejemplo `mantenimiento.work_order` y el id de la orden; son ambos nulos o ambos con valor, y unicos por pareja. `ComprasRepository.create(..., source)` es idempotente: con el mismo origen devuelve la solicitud existente. Todavia no hay pantalla ni herramienta MCP que use el origen: lo usara el modulo mantenimiento.
 
+## Importacion
+
+El modulo soporta extensiones (`supportsExtensions`) que aportan fuentes de importacion; la primera es `compras_monday` (importar tableros de Monday). Cada fuente implementa `ComprasImportSource` y el modulo la enlaza al arrancar (`linkExtensions`). La extension declara el permiso `compras.requests.import`.
+
+- Pantalla **Importar** (nav visible solo con `compras.import`): una tarjeta por fuente activa en la empresa (`isEnabled`), con las piezas que arma la extension. Sin fuentes activas muestra como instalarla; la operacion de una fuente no activa se rechaza.
+- `POST /modules/compras/ui/import` con `op=<fuente>:<operacion>`: exige `compras.import` y la atiende la fuente; un error de validacion vuelve a la pantalla con un aviso rojo.
+- Trabajo `imports` (cada minuto): llama a `runPending(ctx, 200)` de cada fuente; un fallo de una fuente se registra y no frena a las demas.
+- Motor comun `ComprasImportEngine.apply`: idempotente por `import_key` (V002). Las solicitudes importadas quedan con decision "Importado de Monday" (sin aprobador real) y un evento `imported`; no avisan una por una.
+- MCP: las herramientas extra de cada fuente (permiso `compras.import`) se suman a las del modulo.
+- Las solicitudes importadas nunca se borran al desinstalar la extension.
+
 ## Pendientes
 
 - Integracion con el modulo mantenimiento (crear la solicitud desde una orden de trabajo y enlazarla).
-- Importacion del historial desde Monday.
 - Conversion de monedas en los totales (hoy se separan por moneda).
 - Adjuntos y cotizaciones desde MCP.
 - Prueba manual en la app de las pantallas, la subida de archivos y las notificaciones.

@@ -311,6 +311,63 @@ class ComprasScreensTest {
     }
 
     @Test
+    fun importNavAndOperationPermissions() {
+        val v = ComprasModule.View
+        fun labels(vararg granted: String) = navLabels(ComprasScreens.homeScreen(actor(*granted), emptyHome))
+        assertFalse("Importar" in labels(v))
+        assertFalse("Importar" in labels(v, ComprasModule.Create, ComprasModule.Approve, ComprasModule.ViewAll))
+        assertTrue("Importar" in labels(v, ComprasModule.Import))
+        // Solo compras.import abre Importar; manage no basta.
+        assertFalse("Importar" in labels(v, ComprasModule.Manage))
+        assertFalse(ComprasScreens.canOpen("import", actor(v, ComprasModule.Manage)::can))
+        assertTrue(ComprasScreens.canOpen("import", actor(v, ComprasModule.Import)::can))
+        assertFalse(ComprasScreens.canOpen("import", actor(ComprasModule.Import)::can))
+
+        // La operacion "<fuente>:<op>" pide compras.import (manage solo abre la pantalla).
+        fun allowed(op: String?, vararg granted: String) =
+            ComprasActions.permitted("import", listOfNotNull(op?.let { "op" to it }).toMap()) { it in granted }
+        assertTrue(allowed("monday:token", v, ComprasModule.Import))
+        assertFalse(allowed("monday:token", v, ComprasModule.Manage, ComprasModule.Create))
+        assertFalse(allowed("monday:token", ComprasModule.Import))
+        assertFalse(allowed("token", v, ComprasModule.Import))
+        assertFalse(allowed(null, v, ComprasModule.Import))
+    }
+
+    private class FakeSource(override val id: String) : ComprasImportSource {
+        override val label = id
+        override val extensionId = "compras_$id"
+        override fun screen(ctx: ComprasImportContext, params: Map<String, String>): List<com.ideasdeveloper.idc.ui.UiNode> = emptyList()
+        override fun action(ctx: ComprasImportContext, op: String, values: Map<String, String>): com.ideasdeveloper.idc.ui.UiNotice? = null
+        override fun runPending(ctx: ComprasImportContext, budget: Int) = Unit
+    }
+
+    @Test
+    fun onlyEnabledSourcesAreUsedAndAFailureCountsAsDisabled() {
+        val sources = listOf(FakeSource("a"), FakeSource("b"), FakeSource("c"))
+        val active = ComprasActions.activeSources(sources) {
+            when (it.id) {
+                "a" -> true
+                "b" -> false
+                else -> throw IllegalStateException("fallo")
+            }
+        }
+        assertEquals(listOf("a"), active.map { it.id })
+        assertTrue(ComprasActions.activeSources(sources) { false }.isEmpty())
+    }
+
+    @Test
+    fun importScreenListsSourcesOrExplainsHowToInstall() {
+        val manager = actor(V, ComprasModule.Import)
+        val empty = ComprasScreens.importScreen(manager, emptyList())
+        roundTrip(empty)
+        assertEquals("Importar", empty.title)
+        assertTrue(empty.body.size >= 2)
+        val withSource = ComprasScreens.importScreen(manager, listOf(ComprasScreens.ImportCard("monday", "Monday", listOf(com.ideasdeveloper.idc.ui.UiText("hola")))))
+        roundTrip(withSource)
+        assertTrue(walk(withSource.body).any { it is UiCard })
+    }
+
+    @Test
     fun downloadContentTypeAllowList() {
         assertEquals("application/pdf", ComprasDownloads.safeType("application/pdf"))
         assertEquals("image/png", ComprasDownloads.safeType("IMAGE/PNG; charset=x"))
