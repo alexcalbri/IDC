@@ -23,7 +23,35 @@ object ClientesActivity {
         return permissions.userId?.takeUnless { permissions.serverOwner } to shown
     }
 
-    fun record(tenant: Connection, customerId: UUID, kind: String, body: String, author: Pair<UUID?, String>) {
+    // Kinds that belong to one customer and kinds of the company (customer_id NULL); V008 checks them.
+    val customerKinds = setOf("created", "updated", "archived", "restored", "note_deleted", "history_deleted", "merged", "separated")
+    val companyKinds = setOf("field_created", "field_deleted", "linked", "unlinked")
+
+    /** Title shown for an activity kind in the customer's history and in "Registro de Clientes". */
+    fun title(kind: String): String = when (kind) {
+        "created" -> "Cliente creado"
+        "archived" -> "Cliente archivado"
+        "restored" -> "Cliente restaurado"
+        "note_deleted" -> "Nota borrada"
+        "history_deleted" -> "Entrada del historial borrada"
+        "merged" -> "Cliente fusionado"
+        "separated" -> "Clientes separados"
+        "field_created" -> "Campo personalizado creado"
+        "field_deleted" -> "Campo personalizado borrado"
+        "linked" -> "Empresa vinculada"
+        "unlinked" -> "Empresa desvinculada"
+        else -> "Datos del cliente modificados"
+    }
+
+    /** Records an event of one customer. */
+    fun record(tenant: Connection, customerId: UUID, kind: String, body: String, author: Pair<UUID?, String>) =
+        insert(tenant, customerId, kind, body, author)
+
+    /** Records an event of the company, not of one customer (custom field created or deleted, company linked or unlinked). */
+    fun recordCompany(tenant: Connection, kind: String, body: String, author: Pair<UUID?, String>) =
+        insert(tenant, null, kind, body, author)
+
+    private fun insert(tenant: Connection, customerId: UUID?, kind: String, body: String, author: Pair<UUID?, String>) {
         tenant.prepareStatement(
             "INSERT INTO customer_activity (id, customer_id, kind, body, user_id, author) VALUES (?, ?, ?, ?, ?, ?)"
         ).use { insert ->
@@ -35,6 +63,31 @@ object ClientesActivity {
             insert.setString(6, author.second)
             insert.executeUpdate()
         }
+    }
+
+    class CompanyEvent(val at: OffsetDateTime, val kind: String, val body: String, val author: String)
+
+    /** Events of the company (customer_id NULL), newest first, for "Registro de Clientes". */
+    fun companyEvents(tenant: Connection, limit: Int): List<CompanyEvent> = tenant.prepareStatement(
+        "SELECT kind, body, author, created_at FROM customer_activity WHERE customer_id IS NULL ORDER BY created_at DESC LIMIT ?"
+    ).use { query ->
+        query.setInt(1, limit)
+        query.executeQuery().use { rows ->
+            buildList {
+                while (rows.next()) {
+                    add(CompanyEvent(rows.getObject("created_at", OffsetDateTime::class.java), rows.getString("kind"), rows.getString("body"), rows.getString("author")))
+                }
+            }
+        }
+    }
+
+    /**
+     * Keeps the history rows whose module the user may see ([visible], one answer per module id):
+     * a module that is off or whose permission the user lacks shows nothing in the customer's history.
+     */
+    fun <T> filterByModule(rows: List<T>, moduleOf: (T) -> String, visible: (String) -> Boolean): List<T> {
+        val answers = HashMap<String, Boolean>()
+        return rows.filter { answers.getOrPut(moduleOf(it)) { visible(moduleOf(it)) } }
     }
 
     /** "Campo: antes -> despues" for each changed value, or null when nothing changed. */
@@ -62,9 +115,15 @@ object ClientesActivity {
     // Clientes' own part of the customer's history, like any other module's (CustomerTimeline): the
     // changes of the record and what the customer bought or hired in this company (customer_history,
     // written by modules or by hand), each with its link to the record that has the details.
+    // Rows of customer_history read before filtering them by module.
+    private const val HistoryScan = 500
+
     val timeline = CustomerTimeline(permission = "clientes.view") { query ->
         val recorded = if (ClientesSharing.supportsSharing(query.tenant)) {
-            ClientesProfile.history(query.tenant, query.customerId, query.limit).map { row ->
+            val rows = ClientesProfile.history(query.tenant, query.customerId, HistoryScan)
+            // Rows written by other modules show only while that module is on and the user may see its events.
+            filterByModule(rows, { it.moduleId }) { moduleId -> query.access.customerEventsVisible(query.tenant, query.permissions, moduleId) }
+                .take(query.limit).map { row ->
                 CustomerTimelineEntry(row.at.toInstant(), row.kind, row.title, row.detail, row.author).apply { link = row.link }
             }
         } else {
@@ -83,11 +142,7 @@ object ClientesActivity {
                             CustomerTimelineEntry(
                                 at = rows.getObject("created_at", OffsetDateTime::class.java).toInstant(),
                                 kind = kind,
-                                title = when (kind) {
-                                    "created" -> "Cliente creado"
-                                    "archived" -> "Cliente archivado"
-                                    else -> "Datos del cliente modificados"
-                                },
+                                title = title(kind),
                                 detail = rows.getString("body"),
                                 author = rows.getString("author"),
                             )

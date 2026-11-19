@@ -85,11 +85,11 @@ internal object ClientesProfile {
 
     class Note(val id: UUID, val body: String, val author: String, val companyCode: String, val userId: UUID?, val at: OffsetDateTime)
 
-    class HistoryRow(val at: OffsetDateTime, val kind: String, val title: String, val detail: String, val author: String, val link: UiAction?)
+    class HistoryRow(val at: OffsetDateTime, val moduleId: String, val kind: String, val title: String, val detail: String, val author: String, val link: UiAction?)
 
     // Recorded history of the customer in the company of [tenant], newest first.
     fun history(tenant: Connection, customerId: UUID, limit: Int): List<HistoryRow> = tenant.prepareStatement(
-        "SELECT created_at, kind, title, detail, author, link::text AS link FROM customer_history WHERE customer_id = ? ORDER BY created_at DESC LIMIT ?"
+        "SELECT created_at, module_id, kind, title, detail, author, link::text AS link FROM customer_history WHERE customer_id = ? ORDER BY created_at DESC LIMIT ?"
     ).use { query ->
         query.setObject(1, customerId)
         query.setInt(2, limit)
@@ -99,6 +99,7 @@ internal object ClientesProfile {
                     add(
                         HistoryRow(
                             at = rows.getObject("created_at", OffsetDateTime::class.java),
+                            moduleId = rows.getString("module_id"),
                             kind = rows.getString("kind"),
                             title = rows.getString("title"),
                             detail = rows.getString("detail"),
@@ -179,9 +180,16 @@ internal object ClientesProfile {
                 ?: throw ClientesSharingException("Cliente no encontrado.")
             val author = ClientesActivity.author(connection, permissions, access)
             when (params["op"]) {
-                "share", "unshare" -> {
-                    if (!canShare(permissions, customer, currentCode)) throw ClientesSharingException("No tienes permiso para compartir este cliente.")
-                    UiNotice(ClientesSharing.setShared(access, connection, currentCode, id, share = params["op"] == "share"), UiTone.Success)
+                "restore" -> {
+                    if (!canRestore(permissions, customer, currentCode)) throw ClientesSharingException("No tienes permiso para restaurar este cliente o no se creo en esta empresa.")
+                    when (ClientesServerModule.restoreCustomer(connection, id)) {
+                        ClientesServerModule.RestoreResult.NotFound -> throw ClientesSharingException("El cliente no esta archivado.")
+                        ClientesServerModule.RestoreResult.EmailTaken -> throw ClientesSharingException("Otro cliente activo ya usa el correo ${customer.email}.")
+                        ClientesServerModule.RestoreResult.Restored -> Unit
+                    }
+                    ClientesActivity.record(connection, id, "restored", "", author)
+                    ClientesServerModule.propagateLogged(access, connection, currentCode, id)
+                    UiNotice("Cliente restaurado.", UiTone.Success)
                 }
                 "note" -> {
                     if (!permissions.has("clientes.edit")) throw ClientesSharingException("No tienes permiso para editar clientes.")
@@ -206,16 +214,18 @@ internal object ClientesProfile {
                 }
                 "deletenote" -> {
                     val noteId = params["note"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Nota invalida.")
-                    val deleted = ClientesSharing.onCompany(access, connection, currentCode, customer.origin) { origin ->
-                        val note = notes(origin, id).firstOrNull { it.id == noteId } ?: return@onCompany false
+                    val deletedText = ClientesSharing.onCompany(access, connection, currentCode, customer.origin) { origin ->
+                        val note = notes(origin, id).firstOrNull { it.id == noteId } ?: return@onCompany null
                         if (!canDeleteNote(permissions, note, currentCode)) throw ClientesSharingException("Solo quien escribio la nota o el business owner pueden borrarla.")
                         origin.prepareStatement("DELETE FROM customer_notes WHERE id = ? AND customer_id = ?").use { delete ->
                             delete.setObject(1, noteId)
                             delete.setObject(2, id)
-                            delete.executeUpdate() == 1
+                            if (delete.executeUpdate() == 1) note.body else null
                         }
-                    } ?: false
-                    if (deleted) UiNotice("Nota borrada.", UiTone.Success) else throw ClientesSharingException("Nota no encontrada.")
+                    }
+                    if (deletedText == null) throw ClientesSharingException("Nota no encontrada.")
+                    ClientesActivity.record(connection, id, "note_deleted", noteDeletedBody(deletedText), author)
+                    UiNotice("Nota borrada.", UiTone.Success)
                 }
                 "history" -> {
                     if (!permissions.has("clientes.edit")) throw ClientesSharingException("No tienes permiso para editar clientes.")
@@ -235,13 +245,96 @@ internal object ClientesProfile {
                     )
                     UiNotice("Agregado al historial de ${ClientesSharing.companyName(access, currentCode, currentCode)}.", UiTone.Success)
                 }
+                "deletehistory" -> {
+                    if (!permissions.has("clientes.edit")) throw ClientesSharingException("No tienes permiso para editar clientes.")
+                    val entryId = params["entry"]?.let { runCatching { UUID.fromString(it) }.getOrNull() } ?: throw ClientesSharingException("Entrada invalida.")
+                    val title = deleteManualEntry(connection, id, entryId) ?: throw ClientesSharingException("Solo se pueden borrar las entradas agregadas a mano en esta empresa.")
+                    ClientesActivity.record(connection, id, "history_deleted", historyDeletedBody(title), author)
+                    UiNotice("Entrada borrada del historial.", UiTone.Success)
+                }
                 else -> throw ClientesSharingException("Accion desconocida.")
             }
         }
     }
 
-    private fun canShare(permissions: ModulePermissions, customer: ClientesSharing.Customer, currentCode: String): Boolean =
-        customer.origin == currentCode && (permissions.businessOwner || permissions.has(ClientesSharing.SharePermission))
+    // Only the company where the customer was created archives and restores it (copies follow it).
+    private fun canRestore(permissions: ModulePermissions, customer: ClientesSharing.Customer, currentCode: String): Boolean =
+        customer.archived && customer.origin == currentCode && permissions.has("clientes.delete")
+
+    /** Text of the activity row left when a note is deleted: it keeps what the note said. */
+    fun noteDeletedBody(text: String): String = "Nota borrada: ${text.trim()}"
+
+    fun historyDeletedBody(title: String): String = "Entrada borrada del historial: ${title.trim()}"
+
+    // Only the entries added by hand in Clientes (module 'clientes', kind 'manual') can be deleted; what other
+    // modules wrote stays. Returns the title of the deleted entry, or null when there was nothing to delete.
+    private fun deleteManualEntry(tenant: Connection, customerId: UUID, entryId: UUID): String? = tenant.prepareStatement(
+        "DELETE FROM customer_history WHERE id = ? AND customer_id = ? AND module_id = ? AND kind = 'manual' RETURNING title"
+    ).use { delete ->
+        delete.setObject(1, entryId)
+        delete.setObject(2, customerId)
+        delete.setString(3, ClientesModule.id)
+        delete.executeQuery().use { rows -> if (rows.next()) rows.getString(1) else null }
+    }
+
+    class ManualEntry(val id: UUID, val title: String, val at: OffsetDateTime)
+
+    private fun manualEntries(tenant: Connection, customerId: UUID): List<ManualEntry> = tenant.prepareStatement(
+        "SELECT id, title, created_at FROM customer_history WHERE customer_id = ? AND module_id = ? AND kind = 'manual' ORDER BY created_at DESC LIMIT 50"
+    ).use { query ->
+        query.setObject(1, customerId)
+        query.setString(2, ClientesModule.id)
+        query.executeQuery().use { rows ->
+            buildList { while (rows.next()) add(ManualEntry(rows.getObject("id", UUID::class.java), rows.getString("title"), rows.getObject("created_at", OffsetDateTime::class.java))) }
+        }
+    }
+
+    /**
+     * The permissions to read the customer's data in [companyCode]: the user's own in the current company; in any other
+     * company only the business owner (who owns them all) reads, as business owner of that company and with no user or
+     * module permissions taken from the current one. Null for anyone else: they never see another company.
+     */
+    fun permissionsIn(companyCode: String, current: ModulePermissions): ModulePermissions? = when {
+        companyCode == current.companyCode -> current
+        current.businessOwner -> ModulePermissions(companyCode, "", businessOwner = true, granted = emptySet(), userId = null, serverOwner = false)
+        else -> null
+    }
+
+    /** What a module reported about the customer in a company: how many events and the date of the last one. */
+    class ModuleUse(val name: String, val count: Int, val last: String)
+
+    /** The same module twice (customer_history and its own timeline) counts once: the larger count and the later date. */
+    fun mergeUsage(uses: List<ModuleUse>): List<ModuleUse> =
+        uses.groupBy { it.name }.map { (name, group) -> ModuleUse(name, group.maxOf { it.count }, group.maxOf { it.last }) }.sortedBy { it.name.lowercase() }
+
+    fun usageLine(use: ModuleUse): String = "${use.name}: ${use.count} ${if (use.count == 1) "registro" else "registros"}, ultimo ${use.last.take(10)}"
+
+    // Readable name of a module id written in customer_history.
+    fun moduleLabel(moduleId: String): String = moduleId.replace('_', ' ').replaceFirstChar { it.uppercase() }
+
+    // Modules with something in the customer's history of this company (what the user may see), with count and last date.
+    private fun moduleUsage(access: ModuleAccessService, companyTenant: Connection, permissions: ModulePermissions, customerId: UUID): List<ModuleUse> {
+        val recorded = companyTenant.prepareStatement(
+            "SELECT module_id, count(*) AS total, max(created_at) AS last_at FROM customer_history WHERE customer_id = ? GROUP BY module_id"
+        ).use { query ->
+            query.setObject(1, customerId)
+            query.executeQuery().use { rows ->
+                buildList {
+                    while (rows.next()) {
+                        add(Triple(rows.getString("module_id"), rows.getInt("total"), rows.getObject("last_at", OffsetDateTime::class.java).toString()))
+                    }
+                }
+            }
+        }
+        val visible = ClientesActivity.filterByModule(recorded, { it.first }) { moduleId -> access.customerEventsVisible(companyTenant, permissions, moduleId) }
+            .map { (moduleId, count, last) -> ModuleUse(moduleLabel(moduleId), count, last) }
+        // The timelines of other modules (CRM, hotspot...) already apply the module's own rules.
+        val others = access.customerHistory(companyTenant, permissions, customerId, 200)
+            .filter { it.moduleId != ClientesModule.id }
+            .groupBy { it.moduleName }
+            .map { (name, entries) -> ModuleUse(name, entries.size, entries.maxOf { it.at }) }
+        return mergeUsage(visible + others)
+    }
 
     private fun canDeleteNote(permissions: ModulePermissions, note: Note, currentCode: String): Boolean =
         permissions.businessOwner || (note.companyCode == currentCode && note.userId != null && note.userId == permissions.userId && !permissions.serverOwner)
@@ -262,6 +355,7 @@ internal object ClientesProfile {
             return UiScreen(customer.name, notice = UiNotice("La empresa todavia no aplica la actualizacion de Clientes.", UiTone.Warning))
         }
         val tabs = ClientesSharing.tabs(access, tenant, currentCode, customer, permissions.businessOwner)
+        val linked = access.linkedCompanies(currentCode, ClientesLinking.LinkPurpose)
         val tab = params["tab"].orEmpty().takeIf { requested -> requested == NotesTab || tabs.any { it.code == requested } } ?: NotesTab
         val originName = ClientesSharing.companyName(access, currentCode, customer.origin)
         fun open(nextTab: String) = UiNavigate("customer", mapOf("id" to customer.id.toString(), "tab" to nextTab))
@@ -275,26 +369,34 @@ internal object ClientesProfile {
                 customer.email.takeIf { it.isNotBlank() }?.let { UiText("Correo: $it") },
                 customer.phone.takeIf { it.isNotBlank() }?.let { UiText("Telefono: $it") },
                 UiText("Creado en $originName", UiTextStyle.Caption),
-                UiText(
-                    when {
-                        customer.shared -> "Compartido con las empresas del mismo dueno: lo ven en cada una."
-                        else -> "Solo se ve en $originName."
-                    },
-                    UiTextStyle.Caption,
-                ),
+                UiText(linkText(linked.map { it.name }, originName), UiTextStyle.Caption),
                 customer.archived.takeIf { it }?.let { UiText("Cliente archivado.", tone = UiTone.Warning) },
             ),
             actions = listOfNotNull(
-                if (canShare(permissions, customer, currentCode)) {
-                    if (customer.shared) {
-                        UiButton("Dejar de compartir", post("unshare", confirm = "El cliente dejara de verse en las otras empresas. Sus historiales se conservan."), style = "secondary")
-                    } else {
-                        UiButton("Compartir con mis empresas", post("share", confirm = "El cliente se vera en todas las empresas del mismo dueno, con sus notas generales."))
-                    }
+                if (canRestore(permissions, customer, currentCode)) {
+                    UiButton("Restaurar cliente", post("restore", confirm = "El cliente vuelve a aparecer en la lista y en las empresas vinculadas. Continuar?"))
                 } else {
                     null
                 },
+                if (permissions.businessOwner) UiButton("Empresas vinculadas", UiNavigate("links"), style = "secondary") else null,
+                if (ClientesLinkScreens.canSeeActivity(permissions)) UiButton("Registro de Clientes", UiNavigate("activity"), style = "secondary") else null,
             ),
+        )
+
+        // What the customer did, by company of the visible tabs: the modules that have something and how much.
+        val summary = UiCard(
+            title = "Resumen",
+            children = tabs.map { company ->
+                val uses = ClientesSharing.onCompany(access, tenant, currentCode, company.code) { companyTenant ->
+                    if (ClientesSharing.supportsSharing(companyTenant) && ClientesSharing.visible(companyTenant, customer.id)) moduleUsage(access, companyTenant, permissionsIn(company.code, permissions) ?: return@onCompany emptyList(), customer.id) else emptyList()
+                }
+                val lines = when {
+                    uses == null -> listOf(UiText("No se pudo abrir ${company.name}.", tone = UiTone.Danger))
+                    uses.isEmpty() -> listOf(UiText("Sin actividad registrada.", UiTextStyle.Caption))
+                    else -> uses.map { UiText(usageLine(it)) }
+                }
+                UiCard(title = company.name, children = lines)
+            },
         )
 
         val tabRow = UiRow(
@@ -335,7 +437,8 @@ internal object ClientesProfile {
         } else {
             val company = tabs.first { it.code == tab }
             val entries = ClientesSharing.onCompany(access, tenant, currentCode, company.code) { companyTenant ->
-                if (ClientesSharing.supportsSharing(companyTenant)) access.customerHistory(companyTenant, permissions, customer.id) else emptyList()
+                val inCompany = permissionsIn(company.code, permissions)
+                if (inCompany != null && ClientesSharing.supportsSharing(companyTenant)) access.customerHistory(companyTenant, inCompany, customer.id) else emptyList()
             }
             listOfNotNull(
                 UiText("Lo que el cliente compro o contrato en ${company.name}. Las ventas del CRM se agregan solas; toca una para ver el detalle.", UiTextStyle.Caption),
@@ -343,6 +446,27 @@ internal object ClientesProfile {
                     UiText("No se pudo abrir ${company.name}.", tone = UiTone.Danger)
                 } else {
                     UiList(items = entries.map(::historyItem), emptyText = "Sin historial en ${company.name}.")
+                },
+                if (company.code == currentCode && permissions.has("clientes.edit")) {
+                    manualEntries(tenant, customer.id).takeIf { it.isNotEmpty() }?.let { manual ->
+                        UiCard(
+                            title = "Entradas agregadas a mano",
+                            children = listOf(
+                                UiList(
+                                    items = manual.map { entry ->
+                                        UiListItem(
+                                            title = entry.title,
+                                            trailing = entry.at.toLocalDate().toString(),
+                                            badges = listOf(UiBadge("Borrar", UiTone.Danger)),
+                                            action = post("deletehistory", mapOf("entry" to entry.id.toString()), confirm = "Borrar esta entrada del historial?"),
+                                        )
+                                    },
+                                ),
+                            ),
+                        )
+                    }
+                } else {
+                    null
                 },
                 if (company.code == currentCode && permissions.has("clientes.edit")) {
                     UiForm(
@@ -358,8 +482,12 @@ internal object ClientesProfile {
                 },
             )
         }
-        return UiScreen(title = customer.name, notice = notice, body = listOf(details, tabRow) + content)
+        return UiScreen(title = customer.name, notice = notice, body = listOf(details, summary, tabRow) + content)
     }
+
+    /** Says whether the company is linked: which companies share their customers with this one. [linkedNames] has the current company first. */
+    fun linkText(linkedNames: List<String>, originName: String): String =
+        if (linkedNames.size > 1) "Empresa vinculada: los clientes se comparten con ${linkedNames.drop(1).joinToString()}." else "Empresa no vinculada: este cliente solo se ve en $originName."
 
     private fun historyItem(entry: CustomerHistoryEntry): UiListItem = UiListItem(
         title = entry.title,

@@ -7,7 +7,9 @@ import com.ideasdeveloper.idc.server.modules.McpToolCall
 import com.ideasdeveloper.idc.server.modules.McpToolException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
@@ -37,7 +39,11 @@ object ClientesMcpTools {
             "Busca antes de crear para no duplicar: no se permiten dos clientes con el mismo correo. Cada cliente tiene un codigo " +
             "(customerCode) que tambien sirve para identificarlo. Los campos personalizados de la empresa se envian en dynamicFields " +
             "por su clave; consultalos con list_customer_fields. Archivar no borra al cliente: deja de aparecer en la lista y en las busquedas. " +
-            "get_customer_history reune lo que paso con el cliente en todos los modulos (cambios, leads, reservas, WiFi...)."
+            "get_customer_history reune lo que paso con el cliente en todos los modulos (cambios, leads, reservas, WiFi...). " +
+            "Las empresas del mismo dueno se pueden vincular: al vincularlas se comparten TODOS sus clientes y los que tienen el mismo correo " +
+            "se fusionan solos (queda el mas antiguo); lo que no se puede fusionar queda en 'por revisar'. Vincular y desvincular solo lo " +
+            "puede el business owner: confirma siempre con el usuario antes, porque cambia lo que ve cada empresa. " +
+            "Un cliente archivado se puede restaurar con restore_customer; borrar un campo personalizado lo oculta pero conserva los valores."
 
     val tools = listOf(
         McpTool(
@@ -127,6 +133,74 @@ object ClientesMcpTools {
                 required = listOf("fieldKey", "label", "fieldType"),
             ),
         ) { call -> createField(call) },
+        McpTool(
+            name = "restore_customer",
+            title = "Restaurar cliente",
+            description = "Restaura un cliente archivado en la empresa donde se creo; vuelve a la lista y a las empresas vinculadas. " +
+                "No se puede si otro cliente activo ya usa su correo.",
+            permission = "clientes.delete",
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del cliente archivado.")), required = listOf("id")),
+        ) { call -> restore(call) },
+        McpTool(
+            name = "delete_customer_field",
+            title = "Borrar campo personalizado de clientes",
+            description = "Borra un campo personalizado: deja de aparecer en la ficha y en los formularios, pero los valores ya guardados " +
+                "en los clientes se conservan. Confirma con el usuario antes.",
+            permission = "clientes.fields.manage",
+            inputSchema = McpSchema.obj(mapOf("id" to McpSchema.uuid("Id del campo (ver list_customer_fields).")), required = listOf("id")),
+        ) { call -> deleteField(call) },
+        McpTool(
+            name = "get_company_links",
+            title = "Empresas vinculadas",
+            description = "Muestra las empresas vinculadas con la actual para compartir clientes, las que se pueden vincular, el avance " +
+                "de la copia y cuantas fusiones estan por revisar. Solo el business owner.",
+            permission = "clientes.share",
+            readOnly = true,
+            handler = ownerOnly { call -> companyLinks(call) },
+        ),
+        McpTool(
+            name = "link_company",
+            title = "Vincular empresa",
+            description = "Vincula otra empresa del mismo dueno con la actual: se comparten TODOS los clientes de ambas y los que tengan el " +
+                "mismo correo se fusionan solos (queda el mas antiguo). La copia se hace en segundo plano. Solo el business owner; " +
+                "confirma con el usuario antes.",
+            permission = "clientes.share",
+            inputSchema = McpSchema.obj(mapOf("companyCode" to McpSchema.string("Codigo de la empresa a vincular (ver get_company_links).")), required = listOf("companyCode")),
+            handler = ownerOnly { call -> link(call) },
+        ),
+        McpTool(
+            name = "unlink_company",
+            title = "Desvincular empresa",
+            description = "Desvincula una empresa del grupo: deja de ver los clientes de las demas y las demas los suyos. No borra ningun cliente. " +
+                "Solo el business owner; confirma con el usuario antes.",
+            permission = "clientes.share",
+            inputSchema = McpSchema.obj(mapOf("companyCode" to McpSchema.string("Codigo de la empresa a desvincular.")), required = listOf("companyCode")),
+            handler = ownerOnly { call -> unlink(call) },
+        ),
+        McpTool(
+            name = "list_merge_reviews",
+            title = "Fusiones por revisar",
+            description = "Lista las fusiones de clientes duplicados (mismo correo) que quedaron por revisar o ya se hicieron, con el motivo. Solo el business owner.",
+            permission = "clientes.share",
+            readOnly = true,
+            inputSchema = McpSchema.obj(mapOf("limit" to McpSchema.integer("Cantidad maxima.", 1, 200))),
+            handler = ownerOnly { call -> mergeReviews(call) },
+        ),
+        McpTool(
+            name = "separate_merge",
+            title = "Separar clientes fusionados",
+            description = "Deshace una fusion: el cliente fusionado vuelve a estar activo y sus registros se le devuelven; nunca se vuelven a " +
+                "fusionar solos. Los campos que se completaron en el cliente que quedo no se deshacen. Solo el business owner; confirma antes.",
+            permission = "clientes.share",
+            inputSchema = McpSchema.obj(
+                mapOf(
+                    "companyCode" to McpSchema.string("Codigo de la empresa donde esta la fusion (ver list_merge_reviews)."),
+                    "mergeId" to McpSchema.uuid("Id de la fusion (ver list_merge_reviews)."),
+                ),
+                required = listOf("companyCode", "mergeId"),
+            ),
+            handler = ownerOnly { call -> separate(call) },
+        ),
     )
 
     private fun search(call: McpToolCall): JsonElement {
@@ -170,7 +244,16 @@ object ClientesMcpTools {
         val id = UUID.randomUUID()
         ClientesServerModule.upsertCustomer(call.tenant, id, request, insert = true)
         ClientesActivity.record(call.tenant, id, "created", "", author(call))
-        return Json.encodeToJsonElement(find(call, id, "")!!)
+        ClientesServerModule.shareNew(call.access, call.tenant, call.permissions.companyCode, id)
+        // Sharing may have merged the new customer into an older one with the same email: it is then archived.
+        val created = find(call, id, "")
+        if (created != null) return Json.encodeToJsonElement(created)
+        val into = ClientesServerModule.mergedInto(call.tenant, id) ?: "un cliente existente con el mismo correo"
+        return buildJsonObject {
+            put("id", id.toString())
+            put("merged", true)
+            put("result", "El cliente se fusiono con $into porque tiene el mismo correo; queda el mas antiguo. Busca ese cliente para seguir.")
+        }
     }
 
     private fun update(call: McpToolCall): JsonElement {
@@ -187,22 +270,29 @@ object ClientesMcpTools {
         if (ClientesServerModule.emailExists(call.tenant, request.primaryEmail, id)) throw McpToolException("Ya existe otro cliente con ese correo.")
         if (!ClientesServerModule.upsertCustomer(call.tenant, id, request, insert = false)) throw McpToolException("Cliente no encontrado.")
         ClientesServerModule.recordUpdate(call.tenant, id, current, request, author(call))
-        ClientesSharing.propagate(call.access, call.tenant, call.permissions.companyCode, id)
-        return Json.encodeToJsonElement(find(call, id, "")!!)
+        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id)
+        return withWarning(Json.encodeToJsonElement(find(call, id, "")!!), failed)
+    }
+
+    // Adds a warning to the result when the change did not reach every linked company (the next sync fixes it).
+    private fun withWarning(result: JsonElement, failed: List<String>): JsonElement {
+        if (failed.isEmpty() || result !is JsonObject) return result
+        return JsonObject(result + ("warning" to kotlinx.serialization.json.JsonPrimitive("El cambio no llego todavia a: ${failed.joinToString()}. Se corrige solo en el siguiente minuto.")))
     }
 
     private fun archive(call: McpToolCall): JsonElement {
         val id = call.requiredUuid("id")
-        if (ClientesSharing.visible(call.tenant, id) && !ClientesSharing.isOrigin(call.tenant, id)) {
-            throw McpToolException("Este cliente se archiva desde la empresa donde se creo.")
-        }
+        requireOrigin(call, id, "archiva")
         if (!ClientesServerModule.archiveCustomer(call.tenant, id)) throw McpToolException("Cliente no encontrado o ya archivado.")
         ClientesActivity.record(call.tenant, id, "archived", "", author(call))
-        ClientesSharing.propagate(call.access, call.tenant, call.permissions.companyCode, id)
-        return buildJsonObject {
-            put("id", id.toString())
-            put("result", "Cliente archivado.")
-        }
+        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id)
+        return withWarning(
+            buildJsonObject {
+                put("id", id.toString())
+                put("result", "Cliente archivado.")
+            },
+            failed,
+        )
     }
 
     private fun author(call: McpToolCall) = ClientesActivity.author(call.tenant, call.permissions, call.access, call.agentName)
@@ -227,7 +317,139 @@ object ClientesMcpTools {
         if (ClientesServerModule.loadFields(call.tenant).any { it.fieldKey == request.fieldKey.trim() }) {
             throw McpToolException("Ya existe un campo con la clave '${request.fieldKey.trim()}'.")
         }
-        return Json.encodeToJsonElement(ClientesServerModule.insertField(call.tenant, request))
+        val field = ClientesServerModule.insertField(call.tenant, request)
+        ClientesActivity.recordCompany(call.tenant, "field_created", ClientesServerModule.fieldCreatedBody(field), author(call))
+        return Json.encodeToJsonElement(field)
+    }
+
+    private fun deleteField(call: McpToolCall): JsonElement {
+        val field = ClientesServerModule.deleteField(call.tenant, call.requiredUuid("id")) ?: throw McpToolException("Campo no encontrado.")
+        ClientesActivity.recordCompany(call.tenant, "field_deleted", ClientesServerModule.fieldDeletedBody(field), author(call))
+        return buildJsonObject {
+            put("id", field.id)
+            put("result", "Campo borrado.")
+        }
+    }
+
+    private fun restore(call: McpToolCall): JsonElement {
+        val id = call.requiredUuid("id")
+        requireOrigin(call, id, "restaura")
+        when (ClientesServerModule.restoreCustomer(call.tenant, id)) {
+            ClientesServerModule.RestoreResult.NotFound -> throw McpToolException("Cliente no encontrado o no esta archivado.")
+            ClientesServerModule.RestoreResult.EmailTaken -> throw McpToolException("Otro cliente activo ya usa el correo de este cliente.")
+            ClientesServerModule.RestoreResult.Restored -> Unit
+        }
+        ClientesActivity.record(call.tenant, id, "restored", "", author(call))
+        val failed = ClientesServerModule.propagateLogged(call.access, call.tenant, call.permissions.companyCode, id)
+        return withWarning(Json.encodeToJsonElement(find(call, id, "")!!), failed)
+    }
+
+    // Archiving and restoring belong to the company where the customer was created: a hidden copy does not exist for this company.
+    private fun requireOrigin(call: McpToolCall, id: UUID, verb: String) {
+        if (!ClientesSharing.visible(call.tenant, id)) throw McpToolException("Cliente no encontrado.")
+        if (!ClientesSharing.isOrigin(call.tenant, id)) throw McpToolException("Este cliente se $verb desde la empresa donde se creo.")
+    }
+
+    // Linking changes what every company of the group sees: only the business owner, whatever permission the agent holds.
+    fun requireBusinessOwner(permissions: com.ideasdeveloper.idc.server.modules.ModulePermissions) {
+        if (!permissions.businessOwner) throw McpToolException("Solo el business owner puede administrar las empresas vinculadas.")
+    }
+
+    // Wraps a linking tool so the business owner check runs before anything else, for every tool of the group.
+    private fun ownerOnly(handler: (McpToolCall) -> JsonElement): (McpToolCall) -> JsonElement = { call ->
+        requireBusinessOwner(call.permissions)
+        handler(call)
+    }
+
+    private fun company(company: com.ideasdeveloper.idc.server.modules.GroupCompany): JsonObject = buildJsonObject {
+        put("code", company.code)
+        put("name", company.name)
+    }
+
+    private fun companyLinks(call: McpToolCall): JsonElement {
+        val status = ClientesLinking.status(call.access, call.permissions.companyCode)
+        return buildJsonObject {
+            put("linked", JsonArray(status.linked.map(::company)))
+            put("candidates", JsonArray(status.candidates.map(::company)))
+            put("reviewCount", status.reviewCount)
+            put(
+                "jobs",
+                buildJsonArray {
+                    status.jobs.forEach { job ->
+                        add(
+                            buildJsonObject {
+                                put("from", job.from.name)
+                                put("to", job.to.name)
+                                put("status", job.status)
+                                put("copied", job.copied)
+                                put("merged", job.merged)
+                                put("review", job.review)
+                                put("total", job.total)
+                                put("error", job.error)
+                            }
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    private fun link(call: McpToolCall): JsonElement {
+        return linkResult(call) { target -> ClientesLinking.link(call.access, call.tenant, call.permissions.companyCode, target, author(call)) }
+    }
+
+    private fun unlink(call: McpToolCall): JsonElement {
+        return linkResult(call) { target -> ClientesLinking.unlink(call.access, call.tenant, call.permissions.companyCode, target, author(call)) }
+    }
+
+    // Runs a link operation on the company the agent named, turning the module's messages into tool errors.
+    private fun linkResult(call: McpToolCall, action: (String) -> String): JsonElement {
+        val message = try {
+            action(call.requiredString("companyCode", 63))
+        } catch (failure: ClientesSharingException) {
+            throw McpToolException(failure.message.orEmpty())
+        } catch (failure: com.ideasdeveloper.idc.server.modules.CompanyLinkException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        return buildJsonObject { put("result", message) }
+    }
+
+    private fun mergeReviews(call: McpToolCall): JsonElement {
+        val items = ClientesLinking.reviews(call.access, call.permissions.companyCode, call.int("limit", 50, 1..200))
+        return buildJsonObject {
+            put(
+                "merges",
+                buildJsonArray {
+                    items.forEach { item ->
+                        add(
+                            buildJsonObject {
+                                put("id", item.id.toString())
+                                put("companyCode", item.company.code)
+                                put("company", item.company.name)
+                                put("status", item.status)
+                                put("reason", item.reason)
+                                put("email", item.email)
+                                put("keptId", item.keptId.toString())
+                                put("keptName", item.keptName)
+                                put("keptCompany", item.keptCompany)
+                                put("mergedId", item.mergedId.toString())
+                                put("mergedName", item.mergedName)
+                                put("at", item.at.toString())
+                            }
+                        )
+                    }
+                },
+            )
+        }
+    }
+
+    private fun separate(call: McpToolCall): JsonElement {
+        val message = try {
+            ClientesLinking.separate(call.access, call.permissions.companyCode, call.requiredString("companyCode", 63), call.requiredUuid("mergeId"), author(call))
+        } catch (failure: ClientesSharingException) {
+            throw McpToolException(failure.message.orEmpty())
+        }
+        return buildJsonObject { put("result", message) }
     }
 
     private fun find(call: McpToolCall, id: UUID?, code: String): CustomerResponse? =

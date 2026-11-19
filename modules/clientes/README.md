@@ -48,20 +48,29 @@ validations as the routes:
 | `clientes_archive_customer` | `clientes.delete` | Archives a customer, like `DELETE /customers/{id}`. |
 | `clientes_get_customer_history` | `clientes.view` | The customer's history, like `GET /customers/{id}/history`. |
 | `clientes_create_customer_field` | `clientes.fields.manage` | Adds a custom field, like `POST /fields`. |
+| `clientes_delete_customer_field` | `clientes.fields.manage` | Hides a custom field (values are kept), like `DELETE /fields/{id}`. |
+| `clientes_restore_customer` | `clientes.delete` | Restores an archived customer, like `POST /customers/{id}/restore`. |
+| `clientes_get_company_links`, `clientes_list_merge_reviews` | `clientes.share` + business owner | Linked and linkable companies with the copy progress; merges done or to review. |
+| `clientes_link_company`, `clientes_unlink_company`, `clientes_separate_merge` | `clientes.share` + business owner | Link or unlink a company; undo a merge. The handler checks business owner on top of the permission. |
+
+Creating, editing, archiving, restoring and field changes made by an agent are logged like the routes
+(author "name (agente X)"); a new customer is copied to the linked companies at once.
 
 ## Customer profile (ficha) and sharing (V007)
 
 The app's *Ficha* button opens the customer's profile, drawn from the native screens of
 `/modules/clientes/ui/customer?id=...&tab=...` (server-driven: it changes without updating the app):
 
-- **One record for the business owner's companies.** A customer belongs to the company where it was
-  created (`origin_company_code` is `''` there). The business owner, or a user with
-  `clientes.share` in that company, shares it with the other companies of the owner group: the
-  record is copied, with the same id and customer code, to each of them (`origin_company_code` =
-  the origin, `shared = TRUE`) and every edit or archive reaches every copy. Sharing first checks
-  that no company has another customer with the same email or code. Stopping hides the copies
-  (other modules may reference them) and keeps their history. Only the origin archives a customer.
-  Lists, searches and agents only see the company's own customers and the ones shared with it.
+- **One record for the linked companies.** A customer belongs to the company where it was
+  created (`origin_company_code` is `''` there). The business owner links companies of their owner group
+  in "Empresas vinculadas" (`GET/POST /modules/clientes/ui/links`, business owner only, checked on the
+  server; Core table `company_links`, purpose `clientes`). Linking shares ALL customers: each company
+  copies its own to the others in the background (`customer_link_jobs`, job `link-sync`), copies keep the
+  id and customer code, and every edit, archive or restore reaches every copy. Customers with the same
+  email are merged automatically (the oldest stays); what cannot be merged goes to "Por revisar", where
+  the owner can retry or separate (`customer_merges`). Unlinking hides the copies and keeps history.
+  Only the origin archives or restores a customer. Lists, searches and agents only see the company's
+  own customers and the ones shared with it. `clientes.share` is kept only to enable the agent tools.
 - **Notas del cliente** (`customer_notes`, in the origin company's database): tastes and preferences
   of frequent customers and general information, seen in every company where the customer is and
   in its CRM leads (`ServerModule.customerNotesReader`, read with `access.customerNotes`).
@@ -70,8 +79,12 @@ The app's *Ficha* button opens the customer's profile, drawn from the native scr
   (`customer_history`, see "Writing events in the customer's history" in `modules/README.md`; the
   CRM writes "Venta convertida en {empresa}" with a link to the lead), entries added by hand
   (`clientes.edit`, in the current company), the changes of the record and what other modules
-  report. The business owner sees the tab of every company where the customer is; other users only
-  the tab of the company they are part of.
+  report. The business owner sees the tab of every company where the customer is, read with that
+  company's own permissions (business owner there, no user id or grants of the current company); other users
+  only the tab of the company they are part of, even if they ask for another `tab`. A "Resumen" at the top
+  lists, per visible company, the modules with something in the customer's history, with count and last date.
+  The `customer_history` rows of a module show only while the module is on and the user may see its events
+  (`ModuleAccessService.customerEventsVisible`).
 
 Other modules that change a customer's data (the CRM editing a lead's name, email or phone, filling
 a name from WhatsApp, Messenger or Instagram, or importing custom fields) call
@@ -87,3 +100,29 @@ plus what every installed module reports through its `CustomerTimeline` (CRM res
 WiFi connections...). Each
 module's entries appear only when it is enabled and the user holds its permission. Clientes knows no
 module: see "Customer history" in `modules/README.md`.
+
+## Activity log
+
+`customer_activity` records who did what: customer created, edited (field by field, custom fields included),
+archived and restored (`POST /customers/{id}/restore`, `clientes.delete`, origin company only), notes deleted
+(with their text), manual history entries deleted (the profile lists them; only module `clientes`, kind
+`manual`), and merged/separated customers. Events of the company, without a customer (`customer_id` NULL):
+custom field created or deleted (`DELETE /fields/{id}` hides it, keeps the values), company linked or
+unlinked. They appear in "Registro de Clientes" (`GET /modules/clientes/ui/activity`, business owner or
+`clientes.fields.manage`); the customer's own events appear in its profile.
+
+## Linking notes
+
+- `clientes.share` only enables the agent tools for linking and merging (`clientes_get_company_links`,
+  `clientes_link_company`, `clientes_unlink_company`, `clientes_list_merge_reviews`, `clientes_separate_merge`);
+  each of them still requires the business owner, checked in the handler before anything else.
+- Customers created by other modules (CRM, hotspot...) are copied to the linked companies by the `link-sync`
+  job, within the next minute. Customers created in Clientes (route or agent) are copied at once.
+- Automatic merge is by email even when the names differ (owner's decision): the oldest customer stays, the
+  other is archived and its notes and records move to it. "Separar" in "Por revisar" undoes it and the pair is
+  never merged again. Fields completed in the kept customer are not undone.
+- Separating is not a two-phase commit between company databases: each database is changed in its own
+  transaction, so a failure in the middle can leave one company done and another pending; retry from "Por revisar".
+- Unlinking keeps the merges already done; use "Separar" first if the records must go back.
+- Routes do their database work on `Dispatchers.IO`; archive and restore answer 404 for a hidden copy and 409
+  for a visible copy (only the origin company archives or restores).

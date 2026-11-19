@@ -3,6 +3,7 @@ package com.ideasdeveloper.idc.server.modules
 import com.ideasdeveloper.idc.server.auth.domain.LoginCredentials
 import com.ideasdeveloper.idc.server.auth.domain.LoginSuccessResponse
 import com.ideasdeveloper.idc.server.auth.infrastructure.database.LoginDatabases
+import com.ideasdeveloper.idc.server.company.application.CompanyLinks
 import com.ideasdeveloper.idc.server.company.application.ServerWorkspace
 import com.ideasdeveloper.idc.server.auth.infrastructure.security.SessionTokenGenerator
 import io.ktor.http.HttpHeaders
@@ -258,6 +259,61 @@ class ModuleAccessService(
             query.setString(1, companyCode)
             query.executeQuery().use { rows ->
                 buildList { while (rows.next()) add(GroupCompany(rows.getString(1), rows.getString(2))) }
+            }
+        }
+    }
+
+    /**
+     * Companies linked with [companyCode] for [purpose], it first and then by name: active, of the same
+     * owner group as it (checked on every read), in the same link group, never the server workspace.
+     * Only it when it is not linked.
+     */
+    fun linkedCompanies(companyCode: String, purpose: String): List<GroupCompany> = central.connection.use { connection ->
+        CompanyLinks.linked(connection, companyCode, purpose)
+    }
+
+    /**
+     * Links [targetCode] to the group of [companyCode] (and [companyCode] too when it was not). One
+     * transaction that locks the owner group's companies: both active, different, none the server
+     * workspace and the same owner group, else [CompanyLinkException]. The caller checks the business owner.
+     */
+    fun linkCompany(companyCode: String, targetCode: String, purpose: String, linkedBy: String): List<GroupCompany> =
+        central.connection.use { connection -> CompanyLinks.link(connection, companyCode, targetCode, purpose, linkedBy) }
+
+    /**
+     * Removes [targetCode] (it may be [companyCode]) from the group of [companyCode]; the same owner
+     * group is required. A company left alone is removed too. Returns what stays linked on the side of
+     * [companyCode] (only it when it no longer is).
+     */
+    fun unlinkCompany(companyCode: String, targetCode: String, purpose: String): List<GroupCompany> =
+        central.connection.use { connection -> CompanyLinks.unlink(connection, companyCode, targetCode, purpose) }
+
+    /**
+     * Whether the user of [permissions] may see in the customer's file the history rows written by
+     * [moduleId]. See [visibleCustomerEventModules]; this opens a query per call, so for many rows use that.
+     */
+    fun customerEventsVisible(tenant: Connection, permissions: ModulePermissions, moduleId: String): Boolean =
+        moduleId in visibleCustomerEventModules(tenant, permissions, setOf(moduleId))
+
+    /**
+     * Of [moduleIds], the modules whose customer history rows the user may see: Clientes always; an
+     * installed module only when enabled in [tenant] and the user is business owner or server owner, or
+     * holds the permission of its customer timeline (without a timeline, any permission of the module,
+     * whose ids start with "moduleId."); an id that is no installed module (an extension) stays visible.
+     * Reads the enabled modules once for the whole set.
+     */
+    fun visibleCustomerEventModules(tenant: Connection, permissions: ModulePermissions, moduleIds: Set<String>): Set<String> {
+        if (moduleIds.isEmpty()) return emptySet()
+        val timelines = customerTimelines().associateBy { it.moduleId }
+        val candidates = moduleIds.filter { it != CustomersModuleId && moduleInstalled(it) }
+        val enabled = if (candidates.isEmpty()) emptySet() else enabledModules(tenant)
+        return moduleIds.filterTo(mutableSetOf()) { id ->
+            when {
+                id == CustomersModuleId -> true
+                !moduleInstalled(id) -> true
+                id !in enabled -> false
+                permissions.businessOwner || permissions.serverOwner -> true
+                else -> timelines[id]?.let { permissions.has(it.timeline.permission) } ?: permissions.hasAnyWithPrefix("$id.")
             }
         }
     }
@@ -564,7 +620,16 @@ class ModulePermissions(
     val serverOwner: Boolean = false,
 ) {
     fun has(permissionId: String): Boolean = businessOwner || permissionId in granted
+
+    /** Whether the user holds any permission whose id starts with [prefix] (e.g. "crm."). */
+    fun hasAnyWithPrefix(prefix: String): Boolean = businessOwner || granted.any { it.startsWith(prefix) }
 }
+
+/** A company link rule was broken (different owner, inactive, server workspace...); the message is for people. */
+class CompanyLinkException(message: String) : Exception(message)
+
+// Clientes owns the customers table and always shows its own history rows.
+private const val CustomersModuleId = "clientes"
 
 // Who a user is, for activity logs: [name] is the display name (or the username when missing).
 data class UserIdentity(val userId: UUID, val name: String, val email: String?, val username: String)
