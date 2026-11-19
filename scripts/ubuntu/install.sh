@@ -117,6 +117,8 @@ readonly COMPANY_BACKUPS_DIR=$APP_DIR/company-backups
 # Files modules store per company (CRM attachments...); back it up with the databases.
 readonly COMPANY_FILES_DIR=$APP_DIR/company-files
 readonly MODULE_PACKAGES_DIR=$APP_DIR/server-modules
+# El servidor guarda los paquetes de extension junto a los de modulos (carpeta hermana server-extensions).
+readonly EXTENSION_PACKAGES_DIR=$APP_DIR/server-extensions
 readonly DEFAULT_MODULE_CATALOG_URL=https://github.com/alexcalbri/IDC/tree/master/modules
 INSTALL_SWAP_CREATED=false
 
@@ -732,7 +734,7 @@ printf 'Respalda IDC_MASTER_KEY (%s/server.env): sin ella no se pueden leer los 
 unset DB_PASSWORD
 
 # The service runs with ProtectSystem=strict; these are its only writable paths.
-install -d -m 700 -o ideascore -g ideascore "$COMPANY_BACKUPS_DIR" "$COMPANY_FILES_DIR" "$MODULE_PACKAGES_DIR"
+install -d -m 700 -o ideascore -g ideascore "$COMPANY_BACKUPS_DIR" "$COMPANY_FILES_DIR" "$MODULE_PACKAGES_DIR" "$EXTENSION_PACKAGES_DIR"
 
 cat > "$SERVICE_FILE" <<'UNIT'
 [Unit]
@@ -754,7 +756,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/opt/ideascore/company-backups /opt/ideascore/company-files /opt/ideascore/server-modules
+ReadWritePaths=/opt/ideascore/company-backups /opt/ideascore/company-files /opt/ideascore/server-modules /opt/ideascore/server-extensions
 UMask=0077
 
 [Install]

@@ -223,6 +223,9 @@ configure_server_env() {
     chmod 700 "$APP_DIR/company-backups"
     install -d -m 700 "$APP_DIR/server-modules"
     chown ideascore:ideascore "$APP_DIR/server-modules"
+    # El servidor guarda los paquetes de extension en la carpeta hermana de server-modules.
+    install -d -m 700 "$APP_DIR/server-extensions"
+    chown ideascore:ideascore "$APP_DIR/server-extensions"
     install -d -m 700 "$APP_DIR/company-files"
     chown ideascore:ideascore "$APP_DIR/company-files"
 
@@ -276,7 +279,7 @@ configure_service_writable_paths() {
     local dropin_dir=/etc/systemd/system/$SERVICE_NAME.d
     local dropin=$dropin_dir/writable-paths.conf
     local expected
-    expected=$(printf '[Service]\nReadWritePaths=%s %s %s\n' "$APP_DIR/company-backups" "$APP_DIR/company-files" "$APP_DIR/server-modules")
+    expected=$(printf '[Service]\nReadWritePaths=%s %s %s %s\n' "$APP_DIR/company-backups" "$APP_DIR/company-files" "$APP_DIR/server-modules" "$APP_DIR/server-extensions")
     if [[ -f $dropin && $(cat "$dropin") == "$expected" ]]; then
         return
     fi
@@ -495,7 +498,7 @@ harden_app_dir() {
     install -d -m 700 -o root -g root "$ROOT_STATE_DIR"
 
     # Los directorios de ideascore deben ser directorios reales, no enlaces.
-    for name in source company-backups company-files server-modules; do
+    for name in source company-backups company-files server-modules server-extensions; do
         [[ ! -L $APP_DIR/$name ]] || die "$APP_DIR/$name es un enlace simbolico; no es seguro continuar."
     done
 
