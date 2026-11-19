@@ -103,6 +103,7 @@ readonly REQUIRED_FILES=(
     database/control/migrations/V010__create_core_update_requests.sql
     database/control/migrations/V011__create_extensions.sql
     database/control/migrations/V012__extension_zip_url_sources.sql
+    database/control/migrations/V013__create_company_links.sql
 )
 # Both services run on this Ubuntu host. No server IP needs to be entered.
 readonly APP_HOST=127.0.0.1
@@ -653,6 +654,7 @@ apply_migration "$DB_NAME" control database/control/migrations/V009__add_server_
 apply_migration "$DB_NAME" control database/control/migrations/V010__create_core_update_requests.sql
 apply_migration "$DB_NAME" control database/control/migrations/V011__create_extensions.sql
 apply_migration "$DB_NAME" control database/control/migrations/V012__extension_zip_url_sources.sql
+apply_migration "$DB_NAME" control database/control/migrations/V013__create_company_links.sql
 verifier=$(printf '%s' "$SERVER_PASSWORD" | scram_verifier)
 pg_admin -v login_role="$SERVER_OWNER" -v verifier="$verifier" -v db_name="$DB_NAME" -v db_user="$DB_USER" <<'SQL'
 CREATE ROLE :"login_role" LOGIN NOSUPERUSER CREATEDB CREATEROLE PASSWORD :'verifier';
@@ -679,6 +681,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_owner_company_sessions TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON company_links TO :"db_user";
 REVOKE INSERT ON core_update_requests FROM :"db_user";
 GRANT SELECT ON core_update_requests TO :"db_user";
 GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";

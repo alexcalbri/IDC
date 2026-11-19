@@ -12,7 +12,7 @@ class VersionResponseTest {
 
     @Test
     fun onlyANewerCatalogVersionIsAnUpdate() {
-        assertTrue(VersionResponse(coreVersion = "0.8.0", latestCoreVersion = "0.8.1").coreUpdateAvailable)
+        assertTrue(VersionResponse(coreVersion = "0.8.0", latestCoreVersion = "0.8.2").coreUpdateAvailable)
         assertFalse(VersionResponse(coreVersion = "0.8.0", latestCoreVersion = "0.8.0").coreUpdateAvailable)
         assertFalse(VersionResponse(coreVersion = "0.8.0", latestCoreVersion = null).coreUpdateAvailable)
     }

@@ -410,6 +410,8 @@ apply_control_migrations() {
         die 'No se encontro database/control/migrations/V011__create_extensions.sql.'
     [[ -f database/control/migrations/V012__extension_zip_url_sources.sql ]] ||
         die 'No se encontro database/control/migrations/V012__extension_zip_url_sources.sql.'
+        [[ -f database/control/migrations/V013__create_company_links.sql ]] ||
+            die 'No se encontro database/control/migrations/V013__create_company_links.sql.'
     [[ -f database/core/migrations/V003__add_application_user_profile.sql ]] ||
         die 'No se encontro database/core/migrations/V003__add_application_user_profile.sql.'
     [[ -f database/core/migrations/V004__add_application_user_code.sql ]] ||
@@ -430,6 +432,7 @@ apply_control_migrations() {
     apply_migration "$db_name" control database/control/migrations/V010__create_core_update_requests.sql
 apply_migration "$db_name" control database/control/migrations/V011__create_extensions.sql
 apply_migration "$db_name" control database/control/migrations/V012__extension_zip_url_sources.sql
+apply_migration "$db_name" control database/control/migrations/V013__create_company_links.sql
     apply_migration "$db_name" core database/core/migrations/V003__add_application_user_profile.sql
     apply_migration "$db_name" core database/core/migrations/V004__add_application_user_code.sql
     runuser -u postgres -- psql -X -d "$db_name" -v ON_ERROR_STOP=1 -v db_user="$db_user" <<'SQL'
@@ -441,6 +444,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON server_modules TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_settings TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON public_domains TO :"db_user";
 GRANT SELECT, INSERT, UPDATE, DELETE ON server_owner_company_sessions TO :"db_user";
+GRANT SELECT, INSERT, UPDATE, DELETE ON company_links TO :"db_user";
 REVOKE INSERT ON core_update_requests FROM :"db_user";
 GRANT SELECT ON core_update_requests TO :"db_user";
 GRANT INSERT (target_version, from_version, requested_by) ON core_update_requests TO :"db_user";
