@@ -1,5 +1,8 @@
 package com.ideasdeveloper.idc.modules.hotspot
 
+import java.security.MessageDigest
+import java.util.Base64
+
 // Captive portal HTML. Every dynamic value goes through esc(); colors were validated as #RRGGBB.
 object HotspotPortalPages {
     const val BasePath = "/guest/s/default"
@@ -267,7 +270,7 @@ object HotspotPortalPages {
             <main>$body</main>
             $footer
             </div>
-            <script>$SubmitOnceScript</script>
+            <script>$SubmitOnceScriptText</script>
             </body>
             </html>
         """.trimIndent()
@@ -329,6 +332,36 @@ window.addEventListener('pageshow', function (event) {
   });
 });
 """
+
+    // The exact text of the only inline script of the portal pages (line breaks normalized, so its hash is stable).
+    private val SubmitOnceScriptText: String = SubmitOnceScript.replace("\r\n", "\n").replace("\r", "\n")
+
+    /**
+     * Content-Security-Policy of every portal answer: defense in depth against HTML injected by a custom template
+     * (see [HotspotTemplates.validate]). What the portal really uses, and nothing more:
+     * - script-src: only the hash of [SubmitOnceScriptText] (the one inline script); no other script runs, even if one slips in.
+     * - style-src: the pages and the templates carry their own inline <style>/style= (colors come from Configuracion).
+     * - img-src: the company logo is any http(s) address chosen in Configuracion, and data: images; frames, objects and fonts
+     *   have no outside source (system fonts only).
+     * - form-action 'self': every form posts to the portal itself (no redirects out of a form); the success page
+     *   leaves through <meta refresh> and links, which this policy does not restrict.
+     */
+    val ContentSecurityPolicy: String by lazy {
+        val hash = Base64.getEncoder().encodeToString(MessageDigest.getInstance("SHA-256").digest(SubmitOnceScriptText.toByteArray(Charsets.UTF_8)))
+        listOf(
+            "default-src 'self'",
+            "script-src 'sha256-$hash'",
+            "img-src 'self' data: https: http:",
+            "style-src 'self' 'unsafe-inline'",
+            "form-action 'self'",
+            "base-uri 'none'",
+            "frame-ancestors 'none'",
+            "object-src 'none'",
+        ).joinToString("; ")
+    }
+
+    /** What the page really carries inside its script tag, for tests. */
+    val InlineScript: String get() = SubmitOnceScriptText
 
     private const val WifiIcon = """<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"></path><path d="M1.42 9a16 16 0 0 1 21.16 0"></path><path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path><circle cx="12" cy="20" r="1" fill="currentColor"></circle></svg>"""
 }

@@ -961,6 +961,7 @@ class HotspotPortal(private val access: ModuleAccessService) {
         response.header("Cache-Control", "no-store")
         response.header("X-Frame-Options", "DENY")
         response.header("Referrer-Policy", "no-referrer")
+        response.header("Content-Security-Policy", HotspotPortalPages.ContentSecurityPolicy)
         respondText(html, ContentType.Text.Html.withParameter("charset", "utf-8"), status)
     }
 

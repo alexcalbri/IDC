@@ -312,7 +312,10 @@ the page (`HotspotTemplates.validate`) and keeps nothing until it passes:
   `<input type="checkbox" name="terms" value="si">` (form) or `code` (code views),
   and `{{campos_ocultos}}` (MAC, AP, SSID and destination of the guest).
 - `{{error}}` somewhere, for the portal's messages.
-- No `<script>`, frames, `on*=` handlers, `javascript:` URLs, `formaction` or meta refresh.
+- No `<script>`, frames, `<svg>`, `<math>`, `<link>`, `on*=` handlers, `javascript:` / `vbscript:` / `data:` URLs (HTML entities
+  such as `&#106;avascript:` or `&Tab;` are decoded first), `formaction` or meta refresh. `<style>` is allowed but not
+  `expression(`, `@import` or `url()` with those schemes. Since 0.11.1 this is checked on the whole HTML, comments included
+  (`<!-->`, `<!--->`, `--!>` and a comment never closed are rejected because the browser closes them differently).
 - Only the placeholders of that view: common `{{titulo}}`, `{{subtitulo}}`, `{{red}}`,
   `{{logo_url}}`, `{{pie}}`, `{{color_primario}}`, `{{color_secundario}}`,
   `{{color_texto}}`; form `{{nombre}}`, `{{correo}}`, `{{celular}}`, `{{cumpleanos}}`,
@@ -321,6 +324,10 @@ the page (`HotspotTemplates.validate`) and keeps nothing until it passes:
 Values are escaped; `{{error}}` renders `<div class="idc-error" role="alert">` or
 nothing. The other pages (emailed code, success, messages) keep IDC's design with
 the portal colors. "Cargar un ejemplo" fills the editor with a valid page.
+Every portal answer carries a `Content-Security-Policy` (0.11.1, `HotspotPortalPages.ContentSecurityPolicy`): `script-src` only
+allows the SHA-256 of the portal's own inline script (submit-once button), `form-action 'self'`, `base-uri 'none'`,
+`frame-ancestors 'none'`, `object-src 'none'`, `img-src 'self' data: https: http:` (the logo may be http) and
+`style-src 'self' 'unsafe-inline'`. It is a second barrier behind the template validation.
 
 The "Colores del portal" card at the top of Diseño sets the primary, secondary and
 text colors (`#RRGGBB`, `HotspotSettingsRepository.saveColors`). Each blank one
