@@ -1,0 +1,19 @@
+{
+  "id": "inmobiliaria",
+  "module": "crm",
+  "displayName": "Inmobiliaria (corretaje)",
+  "description": "Convierte el CRM en una herramienta de corretaje: inventario de propiedades con enlaces por portal e historial de precios, captaciones, transacciones con partes y comisiones, y herramientas para agentes de IA.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.28.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/inmobiliaria" },
+  "permissions": [
+    "crm.items.write",
+    "crm.leads.update"
+  ],
+  "settings": [],
+  "migrations": ["migrations/V001__inmobiliaria.sql"],
+  "uninstall": { "options": [
+    { "id": "properties", "label": "Inventario de propiedades, enlaces e historial de precios", "default": "keep" },
+    { "id": "deals", "label": "Transacciones y sus partes", "default": "keep" }
+  ] }
+}

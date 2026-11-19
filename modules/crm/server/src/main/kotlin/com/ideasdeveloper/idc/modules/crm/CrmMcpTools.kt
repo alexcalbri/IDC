@@ -108,7 +108,7 @@ object CrmMcpTools {
 
     // What this module tells agents about itself (see ModuleMcp): leads, settings and integrations.
     val mcp: ModuleMcp
-        get() = ModuleMcp(Instructions, tools + CrmSettingsMcpTools.tools + CrmAutomationMcpTools.tools + CrmIntegrationMcpTools.tools + CrmImportMcpTools.tools + CrmImportSources.mcpTools)
+        get() = ModuleMcp(Instructions, tools + CrmSettingsMcpTools.tools + CrmAutomationMcpTools.tools + CrmIntegrationMcpTools.tools + CrmImportMcpTools.tools + CrmImportSources.mcpTools + CrmScreenProviders.mcpTools)
 
     private const val Instructions =
         "El CRM sigue a los interesados (leads) por un embudo de etapas; cerrar en una etapa ganada o perdida termina el seguimiento. " +
