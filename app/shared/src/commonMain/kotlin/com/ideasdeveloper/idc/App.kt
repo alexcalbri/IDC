@@ -13,6 +13,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.savedstate.read
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import com.ideasdeveloper.idc.app.core.company.CompanyIdentityStore
@@ -80,16 +81,23 @@ fun App(initialServerUrl: String = "") {
         }
 
         // Cierra la sesion: primero avisa al servidor para invalidar el token (best-effort), luego limpia local.
-        fun logout() {
+        // [serverUrl] se captura antes de borrar la configuracion local para no perder la llamada al servidor.
+        fun logout(serverUrl: String? = clientConfiguration?.serverUrl) {
             val current = SessionStore.session.value
-            val url = clientConfiguration?.serverUrl
+            val url = serverUrl
             if (current != null && !url.isNullOrBlank()) {
                 scope.launch {
-                    val api = LoginApi(url)
                     try {
-                        api.logout(current.companyCode, current.accessToken)
-                    } finally {
-                        api.close()
+                        val api = LoginApi(url)
+                        try {
+                            api.logout(current.companyCode, current.accessToken)
+                        } finally {
+                            api.close()
+                        }
+                    } catch (exception: CancellationException) {
+                        throw exception
+                    } catch (_: IllegalArgumentException) {
+                        // URL malformada: no hay servidor al que avisar, se limpia solo lo local.
                     }
                 }
             }
@@ -274,10 +282,12 @@ fun App(initialServerUrl: String = "") {
                         onLogout = ::requestLogout,
                         onReturnToDashboard = ::openDashboard,
                         onClearLocalConfiguration = {
+                            // Captura la URL antes de borrarla para que logout avise al servidor.
+                            val serverUrl = clientConfiguration?.serverUrl
                             ClientConfigurationStore.clear()
                             CompanyIdentityStore.clear()
                             clientConfiguration = null
-                            logout()
+                            logout(serverUrl)
                         },
                     )
                 }

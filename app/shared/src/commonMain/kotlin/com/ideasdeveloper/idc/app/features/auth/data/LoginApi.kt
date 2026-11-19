@@ -116,4 +116,5 @@ class LoginApi(serverUrl: String) {
     }
 }
 
-class LoginException(message: String) : Exception(message)
+// [code] es el codigo de error del servidor cuando lo hay (p. ej. PASSWORD_REQUIRED).
+class LoginException(message: String, val code: String? = null) : Exception(message)

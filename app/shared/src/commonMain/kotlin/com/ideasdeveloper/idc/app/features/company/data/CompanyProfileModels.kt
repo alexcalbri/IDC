@@ -107,6 +107,8 @@ data class UpdateCompanyUserRequest(
     val permissions: List<String> = emptyList(),
     // Blank keeps the current password.
     val password: String = "",
+    // Solo si el business owner cambia su propio correo; nunca se guarda ni se registra.
+    val currentPassword: String? = null,
 )
 
 @Serializable

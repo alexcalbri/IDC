@@ -48,6 +48,15 @@ fun ProfileDialog(
     var userCode by remember { mutableStateOf("") }
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    // Contrasena actual: solo se pide al cambiar el correo; vive unicamente en el estado del dialogo.
+    var currentPassword by remember { mutableStateOf("") }
+    var passwordError by remember { mutableStateOf<String?>(null) }
+    val originalEmail = session.email.orEmpty().trim()
+    val emailChanged = !email.trim().equals(originalEmail, ignoreCase = true)
+    // El servidor la pide siempre que el correo difiera del guardado (tambien si no habia correo).
+    val needsPassword = emailChanged
+    // Tambien se muestra si el servidor la reclama aunque session.email este desactualizado.
+    val showPassword = needsPassword || passwordError != null
 
     LaunchedEffect(serverUrl, session.accessToken, session.companyCode) {
         val url = serverUrl ?: return@LaunchedEffect
@@ -83,6 +92,24 @@ fun ProfileDialog(
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                     modifier = Modifier.fillMaxWidth(),
                 )
+                if (showPassword) {
+                    Text("Para cambiar el correo, confirma tu contrasena.", color = AppTheme.colors.muted)
+                    OutlinedTextField(
+                        value = currentPassword,
+                        onValueChange = {
+                            currentPassword = it
+                            passwordError = null
+                        },
+                        label = { Text("Contrasena actual") },
+                        singleLine = true,
+                        enabled = !saving,
+                        visualTransformation = PasswordVisualTransformation(),
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                        isError = passwordError != null,
+                        supportingText = passwordError?.let { message -> { Text(message) } },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 if (userCode.isNotBlank()) {
                     OutlinedTextField(
                         value = userCode,
@@ -97,17 +124,28 @@ fun ProfileDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = !saving && serverUrl != null && displayName.isNotBlank() && email.isNotBlank(),
+                enabled = !saving && serverUrl != null && displayName.isNotBlank() && email.isNotBlank() &&
+                    (!showPassword || currentPassword.isNotEmpty()),
                 onClick = {
                     val url = serverUrl ?: return@TextButton
                     saving = true
                     error = null
+                    passwordError = null
                     scope.launch {
                         try {
-                            val profile = AccountApi(url).use { it.updateProfile(session.accessToken, session.companyCode, displayName, email) }
+                            val password = currentPassword.takeIf { showPassword && it.isNotEmpty() }
+                            val profile = AccountApi(url).use {
+                                it.updateProfile(session.accessToken, session.companyCode, displayName, email, password)
+                            }
+                            currentPassword = ""
                             onSaved(profile)
                         } catch (exception: LoginException) {
-                            error = exception.message
+                            // Los errores de contrasena se muestran junto a su campo.
+                            if (exception.code == "PASSWORD_REQUIRED" || exception.code == "INVALID_PASSWORD" || exception.code == "TOO_MANY_ATTEMPTS") {
+                                passwordError = exception.message
+                            } else {
+                                error = exception.message
+                            }
                         } finally {
                             saving = false
                         }

@@ -61,6 +61,8 @@ fun CompanyUsersSection(
     var newPassword by remember { mutableStateOf("") }
     var newDisplayName by remember { mutableStateOf("") }
     var newEmail by remember { mutableStateOf("") }
+    // Error de contrasena actual al cambiar el correo del business owner (se muestra junto al campo).
+    var currentPasswordError by remember { mutableStateOf<String?>(null) }
     var selectedPermissions by remember { mutableStateOf<Set<String>>(emptySet()) }
     var isLoading by remember { mutableStateOf(false) }
     var message by remember { mutableStateOf<String?>(null) }
@@ -218,6 +220,7 @@ fun CompanyUsersSection(
                         val code = companyCode ?: return@UserEditForm
                         isLoading = true
                         error = null
+                        currentPasswordError = null
                         message = null
                         scope.launch {
                             try {
@@ -232,12 +235,19 @@ fun CompanyUsersSection(
                                     "Usuario actualizado."
                                 }
                             } catch (exception: CompanyException) {
-                                error = exception.message
+                                // Los errores de contrasena actual se muestran junto a su campo.
+                                if (exception.code == "PASSWORD_REQUIRED" || exception.code == "INVALID_PASSWORD" || exception.code == "TOO_MANY_ATTEMPTS") {
+                                    currentPasswordError = exception.message
+                                } else {
+                                    error = exception.message
+                                }
                             } finally {
                                 isLoading = false
                             }
                         }
                     },
+                    currentPasswordError = currentPasswordError,
+                    onCurrentPasswordEdited = { currentPasswordError = null },
                 )
             } else {
                 Text(
@@ -253,6 +263,7 @@ fun CompanyUsersSection(
                     onClick = {
                         editingUserId = user.userId
                         error = null
+                        currentPasswordError = null
                         message = null
                     },
                 ) {
@@ -276,13 +287,20 @@ private fun UserEditForm(
     primaryColor: Color,
     onCancel: () -> Unit,
     onSave: (UpdateCompanyUserRequest) -> Unit,
+    currentPasswordError: String? = null,
+    onCurrentPasswordEdited: () -> Unit = {},
 ) {
+    // Contrasena actual: solo para el business owner cuando cambia su correo; solo vive en este formulario.
+    var currentPassword by remember(user.userId) { mutableStateOf("") }
     var username by remember(user.userId) { mutableStateOf(user.username) }
     var displayName by remember(user.userId) { mutableStateOf(user.displayName.orEmpty()) }
     var email by remember(user.userId) { mutableStateOf(user.email.orEmpty()) }
     var password by remember(user.userId) { mutableStateOf("") }
     var active by remember(user.userId) { mutableStateOf(user.isActive) }
     var selected by remember(user.userId) { mutableStateOf(user.permissions.toSet()) }
+    // El business owner confirma su contrasena al cambiar el correo o al escribir una nueva; tambien si el servidor la reclama.
+    val needsCurrentPassword = user.isBusinessOwner &&
+        (!email.trim().equals(user.email.orEmpty().trim(), ignoreCase = true) || password.isNotEmpty() || currentPasswordError != null)
     val renamed = username.trim() != user.username
     val passwordProblem = when {
         password.isNotEmpty() && password.length < 12 -> "Minimo 12 caracteres."
@@ -314,6 +332,23 @@ private fun UserEditForm(
         enabled = !busy,
         modifier = Modifier.fillMaxWidth(),
     )
+    if (needsCurrentPassword) {
+        Text("Para cambiar el correo o la contrasena, confirma tu contrasena actual.", color = AppTheme.colors.muted)
+        OutlinedTextField(
+            value = currentPassword,
+            onValueChange = {
+                currentPassword = it
+                onCurrentPasswordEdited()
+            },
+            label = { Text("Contrasena actual") },
+            singleLine = true,
+            enabled = !busy,
+            visualTransformation = PasswordVisualTransformation(),
+            isError = currentPasswordError != null,
+            supportingText = currentPasswordError?.let { message -> { Text(message) } },
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
     OutlinedTextField(
         value = password,
         onValueChange = { password = it },
@@ -353,7 +388,8 @@ private fun UserEditForm(
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         Button(
-            enabled = !busy && username.isNotBlank() && displayName.isNotBlank() && email.isNotBlank() && passwordProblem == null,
+            enabled = !busy && username.isNotBlank() && displayName.isNotBlank() && email.isNotBlank() && passwordProblem == null &&
+                (!needsCurrentPassword || currentPassword.isNotEmpty()),
             onClick = {
                 onSave(
                     UpdateCompanyUserRequest(
@@ -363,6 +399,7 @@ private fun UserEditForm(
                         isActive = active,
                         permissions = selected.toList(),
                         password = password,
+                        currentPassword = currentPassword.takeIf { needsCurrentPassword },
                     )
                 )
             },

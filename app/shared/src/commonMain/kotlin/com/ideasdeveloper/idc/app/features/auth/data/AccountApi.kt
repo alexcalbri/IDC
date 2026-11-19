@@ -31,7 +31,12 @@ data class AccountProfile(
 )
 
 @Serializable
-private data class UpdateAccountProfileRequest(val displayName: String, val email: String)
+private data class UpdateAccountProfileRequest(
+    val displayName: String,
+    val email: String,
+    // Solo se envia al cambiar el correo; nunca se guarda ni se registra.
+    val currentPassword: String? = null,
+)
 
 @Serializable
 private data class PasswordResetRequest(val username: String, val companyCode: String? = null)
@@ -66,12 +71,18 @@ class AccountApi(serverUrl: String) {
         }
     }
 
-    suspend fun updateProfile(accessToken: String, companyCode: String?, displayName: String, email: String): AccountProfile = call {
+    suspend fun updateProfile(
+        accessToken: String,
+        companyCode: String?,
+        displayName: String,
+        email: String,
+        currentPassword: String? = null,
+    ): AccountProfile = call {
         client.put("$baseUrl/auth/profile") {
             bearerAuth(accessToken)
             companyCode?.let { header("X-Company-Code", it) }
             contentType(ContentType.Application.Json)
-            setBody(UpdateAccountProfileRequest(displayName, email))
+            setBody(UpdateAccountProfileRequest(displayName, email, currentPassword?.takeIf { it.isNotEmpty() }))
         }
     }
 
@@ -96,7 +107,7 @@ class AccountApi(serverUrl: String) {
             if (response.status == HttpStatusCode.OK) return response.body()
             if (response.status == HttpStatusCode.TooManyRequests) throw LoginException("Demasiados intentos. Espera un minuto.")
             val error = runCatching { response.body<LoginErrorResponse>() }.getOrNull()
-            throw LoginException(error?.message ?: "El servidor no pudo completar la operacion.")
+            throw LoginException(error?.message ?: "El servidor no pudo completar la operacion.", error?.code)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: LoginException) {

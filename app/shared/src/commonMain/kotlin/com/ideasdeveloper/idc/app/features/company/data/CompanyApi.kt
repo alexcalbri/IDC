@@ -656,8 +656,8 @@ class CompanyApi(serverUrl: String) {
         try {
             val response = request()
             if (response.status == HttpStatusCode.OK) return response.body()
-            val message = runCatching { response.body<CompanyErrorResponse>().message }.getOrNull()
-            throw CompanyException(message ?: "El servidor no pudo completar la operacion.")
+            val error = runCatching { response.body<CompanyErrorResponse>() }.getOrNull()
+            throw CompanyException(error?.message ?: "El servidor no pudo completar la operacion.", code = error?.code)
         } catch (exception: CancellationException) {
             throw exception
         } catch (exception: CompanyException) {
@@ -860,4 +860,4 @@ class CompanyApi(serverUrl: String) {
 
 // [network] es true cuando no hubo respuesta del servidor (por ejemplo, durante un reinicio).
 // [status] es el codigo HTTP de la respuesta de error, o null si no hubo respuesta.
-class CompanyException(message: String, val network: Boolean = false, val status: Int? = null) : Exception(message)
+class CompanyException(message: String, val network: Boolean = false, val status: Int? = null, val code: String? = null) : Exception(message)

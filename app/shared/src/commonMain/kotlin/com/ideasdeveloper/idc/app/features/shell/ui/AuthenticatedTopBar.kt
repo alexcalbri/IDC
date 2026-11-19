@@ -28,6 +28,10 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -84,7 +88,12 @@ fun AuthenticatedTopBar(
             Box {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
-                    modifier = if (titleMenu.isEmpty()) Modifier else Modifier.clickable { titleMenuExpanded = true },
+                    modifier = if (titleMenu.isEmpty()) Modifier else Modifier
+                        .clickable(
+                            onClickLabel = "Cambiar de empresa",
+                            role = Role.Button,
+                        ) { titleMenuExpanded = true }
+                        .semantics(mergeDescendants = true) { contentDescription = "$title, abrir lista de empresas" },
                 ) {
                     Text(
                         text = title,
@@ -94,7 +103,8 @@ fun AuthenticatedTopBar(
                     )
                     if (titleMenu.isNotEmpty()) {
                         Spacer(Modifier.width(6.dp))
-                        Text("v", color = colors.onScreenMuted, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        // Indicador decorativo: lo describe el Row clicable.
+                        Text("v", modifier = Modifier.clearAndSetSemantics {}, color = colors.onScreenMuted, fontSize = 14.sp, fontWeight = FontWeight.Bold)
                     }
                 }
                 DropdownMenu(expanded = titleMenuExpanded, onDismissRequest = { titleMenuExpanded = false }) {
@@ -144,10 +154,13 @@ fun AuthenticatedTopBar(
                 modifier = Modifier
                     .size(48.dp)
                     .background(circleColor, CircleShape)
-                    .graphicsLayer { rotationZ = menuRotation.value },
+                    .graphicsLayer { rotationZ = menuRotation.value }
+                    .semantics { contentDescription = "Menú" },
             ) {
                 // Siempre "|||" girado (gira al abrirse) para no confundirse con la X de cerrar.
+                // Es decorativo: la descripcion accesible la da el boton.
                 Text(
+                    modifier = Modifier.clearAndSetSemantics {},
                     text = "|||",
                     color = colors.onScreen,
                     fontSize = 18.sp,
