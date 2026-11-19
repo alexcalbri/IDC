@@ -1,3 +1,15 @@
+// The Ktor plugin asks for commons-lang3 [3.18.0,); with an empty Gradle cache the range picks the
+// newest release and plugin classpath resolution fails ("has no target nodes"). Pin it.
+buildscript {
+    dependencies {
+        constraints {
+            classpath("org.apache.commons:commons-lang3") {
+                version { strictly("3.18.0") }
+            }
+        }
+    }
+}
+
 plugins {
     // this is necessary to avoid the plugins to be loaded multiple times
     // in each subproject's classloader
