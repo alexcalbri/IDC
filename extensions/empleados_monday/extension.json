@@ -1,0 +1,19 @@
+{
+  "id": "empleados_monday",
+  "module": "empleados",
+  "displayName": "Importacion de empleados desde monday",
+  "description": "Importa tableros de monday (por ejemplo un horario del equipo) como empleados, sedes y horarios habituales del modulo Empleados: lee el tablero con el token de la empresa y mapea sus columnas.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.1.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/empleados_monday" },
+  "permissions": [
+    "network.outbound:api.monday.com",
+    "secrets.write",
+    "empleados.import.write"
+  ],
+  "settings": [],
+  "migrations": ["migrations/V001__settings.sql"],
+  "uninstall": { "options": [
+    { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
+  ] }
+}

@@ -1,0 +1,8 @@
+{
+  "id": "empleados",
+  "displayName": "Empleados",
+  "description": "Fichas de empleados, sedes y departamentos, horario habitual con turnos concretos, vista semanal por sede, solicitudes de ausencia con aprobacion y avisos de cambios de turno.",
+  "version": "0.1.0",
+  "minCoreVersion": "0.8.0",
+  "minAppVersion": "0.7.0"
+}
