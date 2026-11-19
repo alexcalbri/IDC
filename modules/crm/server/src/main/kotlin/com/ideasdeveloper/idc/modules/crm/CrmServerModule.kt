@@ -252,7 +252,7 @@ object CrmServerModule : ServerModule {
         id = CrmModule.id,
         displayName = CrmModule.displayName,
         description = "Leads ligados a Clientes con pipeline de etapas, seguimientos, actividad e intereses opcionales que reparten los leads entre usuarios.",
-        version = "0.27.1",
+        version = "0.28.0",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.7.0",
         supportsExtensions = true,
@@ -402,7 +402,8 @@ object CrmServerModule : ServerModule {
                         "note" -> null
                         else -> CrmScreens.Manage
                     }
-                    else -> CrmScreens.Manage
+                    // Las pantallas de una extension piden el permiso de su seccion.
+                    else -> CrmScreenProviders.section(screen)?.second?.permission ?: CrmScreens.Manage
                 }
                 if (required != null && !permissions.has(required)) {
                     return@post call.respond(HttpStatusCode.Forbidden, CrmErrorResponse("missing_permission", "No tienes permiso para esta accion."))
@@ -445,6 +446,23 @@ object CrmServerModule : ServerModule {
         extensionOfOperation?.let { id -> CrmExtensions.inactive(tenant, id)?.let { return show("integrations", UiNotice(it, UiTone.Warning), emptyMap()) } }
 
         return try {
+            // Las pantallas de una extension: la accion la atiende su proveedor (con la extension activa en la empresa).
+            CrmScreenProviders.section(screen)?.let { (provider, _) ->
+                CrmExtensions.inactive(tenant, provider.extensionId)?.let { return show(screen, UiNotice(it, UiTone.Warning), emptyMap()) }
+                val result = try {
+                    provider.action(context, actor, screen, params["op"].orEmpty(), params, values)
+                } catch (e: CrmValidationException) {
+                    throw e
+                } catch (e: Exception) {
+                    org.slf4j.LoggerFactory.getLogger("CrmScreenProviders").warn("Fallo una accion de la extension {}.", provider.extensionId, e)
+                    return show(screen, UiNotice("No se pudo completar la accion.", UiTone.Danger), emptyMap())
+                }
+                // Si la extension manda a una pantalla que el usuario no puede abrir, se queda en la de la accion con el aviso.
+                if (!CrmScreens.canOpen(result.screen, permissions)) {
+                    return show(screen, result.notice ?: UiNotice("Listo.", UiTone.Success), params - "op")
+                }
+                return show(result.screen, result.notice ?: UiNotice("Listo.", UiTone.Success), result.params, result.submitted)
+            }
             // Las acciones propias de las fuentes externas de importacion (las trae su extension) las atiende la fuente.
             if (screen == "import") {
                 CrmImportSources.action(tenant, params["op"].orEmpty(), values, actor.userId)?.let { result ->

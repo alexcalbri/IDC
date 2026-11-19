@@ -202,9 +202,14 @@ object CrmModuleExtensions {
     @Volatile
     private var linked: List<ServerExtension> = emptyList()
 
+    // Se recalcula solo en link(): la referencia cambia con cada enlace y asi se invalida la cache de CrmScreenProviders.
+    @Volatile
+    private var screens: List<CrmScreenProvider> = emptyList()
+
     fun link(extensions: List<ServerExtension>) {
         linked = extensions
         providers = extensions.filterIsInstance<CrmActionProvider>()
+        screens = extensions.filterIsInstance<CrmScreenProvider>()
     }
 
     fun actionProviders(): List<CrmActionProvider> = providers
@@ -227,6 +232,9 @@ object CrmModuleExtensions {
 
     /** Fuentes externas de importacion que traen las extensiones instaladas (ver [CrmImportSources]). */
     fun importSources(): List<CrmImportSource> = linked.filterIsInstance<CrmImportSource>()
+
+    /** Extensiones que aportan pantallas, acciones, herramientas MCP y un bloque en la ficha del lead (ver [CrmScreenProvider]). */
+    fun screenProviders(): List<CrmScreenProvider> = screens
 
     /** Cloudbeds instalado, configurado y activo en la empresa; false si la extensión no está instalada. */
     fun cloudbedsActive(tenant: Connection): Boolean = cloudbeds()?.active(CrmHost, tenant) ?: false

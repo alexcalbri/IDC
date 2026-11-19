@@ -124,12 +124,20 @@ object CrmScreens {
     private fun menuItemOf(screen: String): String = when {
         screen in setOf("pipeline", "leads", "lead", "rooms", "properties") -> "leads"
         settingsTabOf(screen) != null -> "settings"
-        else -> screen
+        else -> CrmScreenProviders.section(screen)?.let { (provider, section) ->
+            // Una seccion oculta de una extension marca su propio id, o la primera del menu del mismo proveedor.
+            if (section.inMenu) section.id else CrmScreenProviders.sections(provider).firstOrNull { it.inMenu }?.id ?: section.id
+        } ?: screen
     }
 
-    fun isScreen(id: String) = canonical(id).let { screen -> sections.any { it.id == screen } || screen in hidden }
+    /** Si [id] es una pantalla propia del CRM (las de las extensiones no cuentan). */
+    internal fun isOwnScreen(id: String) = canonical(id).let { screen -> sections.any { it.id == screen } || screen in hidden }
 
-    fun permissionFor(screen: String): String? = canonical(screen).let { id -> sections.firstOrNull { it.id == id }?.permission ?: hidden[id] }
+    fun isScreen(id: String) = isOwnScreen(id) || CrmScreenProviders.section(canonical(id)) != null
+
+    fun permissionFor(screen: String): String? = canonical(screen).let { id ->
+        sections.firstOrNull { it.id == id }?.permission ?: hidden[id] ?: CrmScreenProviders.section(id)?.second?.permission
+    }
 
     // First screen a user opens: the leads, then what is waiting for them, then the rest.
     private val homeOrder = listOf("leads", "reception", "followups", "new", "settings")
@@ -140,7 +148,8 @@ object CrmScreens {
     fun canOpen(id: String, permissions: ModulePermissions): Boolean {
         val screen = canonical(id)
         sections.firstOrNull { it.id == screen }?.let { return it.allows(permissions) }
-        return hidden[screen]?.let { permissions.has(it) } ?: false
+        hidden[screen]?.let { return permissions.has(it) }
+        return CrmScreenProviders.section(screen)?.second?.let { permissions.has(it.permission) } ?: false
     }
 
     // Ids of the sections the user sees in the menu ([interestsEnabled]: no section depends on it today).
@@ -204,8 +213,23 @@ object CrmScreens {
         submitted: Map<String, String>? = null,
     ): UiScreen {
         val screen = canonical(requested)
-        val permission = permissionFor(screen)!!
+        val permission = permissionFor(screen)
+            ?: return frame(context, screen, "Lead", UiNotice("Esa pantalla no existe.", UiTone.Warning), emptyList())
         val section = sections.firstOrNull { it.id == screen }
+        CrmScreenProviders.section(screen)?.let { (provider, extensionSection) ->
+            if (!context.permissions.has(permission)) {
+                return frame(context, screen, extensionSection.label, UiNotice("No tienes permiso para ver esta seccion.", UiTone.Danger), emptyList())
+            }
+            if (!CrmScreenProviders.enabled(context.tenant, provider)) {
+                return frame(context, screen, extensionSection.label, UiNotice(CrmExtensions.inactiveMessage(provider.extensionId), UiTone.Warning), emptyList())
+            }
+            return try {
+                frame(context, screen, extensionSection.label, notice, provider.screen(context, screen, params, submitted))
+            } catch (failure: Exception) {
+                org.slf4j.LoggerFactory.getLogger("CrmScreenProviders").warn("Fallo la pantalla {} de la extension {}.", screen, provider.extensionId, failure)
+                frame(context, screen, extensionSection.label, UiNotice("No se pudo abrir esta pantalla de la extension.", UiTone.Danger), emptyList())
+            }
+        }
         val title = when {
             section != null -> section.label
             screen == "pipeline" -> "Leads"
@@ -259,14 +283,24 @@ object CrmScreens {
         title = title,
         navigation = UiNavigation(
             title = CrmModule.displayName,
-            items = sections
-                .filter { it.id in menu(context.permissions, context.interestsEnabled) }
-                .map { UiNavItem(it.id, it.label, UiNavigate(it.id)) },
+            items = menuItems(context),
             selected = menuItemOf(selected),
         ),
         notice = notice,
         body = (if (showTitle) listOf<UiNode>(UiText(title, UiTextStyle.Title)) else emptyList()) + body,
     )
+
+    // Menu items: the own sections, with the active extensions' sections (that the user may open) before "settings".
+    private fun menuItems(context: Context): List<UiNavItem> {
+        val own = menu(context.permissions, context.interestsEnabled)
+        val ownItems = sections.filter { it.id in own }.map { it.id to UiNavItem(it.id, it.label, UiNavigate(it.id)) }
+        val extra = CrmScreenProviders.active(context.tenant).flatMap { provider ->
+            CrmScreenProviders.sections(provider).filter { it.inMenu && context.permissions.has(it.permission) }
+                .map { UiNavItem(it.id, it.label, UiNavigate(it.id)) }
+        }
+        val settingsAt = ownItems.indexOfFirst { it.first == "settings" }.takeIf { it >= 0 } ?: ownItems.size
+        return ownItems.map { it.second }.let { it.take(settingsAt) + extra + it.drop(settingsAt) }
+    }
 
     // Tabs of Configuracion: a row of buttons (the module navigation has one level), the current one in primary.
     private fun tabBar(context: Context, current: String): List<UiNode> {
@@ -915,7 +949,8 @@ object CrmScreens {
         val items = CrmWordPressScreens.items(context, lead, canEdit).takeIf { access.canWrite }
         val reservation = CrmCloudbedsScreens.reservation(context, lead, canEdit).takeIf { access.canWrite }
         val buttons = buttonsCard(context, lead, canEdit)
-        return listOfNotNull(header, actions, review, suggestion, customerNotes, form, buttons, items, reservation, conversation, mentions, note.takeIf { canNote }, timeline)
+        return listOfNotNull(header, actions, review, suggestion, customerNotes, form, buttons, items, reservation, conversation, mentions, note.takeIf { canNote }, timeline) +
+            (if (access.canWrite) CrmScreenProviders.leadPanels(context, lead) else emptyList())
     }
 
     /**

@@ -826,6 +826,23 @@ The lead shows the customer's notes ("Notas del cliente", from Clientes: tastes 
 that apply to every lead) with a button that opens the customer's profile. The lead's own notes
 ("Notas del lead", in its activity) and "Detalles" are about that deal only.
 
+## Screens from extensions (`CrmScreenProvider`, 0.28.0)
+
+An extension package can add screens to the CRM by implementing `CrmScreenProvider` next to `ServerExtension`
+(the Core links the extensions with `CrmModuleExtensions.link`; the CRM lists the providers with
+`CrmModuleExtensions.screenProviders()`). The change is additive: nothing the CRM did before changes and
+`CrmExtensions.MinModuleVersion` stays 0.27.0.
+
+- `sections`: `CrmExtensionSection(id, label, permission, inMenu)`. The id must start with `<extensionId>_`; ids that
+  clash with a screen of the CRM, or lack the prefix, are ignored. `permission` is one of the CRM permissions.
+- Menu: the sections with `inMenu` show after the CRM's own sections (before Configuracion) only when the extension
+  is active in the company and the user has the permission. A hidden section keeps the menu item of its provider selected.
+- `screen(...)` draws a section; `action(...)` runs its POST (`op` parameter) and returns a `CrmExtensionActionResult`
+  (the screen to show next, notice, parameters and form values). Both need the section permission and the extension
+  active; otherwise the CRM answers with the "extension not active" notice. A failure of the provider becomes a notice and never breaks the CRM.
+- `mcpTools`: added to the CRM's MCP tools (each tool checks the user's live permissions and that the extension is active).
+- `leadPanel(...)`: nodes added at the end of the lead detail (only for users that can edit the lead, not for mention-only readers).
+
 ## Not in this version
 
 Webhooks, leaving to "Old Guest" and distribution by assigned user.
