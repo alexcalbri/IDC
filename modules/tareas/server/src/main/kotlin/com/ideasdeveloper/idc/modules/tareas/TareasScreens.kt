@@ -82,6 +82,8 @@ object TareasScreens {
         val users: List<TareasUser>,
         val today: LocalDate,
         val canSeeCustomers: Boolean = false,
+        // The user holds tareas.import and some import source is active: the "Importar" item shows.
+        val importEnabled: Boolean = false,
         val zone: ZoneId = ZoneId.systemDefault(),
     ) {
         val names: UserNames = UserNames(users)
@@ -131,18 +133,19 @@ object TareasScreens {
 
     // ---- navigation ----
 
-    fun navigation(scope: TareasScope, selected: String): UiNavigation = UiNavigation(
+    fun navigation(scope: TareasScope, selected: String, import: Boolean = false): UiNavigation = UiNavigation(
         title = TareasModule.displayName,
         items = listOfNotNull(
             UiNavItem("mine", "Mis tareas", UiNavigate("mine")),
             UiNavItem("boards", "Tableros", UiNavigate("boards")),
             UiNavItem("admin", "Administrar", UiNavigate("admin")).takeIf { scope.admin },
+            UiNavItem("importar", "Importar", UiNavigate("importar")).takeIf { import },
         ),
         selected = selected,
     )
 
     private fun screen(context: Context, title: String, selected: String, notice: UiNotice?, body: List<UiNode>) =
-        UiScreen(title = title, navigation = navigation(context.scope, selected), notice = notice, body = body)
+        UiScreen(title = title, navigation = navigation(context.scope, selected, context.importEnabled), notice = notice, body = body)
 
     private fun openTask(task: Task): UiAction = UiNavigate("task", mapOf("id" to task.id.toString()))
 

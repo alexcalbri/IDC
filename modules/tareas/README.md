@@ -1,12 +1,12 @@
 # Tareas
 
-Version 0.1.0 (in development). Replaces the Monday boards: tasks organized in boards and groups, with several
+Version 0.2.0 (in development). Replaces the Monday boards: tasks organized in boards and groups, with several
 responsibles, an optional reviewer, checklist, comments, attachments, due reminders and list, kanban, agenda and
 workload views.
 
 ## Data (company database)
 
-Migration `V001__create_tareas.sql`:
+Migrations `V001__create_tareas.sql` (the module) and `V002__import.sql` (`import_key` columns, see *Import*):
 
 - `tareas_boards`, `tareas_board_members`, `tareas_groups`: boards (company-wide or private), their members and
   their groups ("Esta semana", a department...; named freely).
@@ -27,6 +27,7 @@ Cancelada. Priorities: `urgent`, `high`, `medium` (default), `low`.
 | `tareas.view` | Open the module, see the visible boards and "Mis tareas". Responsibles and the reviewer of a task can, with only this permission, change its status, tick its checklist, comment and attach files in THAT task. |
 | `tareas.manage` | Create, edit, assign and archive tasks in the boards the user sees. |
 | `tareas.boards` | Create, edit and archive boards, groups and members; sees every board (private ones too). |
+| `tareas.import` | Use the "Importar" screen and the import tools of the agents (needs an import extension). |
 
 The business owner and the server owner hold everything.
 
@@ -55,6 +56,8 @@ change is never notified. Target: screen `task` with the task id.
 
 ## Jobs
 
+- `import-runner` (1 min, 40 s budget): moves forward the reading and applying of the active import sources (see *Import*).
+
 - `due-reminders` (30 min): open tasks due tomorrow (`due_soon`) or overdue (`overdue`) notify each responsible once per
   due date (batch of 200; the row in `tareas_reminders` is claimed first with `ON CONFLICT DO NOTHING`).
 - `attachments-cleanup` (1 h): deletes the stored file and the row of removed attachments and of uploads never linked
@@ -80,6 +83,36 @@ TareasExternal.upsertTask(tenant, ExternalTaskRequest(
 characters. The task is created or, when it exists, its title, detail, priority, due date, group and responsibles are
 updated (status, reviewer, customer and checklist stay). The caller owns the transaction and checks that the
 assignees can use the module. Nobody uses it in 0.1.0.
+
+## Import (0.2.0)
+
+Tareas does not know where data comes from: import **extensions** (for example `tareas_monday`) implement
+`TareasImportSource` (`TareasImport.kt`) and the module links them with `linkExtensions` (`supportsExtensions = true`;
+the extension permission is `tareas.import.write`: create boards, groups, tasks, comments and attachments).
+
+- **Screen** `importar` (GET and POST `?source=&op=`, permission `tareas.import` checked before the connection opens). The
+  "Importar" item of the navigation shows only with that permission and at least one active source. With several sources
+  the screen shows a button for each; the body is `source.screen(...)` and an operation is `source.action(...)`, which
+  answers a `TareasImportReply(notice, error, params)` (the screen shown next gets `params`).
+- **Job** `import-runner` calls `TareasImportSources.runPending(context, budget)`: each active source gets an equal share
+  of what is left of the budget; one that fails is logged and the others continue. A source must be short, idempotent and
+  log its errors.
+- **Agent tools**: `TareasMcpTools.mcp` adds `TareasImportSources.all.flatMap { it.mcpTools }` on every request (permission
+  `tareas.import`, no credentials).
+- **Writing rows** (`TareasImportApply`): `summary` (pure preview: people matched by email without regard to case, people
+  without user, problems such as an empty title), `ensureBoard(importKey, name, targetBoardId, actorId)` (target board if
+  given, else the board already created for the key, else a new company-wide one), `apply` and `attachFile`.
+  `apply` is one transaction per row, repeatable and sends no notices: the task is `source` + `external_ref = row.key`
+  in the board (created or updated: title, detail, status, priority, due date, group, responsibles, reviewer). People
+  without a user are noted at the end of the detail ("Responsables en Monday sin usuario: ..."). An open task due tomorrow
+  or earlier gets its due reminders recorded as sent, so an import never floods notices. Checklist items and comments carry
+  an `import_key` (unique per task): only the missing ones are added; comments keep the original author and date in the
+  text. Over the limits (100 checklist items, 2000 comments) the extra ones are left out (logged). Long texts are cut with
+  "…" (title 300, detail 20000, comment 5000, checklist 300); a row without title or identifier is skipped. Attachments are
+  stored once per `import_key` (25 MB each, 100 per task).
+- Importing again updates the tasks already imported and overwrites the local changes made to the imported fields. Importing into an existing board needs `tareas.manage` on it and a new board needs `tareas.boards`; the extension enforces both.
+- Imported tasks write a "imported" activity row and nothing in the customer's history.
+- When a company is duplicated the boards do not keep their `import_key`.
 
 ## Files
 

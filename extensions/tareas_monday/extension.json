@@ -1,0 +1,19 @@
+{
+  "id": "tareas_monday",
+  "module": "tareas",
+  "displayName": "Importacion de tareas desde monday",
+  "description": "Importa tableros de monday como tableros de Tareas: lee el tablero con el token de la empresa, mapea sus columnas y trae grupos, tareas, subelementos, comentarios y archivos.",
+  "version": "1.0.0",
+  "minModuleVersion": "0.2.0",
+  "source": { "type": "github", "url": "https://github.com/alexcalbri/idc/tree/0000000000000000000000000000000000000000/extensions/tareas_monday" },
+  "permissions": [
+    "network.outbound:api.monday.com",
+    "secrets.write",
+    "tareas.import.write"
+  ],
+  "settings": [],
+  "migrations": ["migrations/V001__settings.sql"],
+  "uninstall": { "options": [
+    { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }
+  ] }
+}

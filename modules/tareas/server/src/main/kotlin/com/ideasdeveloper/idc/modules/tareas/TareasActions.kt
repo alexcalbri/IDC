@@ -186,6 +186,7 @@ object TareasActions {
             else -> TareasModule.View
         }
         "admin", "board-edit" -> TareasModule.Boards
+        "importar" -> TareasModule.Import
         else -> TareasModule.View
     }
 }

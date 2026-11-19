@@ -13,5 +13,8 @@ object TareasModule {
     /** Create, edit and archive boards, groups and members; sees every board (private ones too). */
     const val Boards: String = "tareas.boards"
 
+    /** Import data from other systems (Monday...) through the import extensions. */
+    const val Import: String = "tareas.import"
+
     const val UiRoute: String = "/modules/tareas/ui"
 }

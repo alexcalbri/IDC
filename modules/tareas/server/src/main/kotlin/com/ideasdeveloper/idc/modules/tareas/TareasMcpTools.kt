@@ -176,7 +176,8 @@ object TareasMcpTools {
         ) { call -> guarded { setChecklistItem(call) } },
     )
 
-    val mcp: ModuleMcp = ModuleMcp(Instructions, tools)
+    // A getter: the tools of the import extensions are read on every request of the bridge (extensions are linked after this object loads).
+    val mcp: ModuleMcp get() = ModuleMcp(Instructions, tools + TareasImportSources.all.flatMap { it.mcpTools })
 
     // ---- helpers (public and free of the database so they can be tested) ----
 

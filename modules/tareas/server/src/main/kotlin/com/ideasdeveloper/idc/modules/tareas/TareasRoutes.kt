@@ -4,8 +4,14 @@ import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModulePermissionLookup
 import com.ideasdeveloper.idc.server.modules.ModulePermissions
 import com.ideasdeveloper.idc.server.modules.requireModuleAccess
+import com.ideasdeveloper.idc.ui.UiButton
+import com.ideasdeveloper.idc.ui.UiNavigate
+import com.ideasdeveloper.idc.ui.UiNode
 import com.ideasdeveloper.idc.ui.UiNotice
+import com.ideasdeveloper.idc.ui.UiRow
 import com.ideasdeveloper.idc.ui.UiScreen
+import com.ideasdeveloper.idc.ui.UiText
+import com.ideasdeveloper.idc.ui.UiTextStyle
 import com.ideasdeveloper.idc.ui.UiTone
 import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.ApplicationCall
@@ -27,7 +33,7 @@ import java.util.UUID
  */
 object TareasRoutes {
     private val log = LoggerFactory.getLogger(TareasRoutes::class.java)
-    private val ScreenIds = setOf("mine", "boards", "board", "task", "new-task", "admin", "board-edit")
+    private val ScreenIds = setOf("mine", "boards", "board", "task", "new-task", "admin", "board-edit", ImportScreen)
 
     /** The screen to show next, with the query parameters it keeps. */
     private class Outcome(val screen: String, val params: Map<String, String>, val notice: UiNotice)
@@ -37,10 +43,14 @@ object TareasRoutes {
     fun screens(route: Route, access: ModuleAccessService) {
         route.get("/{screen}") {
             val permissions = call.requireModuleAccess(access, TareasModule.id) ?: return@get
-            if (!permissions.has(TareasModule.View)) return@get call.forbidden()
             val screen = call.parameters["screen"].orEmpty()
+            // "importar" needs tareas.import (checked before the connection opens); every other screen needs tareas.view.
+            if (!permissions.has(if (screen == ImportScreen) TareasModule.Import else TareasModule.View)) return@get call.forbidden()
             if (screen !in ScreenIds) return@get call.respond(HttpStatusCode.NotFound)
             val params = call.request.queryParameters.entries().associate { it.key to it.value.firstOrNull().orEmpty() }
+            if (screen == ImportScreen) {
+                return@get call.respondTareas(access, UiScreen.serializer()) { tenant -> importScreen(tenant, access, permissions, params, null) }
+            }
             val customers = if (screen == "task" || screen == "new-task") canSeeCustomers(access, call) else false
             call.respondTareas(access, UiScreen.serializer()) { tenant ->
                 open(tenant, permissions, customers, screen, params, null, null)
@@ -60,6 +70,9 @@ object TareasRoutes {
                 TareasActions.formValues(call.receiveText())
             } catch (failure: TareasValidationException) {
                 return@post call.respond(HttpStatusCode.BadRequest, TareasErrorResponse("invalid_request", failure.message.orEmpty()))
+            }
+            if (screen == ImportScreen) {
+                return@post call.respondTareas(access, UiScreen.serializer()) { tenant -> importAct(tenant, access, permissions, params, values) }
             }
             val customers = if (screen == "task" || screen == "new-task") canSeeCustomers(access, call) else false
             call.respondTareas(access, UiScreen.serializer()) { tenant ->
@@ -93,7 +106,67 @@ object TareasRoutes {
         users = TareasRepository.users(tenant),
         today = TareasRepository.today(),
         canSeeCustomers = customers,
+        importEnabled = permissions.has(TareasModule.Import) && TareasImportSources.enabled(tenant, permissions.companyCode).isNotEmpty(),
     )
+
+    // ---- import screen (the sources are extensions: see TareasImportSource) ----
+
+    private const val ImportScreen = "importar"
+
+    private fun importContext(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions) = TareasImportContext(
+        access, tenant, permissions.companyCode, permissions, access.userIdentity(tenant, permissions)?.name ?: "Usuario", TareasRepository.today(),
+    )
+
+    private fun errorBody(text: String) = listOf<UiNode>(UiText(text, UiTextStyle.Body, UiTone.Danger))
+
+    /** "Importar": one source's screen, or the buttons to choose among several. Needs tareas.import (checked by the route). */
+    private fun importScreen(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, notice: UiNotice?): UiScreen {
+        val scope = TareasService.scope(tenant, permissions)
+        val sources = TareasImportSources.enabled(tenant, permissions.companyCode)
+        fun screen(body: List<UiNode>) = UiScreen(
+            title = "Importar",
+            navigation = TareasScreens.navigation(scope, ImportScreen, import = sources.isNotEmpty()),
+            notice = notice,
+            body = body,
+        )
+        if (sources.isEmpty()) {
+            return screen(listOf(UiText("No hay fuentes de importación activas. Instala y activa una extensión de importación de Tareas (por ejemplo Monday) y vuelve aquí.")))
+        }
+        val chosen = sources.firstOrNull { it.sourceId == params["source"] } ?: sources.singleOrNull()
+        val picker = if (sources.size > 1) {
+            listOf<UiNode>(UiRow(sources.map { UiButton(it.title, UiNavigate(ImportScreen, mapOf("source" to it.sourceId)), style = if (it === chosen) "primary" else "secondary") }))
+        } else {
+            emptyList()
+        }
+        if (chosen == null) return screen(picker + UiText("Elige desde dónde quieres importar.", UiTextStyle.Caption))
+        val body = try {
+            chosen.screen(importContext(tenant, access, permissions), params)
+        } catch (failure: TareasValidationException) {
+            errorBody(failure.message.orEmpty())
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Exception) {
+            log.warn("No se pudo mostrar la fuente de importación {} ({}).", chosen.sourceId, failure.javaClass.simpleName)
+            errorBody("No se pudo mostrar esta fuente de importación.")
+        }
+        return screen(picker + body)
+    }
+
+    private fun importAct(tenant: Connection, access: ModuleAccessService, permissions: ModulePermissions, params: Map<String, String>, values: Map<String, String>): UiScreen {
+        val source = TareasImportSources.enabled(tenant, permissions.companyCode).firstOrNull { it.sourceId == params["source"] }
+            ?: return importScreen(tenant, access, permissions, emptyMap(), UiNotice("Esa fuente de importación no está disponible.", UiTone.Danger))
+        val reply = try {
+            source.action(importContext(tenant, access, permissions), params["op"].orEmpty(), values)
+        } catch (failure: TareasValidationException) {
+            TareasImportReply(failure.message.orEmpty(), error = true)
+        } catch (failure: CancellationException) {
+            throw failure
+        } catch (failure: Exception) {
+            log.warn("Falló una operación de importación de {} ({}).", source.sourceId, failure.javaClass.simpleName)
+            TareasImportReply("No se pudo completar la operación.", error = true)
+        }
+        return importScreen(tenant, access, permissions, reply.params + ("source" to source.sourceId), UiNotice(reply.notice, if (reply.error) UiTone.Danger else UiTone.Success))
+    }
 
     private fun uuid(params: Map<String, String>, key: String): UUID? = TareasActions.uuid(params[key])
 

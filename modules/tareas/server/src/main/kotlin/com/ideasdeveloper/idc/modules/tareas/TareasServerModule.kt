@@ -1,5 +1,6 @@
 package com.ideasdeveloper.idc.modules.tareas
 
+import com.ideasdeveloper.idc.server.extensions.ServerExtension
 import com.ideasdeveloper.idc.server.modules.ModuleAccessService
 import com.ideasdeveloper.idc.server.modules.ModuleDefinition
 import com.ideasdeveloper.idc.server.modules.ModuleJob
@@ -48,6 +49,7 @@ object TareasServerModule : ServerModule {
 
     override val migrationPaths = listOf(
         "modules/tareas/migrations/V001__create_tareas.sql",
+        "modules/tareas/migrations/V002__import.sql",
     )
 
     override val runtimeTables = listOf(
@@ -64,11 +66,11 @@ object TareasServerModule : ServerModule {
     )
 
     /**
-     * A duplicated company keeps the boards (without who created them) and their groups. Members, tasks and everything
+     * A duplicated company keeps the boards (without who created them nor their import key) and their groups. Members, tasks and everything
      * that hangs from a task stay behind: users are not copied.
      */
     override val duplicatedSettings = listOf(
-        SettingsTable("tareas_boards", reset = mapOf("created_by" to null)),
+        SettingsTable("tareas_boards", reset = mapOf("created_by" to null, "import_key" to null)),
         SettingsTable("tareas_groups"),
     )
 
@@ -81,7 +83,27 @@ object TareasServerModule : ServerModule {
         ModuleJob("attachments-cleanup", Duration.ofHours(1)) { context ->
             TareasRepository.cleanup(context.tenant, context.access.files(context.companyCode, TareasModule.id))
         },
+        // Reads and applies the imports of the extensions (a short slice every minute).
+        ModuleJob("import-runner", Duration.ofMinutes(1)) { context ->
+            try {
+                TareasImportSources.runPending(
+                    TareasImportJobContext(context.access, context.tenant, context.companyCode, context.access.files(context.companyCode, TareasModule.id), TareasRepository.today()),
+                    Duration.ofSeconds(40),
+                )
+            } catch (stop: InterruptedException) {
+                throw stop
+            } catch (stop: java.util.concurrent.CancellationException) {
+                throw stop
+            } catch (failure: Exception) {
+                log.warn("Fallo el trabajo de importacion de Tareas ({}).", failure.javaClass.simpleName)
+            }
+        },
     )
+
+    // The import extensions of the module (Monday...) offer their sources, screens and agent tools through it.
+    override fun linkExtensions(extensions: List<ServerExtension>) {
+        TareasImportSources.link(extensions)
+    }
 
     override val mcp: ModuleMcp
         get() = TareasMcpTools.mcp
@@ -90,7 +112,7 @@ object TareasServerModule : ServerModule {
         id = TareasModule.id,
         displayName = TareasModule.displayName,
         description = "Tableros de tareas con grupos, varios responsables, revisor, lista de comprobacion, comentarios, adjuntos, avisos de vencimiento y vistas de lista, kanban, agenda y carga de trabajo.",
-        version = "0.1.0",
+        version = "0.2.0",
         minCoreVersion = "0.8.0",
         minAppVersion = "0.7.0",
         permissions = listOf(
@@ -109,7 +131,14 @@ object TareasServerModule : ServerModule {
                 "Administrar tableros",
                 "Permite crear, editar y archivar tableros, grupos y miembros, y ver todos los tableros, tambien los privados.",
             ),
+            ModulePermissionDefinition(
+                TareasModule.Import,
+                "Importar datos",
+                "Permite importar tableros y tareas desde otros sistemas (por ejemplo Monday) con las extensiones de importacion instaladas.",
+            ),
         ),
+        supportsExtensions = true,
+        extensionPermissions = listOf("tareas.import.write"),
         ui = ModuleUiEntry(type = "native", entry = TareasModule.UiRoute, home = "mine"),
     )
 
