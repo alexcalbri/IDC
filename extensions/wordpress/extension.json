@@ -14,7 +14,7 @@
     "crm.items.write"
   ],
   "settings": [],
-  "migrations": ["V001__settings.sql"],
+  "migrations": ["migrations/V001__settings.sql"],
   "uninstall": { "options": [
     { "id": "linked_properties", "label": "Propiedades del sitio vinculadas a los leads", "default": "keep" }
   ] }

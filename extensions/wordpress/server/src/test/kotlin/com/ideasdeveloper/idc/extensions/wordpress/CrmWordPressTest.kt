@@ -66,14 +66,14 @@ class CrmWordPressTest {
         val zip = CrmPlugin.zip(CrmPlugin::class.java.classLoader)
         val names = ZipInputStream(zip.inputStream()).use { input -> generateSequence { input.nextEntry?.name }.toList() }
         assertEquals(listOf("idc-connector/idc-connector.php", "idc-connector/readme.txt"), names)
-        val php = CrmPlugin::class.java.classLoader.getResourceAsStream("extensions/wordpress/idc-connector/idc-connector.php")!!.use { it.readBytes().decodeToString() }
+        val php = CrmPlugin::class.java.classLoader.getResourceAsStream("extensions/wordpress/idc-connector/idc-connector.php.txt")!!.use { it.readBytes().decodeToString() }
         assertTrue(php.contains("Version: ${CrmWordPress.PluginVersion}"), "Plugin header and CrmWordPress.PluginVersion must match")
         assertEquals(WordPressPluginInfo.Version, CrmWordPress.PluginVersion)
     }
 
     @Test
     fun theWordPressPluginPostsToTheExtensionAddress() {
-        val php = CrmPlugin::class.java.classLoader.getResourceAsStream("extensions/wordpress/idc-connector/idc-connector.php")!!.use { String(it.readBytes()) }
+        val php = CrmPlugin::class.java.classLoader.getResourceAsStream("extensions/wordpress/idc-connector/idc-connector.php.txt")!!.use { String(it.readBytes()) }
         assertTrue(php.contains("'/modules/crm/extensions/wordpress/' . rawurlencode( \$settings['company'] ) . '/hook'"))
         assertFalse(php.contains("/modules/crm/hooks/"))
     }

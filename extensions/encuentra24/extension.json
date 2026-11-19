@@ -15,7 +15,7 @@
     "crm.items.write"
   ],
   "settings": [],
-  "migrations": ["V001__settings.sql"],
+  "migrations": ["migrations/V001__settings.sql"],
   "uninstall": { "options": [
     { "id": "ads", "label": "Anuncios de Encuentra24 vinculados a los leads", "default": "keep" }
   ] }

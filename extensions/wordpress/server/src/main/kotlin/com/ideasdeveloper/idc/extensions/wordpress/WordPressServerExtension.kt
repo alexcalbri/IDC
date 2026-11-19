@@ -74,7 +74,7 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
         ),
         // Los ajustes se guardan en ext_wordpress__settings y se editan en las pantallas del CRM: ninguno es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("V001__settings.sql"),
+        migrations = listOf("migrations/V001__settings.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(
                 ExtensionUninstallOption(LinkedPropertiesOption, "Propiedades del sitio vinculadas a los leads", UninstallDefault.Keep),
@@ -176,6 +176,6 @@ object CrmWordPressExtension : ServerExtension, WordPressProvider, CrmImportSour
 }
 
 /** Punto de entrada que el servidor instancia al cargar el paquete de la extension. */
-class WordPressServerExtensionProvider : ServerExtensionProvider {
+class WordpressServerExtensionProvider : ServerExtensionProvider {
     override fun create(): ServerExtension = CrmWordPressExtension
 }

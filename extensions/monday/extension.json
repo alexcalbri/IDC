@@ -15,7 +15,7 @@
     "crm.messages.write"
   ],
   "settings": [],
-  "migrations": ["V001__settings.sql"],
+  "migrations": ["migrations/V001__settings.sql"],
   "uninstall": { "options": [
     { "id": "created_fields", "label": "Campos del CRM creados por la importacion (con sus valores en los leads)", "default": "ask" },
     { "id": "import_history", "label": "Historial de importaciones de monday", "default": "delete" }

@@ -18,7 +18,8 @@ CREATE TABLE ext_wordpress__agents (
     wp_user_id BIGINT PRIMARY KEY CHECK (wp_user_id > 0),
     name TEXT NOT NULL DEFAULT '',
     email TEXT NOT NULL DEFAULT '',
-    user_id UUID REFERENCES application_users(id) ON DELETE SET NULL,
+    -- Usuario de IDC (application_users.id). Sin clave foranea: una migracion de extension no puede apuntar a tablas del nucleo.
+    user_id UUID,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 

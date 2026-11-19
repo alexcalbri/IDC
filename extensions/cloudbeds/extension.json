@@ -15,7 +15,7 @@
     "crm.reservations.write"
   ],
   "settings": [],
-  "migrations": ["V001__settings.sql"],
+  "migrations": ["migrations/V001__settings.sql"],
   "uninstall": { "options": [
     { "id": "reservations", "label": "Reservas de Cloudbeds registradas en los leads", "default": "keep" },
     { "id": "rooms", "label": "Habitaciones de Cloudbeds asignadas a los leads", "default": "keep" },

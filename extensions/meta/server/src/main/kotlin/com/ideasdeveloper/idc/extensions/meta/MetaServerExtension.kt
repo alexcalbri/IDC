@@ -75,7 +75,7 @@ object CrmMetaExtension : ServerExtension, MetaProvider {
         ),
         // Las conexiones se guardan en ext_meta__settings y se editan en las pantallas del CRM: ninguno es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("V001__settings.sql"),
+        migrations = listOf("migrations/V001__settings.sql"),
         // Las conexiones se borran siempre y las conversaciones se conservan siempre: no hay nada que preguntar.
         uninstall = ExtensionUninstallDefinition(emptyList()),
     )

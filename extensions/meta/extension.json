@@ -15,6 +15,6 @@
     "crm.messages.write"
   ],
   "settings": [],
-  "migrations": ["V001__settings.sql"],
+  "migrations": ["migrations/V001__settings.sql"],
   "uninstall": { "options": [] }
 }

@@ -50,7 +50,7 @@ object MondayServerExtension : ServerExtension, CrmImportSource by MondayImport 
         ),
         // El token se guarda en ext_monday__settings y se edita en la pantalla Importar del CRM: ningun ajuste es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("V001__settings.sql"),
+        migrations = listOf("migrations/V001__settings.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(
                 ExtensionUninstallOption(CreatedFieldsOption, "Campos del CRM creados por la importacion (con sus valores en los leads)", UninstallDefault.Ask),

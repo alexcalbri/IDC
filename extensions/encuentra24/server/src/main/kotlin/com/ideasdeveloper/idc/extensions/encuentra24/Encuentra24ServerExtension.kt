@@ -49,7 +49,7 @@ object Encuentra24ServerExtension : ServerExtension, Encuentra24Provider {
         ),
         // Los ajustes se guardan en ext_encuentra24__settings y se editan en las pantallas del CRM: ninguno es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("V001__settings.sql"),
+        migrations = listOf("migrations/V001__settings.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(
                 ExtensionUninstallOption(AdsOption, "Anuncios de Encuentra24 vinculados a los leads", UninstallDefault.Keep),

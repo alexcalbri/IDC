@@ -303,22 +303,6 @@ class ExtensionPackageBuilder(
         return VerifiedPackage(manifest, actual, false, null)
     }
 
-    private fun structureProblems(extensionId: String, packageDir: Path): List<String> {
-        val problems = ExtensionPackageSafety.contentProblems(packageDir).toMutableList()
-        val kotlinRoot = packageDir.resolve("server/src/main/kotlin")
-        val packagePath = "com/ideasdeveloper/idc/extensions/$extensionId/"
-        val sources = if (Files.isDirectory(kotlinRoot)) kotlinRoot.walk().filter { it.isRegularFile() && it.extension == "kt" }.toList() else emptyList()
-        if (sources.isEmpty()) problems += "no tiene codigo en server/src/main/kotlin."
-        sources.forEach { file ->
-            if (!file.relativeTo(kotlinRoot).invariantSeparatorsPathString.startsWith(packagePath)) {
-                problems += "${file.name} debe estar en server/src/main/kotlin/$packagePath."
-            }
-        }
-        val provider = providerClassName(extensionId).substringAfterLast('.')
-        if (sources.none { it.readText().contains("class $provider") }) problems += "no declara $provider."
-        return problems
-    }
-
     private fun download(url: String, target: Path): Path {
         var current = url
         var response: HttpResponse<Path>
@@ -420,6 +404,23 @@ class ExtensionPackageBuilder(
         fun zipLabel(fileName: String?): String {
             val name = fileName.orEmpty().substringAfterLast('/').substringAfterLast('\\')
             return "zip:" + name.replace(UnsafeLabelChars, "_").take(80).ifBlank { "paquete.zip" }
+        }
+
+        /** Problemas de estructura del paquete extraido (contenido, ruta de las fuentes y clase proveedora). Publico para que las pruebas lo usen sin construir el builder. */
+        fun structureProblems(extensionId: String, packageDir: Path): List<String> {
+            val problems = ExtensionPackageSafety.contentProblems(packageDir).toMutableList()
+            val kotlinRoot = packageDir.resolve("server/src/main/kotlin")
+            val packagePath = "com/ideasdeveloper/idc/extensions/$extensionId/"
+            val sources = if (Files.isDirectory(kotlinRoot)) kotlinRoot.walk().filter { it.isRegularFile() && it.extension == "kt" }.toList() else emptyList()
+            if (sources.isEmpty()) problems += "no tiene codigo en server/src/main/kotlin."
+            sources.forEach { file ->
+                if (!file.relativeTo(kotlinRoot).invariantSeparatorsPathString.startsWith(packagePath)) {
+                    problems += "${file.name} debe estar en server/src/main/kotlin/$packagePath."
+                }
+            }
+            val provider = providerClassName(extensionId).substringAfterLast('.')
+            if (sources.none { it.readText().contains("class $provider") }) problems += "no declara $provider."
+            return problems
         }
 
         fun providerClassName(extensionId: String): String =

@@ -69,7 +69,7 @@ object CrmCloudbedsExtension : ServerExtension, CloudbedsProvider {
         ),
         // Los ajustes se guardan en ext_cloudbeds__settings y se editan en las pantallas del CRM: ninguno es obligatorio para activarla.
         settings = emptyList(),
-        migrations = listOf("V001__settings.sql"),
+        migrations = listOf("migrations/V001__settings.sql"),
         uninstall = ExtensionUninstallDefinition(
             listOf(
                 ExtensionUninstallOption(ReservationsOption, "Reservas de Cloudbeds registradas en los leads", UninstallDefault.Keep),
