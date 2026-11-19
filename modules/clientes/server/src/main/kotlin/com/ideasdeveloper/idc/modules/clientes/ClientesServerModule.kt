@@ -67,7 +67,7 @@ object ClientesServerModule : ServerModule {
         id = ClientesModule.id,
         displayName = ClientesModule.displayName,
         description = "Gestiona la identidad compartida de clientes.",
-        version = "0.10.0",
+        version = "0.10.1",
         locked = true,
         permissions = listOf(
             ModulePermissionDefinition("clientes.view", "Ver clientes", "Permite consultar la lista y ficha de clientes."),
@@ -485,7 +485,7 @@ object ClientesServerModule : ServerModule {
 
     // Customers without email never collide with each other.
     internal fun emailExists(connection: Connection, email: String, excluding: UUID?): Boolean = email.isNotBlank() && connection.prepareStatement(
-        "SELECT 1 FROM customers WHERE lower(primary_email) = lower(?) AND status <> 'archived' AND (? IS NULL OR id <> ?)"
+        "SELECT 1 FROM customers WHERE lower(primary_email) = lower(?) AND status <> 'archived' AND (CAST(? AS uuid) IS NULL OR id <> ?)"
     ).use { query ->
         query.setString(1, email)
         query.setObject(2, excluding)
