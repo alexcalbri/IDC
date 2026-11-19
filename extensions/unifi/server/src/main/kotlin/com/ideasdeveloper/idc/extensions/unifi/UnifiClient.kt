@@ -227,10 +227,12 @@ object UnifiClient {
     /** Guest devices connected to the site now. Throws [UnifiException] when UniFi cannot be asked. */
     fun connectedGuests(settings: HotspotSettings): List<ConnectedGuest> {
         if (!settings.unifiConfigured) throw UnifiException("UniFi no esta configurado.")
-        val reference = siteReference(settings.unifiApiKey!!, settings.unifiConsoleId!!, settings.unifiSiteId!!)
+        // Copia local: HotspotSettings es de otro modulo y el compilador no puede afinar el tipo de su propiedad.
+        val apiKey = settings.unifiApiKey!!
+        val reference = siteReference(apiKey, settings.unifiConsoleId!!, settings.unifiSiteId!!)
         val page = getJson(
             "$CloudApi/v1/connector/consoles/${settings.unifiConsoleId}/proxy/network/api/s/${encode(reference)}/stat/sta",
-            settings.unifiApiKey,
+            apiKey,
         )
         if ((page["meta"] as? JsonObject)?.string("rc") != "ok") throw UnifiException("UniFi no devolvio los dispositivos conectados.")
         return parseGuests(page)
