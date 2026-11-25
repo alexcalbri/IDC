@@ -85,7 +85,7 @@ class CrmInboxRulesTest {
 
     @Test
     fun cutsQuotedReplies() {
-        val reply = "Si, me interesa.\n\nEl lun, 3 nov 2026 a las 10:00, Magrock escribio:\n> Hola Ana"
+        val reply = "Si, me interesa.\n\nEl lun, 3 nov 2026 a las 10:00, Costa Azul escribio:\n> Hola Ana"
         assertEquals("Si, me interesa.", CrmMail.withoutQuote(reply))
         assertFalse(CrmMail.withoutQuote("Solo texto").isEmpty())
     }

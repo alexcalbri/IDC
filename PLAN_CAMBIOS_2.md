@@ -236,7 +236,7 @@ Nada de lo que corre como root o postgres se lee de `source/`. La lógica del cl
 
 ## 9. Automatizaciones, plantillas con traducción, botones y avisos (CRM 0.24.0, V021)
 
-**Origen:** la revisión de los tableros de leads de La Jolla en monday. Los puntos 6, 7 y 8 de esa revisión (salida a la etapa Old Guest, reparto por asignado y webhook) quedan fuera.
+**Origen:** la revisión de los tableros de leads de Vista Mar en monday. Los puntos 6, 7 y 8 de esa revisión (salida a la etapa Old Guest, reparto por asignado y webhook) quedan fuera.
 
 ### 9.1 Plantillas de correo por contenido
 - Siguen las plantillas actuales (`crm_email_templates`, HTML o texto). Cada empresa crea las que quiera (bienvenida, confirmación, recordatorio...), sin una plantilla por idioma.
@@ -288,7 +288,7 @@ Configuración > Automatizaciones (permiso `crm.settings`). Cada regla tiene un 
 Salida a la etapa "Old Guest", reparto por asignado y webhooks.
 
 ### Automatizaciones para las pruebas del cambio 9 (no son código)
-No se programan: son datos de configuración. Al probar el cambio 9, se crean desde la app (o por MCP) en el servidor, con la configuración de La Jolla (las fechas mapeadas como "Fecha de ingreso" y "Fecha de salida", y el campo de idioma mapeado):
+No se programan: son datos de configuración. Al probar el cambio 9, se crean desde la app (o por MCP) en el servidor, con la configuración de Vista Mar (las fechas mapeadas como "Fecha de ingreso" y "Fecha de salida", y el campo de idioma mapeado):
 1. **Bienvenida antes del check-in:**
    - disparador: 1 día antes de "Fecha de ingreso", a la hora configurada;
    - condiciones: etapa Booked/Converted y tiene correo;
@@ -301,7 +301,7 @@ No se programan: son datos de configuración. Al probar el cambio 9, se crean de
    - si faltan las fechas o la habitación, avisa qué falta.
 4. **Booked sin fechas:**
    - disparador: cambio a la etapa Booked/Converted;
-   - acción: avisar a los asignados (o al usuario elegido, como magrock en monday);
+   - acción: avisar a los asignados (o al usuario elegido, como una cuenta compartida en monday);
    - si faltan la fecha de ingreso o la de salida, avisa qué falta.
 5. **Mensaje nuevo de un lead:** aviso en la app y por correo a los asignados. Lo cubre 9.3; se revisa que llegue.
 6. **Seguimiento que vence:** aviso en la app y por correo a los asignados a la hora del seguimiento. Lo cubre 9.3.

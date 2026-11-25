@@ -42,9 +42,9 @@ class HotspotRoamingTest {
 
     @Test
     fun theLongestLiveAccessWins() {
-        val soon = access("lajolla", Instant.parse("2026-11-16T19:00:00Z"))
-        val later = access("magrock", Instant.parse("2026-11-17T09:00:00Z"))
-        val forever = access("magrock", null)
+        val soon = access("vistamar", Instant.parse("2026-11-16T19:00:00Z"))
+        val later = access("costaazul", Instant.parse("2026-11-17T09:00:00Z"))
+        val forever = access("costaazul", null)
         assertEquals(later, HotspotRoaming.best(listOf(soon, later)))
         assertEquals(forever, HotspotRoaming.best(listOf(soon, forever, later)))
         assertNull(HotspotRoaming.best(emptyList()))
@@ -52,17 +52,17 @@ class HotspotRoamingTest {
 
     @Test
     fun minutesLeftRoundUpAndAccessesWithoutExpiryHaveNone() {
-        assertEquals(960, access("lajolla", Instant.parse("2026-11-17T10:00:00Z")).minutesLeft(now))
-        assertEquals(1, access("lajolla", Instant.parse("2026-11-16T18:00:20Z")).minutesLeft(now))
-        assertNull(access("lajolla", null).minutesLeft(now))
+        assertEquals(960, access("vistamar", Instant.parse("2026-11-17T10:00:00Z")).minutesLeft(now))
+        assertEquals(1, access("vistamar", Instant.parse("2026-11-16T18:00:20Z")).minutesLeft(now))
+        assertNull(access("vistamar", null).minutesLeft(now))
     }
 
     @Test
     fun networksCanBeSharedWithLinkedCompanies() {
-        val shared = HotspotNetworks.parse(UUID.randomUUID(), mapOf("ssid" to "Escape", "accessMode" to "Formulario", "shared" to "true"))
+        val shared = HotspotNetworks.parse(UUID.randomUUID(), mapOf("ssid" to "Bosque", "accessMode" to "Formulario", "shared" to "true"))
         assertTrue(shared.shared)
         assertEquals("true", HotspotNetworks.toFormValues(shared)["shared"])
-        assertFalse(HotspotNetworks.parse(UUID.randomUUID(), mapOf("ssid" to "Escape", "accessMode" to "Formulario")).shared)
+        assertFalse(HotspotNetworks.parse(UUID.randomUUID(), mapOf("ssid" to "Bosque", "accessMode" to "Formulario")).shared)
     }
 
     @Test

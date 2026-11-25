@@ -24,8 +24,8 @@ class CrmImportTest {
     fun listsMondayBoardsWithTheirWorkspaceAndSkipsSubitemBoards() {
         val data = kotlinx.serialization.json.Json.parseToJsonElement(
             """{"boards": [
-                {"id": "101", "name": "Surf Camps", "type": "board", "items_count": 42, "workspace": {"name": "Magrock"}},
-                {"id": "102", "name": "Subelementos de Surf Camps", "type": "sub_items_board", "workspace": {"name": "Magrock"}},
+                {"id": "101", "name": "Surf Camps", "type": "board", "items_count": 42, "workspace": {"name": "Costa Azul"}},
+                {"id": "102", "name": "Subelementos de Surf Camps", "type": "sub_items_board", "workspace": {"name": "Costa Azul"}},
                 {"id": "103", "name": "Notas", "type": "document", "workspace": null},
                 {"id": "104", "name": "Yoga", "type": "board", "items_count": null, "workspace": null},
                 {"id": "x", "name": "Sin id valido", "type": "board"}
@@ -33,7 +33,7 @@ class CrmImportTest {
         ) as kotlinx.serialization.json.JsonObject
         val boards = CrmImport.parseMondayBoards(data)
         assertEquals(
-            listOf(CrmMondayBoard("101", "Surf Camps", "Magrock", 42), CrmMondayBoard("104", "Yoga", CrmImport.MainWorkspace, null)),
+            listOf(CrmMondayBoard("101", "Surf Camps", "Costa Azul", 42), CrmMondayBoard("104", "Yoga", CrmImport.MainWorkspace, null)),
             boards,
         )
     }
@@ -41,7 +41,7 @@ class CrmImportTest {
     @Test
     fun recognizesTheMondayExportLayout() {
         val records = listOf(
-            listOf("Magrock Lead Surf Camps", "", ""),
+            listOf("Costa Azul Lead Surf Camps", "", ""),
             listOf("Answered", "", ""),
             listOf("Name", "Leads Status", "Email"),
             listOf("Louise Corbeil", "Answered", "louise@x.com"),
@@ -114,11 +114,11 @@ class CrmImportTest {
             columns = mapOf("Name" to "name", "Email" to "email", "Phone" to "phone", "Leads Status" to "stage", "Involved" to "owner", "Tablero" to "interest", "Booking Date" to "dates", "Notes" to "details"),
             stages = mapOf("Booked" to "Reservado"),
             owners = mapOf("BF" to "ana"),
-            interests = mapOf("Magrock Lead Surf Camps" to "Surf"),
+            interests = mapOf("Costa Azul Lead Surf Camps" to "Surf"),
         )
         val row = mapOf(
             "Name" to "Jason Weiss", "Email" to "JASON@gmail.co", "Phone" to "(202) 555-0123", "Leads Status" to "Booked", "Involved" to "BF",
-            "Tablero" to "Magrock Lead Surf Camps", "Booking Date" to "Dec 25 - Jan 3", "Notes" to "2 ppl, LIBERIA",
+            "Tablero" to "Costa Azul Lead Surf Camps", "Booking Date" to "Dec 25 - Jan 3", "Notes" to "2 ppl, LIBERIA",
         )
         val values = CrmImport.values(row, mapping, context)
         assertEquals("JASON@gmail.com", values.email)
